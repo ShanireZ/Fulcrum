@@ -1,0 +1,117 @@
+# 门禁：GitHub Actions 上跑**全量**。
+#
+# ★ ★ ★ **这里只有一条命令，而且与本机那条逐字相同**：`bash tests/m0/docker-run.sh`。
+#   这不是省事，是判据纪律：CI 若自己拼一套「等价的」步骤，就会长出**第二套判据**，
+#   而两套判据迟早分家 —— 那时「CI 绿」与「门禁绿」是两件事，却没有任何东西会说出来。
+#
+# ⚠ ⚠ **有意不写 `paths-ignore`。** `crates/fulcrum-config/tests/doc_contract.rs` 用
+#   `include_str!` 读 `docs/architecture/dsl-reference.md`，`supply_gates.rs` 读根
+#   `Cargo.toml`/`Cargo.lock`，还有一道门反向断言**已接线的能力不许出现在 `dsl-reference.md` 里**
+#   ⇒ **一次纯文档改动是真的能把门禁弄红的**，跳过它等于把这类缺陷放行，而现象是「CI 一直绿」。
+#
+# 两条止血阀：`concurrency` + `cancel-in-progress`（连着推几次时只有最后一次跑到底）、
+# `timeout-minutes`（卡死的任务最多烧这么多，而不是默认的 6 小时）。
+name: gate
+
+on:
+  # ★ 只在 main 上跑：口径是「直接提交 main，不开分支不开 PR」。
+  push:
+    branches: [main]
+  # 手工触发，用于改完 workflow 自身之后重跑。
+  workflow_dispatch:
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # ★ 钉住大版本，不用 `ubuntu-latest`：M1 的 systemd 场景依赖宿主机是 **cgroup v2**，
+    #   而 `ubuntu-latest` 换代时不会有任何一行输出告诉我们环境变了。
+    runs-on: ubuntu-24.04
+    # ⚠ 这个上限是**止血阀**，不是预期耗时；真实耗时见每次运行的记录。
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ★ runner 上 `/` 只有二十几 GB 空余，而这里要放：构建镜像、systemd 测试镜像、
+      #   cargo registry、release 模式的整个 target。⚠ 磁盘满的报错形态五花八门
+      #   （链接器 OOM、docker 写层失败），而没有一条会说「磁盘满了」。
+      - name: 腾出磁盘
+        run: |
+          echo "── 清理前 ──"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup "$AGENT_TOOLSDIRECTORY" || true
+          echo "── 清理后 ──"; df -h /
+
+      # ★ 每次都把环境打出来。§8 要求可复现，而可复现的第一步是**看得见跑的是什么**。
+      #   ⚠ cgroup 那一行是判据相关的：M1 的 `ExitType=cgroup` 要求容器侧 systemd ≥ 250
+      #   且宿主机是 cgroup v2 统一层级。它变成 v1 的那天，M1 场景会以一种
+      #   看起来像产品缺陷的方式红。
+      - name: 环境快照
+        run: |
+          echo "── docker ──"; docker version
+          echo "── 内核 ──"; uname -a
+          echo "── cgroup 层级 ──"; stat -fc %T /sys/fs/cgroup
+          echo "── git 行尾配置（CRLF 门的前提）──"
+          git config --get core.autocrlf || echo "core.autocrlf 未设（Linux 上的默认，正是要的）"
+
+      # ── 构建缓存 ───────────────────────────────────────────────────────────
+      #
+      # ⚠ ⚠ **缓存最坏的失效方式不是「没命中」，是「命中了一份不该用的」。**
+      #   两道防线：① 键里带 `Dockerfile.build` 的哈希（工具链身份，连 C 工具链一起）；
+      #   ② `tests/ci/cache.sh` 在归档里另存一份 meta，**灌回前逐字比对**，对不上就跳过。
+      #
+      # ★ **怀疑缓存的时候**：把下面键里的 `v1` 改成 `v2`，整片缓存立即作废。
+      - name: 取构建缓存
+        id: buildcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/fulcrum-cache
+          # ★ 精确键 = 工具链 + 两把锁；`restore-keys` 让它仍然能从**同一套工具链**的
+          #   上一份热起来（cargo 增量补差）。
+          key: fulcrum-buildcache-v1-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build') }}-${{ hashFiles('Cargo.lock', 'vendor/pingora/Cargo.lock') }}
+          restore-keys: |
+            fulcrum-buildcache-v1-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build') }}-
+
+      - name: 把缓存灌回 docker 卷
+        run: bash tests/ci/cache.sh restore ~/fulcrum-cache
+
+      # ★ ★ ★ 就这一条，退出码就是判据。
+      # ⚠ 绝不接管道：`| tee` / `| tail` 取回的是右边那个命令的退出码（本仓库栽过）。
+      - name: 全量门禁
+        run: bash tests/m0/docker-run.sh
+
+      # ★ `always()`：门禁红了也要存 —— 依赖照样是编好的。
+      # ⚠ ⚠ **精确命中时整步跳过**：压归档要几分钟，而下面「存构建缓存」在命中时本就不跑
+      #   ⇒ 压出来的东西会被原样扔掉。★ 一步只在「它的产物会被用到」时才该跑。
+      # ★ 代价说在明处：命中时缓存**不刷新**，缓存里那份 target 相对 HEAD 会越来越旧。
+      #   哪天两把锁之一变了，键跟着变、自然重做一份新的。
+      # ★ ★ **诊断必须落到「日志之外」的地方** —— 日志 blob 取不回来的情况真的发生过
+      #   （`gh run view --log` 一直 404 BlobNotFound），那时「加一行 df 让下一轮自己说话」
+      #   本身就没生效：话是说了，只是没人听得见。
+      - name: 导出构建缓存
+        id: dumpcache
+        if: always() && steps.buildcache.outputs.cache-hit != 'true'
+        run: bash tests/ci/dump-cache.sh ~/fulcrum-cache ~/cache-diag.txt
+
+      # ★ 与日志分开的那条路：artifact 一定取得回来（`gh run download`）。
+      - name: 传诊断
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-diag
+          path: ~/cache-diag.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: 存构建缓存
+        if: always() && steps.dumpcache.outputs.archived == 'true' && steps.buildcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/fulcrum-cache
+          key: fulcrum-buildcache-v1-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build') }}-${{ hashFiles('Cargo.lock', 'vendor/pingora/Cargo.lock') }}

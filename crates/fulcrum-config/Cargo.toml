@@ -1,0 +1,10 @@
+[package]
+name = "fulcrum-config"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "枢衡的配置层：DSL（Caddyfile 式）→ 诊断 → 结构化配置（JSON）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

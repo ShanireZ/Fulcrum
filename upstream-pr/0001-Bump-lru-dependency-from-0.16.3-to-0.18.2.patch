@@ -1,0 +1,34 @@
+From f07e1bdd6a2c74fcffa8dbc4f8a4555198f37c8e Mon Sep 17 00:00:00 2001
+From: Shanire <shanire86@gmail.com>
+Date: Thu, 13 Aug 2026 05:31:20 +0000
+Subject: [PATCH] Bump lru dependency from 0.16.3 to 0.18.2
+
+RUSTSEC-2026-0253 reports a potential use-after-free in LruCache::pop()
+caused by a lack of panic safety; all versions before 0.18.2 are affected.
+This moves every crate in the workspace onto the first fixed release.
+
+lru 0.17 and later declare rust-version = 1.85.0, which matches this
+repository's MSRV floor, so no MSRV change is required. No source
+changes are needed: cargo check --workspace passes unmodified.
+
+Signed-off-by: Shanire <shanire86@gmail.com>
+---
+ Cargo.toml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index d62629c..64d4707 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -43,7 +43,7 @@ log = "0.4"
+ futures = "0.3"
+ h2 = ">=0.4.14"
+ once_cell = "1"
+-lru = "0.16.3"
++lru = "0.18.2"
+ ahash = ">=0.8.9"
+ 
+ [workspace.lints.rust]
+-- 
+2.39.5
+

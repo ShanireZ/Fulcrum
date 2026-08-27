@@ -1,0 +1,19 @@
+[package]
+name = "fulcrum"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "枢衡 Fulcrum 的产品二进制：validate / compile / plan / serve"
+
+[dependencies]
+# `issuer_slug`：`validate` 要按**这份配置**的 `acme_ca` 去找证书目录，不按写死的默认值。
+fulcrum-acme = { path = "../fulcrum-acme" }
+fulcrum-config = { path = "../fulcrum-config" }
+fulcrum-runtime = { path = "../fulcrum-runtime" }
+fulcrum-server = { path = "../fulcrum-server" }
+# `serve` 的日志。★ 格式里带 pid：零停机换代时两代同时在跑，分不清是谁打的日志就没法读。
+env_logger = { workspace = true }
+
+[[bin]]
+name = "fulcrum"
+path = "src/main.rs"

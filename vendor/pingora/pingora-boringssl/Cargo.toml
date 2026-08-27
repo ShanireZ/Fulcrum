@@ -1,0 +1,59 @@
+[package]
+name = "pingora-boringssl"
+version = "0.8.1"
+authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
+license = "Apache-2.0"
+edition = "2021"
+repository = "https://github.com/cloudflare/pingora"
+categories = ["asynchronous", "network-programming"]
+keywords = ["async", "tls", "ssl", "pingora"]
+description = """
+BoringSSL async APIs for Pingora.
+"""
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "pingora_boringssl"
+path = "src/lib.rs"
+
+[dependencies]
+# ★ ★ ★ **枢衡改动 1/1：去掉上游的 `features = ["pq-experimental"]`。**
+#
+# ⚠ ⚠ 那个 feature 不是一个开关，它会让 `boring-sys` **给 BoringSSL 源码打一个补丁**
+#   （`boring-sys-4.22.0/build/main.rs`：`apply_patch(config, "boring-pq.patch")`，
+#   还会打一行 `cargo:warning=applying experimental post quantum crypto patch to boringssl`）。
+# ⇒ 开着它，产品链接的就**不是原版 BoringSSL**，而是一个打了实验性后量子补丁的版本。
+#
+# ★ **而本 crate 根本用不上它**：`src/ext.rs` 里唯一碰后量子的地方是
+#   `ssl_use_second_key_share`，它被本 crate **自己的** `pq_use_second_keyshare` feature
+#   门控着（默认关），关着时是一个空函数。⇒ 去掉 `pq-experimental` 不改变任何行为。
+#   ⚠ **若将来要打开 `pq_use_second_keyshare`，必须同时把 `pq-experimental` 加回来**
+#   —— 那个符号（`SSL_use_second_keyshare`）只有补丁打上之后才存在。
+#
+# ★ ★ 另一条同样重要：**这一条让 `docs/verification/musl-boringssl.md` 的结论继续成立。**
+#   那份探针编的是原版 BoringSSL；开着 `pq-experimental` 的话产品编的是打过补丁的另一份，
+#   而「探针验过」这句话就不再覆盖产品了 —— **一次验证的适用范围止于它真正编过的那份源码。**
+#
+# ⚠ ⚠ **上界 `^4` 必须保留，这是本 fork 里第一条「不许按 G30 抬」的上界。**
+#   G30 的口径是把脱字号上界抬掉，因为它们把传递依赖钉在旧版上。这一条相反：
+#   `quiche 0.29.3`（G103）要的也是 `boring ^4`，两边**必须解到同一个 boring**，
+#   否则 `SslContextBuilder` 同名而是两个类型。实测两者解到同一个 `boring 4.22.0`。
+#   ⇒ 抬成 `>=4.22` 会让 cargo 挑 5.x，当场把 quiche 那条路弄坏。
+boring = "4.5"
+boring-sys = "4.5"
+futures-util = { version = "0.3", default-features = false }
+tokio = { workspace = true, features = ["io-util", "net", "macros", "rt-multi-thread"] }
+libc = "0.2.70"
+foreign-types-shared = { version = "0.3" }
+
+
+[dev-dependencies]
+tokio-test = "0.4"
+tokio = { workspace = true, features = ["full"] }
+
+[features]
+default = []
+# ⚠ 打开它必须同时给 `boring` 加回 `pq-experimental`，见上面那段。
+pq_use_second_keyshare = []
+# waiting for boring-rs release
+read_uninit = []

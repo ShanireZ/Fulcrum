@@ -1,0 +1,172 @@
+# 枢衡的构建镜像（G26）。宿主机不装任何东西，工具链全在这里。
+#
+# 基础镜像已带 gcc / make / pkg-config / perl；额外需要：
+#   cmake —— pingora 的传递依赖 libz-ng-sys 用它编 zlib-ng
+#   clang —— 任何走 bindgen 的 *-sys 包会用到，先备着
+#            ★ 原注释写的是「若将来引入 aws-lc-rs……」，而 G41 已把 aws-lc-rs
+#              **明确排除**在产物之外（见 pingora-rustls/Cargo.toml）。留着那句话
+#              会让下一个人以为它迟早要来。clang 本身仍留着，理由换成上面那条更一般的。
+#   iptables —— ★ 只给回归网用：把 192.0.2.0/24 做成**真丢包**，见下
+#
+# ★ 用 trixie（Debian 13）而不是 bookworm（Debian 12，已是 oldstable）。
+#   上游的 `rust:1` 与 `rust:latest` 现在都指向 trixie，钉 bookworm 等于主动留在旧的那档。
+#
+# ★ ★ **钉死到 digest，不用浮动 tag。** 这是整条验证链上最后一个没钉住的输入：
+#   `Cargo.lock` 入库、vendor 的锁也入库、G26 明写「完全可复现」、§8 的性能对拍要求
+#   环境可复现——而编译器本身却跟着 `rust:1-trixie` 浮动。上游把这个 tag 推到新的
+#   rustc，下次重建镜像就换了编译器，于是**不同机器上的「同一次验证」可能跑在不同
+#   编译器上**，而两边都报绿。
+#
+#   ★ 这不是假设。2026-08-14 实测：本文件在 `00ebcad` 就已经改成 trixie，而本机
+#     `fulcrum-build:local` 里跑的仍是 **bookworm**——因为 `docker-run.sh` 只做
+#     `docker image inspect` 命中检查，命中就不重建。此后每一次「全绿」，实际跑的
+#     基础镜像都与本文件声明的不是同一个。
+#     修法有两半，缺一不可：**这里钉死**，加上 docker-run.sh 按本文件的内容哈希决定重建。
+#
+# ── 怎么升（口径 = G36，2026-08-14 拍板）────────────────────────────────────────
+#   G29 的精神是追新，所以这个钉子是**要定期拔的**，不是拿来烂在旧版本上的。
+#   ★ **什么时候拔不用自己记**：`tools/dep-check.py` 的第三项检查会查 Docker Hub 上
+#     `rust:1-trixie` 现在指向哪个精确版本，**只在 rustc 变了时判红**（退出码 40）。
+#     Debian 侧的 digest 漂移只提示——那些包不进产物（G13 是 musl 静态二进制）。
+#   ★ 它**只报告、拒绝自动应用**：换编译器必须重跑三场景，不该无人值守。报红后手工做：
+#     1. `docker pull rust:1-trixie`
+#     2. `docker image inspect rust:1-trixie --format '{{range .RepoDigests}}{{.}}{{end}}'`
+#     3. 把下面的 tag 与 digest 一起换成新值（tag 写**精确小版本**，别写 `1-trixie`）
+#     4. `bash tests/m0/docker-run.sh` —— 镜像会因内容哈希变化自动重建，三场景必须全绿
+#     5. 把新的 rustc 版本记进 docs/platform/build-and-test.md
+#     6. ⚠ ★ **2026-08-25 新增的一步：把 `docker/Dockerfile.musl-probe` 的 rustc 一起换掉。**
+#        那份 musl 探针钉的是 `rust:<同一版本>-alpine`，而它的结论里有一句
+#        「rustc 与本文件是同一个版本」—— 只换这边，那句话就变成假的，
+#        **而没有任何东西会说出来**（探针不在门禁里跑，见 D22）。
+#        ⇒ 这是本仓库第二次出现「两个地方钉同一个东西」，第一次是基础镜像 tag 与 digest。
+#     6b. ⚠ ⚠ ★ **2026-08-26 起还有第三个地方：`docker/Dockerfile.musl-product`**
+#        （D22 结案时新加的第二十个场景，编的是**产品本体**）。它钉的是同一张 Alpine 镜像。
+#        ★ ★ 上面那句「这是第二次出现『两个地方钉同一个东西』」**今天已经不准确了** ——
+#        原文保留，而这一行是它的更正：**用数字说事的话，会在数字变了的那一刻悄悄变假。**
+#        ⇒ 拔钉子时**三份一起拔**：本文件 · `Dockerfile.musl-probe` · `Dockerfile.musl-product`。
+#   ⚠ ★ **M3 对拍期间冻结**：开始采集数据时记下 digest，整个对拍期不动，否则 §8 的原始数据
+#     在自己内部就不可比。
+#
+#   本次钉定：rust 1.98.0 / Debian 13 trixie，2026-08-27 拉取（G36，§10 第 75 轮）。
+#   ⚠ 上一次是 1.97.1 (8bab26f4f 2026-07-14) / 2026-08-14 拉取。
+FROM rust:1.98.0-trixie@sha256:271849e998ffce5776454bbf98c5dc21baafc854ff8e566197908d3aca9a81e8
+
+# ★ apt 这几个包**没有**钉版本。trixie 是 stable，其归档里的版本在该发行版生命周期内
+#   基本冻结，真要按版本号钉死就得连 snapshot.debian.org 一起钉，代价与收益不成比例。
+#   折中：把镜像里实际装到的版本落到 /etc/fulcrum-toolchain，由 docker-run.sh 每次打印，
+#   **让漂移可见**——查不出来的漂移才是问题，看得见的漂移不是。
+# ★ ★ iptables 的用途（G41）：上游的连接超时测试拿 `192.0.2.1:79` 当黑洞
+#   （RFC 5737 TEST-NET-1，源码里的 `BLACK_HOLE` 常量），设 1ms 超时等 `ConnectTimedout`。
+#   **但 Docker 默认网络会替这个地址应答**——实测 1.7ms 就 CONNECTED，于是超时永远
+#   等不到，6 条测试恒红。此前其中一条被当成「环境性失败」登记进名单，根因没人查。
+#   ★ 修法是把环境修对，不是把名单加长：
+#       iptables -A OUTPUT -d 192.0.2.0/24 -j DROP
+#   让 SYN 被静默丢弃，connect 才会真的超时。实测：359 passed / 2 failed，
+#   已知失败名单从 3 条缩到 2 条。
+#   ⚠ 规则**存不进镜像**（iptables 规则不是文件系统状态），由 tests/m0/docker-run.sh
+#     在容器起来后装，并由 tests/vendor/run.sh 自证生效——装不上要红，不许当没事。
+#   ★ 只有 DROP 有用：`ip route add blackhole` 给的是立刻 EHOSTUNREACH，
+#     那是 ConnectError 不是 ConnectTimedout，测试照样红。
+# ★ ★ `python3` 是**显式声明**的，不是「碰巧在基础镜像里」：
+#   2026-08-23（M2 批 B）实测发现它一直都在（基础镜像带的），而 docker-run.sh 的注释里
+#   写着「构建镜像里没有 python3」—— **那句话是错的**。
+#   ⚠ 把判据挂在一个「碰巧在」的工具上，等于把门禁挂在别人的实现细节上：
+#   哪天基础镜像换了，红的会是 L4 那一格，而根因在这里。
+#   ⇒ L4 场景的 UDP 回声上游用它（一个十来行的脚本），所以把它钉进这张清单。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      cmake \
+      clang \
+      shellcheck \
+      iptables \
+      python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# ★ `rustfmt` / `clippy` **不在官方 rust 镜像里**（它只带 cargo/rustc/rust-std，实测过）。
+#   装进镜像而不是在跑测试时 `rustup component add`：后者要联网，且拿到的版本随时间漂——
+#   而这两样是 lint 门的判据本身，判据自己漂了，门就说明不了任何事。
+RUN rustup component add clippy rustfmt
+
+# ── pebble：门禁里的本地 ACME CA（G64，2026-08-19 owner 拍板）───────────────────
+#
+# ★ ★ **加它的理由是「判据没有着落」，不是「多一个工具」**：真实签发要么打真 CA
+#   （要真域名、消耗速率配额，**不能进门禁**），要么在门禁里跑一个本地 ACME 服务器。
+#   而 G58 已经把「至少签发并续期一次通配符证书」写进 M1 的退出条件——
+#   没有本地 CA，那条退出条件只能靠人手工跑一次真域名来证明，**不可复现**。
+#
+#   `pebble` 是 Let's Encrypt 官方的测试用 CA（RFC 8555 的另一个实现，同一批人写的），
+#   `pebble-challtestsrv` 是配套的假 DNS / 挑战服务器——DNS-01 要有一台**权威 NS**
+#   才验得了「TXT 真的可见了」（G58 那条），challtestsrv 正是那台。
+#
+# ★ **按 sha256 钉死，不按 tag。** 理由与基础镜像那条一模一样：
+#   `releases/latest/download/…`（上游自己的 CI 就是这么写的）是浮动的，
+#   哪天上游发了新版，门禁里跑的 CA 就换了，而**没有任何一行输出会说出来**。
+#   ⚠ 这里还比基础镜像多一层：它们是**从公网下载的可执行文件**，
+#   哈希既是可复现性，也是完整性。
+#
+# ★ **怎么拔这个钉子**：`tools/dep-check.py` 的构建镜像那一栏会查上游最新 release，
+#   落后就判红（退出码 40 —— 与 rustc 同一栏，因为它们钉在同一个文件里）。
+#   拔的时候**两个架构的哈希一起换**，别只换本机那个。
+ARG PEBBLE_VERSION=v2.10.1
+ARG PEBBLE_SHA256_AMD64=4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed
+ARG PEBBLE_SHA256_ARM64=b53fd072a69eb7692451de4e8b0667e0bdf5cccd7e36fc51b8eaf2fcc135ed9f
+ARG CHALLTESTSRV_SHA256_AMD64=e93a5aa25ecdf3af2f9fbb2de32b0173e64a2eae81002a4ccfe35fa6f4f60b92
+ARG CHALLTESTSRV_SHA256_ARM64=db8e1a79ccdb2195c489fbe4f40fddb7f30e86f9cd8a07912566ee5025094d6c
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) pebble_sha="$PEBBLE_SHA256_AMD64"; cts_sha="$CHALLTESTSRV_SHA256_AMD64" ;; \
+      arm64) pebble_sha="$PEBBLE_SHA256_ARM64"; cts_sha="$CHALLTESTSRV_SHA256_ARM64" ;; \
+      *) echo "pebble 没有 $arch 的发布物 —— 这个镜像装不了 ACME 门禁" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/letsencrypt/pebble/releases/download/${PEBBLE_VERSION}"; \
+    for one in "pebble:$pebble_sha" "pebble-challtestsrv:$cts_sha"; do \
+      name="${one%%:*}"; want="${one#*:}"; tgz="/tmp/${name}.tar.gz"; \
+      curl -fsSL -o "$tgz" "${base}/${name}-linux-${arch}.tar.gz"; \
+      echo "${want}  ${tgz}" | sha256sum -c -; \
+      tar -xzf "$tgz" --strip-components=3 -C /usr/local/bin \
+          "${name}-linux-${arch}/linux/${arch}/${name}"; \
+      chmod 0755 "/usr/local/bin/${name}"; rm -f "$tgz"; \
+    done; \
+    test -x /usr/local/bin/pebble; test -x /usr/local/bin/pebble-challtestsrv
+
+# ── oha：压力场景的负载生成器（2026-08-21 批 15，owner 拍板）─────────────────
+#
+# ★ ★ **为什么用现成的而不是自己写一个**：本仓库 2026-08-21 刚写下过这条 ——
+#   「能用现成客户端就别手搓」。而在压力这件事上它更硬：**一个自己写的负载生成器
+#   少报了错误，看起来和「没有错误」一模一样**，而「零错误」正是压力场景的主判据。
+#   oha 是 Rust 写的单二进制，自带并发、百分位与**按状态码分类的计数**。
+#
+# ⚠ **它只进测试镜像，不进产品依赖图**（`cargo tree` 里看不到它）。
+#
+# ★ 按 sha256 钉死，理由同 pebble 那一段：`releases/latest/download/…` 是浮动的，
+#   哪天上游发了新版，压力数字的来源就换了，而没有任何一行输出会说出来。
+#   ⚠ 拔钉子时**两个架构的哈希一起换**。
+#   （2026-08-21 实测取得：容器里下载后 `sha256sum`，并跑过一次 `oha --version`。）
+ARG OHA_VERSION=v1.15.0
+ARG OHA_SHA256_AMD64=86ab7fa2c1df23b3bbc53b73561ffa44a7a38ca08f0e10351df9522a5c4c3c61
+ARG OHA_SHA256_ARM64=72d5bf4575cede9f9277f93f097b904f893b0f0cd4d92f0869439b05e1403731
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) want="$OHA_SHA256_AMD64" ;; \
+      arm64) want="$OHA_SHA256_ARM64" ;; \
+      *) echo "oha 没有 $arch 的发布物 —— 这个镜像跑不了压力场景" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/oha \
+      "https://github.com/hatoo/oha/releases/download/${OHA_VERSION}/oha-linux-${arch}"; \
+    echo "${want}  /usr/local/bin/oha" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/oha; \
+    oha --version
+
+RUN { rustc --version; cargo --version; \
+      cargo clippy --version; cargo fmt --version; \
+      shellcheck --version | grep '^version:' | sed 's/^version: /shellcheck /'; \
+      python3 --version; \
+      iptables --version; \
+      cmake --version | head -1; clang --version | head -1; \
+      echo "pebble $PEBBLE_VERSION（按 sha256 钉死）"; \
+      echo "oha $OHA_VERSION（按 sha256 钉死）"; \
+      . /etc/os-release && echo "base: $PRETTY_NAME"; } > /etc/fulcrum-toolchain
+
+WORKDIR /w

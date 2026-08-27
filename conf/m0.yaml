@@ -1,0 +1,17 @@
+---
+version: 1
+daemon: true
+error_log: /w/run/m0/error.log
+pid_file: /w/run/m0/m0.pid
+upgrade_sock: /w/run/m0/m0-upgrade.sock
+
+# 线程模型已由 G35 结案（work_stealing 保持 true；线程数按 service 角色定默认）。
+# 这里仍用一个明确的小值，是为了让日志与行为可读——spike 不是产品默认值。
+threads: 2
+listener_tasks_per_fd: 1
+work_stealing: true
+
+# 排空窗口必须大于测试时长，否则「长连接被切断」会是排空到点造成的，
+# 而不是接缝失败造成的——那样断言就失去意义了。
+grace_period_seconds: 30
+graceful_shutdown_timeout_seconds: 30

@@ -1,0 +1,21 @@
+[package]
+name = "m0-seam"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "M0 接缝验证：自建裸 TCP / 裸 UDP 监听器能否参与 Pingora 的 socket 移交"
+
+[dependencies]
+pingora-core = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+[[bin]]
+name = "m0-seam"
+path = "src/main.rs"
+
+[[bin]]
+name = "m0-probe"
+path = "src/bin/probe.rs"

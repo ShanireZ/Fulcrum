@@ -1,0 +1,89 @@
+# **产品**的 musl 静态产物自证（D22，2026-08-26 owner 拍板）。
+#
+# ★ ★ ★ **它与 `Dockerfile.musl-probe` 的区别是全部意义所在：那份编的是 spike，这份编的是产品。**
+#   D22 想守的那句话是「**产物**是不是单静态二进制」（G13 的分发口径），
+#   而探针**答不了它** —— 探针自己的验证记录第 5 节第 1 条就写着：
+#   「『探针编得出来』证不了『枢衡编得出来』」，因为真正的产品图里还有 `pingora-core`、
+#   `libz-ng-sys`、`zstd-sys`、`brotli`、`sd-notify` 一大票，**其中任何一个的 `*-sys`
+#   依赖都可能在 musl 上另有说法**。
+#   ⇒ owner 2026-08-26 拍板：**判据换成产品自证，探针留在门外当历史记录。**
+#
+# ⚠ ⚠ **上下文是仓库根**，不是 `docker/` —— 根 `Cargo.toml` 的 `[patch.crates-io]`
+#   指着 `vendor/pingora`，少了它连 resolve 都过不去。⇒ 仓库根有一份 `.dockerignore`。
+#
+# ── 下面这些坑与 `Dockerfile.musl-probe` 是同一批，理由不重抄，只点名 ──────────
+#   · 用 Alpine 而不是仓库那张 Debian：**Debian 没有 `musl-g++`**，而 BoringSSL 的 `ssl/` 是 C++；
+#   · `git` 是 `boring-sys` 的构建依赖（它自己 `git init` + `git apply` 打补丁），
+#     而没有任何一份文档这么说，缺它的报错也不提 git；
+#   · `clang-dev` 给 `libclang.so`，`boring-sys` 的 bindgen 要它；
+#   · **两趟**：Alpine 上 rustc 的 host 目标默认就是 `+crt-static` ⇒ build script 也是静态的，
+#     而静态二进制**不能 dlopen** ⇒ 第一趟整体 `-crt-static` 把依赖编出来，
+#     第二趟只给最终那个 bin 加 `+crt-static`（`cargo rustc --` 是 stable 上唯一的 per-crate 口子）。
+#
+# ⚠ ⚠ **rustc 版本必须与 `docker/Dockerfile.build`、`docker/Dockerfile.musl-probe` 三者一致。**
+#   ★ 这已经是**第三个**钉同一个 rustc 的地方了 —— `Dockerfile.build` 的「怎么升」那一节
+#     写的是「把 musl-probe 的一起换掉」，**那句话现在少了一个**。已就地补上。
+#   本次钉定：rust 1.97.1 / Alpine，2026-08-25 拉取（与 musl-probe 同一个 digest）。
+FROM rust:1.97.1-alpine@sha256:3c38f3f82c2f3d73da3b38e18d279393a04cb43ddded0e35088a8c3324d40900 AS build
+
+RUN apk add --no-cache build-base cmake perl linux-headers openssl git clang-dev
+
+# 反证把它翻成 `-crt-static`，产出一个动态二进制 —— 第二段必须跑不起来。
+ARG CRT_STATIC=+crt-static
+
+WORKDIR /w
+COPY . .
+
+# ★ `-p fulcrum --bin fulcrum`：只编产品二进制。**不编测试**（那是十九场景的事，
+#   而且 `tests/` 里那几个 `include_str!` 会把编译面拉大而与本格要证的事无关）。
+# ★ `--locked`：这一格的结论要能被重现，而一个会自己漂的依赖图重现不了。
+#
+# ── ★ ★ 两条 BuildKit 缓存挂载，而它们是**让这一格挂得起门禁**的前提 ─────────
+#
+# ⚠ 上面那条 `COPY . .` 意味着**仓库里任何一个文件变了，这一层就作废** ——
+#   而这是一道要在**每次提交**上跑的门。实测冷编一趟 **6m49s**，那等于给每一次提交
+#   加上三分之一个门禁的时间。
+# ★ 缓存挂载解掉的正是这一半：源码变了照样重编我们自己那几个 crate，
+#   但 BoringSSL / pingora fork / 全部第三方依赖**不重编**。
+# ⚠ ⚠ **`id` 里必须带 `$CRT_STATIC`**：反证那一趟的 RUSTFLAGS 与正向不同，
+#   共用一份 target 只会让两边互相把对方的产物挤掉 —— cargo 不会算错，只会一直重编。
+# ⚠ 缓存挂载**不进镜像层** ⇒ `cp` 必须与构建在**同一条 RUN 里**。
+#   ★ 写在明处：把 `cp` 挪到下一层是个看起来很自然、而且**不会报错**的改法 ——
+#     它只会让 `/fulcrum` 不存在，而报错出现在离它很远的地方。
+RUN --mount=type=cache,id=fulcrum-musl-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=fulcrum-musl-target-$CRT_STATIC,target=/w/target \
+    RUSTFLAGS="-C target-feature=-crt-static" \
+    cargo build --release --locked -p fulcrum \
+ && RUSTFLAGS="-C target-feature=-crt-static" \
+    cargo rustc --release --locked -p fulcrum --bin fulcrum \
+      -- -C "target-feature=$CRT_STATIC" \
+ && cp target/release/fulcrum /fulcrum
+
+# 证据写成 `键=值` 而不是人话，理由与探针那份一样：判据要按字段比，
+# 一份「读起来像结论」的自由文本会诱人用 `grep 静态` 去判。
+# ★ `INTERP` 与 `NEEDED` 两个数是主判据：完全静态 ⇒ 两个都是 0。
+RUN { echo "TARGET=$(rustc -vV | sed -n 's/^host: //p')"; \
+      echo "CRT_STATIC=$CRT_STATIC"; \
+      echo "MACHINE=$(readelf -h /fulcrum | sed -n 's/^ *Machine: *//p')"; \
+      echo "ELFTYPE=$(readelf -h /fulcrum | sed -n 's/^ *Type: *//p')"; \
+      echo "INTERP=$(readelf -l /fulcrum | grep -c INTERP || true)"; \
+      echo "NEEDED=$(readelf -d /fulcrum 2>/dev/null | grep -c NEEDED || true)"; \
+      echo "BYTES=$(wc -c < /fulcrum)"; \
+      echo "FILE=$(file -b /fulcrum)"; } > /evidence.txt
+
+# ── 第二段：什么都没有 ─────────────────────────────────────────────────────
+#
+# ★ ★ 这不是为了镜像小，**这就是判据本身**：§6.2 明写不做官方容器镜像、
+#   文档给一份 `FROM scratch` Dockerfile 代替；动态链接的二进制在这里会当场死在
+#   「找不到解释器」上。
+FROM scratch
+COPY --from=build /fulcrum /fulcrum
+COPY --from=build /evidence.txt /evidence.txt
+COPY --from=build /w/tests/musl/product.Fulcrumfile /Fulcrumfile
+# ★ 反向那一半也进镜像：`docker run --entrypoint /fulcrum <镜像> validate /bad.Fulcrumfile`
+#   （scratch 里没有 shell，但 `--entrypoint` 是 execve，不需要 shell）。
+COPY --from=build /w/tests/musl/product-bad.Fulcrumfile /bad.Fulcrumfile
+# ★ `validate` 而不是 `serve`：这一格要的是「它真的跑起来并执行了真代码」，
+#   而 `serve` 会开端口、等信号，在 scratch 里也没有客户端能连它。
+#   ⚠ `validate` 跑的是四层（诊断 → 结构化 → 运行时图 → TLS 装载），不是只解析一下。
+ENTRYPOINT ["/fulcrum", "validate", "/Fulcrumfile"]

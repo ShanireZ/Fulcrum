@@ -1,0 +1,16 @@
+# docker build 的上下文里不该有的东西。
+#
+# ⚠ ⚠ **它只对「上下文 = 仓库根」的那些构建生效**，而 `.dockerignore` 是按上下文根读的：
+#   · `docker/Dockerfile.build` 的上下文是 `docker/` ⇒ 读不到这个文件；
+#   · `docker/Dockerfile.musl-probe` 的上下文是 `spikes/musl-boringssl/` ⇒ 同上；
+#   · `docker/Dockerfile.musl-product` 的上下文**是仓库根**（它要 `vendor/pingora`，
+#     因为根 `Cargo.toml` 的 `[patch.crates-io]` 指着它）⇒ **只有它读这份**。
+#   ★ 写清楚是因为「加一条 .dockerignore」听起来是全局动作，而实际上不是。
+#
+# ★ `target/` 那两条是**性能**，不是正确性：G107 的门保证跑门禁时它们是空的，
+#   但有人在门禁之外手工 `docker build` 时它们可能不是，而 1.2 GB 的上下文会
+#   在「发送构建上下文」那一步静默地花掉几十秒。
+target/
+**/target/
+.git/
+run/

@@ -1,0 +1,39 @@
+From 2f63d9c59e2f32b91ebd3b6508c8c7249a28c24c Mon Sep 17 00:00:00 2001
+From: Shanire <shanire86@gmail.com>
+Date: Thu, 20 Aug 2026 09:49:20 +0800
+Subject: [PATCH] Use read_exact in test_connect_uds
+
+AsyncReadExt::read succeeds on a short read and its return value was
+discarded, so a segmented delivery of the mock server's 9-byte response
+left buf holding a partial message padded with zeros, and the assertion
+compared that against b"it works!". Stream sockets are free to split a
+write_all across multiple reads, so this is a latent flake rather than a
+guaranteed failure.
+
+Made deterministic by splitting the mock server's write_all into
+1 byte + 20ms + 8 bytes, which is legal stream behaviour: the test then
+fails every time before this change (left: [105, 0, 0, 0, 0, 0, 0, 0, 0],
+only the leading 'i' arrived) and passes after it. That perturbation is
+only a reproduction aid and is not part of this commit.
+
+Signed-off-by: Shanire <shanire86@gmail.com>
+---
+ pingora-core/src/connectors/mod.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pingora-core/src/connectors/mod.rs b/pingora-core/src/connectors/mod.rs
+index 6bfd7b4..98ed18e 100644
+--- a/pingora-core/src/connectors/mod.rs
++++ b/pingora-core/src/connectors/mod.rs
+@@ -656,7 +656,7 @@ mod tests {
+         // make a new connection to mock uds
+         let mut stream = connector.new_stream(&peer).await.unwrap();
+         let mut buf = [0; 9];
+-        let _ = stream.read(&mut buf).await.unwrap();
++        stream.read_exact(&mut buf).await.unwrap();
+         assert_eq!(&buf, b"it works!");
+ 
+         // Test connection reuse by releasing and getting the stream back
+-- 
+2.50.1.windows.1
+

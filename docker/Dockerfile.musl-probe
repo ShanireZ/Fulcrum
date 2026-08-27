@@ -1,0 +1,113 @@
+# musl + BoringSSL 探针的镜像（G103/G104 的未验前置）。
+#
+# ★ ★ ★ **两段式，而第二段是 `FROM scratch` —— 那不是为了镜像小，那就是判据本身。**
+#   §5 的分发口径是「单静态二进制」，§6.2 明写不做官方容器镜像、
+#   **文档给一份 `FROM scratch` Dockerfile 代替**。
+#   ⇒ 把产物丢进一个**什么都没有**的镜像里跑，正是那句话的字面检验：
+#   动态链接的二进制在这里会当场死在「找不到解释器」上
+#   （实测反证那一趟：`exec /probe: no such file or directory`）。
+#
+#   ⚠ **这一段第一版还写着「`file(1)` 说的 statically linked 是一句可以被相信错的话」——
+#     那是我编的，不是量的。** 实测反证产物的 `file` 输出是
+#     `… dynamically linked, interpreter /lib/ld-musl-x86_64.so.1 …`，
+#     **它分得一清二楚**。⇒ 已删掉那句。
+#   ★ 真正的理由不是「`file` 不可信」，是**它答的不是同一个问题**：
+#     `file` 描述的是 ELF 头里写着什么，而我们要发的是「除了这个文件之外什么都不需要」。
+#     前者是后者的必要条件，不是它本身。
+#   > ★ ★ 一条**为了让判据显得更有必要而编出来的理由**，比没有理由更坏：
+#   > 它会让下一个人以为 `file` 这条路走不通，从而不去用一件其实好用的工具。
+#   ★ 反证走 `--build-arg CRT_STATIC=-crt-static`：同一份 Dockerfile 产出一个动态二进制，
+#     第二段必须失败 —— 那证明这道尺子分得开好坏两种情况。
+#
+# ⚠ **基础镜像按 digest 钉死**，理由与 `docker/Dockerfile.build` 那段一模一样：
+#   不钉的话，「同一次验证」在两台机器上可能跑在两个 rustc 上，而两边都报绿。
+#   ★ 这里比那边多一层要求：**rustc 必须与 `docker/Dockerfile.build` 是同一个版本**
+#   （1.97.1），否则这份探针证的是另一个编译器的事。
+#   本次钉定：rust 1.97.1 / Alpine，2026-08-25 拉取。
+FROM rust:1.97.1-alpine@sha256:3c38f3f82c2f3d73da3b38e18d279393a04cb43ddded0e35088a8c3324d40900 AS build
+
+# ★ 为什么是 Alpine 而不是仓库自己那张 `rust:1.97.1-trixie`：**Debian 没有 musl 的 C++ 编译器。**
+#   实测（2026-08-25，trixie）：`musl-tools` 只装出 `musl-gcc`（C），**没有 `musl-g++`**，
+#   而 BoringSSL 的 `ssl/` 是 C++。⇒ 在 Debian 上要么另配一整套 musl 交叉工具链，
+#   要么换一个 libc 本身就是 musl 的发行版。Alpine 是后者，`build-base` 直接给
+#   原生的 gcc/g++/musl —— **不是交叉编译，是本地编译**，少一整类工具链配错的可能。
+#   ⚠ 代价登记在明处：仓库从此多一个被钉死的基础镜像（见 docs/verification/musl-boringssl.md）。
+#
+# ⚠ ⚠ **`git` 是 `boring-sys` 的构建依赖，而没有任何一份文档这么说。**
+#   quiche 的 README 只写 cmake；实测（2026-08-25）`boring-sys 4.22.0` 的
+#   `build/main.rs:673` 那句 `ensure_patches_applied(&config).unwrap()` 会
+#   `git init` + `git apply` 打自己的补丁，缺 git 就是一句
+#   `Os { code: 2, kind: NotFound }` —— **它不说自己找不到的是 git**。
+#   ★ 在仓库那张 Debian 镜像上撞不到这一条，因为 `rust:*-trixie` 自带 git；
+#     Alpine 的 `rust:*-alpine` 不带。⇒ 一条只在换基础镜像时才现形的构建依赖。
+#
+# ⚠ `clang-dev` 给的是 `libclang.so` —— `boring-sys` 用 **bindgen** 生成 FFI 绑定，
+#   缺它的报错是 bindgen 自己说的 `Unable to find libclang`（这一条倒是说清楚了找不到谁）。
+#   ★ 仓库那张 Debian 镜像里 clang 早就装着，注释写的理由是「任何走 bindgen 的 *-sys 包
+#     会用到，先备着」—— 那句「先备着」今天兑现了。
+RUN apk add --no-cache build-base cmake perl linux-headers openssl git clang-dev
+
+# 反证把它翻成 `-crt-static`，产出一个动态二进制。
+ARG CRT_STATIC=+crt-static
+
+WORKDIR /w
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src ./src
+
+# ── ★ ★ ★ 两趟，而这不是优化，是**唯一走得通的顺序** ──────────────────────
+#
+# ⚠ ⚠ **Alpine 上 rustc 的 host 目标默认就是 `+crt-static`**（实测：
+#   `rustc --print cfg` 里有 `target_feature="crt-static"`，不给任何 RUSTFLAGS 编出来的
+#   hello world 也没有 INTERP 段）。⇒ **build script 也是静态的**，
+#   而静态二进制**不能 `dlopen`** —— `boring-sys` 用 bindgen 生成 FFI 绑定，
+#   bindgen 默认走 `clang-sys` 的 runtime 模式，也就是 `dlopen("libclang.so")`。
+#   实测报错原话：`the libclang shared library ... could not be opened:
+#   Dynamic loading not supported`。
+#   ★ 这一条**与 BoringSSL 无关，也与 musl 能不能静态链接无关** ——
+#     它卡的是**构建宿主**，不是目标。⇒ 分开写，别把它记成「musl 不行」。
+#
+#   ⇒ 第一趟整体用 `-crt-static`：build script 是动态的，dlopen 成立，
+#     BoringSSL 编出来、绑定生成好。
+#   ⇒ 第二趟只给**最终那个 bin** 加 `+crt-static`：`cargo rustc -- <flags>` 的
+#     那串参数只作用于正在编的这一个 crate，依赖不重编（实测第二趟 2.81 秒）。
+#
+# ★ 为什么不是 `RUSTFLAGS` 一把梭：`RUSTFLAGS` 作用于全图，第二趟会连 build script
+#   一起重编成静态，于是又回到 dlopen 那一步。**per-crate 的口子在 stable 上只有
+#   `cargo rustc --`这一个。**
+# ★ `--locked`：这份探针的结论要能被重现，而一个会自己漂的依赖图重现不了。
+RUN RUSTFLAGS="-C target-feature=-crt-static" \
+    cargo build --release --locked \
+ && RUSTFLAGS="-C target-feature=-crt-static" \
+    cargo rustc --release --locked --bin musl-boringssl-probe \
+      -- -C "target-feature=$CRT_STATIC" \
+ && cp target/release/musl-boringssl-probe /probe
+
+# 自签证书。★ 只为让握手有张证书可用；探针的客户端 `verify_peer(false)`，验的是
+#   BoringSSL 跑不跑，不是 PKI。有效期给足，免得这份判据哪天因为过期而红。
+RUN openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout /key.pem -out /cert.pem \
+      -subj "/CN=probe.fulcrum.invalid" \
+      -addext "subjectAltName=DNS:probe.fulcrum.invalid" 2>/dev/null
+
+# 把证据留在镜像里，`tests/musl/probe.sh` 用 `docker cp` 取出来再判。
+#
+# ★ 写成 `键=值` 而不是人话，理由是判据要按字段比：一份「读起来像结论」的自由文本
+#   会诱人用 `grep 静态` 去判，而 `file(1)` 在动态 musl 二进制上也可能打出很像的话。
+# ★ `INTERP` 与 `NEEDED` 两个数是这份证据的**主判据**：
+#   完全静态 ⇒ 两个都是 0；动态 ⇒ INTERP=1（反证那一趟就靠它分开）。
+RUN { echo "TARGET=$(rustc -vV | sed -n 's/^host: //p')"; \
+      echo "CRT_STATIC=$CRT_STATIC"; \
+      echo "MACHINE=$(readelf -h /probe | sed -n 's/^ *Machine: *//p')"; \
+      echo "ELFTYPE=$(readelf -h /probe | sed -n 's/^ *Type: *//p')"; \
+      echo "INTERP=$(readelf -l /probe | grep -c INTERP || true)"; \
+      echo "NEEDED=$(readelf -d /probe 2>/dev/null | grep -c NEEDED || true)"; \
+      echo "BYTES=$(wc -c < /probe)"; \
+      echo "FILE=$(file -b /probe)"; } > /evidence.txt
+
+# ── 第二段：什么都没有 ─────────────────────────────────────────────────────
+FROM scratch
+COPY --from=build /probe /probe
+COPY --from=build /cert.pem /cert.pem
+COPY --from=build /key.pem /key.pem
+COPY --from=build /evidence.txt /evidence.txt
+ENTRYPOINT ["/probe", "/cert.pem", "/key.pem"]

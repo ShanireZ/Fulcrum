@@ -1,0 +1,48 @@
+# M1 spike 的**测试宿主**镜像：一个真的以 systemd 为 PID 1 跑起来的容器。
+#
+# ★ 它与 `Dockerfile.build` 是两件不同的东西，别合并：
+#     · Dockerfile.build  = 编译产物的地方（rust 工具链，不需要 systemd）
+#     · Dockerfile.systemd = 运行产物的地方（systemd，不需要 rust）
+#   合并会让每次改测试宿主都触发一次全量重编译（构建镜像的内容哈希是 target 卷的键）。
+#
+# ★ ★ **为什么它必须被钉死到 digest**：本 spike 的结论形如「systemd 257 接受来自同 cgroup
+#   非亲生进程的 MAINPID 交接」——**systemd 的版本是结论的一部分**。浮动 tag 会让某天
+#   基础镜像换了 systemd 大版本而结论悄悄失效，且没有任何一行输出会说出来。
+#   这与 G36 钉构建镜像是同一条理由（§8 要求环境可复现），但**不是同一个决策**：
+#   G36 只管构建镜像的 rustc。本镜像何时拔钉子尚未定案，见 docs/governance/open-questions.md。
+#
+#   本次钉定：Debian GNU/Linux 13 (trixie) / systemd 257.13-1~deb13u1，2026-08-14 拉取。
+#
+# ★ 下面这一行是**机器可读**的，`tools/dep-check.py` 的第四项检查（G39）靠它比对。
+#   它与 FROM 行同处一个文件，**不另存第二份**——第二份记录迟早与事实分家。
+# fulcrum-pinned-systemd: 257.13-1~deb13u1
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+
+# systemd-sysv 提供 /sbin/init；procps 给 ps；iproute2 给 ss（端口前置检查用）。
+# ★ curl 是 2026-08-21 批 12 加的：产品场景（tests/m1/product.sh）要验的是
+#   **产品二进制**，而产品是个 HTTP 服务器 —— 「换代窗口内流量不断」「新配置真的生效了」
+#   都要一个真的 HTTP 客户端才量得出来。spike 那三个场景用的是 m0-probe，
+#   它一次要三类流量（http/tcp/udp）的地址，套不到产品上。
+#   ⚠ 用 bash 的 /dev/tcp 手搓一个也行，但本仓库已经栽过一次「自检探针自己是瞎的」
+#   （一个测 /dev/null 而不是 /dev/tcp 的自检），能用现成客户端就别手搓。
+# ★ 没装 systemd-journal-remote 之类的东西：journal 只要在容器内可读即可。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      systemd \
+      systemd-sysv \
+      procps \
+      iproute2 \
+      curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# ★ 容器里不需要、且在容器里必然失败的 unit，先摘掉，免得 `is-system-running` 永远是 degraded
+#   而把「真的有 unit 挂了」淹掉。⚠ 只摘这一个，摘多了会把真问题一起藏起来。
+RUN systemctl mask systemd-modules-load.service
+
+RUN { . /etc/os-release && echo "base: $PRETTY_NAME"; \
+      echo "systemd $(dpkg-query -W -f='${Version}' systemd)"; } > /etc/fulcrum-systemd-image
+
+# systemd 的关机信号是 SIGRTMIN+3；不设的话 `docker stop` 会走满 10 秒超时再 SIGKILL。
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]

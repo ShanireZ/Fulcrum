@@ -1,0 +1,56 @@
+[package]
+name = "pingora-rustls"
+version = "0.8.1"
+license = "Apache-2.0"
+edition = "2021"
+repository = "https://github.com/cloudflare/pingora"
+categories = ["asynchronous", "network-programming"]
+keywords = ["async", "tls", "ssl", "pingora"]
+description = """
+RusTLS async APIs for Pingora.
+"""
+
+[lib]
+name = "pingora_rustls"
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4.21"
+pingora-error = { version = "0.8.1", path = "../pingora-error"}
+ring = "0.17.12"
+# ★ 枢衡改动 1/2（G41）：加 `default-features = false`。
+# rustls 0.23 的 default 是 ["aws_lc_rs", "logging", "prefer-post-quantum", "std", "tls12"]，
+# 上游只写了 features = ["ring"]，于是 **ring 和 aws-lc-rs 两个 provider 一起编进产物**——
+# 而本 crate 自己装的是 ring（install_default_crypto_provider），aws-lc-rs 一行都不会被调用。
+# 代价是 aws-lc-sys 的 69 MB C 源码走 cmake 编，直接顶到 PLAN.md G13 的 musl 静态二进制。
+# ★ 丢掉的默认项只有 `prefer-post-quantum`，而它自己就是 `["aws_lc_rs"]`——rustls 源码里
+#   每一处 #[cfg(feature = "prefer-post-quantum")] 都在 src/crypto/aws_lc_rs/ 下，
+#   ring provider 下是空操作。实测：依赖图 175 → 173，**只少了 aws-lc-rs 与 aws-lc-sys**。
+rustls = { version = "0.23.12", default-features = false, features = [
+    "ring",
+    "logging",
+    "std",
+    "tls12",
+] }
+# ★ 枢衡改动 2/2（G41）：0.7 → 0.8。上游的 `^0.7.1` 把它钉在 0.7.3（2024-08-28），
+# 而 0.8.0 第二天就发了，现在已到 0.8.4——正是 G30 那个「脱字号自带上界」的形状。
+# ⚠ 有调用点适配：0.8 的 load_native_certs() 不再返回 Result，改为返回
+#   CertificateResult { certs, errors }。语义按 0.7.3 逐字保留，见 src/lib.rs。
+rustls-native-certs = "0.8.4"
+# ★ 枢衡改动 3/3（G45）：`rustls-pemfile` 整条删掉。
+# RUSTSEC-2025-0134：它失维（仓库 2025-08 归档）、`patched = []`、没有可升的版本。
+# ★ 公告原文：*"The latest version of rustls-pemfile is in fact a thin wrapper around the
+#   same code used in rustls-pki-types"*——实测属实（`impl PemObject for Item`），
+#   所以这是**搬家不是换实现**，那条「证书与私钥解析属安全敏感」的顾虑在这里比表面上小。
+# ⚠ 但仍有一处语义要逐字保留（ECHCONFIG 会被静默跳过），见 src/lib.rs 的
+#   RUSTLS_PEMFILE_ITEM_KINDS，以及为此新写的 16 条特征化测试。
+# 下界从 1.7.0 抬到 1.9（`PemObject` 自 1.9.0 起提供），实际解析到 1.15.1。
+rustls-pki-types = "1.9"
+# ★ 同改动 1/2：tokio-rustls 0.26 的 default 也是 ["logging", "tls12", "aws_lc_rs"]，
+# 是 aws-lc-rs 进来的第二扇门。两扇都要关，只关一扇没有效果。
+tokio-rustls = { version = "0.26.0", default-features = false, features = [
+    "ring",
+    "logging",
+    "tls12",
+] }
+no_debug = "3.1.0"

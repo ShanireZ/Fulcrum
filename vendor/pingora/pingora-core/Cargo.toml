@@ -1,0 +1,165 @@
+[package]
+name = "pingora-core"
+version = "0.8.1"
+authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
+license = "Apache-2.0"
+edition = "2021"
+repository = "https://github.com/cloudflare/pingora"
+categories = ["asynchronous", "network-programming"]
+keywords = ["async", "http", "network", "pingora"]
+exclude = ["tests/*"]
+description = """
+Pingora's APIs and traits for the core network protocols.
+"""
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "pingora_core"
+path = "src/lib.rs"
+
+[dependencies]
+pingora-runtime = { version = "0.8.1", path = "../pingora-runtime" }
+# ★ ★ ★ **2026-08-25（G104）：`pingora-boringssl` 加回来了。**
+#   ⚠ ⚠ **下面那段原文保留，因为它给的理由今天已经作废** —— 它写着
+#   「PLAN.md §5.1 第 1 条把 TLS 后端锁死在 rustls，三者永远不会被启用」，
+#   而 §5.1 第 1 条已被 **G104** 推翻（§10 第 59 轮，本项目第一次推翻「不可回头」的约束）。
+#   ★ 那句注释本身是 rebase 说明的一部分，所以它必须跟着改，不能只改代码。
+#   ⇒ 现状：**`pingora-openssl` 与 `pingora-s2n` 仍然没有 vendor**（枢衡用不上），
+#     它们的 `#[cfg(feature)]` 分支照旧永远不会被点亮；
+#     而 `boringssl` 那条从今天起**是被点亮的那一条**。
+#
+#   ── 以下为原文（2026-08-14 写，2026-08-25 起其理由已不成立）──
+#   ~~上游此处还有 pingora-openssl / pingora-boringssl / pingora-s2n 三个可选后端。
+#   它们没有被 vendor 进来（FORK.md「范围」：只保留枢衡用到的 7 个 crate），
+#   而 PLAN.md §5.1 第 1 条把 TLS 后端锁死在 rustls，三者永远不会被启用。~~
+#   ★ ★ **这一条仍然成立，而且是本次加回来时必须照做的**：
+#     必须把**声明**也写全，不能只在 [features] 里提名字 —— 路径依赖即使 optional
+#     且未启用，在**作为 workspace 成员加载**时 cargo 也会去读它的清单；
+#     反过来，提了名字而没有声明，`tests/vendor/run.sh` 那类直接对 vendor 树跑的
+#     cargo 命令会当场失败，而作为根 workspace 的 patch 依赖则不会 ——
+#     **这个坑在产品构建时完全不显形。**
+#   rebase 时要连同下面 [features] 里的 openssl / s2n 两条一起重做。
+pingora-pool = { version = "0.8.1", path = "../pingora-pool" }
+pingora-error = { version = "0.8.1", path = "../pingora-error" }
+pingora-timeout = { version = "0.8.1", path = "../pingora-timeout" }
+pingora-http = { version = "0.8.1", path = "../pingora-http" }
+pingora-rustls = { version = "0.8.1", path = "../pingora-rustls", optional = true }
+pingora-boringssl = { version = "0.8.1", path = "../pingora-boringssl", optional = true }
+bstr = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "signal"] }
+tokio-stream = { workspace = true }
+futures = "0.3"
+async-trait = { workspace = true }
+httparse = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+log = { workspace = true }
+h2 = { workspace = true }
+educe.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+once_cell = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+# ★ 2026-08-13 还原为上游值（原本抬到 0.28）。无安全公告、无源码改动，
+#   纯版本号；留着只会增大每次 rebase 要重做的面。理由见 FORK.md「哪些上界值得留」。
+strum = "0.26.2"
+strum_macros = "0.26.2"
+libc = "0.2.70"
+chrono = { version = "~0.4.31", features = ["alloc"], default-features = false }
+prometheus = "0.14"
+sentry = { version = "0.36", features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "reqwest",
+    "rustls",
+], default-features = false, optional = true }
+regex = "1"
+percent-encoding = "2.1"
+parking_lot = { version = "0.12", features = ["arc_lock"] }
+socket2 = { version = ">=0.4, <1.0.0", features = ["all"] }
+flate2 = { version = "1", features = ["zlib-ng"], default-features = false }
+sfv = "0.15"
+rand = "0.10"
+ahash = { workspace = true }
+unicase = "2"
+brotli = "8"
+# ★ 2026-08-13 还原为上游值（原本抬到 0.2）。无安全公告、无源码改动，纯版本号。
+#   ⚠ 注意措辞：它是**非可选**依赖，所以 crate 本身照样被编译；
+#   §5.1 锁死 rustls 之后不编译的是它的**唯一调用点**
+#   （connectors/tls/boringssl_openssl/mod.rs，被 cfg 挡掉）。
+#   「调用点不编译」≠「crate 不进编译图」——tools/supply-audit.py 的分桶把它算作「编译」。
+openssl-probe = "0.1.6"
+tokio-test = "0.4"
+zstd = "0"
+httpdate = "1"
+# ★ G30 抬上界（2026-08-20）：上游写的是 `"0.16.0"`，而脱字号自带 `<0.17`。
+#   ⚠ 抬它的理由不是「新就是好」，是 **`instant-acme` 要 `^0.18`**（ARI 要从证书 DER 里
+#   抠 AKI + serial），于是产物的依赖图里会同时出现 0.16 与 0.18 两份 x509-parser
+#   ——连带 asn1-rs / der-parser / oid-registry 各两份。
+#   ★ 而真正的代价不是体积：`tests/vendor/run.sh` 的第 [2/5] 步会因此判红并**拒绝跑**，
+#   理由是「vendor 测试跑的不是产物里那套组合，结果不可采信」。那道门是对的。
+x509-parser = { version = "0.18.1", optional = true }
+ouroboros = { version = "0.18.4", optional = true }
+lru = { workspace = true, optional = true }
+# ★ 2026-08-13 还原为上游值（原本抬到 0.9，连带 petgraph 0.7→0.8）。
+#   无安全公告、无源码改动。连带效果是 hashbrown/foldhash 那两条陈旧项的成因回到上游状态。
+daggy = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+daemonize = "0.5.0"
+nix = { version = "0.31", features = ["socket", "net", "fs", "uio"] }
+
+[target.'cfg(windows)'.dependencies]
+# ★ 2026-08-13 还原为上游值（原本抬到 0.61）。G13 的目标平台只有 Linux，
+#   这个 crate 在目标构建里一行都不编译。
+windows-sys = { version = "0.59.0", features = ["Win32_Networking_WinSock"] }
+
+[dev-dependencies]
+h2 = { workspace = true, features = ["unstable"] }
+tokio-stream = { version = "0.1", features = ["full"] }
+env_logger = "0.11"
+reqwest = { version = "0.12", features = [
+    "rustls-tls",
+    "http2",
+], default-features = false }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2"] }
+http-body-util = "0.1"
+rstest = "0.23.0"
+# ★ 枢衡改动（G45，2026-08-19）：这是 aws-lc-rs 进来的**第三扇门**，而 G41 只关了前两扇。
+# 由上游 PR #966 的 Codex 复审提出（P2），实测属实且比它说的更宽——★ 这条 dev-dependency
+# 是**无条件**的，所以连默认（openssl）构建跑测试时都在编 aws-lc-rs：
+#   cargo tree -p pingora-core -e normal,dev            228 → 226（无 feature）
+#   cargo tree -p pingora-core --features rustls -e normal,dev  260 → 258
+# ★ ★ 它此前没被发现，是因为 G41 的判据用的是 `-e normal`——**按定义排除 dev-dependencies**。
+#   判据的覆盖面小于它自称回答的范围，这在本 fork 已是第三次（G41 三道门、G43 核对命令）。
+# ★ 这里**刻意不指定任何 provider**：它只被 connectors/http 的测试拿去用类型
+#   （ServerCertVerifier / CertificateDer / DigitallySignedStruct），运行时要的 provider
+#   本来就经 pingora-rustls 进来；在这里点名一个，就是把本改动要修的错误再犯一遍。
+rustls = { version = "0.23", default-features = false, features = [
+    "logging",
+    "std",
+    "tls12",
+] }
+
+[target.'cfg(unix)'.dev-dependencies]
+hyperlocal = "0.9"
+jemallocator = "0.5"
+
+[features]
+default = []
+# ★ 上游的 openssl / s2n 两条仍然删着——对应的 crate 没被 vendor，枢衡用不上。
+#   源码里的 #[cfg(feature = "...")] 分支原样保留，只是永远不会被点亮。
+#   ⚠ ⚠ **而 boringssl 那条 2026-08-25 加回来了（G104）**，理由见 [dependencies] 处。
+#   ★ 上游原文是 `boringssl = ["pingora-boringssl", "openssl_derived"]`，这里逐字照抄 ——
+#     `openssl_derived` 才是源码里那一大片 #[cfg] 用的名字，boringssl 与 openssl
+#     共用同一份实现（listeners/tls/boringssl_openssl/）。
+rustls = ["pingora-rustls", "any_tls", "dep:x509-parser", "ouroboros"]
+boringssl = ["pingora-boringssl", "openssl_derived"]
+patched_http1 = ["pingora-http/patched_http1"]
+openssl_derived = ["any_tls"]
+any_tls = []
+sentry = ["dep:sentry"]
+connection_filter = []

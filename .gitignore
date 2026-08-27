@@ -1,0 +1,18 @@
+/target
+# ★ `vendor/pingora` 是**另一个 workspace**：对它直接跑 cargo（不带 --target-dir）会在
+#   `vendor/pingora/target/` 下堆出几百 MB，而上面那条 `/target` 锚定根目录、盖不住它。
+#   所以再加一条不锚定的，任何层级的 target/ 都盖住。
+target/
+**/*.rs.bk
+
+# 运行期产物（进程、套接字、日志），不入库
+/run/
+*.pid
+*.sock
+
+# Python 工具的字节码。★ 直接跑脚本不会产生它，但**任何 import 都会**。
+__pycache__/
+*.py[cod]
+
+# 工作过程记录（交接、草稿）只留在本地，不入库（G115）
+/handoff/

@@ -1,0 +1,44 @@
+# musl + BoringSSL 静态链接探针（G103/G104 的未验前置，`PLAN.md` §10）
+#
+# ★ ★ **它是自己的一个 workspace**（下面那个空的 `[workspace]` 表），
+#   故意不进根 workspace 的 `members`。理由有两条，都不是风格：
+#   ① 进了根 workspace，`cargo build` / `cargo test --workspace` 就会在**十九场景门禁的
+#      每一次跑**里编一遍 BoringSSL —— 为一个产品目前一行都没依赖的 C 库付这个代价；
+#   ② 它会把 `boring-sys` 拖进根 `Cargo.lock`，而 `crates/fulcrum/tests/supply_gates.rs`
+#      门 1 扫的正是那把锁。⚠ 那道门今天说不出 boring 的话（它只认 aws-lc-rs），
+#      于是「产物里有几套 TLS」会在没有任何门看着的情况下变成两套。
+#      ⇒ 等 G104 真的落到产品里时，那道门要一起改；在那之前不要提前污染那把锁。
+#
+# ⚠ ⚠ **它自己的 `Cargo.lock` 没有任何门看着** —— 已登记在
+#   `docs/verification/musl-boringssl.md`「这份探针证不了什么」一节。
+
+[workspace]
+
+[package]
+name = "musl-boringssl-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "验 BoringSSL 能否与 musl 静态链接，并在 musl 上真的跑一次 QUIC 握手"
+
+[dependencies]
+# ★ 探针**故意直接取产品将来要用的那两个 crate**，不取一个「随便什么用 BoringSSL 的东西」。
+#   D11 的判据是 quiche 这条路走不走得通，而不是「BoringSSL 一般而言能不能静态链接」。
+#   quiche 的 default feature 就是 `boringssl-boring-crate`（实测 0.29.3），
+#   `Config::with_boring_ssl_ctx_builder` 走的正是它。
+quiche = "0.29.3"
+# G104 的那个回调（`set_select_certificate_callback`）住在这里。
+#
+# ⚠ ⚠ **版本必须跟着 quiche 走，不能按 G29「追新」写。** 实测：
+#   crates.io 上 `boring` 的最新版是 **5.2.0**，而 quiche 0.29.3 解出来的是 **4.22.0**。
+#   照追新写一行 `boring = "5"`，cargo 会**同时**留下两份 boring ——
+#   `SslContextBuilder` 同名却是两个类型，`with_boring_ssl_ctx_builder` 当场编不过。
+#   ★ 本仓库在 `pingora-http` 那条上栽过一模一样的形状（见根 Cargo.toml 的 [patch] 注释）。
+boring = "4.22.0"
+# 只为量一件事：握手那条线程真实的栈大小（`pthread_getattr_np`）。
+# ★ **新增 0 个包** —— `quiche` 本来就把 libc 拉进来了（实测在同一份 Cargo.lock 里）。
+libc = "0.2"
+
+[profile.release]
+# 与产品无关，只为让探针二进制小一点、跑得快一点。
+opt-level = 1

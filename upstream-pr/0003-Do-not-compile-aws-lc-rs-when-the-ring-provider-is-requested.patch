@@ -1,0 +1,108 @@
+From 73600fd99ad281fa9aeac390a6f9aa9a609b687b Mon Sep 17 00:00:00 2001
+From: Shanire <shanire86@gmail.com>
+Date: Wed, 19 Aug 2026 10:00:00 +0800
+Subject: [PATCH] Don't compile aws-lc-rs when the ring provider is requested
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pingora-rustls asks rustls and tokio-rustls for the `ring` provider, but
+neither dependency disables default features. Both crates enable
+`aws_lc_rs` by default, so *both* crypto providers end up in the build:
+
+  rustls 0.23.43      default = ["aws_lc_rs", "logging",
+                                 "prefer-post-quantum", "std", "tls12"]
+  tokio-rustls 0.26.4 default = ["logging", "tls12", "aws_lc_rs"]
+
+pingora-core's own `rustls = "0.23"` dev-dependency is a third such
+entry, and because it is unconditional it reaches even the default
+(openssl) test build.
+
+The aws-lc-rs provider is never used. pingora-rustls installs ring
+explicitly (`CryptoProvider::install_default(rustls::crypto::ring::
+default_provider())` in `install_default_crypto_provider()`), and the
+only other crypto call in the crate is `ring::digest`.
+
+What it costs: aws-lc-sys vendors ~69 MB of C source (ring is ~8.5 MB)
+and builds it through cmake, so every consumer of pingora-core's
+`rustls` feature pays for a C toolchain and the resulting compile time.
+For anyone linking statically against musl this is a real obstacle, and
+it is a needless increase in the amount of compiled-in crypto code.
+
+Fixing it means naming the defaults we do want, since
+`default-features = false` also drops `logging`, `std` and `tls12`.
+tokio-rustls has no `std` feature; its `ring`, `logging` and `tls12`
+features forward to the rustls features of the same name. The only
+default that is deliberately not restored is `prefer-post-quantum`,
+which is defined as `["aws_lc_rs"]` and whose every `#[cfg]` site lives
+under `src/crypto/aws_lc_rs/` — it does nothing under the ring provider.
+
+The dev-dependency deliberately names no provider at all. It is only
+used for types (`ServerCertVerifier`, `CertificateDer`,
+`DigitallySignedStruct` in connectors/http tests), and the provider it
+needs at runtime already arrives through pingora-rustls; selecting one
+there would repeat the mistake this commit fixes.
+
+Measured on this commit's parent with
+`cargo tree -p pingora-core -e <edges>`, counting unique crates:
+
+  --features rustls -e normal      178 -> 176   aws-lc gone
+  --features rustls -e normal,dev  260 -> 258   aws-lc gone
+  (no features)     -e normal,dev  228 -> 226   aws-lc gone
+
+`cargo check -p pingora-core --all-targets`, with and without the
+`rustls` feature, passes before and after.
+
+Signed-off-by: Shanire <shanire86@gmail.com>
+---
+ pingora-core/Cargo.toml   |  8 +++++++-
+ pingora-rustls/Cargo.toml | 13 +++++++++++--
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/pingora-core/Cargo.toml b/pingora-core/Cargo.toml
+index 8d1d119..d0d74ff 100644
+--- a/pingora-core/Cargo.toml
++++ b/pingora-core/Cargo.toml
+@@ -94,7 +94,13 @@ hyper = { version = "1", features = ["client", "http1", "http2"] }
+ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2"] }
+ http-body-util = "0.1"
+ rstest = "0.23.0"
+-rustls = "0.23"
++# Only used for types in tests; the crypto provider arrives through
++# pingora-rustls, so no provider feature is selected here.
++rustls = { version = "0.23", default-features = false, features = [
++    "logging",
++    "std",
++    "tls12",
++] }
+ 
+ [[bench]]
+ name = "h1_pipelining"
+diff --git a/pingora-rustls/Cargo.toml b/pingora-rustls/Cargo.toml
+index 51cd00f..de0a4fe 100644
+--- a/pingora-rustls/Cargo.toml
++++ b/pingora-rustls/Cargo.toml
+@@ -18,9 +18,18 @@ path = "src/lib.rs"
+ log = "0.4.21"
+ pingora-error = { version = "0.8.0", path = "../pingora-error"}
+ ring = "0.17.12"
+-rustls = { version = "0.23.12", features = ["ring"] }
++rustls = { version = "0.23.12", default-features = false, features = [
++    "ring",
++    "logging",
++    "std",
++    "tls12",
++] }
+ rustls-native-certs = "0.7.1"
+ rustls-pemfile = "2.1.2"
+ rustls-pki-types = "1.7.0"
+-tokio-rustls = "0.26.0"
++tokio-rustls = { version = "0.26.0", default-features = false, features = [
++    "ring",
++    "logging",
++    "tls12",
++] }
+ no_debug = "3.1.0"
+-- 
+2.47.3
+

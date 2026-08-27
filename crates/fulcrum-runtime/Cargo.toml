@@ -1,0 +1,16 @@
+[package]
+name = "fulcrum-runtime"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "枢衡的运行时对象图：结构化配置 → 站点索引 / 匹配器 / 执行链，纯逻辑不碰网络"
+
+[dependencies]
+fulcrum-config = { path = "../fulcrum-config" }
+regex = { workspace = true }
+
+[dev-dependencies]
+# ★ 只给测试用：`udp_上的_proxy_protocol_两层都拦` 要**绕过 DSL**、
+#   直接喂一份结构化配置进来 —— 那正是 G11 说的「公开入口」，
+#   而「第二层判据真的存在」这件事只能这么证。
+serde_json = { workspace = true }

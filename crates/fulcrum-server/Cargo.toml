@@ -1,0 +1,72 @@
+[package]
+name = "fulcrum-server"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "枢衡的数据面：把运行时对象图挂到 Pingora 上（HTTP/1.1 + h2c + TLS + ACME + 管理面 + 进程托管）"
+
+[dependencies]
+fulcrum-acme = { path = "../fulcrum-acme" }
+fulcrum-config = { path = "../fulcrum-config" }
+fulcrum-runtime = { path = "../fulcrum-runtime" }
+fulcrum-tls = { path = "../fulcrum-tls" }
+# ★ ★ **`features = ["boringssl"]` 是硬要求，不是可选项**（G104）：
+#   不开任何 TLS feature 的话，产品链接的是另一套代码，而它那一批传递依赖会留在
+#   常规审计视野之外（G41 查出的 rustls 那条就是这个形状）。
+#   由 crates/fulcrum/tests/supply_gates.rs 门 3 守着 —— 不开就红。
+pingora-core = { workspace = true, features = ["boringssl"] }
+# `RequestHeader` / `ResponseHeader`。★ 它必须解析到 vendor 那一份，
+# 否则与 pingora-core 里的同名类型**不是同一个类型**；根 Cargo.toml 的 [patch] 负责这件事。
+pingora-http = { workspace = true }
+# ★ **本 crate 与 rustls 再无任何关系**（G104）：L4 的 SNI/ALPN 分流已换到
+#   BoringSSL 的早回调（`src/l4.rs` 的 `peek_client_hello`），FORK.md 改动 8 / 8b / 10
+#   随之归零。⇒ **「依赖图里只有一套 TLS」成立**
+#   （`cargo tree … -i rustls` → nothing to print）。
+#   ⚠ ⚠ **但别说成「产物里」**：那是第三个问题，仍然没有判据（**D23**）；
+#   而「锁里」是第一个问题 —— `rustls` 那一族**仍然写在 `Cargo.lock` 里**，
+#   因为锁是依赖图的超集。三个问题分别由门 4 / 门 5 / 无人回答。
+# BoringSSL 那侧的类型（`SslAcceptor` / `SslMethod` / ALPN 那几样 / ClientHello 早回调）。
+# ★ 纪律是「优先经这一个 crate 拿」，目的是**类型同一性**。
+#   ⚠ G111 破了例（下面那行 `boring`）：只有 `pingora-boringssl` 没有 re-export 的那几样
+#   （`symm`）才直接够 `boring`。**目的没有变，变的是执行者** ——
+#   现在由编译器在三个 `boring` 消费者之间强制，不再靠约定。
+pingora-boringssl = { workspace = true }
+# HTTP/3：传输层 + `quiche::h3` 语义层（G103 / G105，M2 批 J）。
+# ★ ★ **它与上面那一行必须解到同一个 `boring`** —— `SniResolver::install_into()` 收的
+#   `SslContextBuilder` 要原样交给 `quiche::Config::with_boring_ssl_ctx_builder()`，
+#   那正是 G104「两个入口共用同一个 `select_certificate_callback`」的机械落点。
+#   ⚠ 解成两份的话这里当场编不过 —— **守它的是类型系统，不是那两道读包名的门**
+#   （门 4 / 门 5 都按名字去重，看不见「一个名字两个版本」；见 supply_gates.rs）。
+# ⚠ feature 的口径继承根清单（`default-features = false` + 显式挑
+#   `boringssl-boring-crate`），门 2 守着这一条。
+quiche = { workspace = true }
+# ★ QUIC 的监听侧还要直接够到 `quiche::Config::with_boring_ssl_ctx_builder()` 收的那个
+#   `boring::ssl::SslContextBuilder` —— 见下面 `boring` 那一行（G111）。
+# ⚠ ★ **G111 破例的那条直接依赖**：Retry token 要 `boring::symm` 的 AES-256-GCM，
+#   而 `pingora-boringssl` 没有 re-export `symm`。理由、代价与「owner 给的理由是错的、
+#   结论仍然成立」那一条，全写在根清单里那一段 —— 别只读这三行。
+boring = { workspace = true }
+# 连接 ID 与 Retry token 的随机源（批 J）。★ 新增 0 个包，见根清单那一段。
+rand = { workspace = true }
+# 只为写得出 `SessionCustom` 那两个方法的签名。★ 新增 0 个包，见根清单那一段。
+futures = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+bytes = { workspace = true }
+# `http::Uri`：`rewrite` 改过路径后要重新构造上游请求的 URI。
+http = { workspace = true }
+# ★ 进程托管（G78）：`sd_notify(READY=1)` 与「给自己发 SIGQUIT」。
+# ★ 两条都由 G31 指定过（纯 Rust、可 musl 静态链接，满足 G13），而且**新增 0 个包**：
+#   `libc` 早就在依赖图里（pingora 自己就依赖它），`sd-notify` 此前只被 spike 用着。
+sd-notify = { workspace = true }
+libc = { workspace = true }
+# 管理面（G8 的全量 load）收的是**结构化配置 JSON**（G48：与磁盘上那份同一种）。
+# ★ 两条本来就在依赖图里，这里只是变成显式的直接依赖。
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# 只给判据用：QUIC 握手要一张证书，而这里的客户端那一半也是真的 quiche。
+# ★ 新增 0 个包：rcgen 早就在依赖图里（instant-acme 拉的，见根清单）。
+rcgen = { workspace = true }

@@ -1,0 +1,41 @@
+---
+version: 1
+
+# ★ ★ 前台运行。这不是风格选择，是 G31 的产品决策，也是本 spike 的全部前提：
+#   daemonize() 会 fork，pingora 自己的注释写着「run() 之前创建的任何线程都会丢失」，
+#   而升级触发器就住在那样一个线程里。`m1-systemd` 启动时会**拒绝** daemon=true。
+daemon: false
+
+# ★ ★ 实测（读 vendor/pingora/pingora-core/src/server/daemon.rs）：`error_log` 与 `pid_file`
+#   **只在 daemonize() 里被读**，`daemon: false` 时那段代码整个不执行。也就是说前台模式下
+#   这两个配置项会被**安静地忽略**——配置里写了路径，文件永远不出现。
+#   这是个很难查的假象，产品要么自己兑现，要么显式拒绝。本 spike 的处理是分开的：
+#
+#   · `error_log` —— **不写**。日志走 stderr → journal，正是 G31/G33 定的那条路。
+#   · `pid_file`  —— **写，并且由 m1-systemd 自己兑现**（pingora 不管）。
+#
+# ★ pid 文件在 G33 里被判为「不需要」，那句话说的是 systemd 的 `PIDFile=` 指令
+#   （`Type=notify` 下 systemd 自己跟踪 MainPID），**不是**「没有任何东西需要知道当前是哪一代」。
+#   本 spike 实测出的形状恰恰需要它：`ExitType=cgroup` 之下 unit 的 MainPID 在第一次升级后
+#   变成 0，`ExecReload=/bin/kill -USR2 $MAINPID` 当场失效 —— reload 必须从这个文件里
+#   找当前这一代。写它的是每一代自己，且是在**服务真的起来之后**才写（write + rename 原子替换）。
+pid_file: /run/fulcrum-m1/fulcrum.pid
+
+# 升级 socket 放在 RuntimeDirectory 里（G33：/run/<name>，由 systemd 建目录并设权限）。
+upgrade_sock: /run/fulcrum-m1/upgrade.sock
+
+threads: 2
+listener_tasks_per_fd: 1
+work_stealing: true
+
+# ★ 比 M0 的 30/30 小得多，因为 M1 这一轮要量的是 **systemd 的反应**，
+#   而每一次 `systemctl stop` 都要真等满 grace + graceful（见下），
+#   30/30 会让每个场景多等一分钟。
+#
+# ★ ★ 这两个数直接决定 unit 文件里的 `TimeoutStopSec=`：
+#     停机耗时 ≈ grace_period_seconds + graceful_shutdown_timeout_seconds
+#     升级时老进程还要多等 CLOSE_TIMEOUT（5 秒，pingora 写死在 server/mod.rs）
+#   —— 也就是说 `TimeoutStopSec` 必须 > 10 秒，否则 systemd 会在服务还在排空时就 SIGKILL。
+#   这是 2026-08-14 在 M0 的收尾里量出来的那条（35–65 秒）在小配置下的同一个公式。
+grace_period_seconds: 5
+graceful_shutdown_timeout_seconds: 5

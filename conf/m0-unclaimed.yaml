@@ -1,0 +1,22 @@
+---
+version: 1
+# 「未被认领的继承 fd」场景专用（tests/m0/unclaimed.sh）。与 m0.yaml 的唯一差别是
+# run 目录与升级 socket 各用各的，免得两个场景抢同一个 pid/sock 文件。
+daemon: true
+error_log: /w/run/m0-unclaimed/error.log
+pid_file: /w/run/m0-unclaimed/m0.pid
+upgrade_sock: /w/run/m0-unclaimed/m0-upgrade.sock
+
+# 线程模型已由 G35 结案（work_stealing 保持 true；线程数按 service 角色定默认）。
+# 这里仍用一个明确的小值，是为了让日志与行为可读——spike 不是产品默认值。
+threads: 2
+listener_tasks_per_fd: 1
+work_stealing: true
+
+# ★ 与 m0.yaml 相反：这个场景**不测长连接**，只想让老一代尽快退出。
+#   因为「未被认领的 fd 黑洞化」只有在老一代消失之后才显形——
+#   在那之前老一代仍持有同一个监听 socket 并照常 accept。
+#   ⚠ 注意 pingora 在发完 fd 后还会硬等 CLOSE_TIMEOUT（5 秒，server/mod.rs:59）
+#   才广播停机，那段时间没法缩短，所以老一代最快也要 ~7 秒才走干净。
+grace_period_seconds: 2
+graceful_shutdown_timeout_seconds: 2

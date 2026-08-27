@@ -1,0 +1,55 @@
+[package]
+name = "fulcrum-acme"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "枢衡的 ACME 层：账户、订单、挑战求解、签发与续期调度（G53/G54/G56）"
+
+[dependencies]
+# ⚠ default-features 关掉的理由见根清单里那段注释：它的 default 里就含 aws-lc-rs。
+#   守它的是 crates/fulcrum/tests/supply_gates.rs，不是注释。
+instant-acme = { workspace = true }
+# 证书存储（G55）、续期判定（G56）、按 SNI 挑证书都在 TLS 层，本 crate 只往里写。
+fulcrum-tls = { path = "../fulcrum-tls" }
+# TLS-ALPN-01 的挑战证书是现造的（RFC 8737）。★ 新增 0 个包：instant-acme 已经拉了它。
+rcgen = { workspace = true }
+# 出站 HTTPS：ACME 协议本身 + 原生 Cloudflare / DNSPod（G57）的 API 调用。
+# ★ 新增 0 个包，理由见根清单。
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+# 出站连接器要实现的形状（`Service<Uri>`）。★ 新增 0 个包：hyper-util 本来就拉着它。
+tower-service = { workspace = true }
+# ★ ★ ★ **（G104 第 ③ 处）：`hyper-rustls` 换成了 `pingora-boringssl`。**
+#   出站 TLS 从 rustls 换到 BoringSSL，握手与校验全部交给 `boring::ssl::SslConnector`，
+#   本 crate 只写连接器胶水（`src/https.rs`）。
+# ⚠ **BoringSSL 的类型只经 `pingora-boringssl` 拿**，与 `fulcrum-tls` 同一条纪律：
+#   多一处版本声明就多一个把 `boring` 劈成两份的机会，而劈开之后
+#   `SslContextBuilder` 同名却是两个类型。★ **新增 0 个包**（`fulcrum-tls` 已经拉着它）。
+pingora-boringssl = { workspace = true }
+# ARI 的证书标识：`instant-acme` 只认 `&CertificateDer`，而我们的证书类型
+# 此后是 BoringSSL 的 `X509`（G104）。
+# ★ **纯类型定义 crate**（没有 crypto、没有 provider、没有 feature），
+#   与 G41/G45 点名的 `rustls` / `tokio-rustls` 不是一类东西；**新增 0 个包**。
+rustls-pki-types = { workspace = true }
+http-body-util = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# ★ 本 crate **不挂在 pingora 的进程模型上**，与 `fulcrum-runtime` 同一条纪律：
+#   它是「什么时候该签、怎么签」的逻辑，不是「挂在哪个进程模型上」。
+#   停机信号用 `tokio::sync::watch::Receiver<bool>` 接——那恰好就是
+#   `pingora_core::server::ShutdownWatch` 的真身，所以 `fulcrum-server` 直接传进来即可。
+#
+# ⚠ ⚠ ★ **这句话就地改过，原话是「本 crate 不依赖 pingora」，而它现在不成立了。**
+#   上面那行 `pingora-boringssl` 是一条真的 pingora 依赖。
+#   ★ 改措辞而不是删掉这条纪律，是因为**这条纪律要挡的东西一个字没变**：
+#     `pingora-core`（进程模型、监听器、优雅升级）仍然一行都没进来，
+#     而 `pingora-boringssl` 是一层**纯类型再导出**（`pub use boring::ssl;` 那种）。
+#   ⚠ 与其让一句听起来更干净、而与 `Cargo.toml` 相反的话留在这里 —— 本仓库已经
+#     为「一条很有道理、却与代码相反的理由」付过一次代价（§5 选 Pingora 那条）。
+
+[dev-dependencies]
+# 只给测试用：从产物 DER 里核对那条 acmeIdentifier 扩展真的在、且真的 critical。
+x509-parser = { workspace = true }

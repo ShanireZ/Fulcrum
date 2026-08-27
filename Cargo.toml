@@ -1,0 +1,179 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/fulcrum",
+  "crates/fulcrum-acme",
+  "crates/fulcrum-config",
+  "crates/fulcrum-runtime",
+  "crates/fulcrum-server",
+  "crates/fulcrum-tls",
+  "spikes/m0-seam",
+  "spikes/m1-systemd",
+]
+# vendor/pingora 是自带 [workspace] 的 fork，不能当成本 workspace 的成员
+exclude = ["vendor/pingora"]
+
+# G30：pingora-core 0.8.1 的清单里有十条版本上界（`brotli = "3"` 这类脱字号需求
+# 自带 `<4.0.0`），把 44 个传递依赖钉在旧版上，其中两个带安全公告。
+# ★ [patch] 打不破版本需求——被 patch 的 crate 仍须满足依赖方的需求，
+#   所以唯一的杠杆是替换 pingora-core 本身。fork 在 vendor/pingora，
+#   改动只在各 Cargo.toml 的版本上界与随之而来的调用点适配。
+# 现状、实测破坏面与重跑方式见 docs/platform/supply-chain.md。
+[patch.crates-io]
+pingora-core = { path = "vendor/pingora/pingora-core" }
+# ★ ★ `pingora-http` 也必须 patch，而这不是「顺手多写一条」：
+#   数据面要直接用 `RequestHeader` / `ResponseHeader`，而 vendor 里的 pingora-core
+#   走 `path = "../pingora-http"`。若产品 crate 从 crates.io 再拿一份，
+#   **同名同版本却是两个不同的类型**，编译期就会撞上一堆看不懂的类型不匹配。
+#   ⚠ 只 patch 真正进依赖图的那些——patch 了没人用的会让 cargo 每次打一行
+#   「patch was not used」的噪音。
+pingora-http = { path = "vendor/pingora/pingora-http" }
+# ★ （G104）TLS 后端是 BoringSSL，同样必须 patch —— `fulcrum-tls` 要用
+#   `X509` / `PKey` / `ClientHello`，而它们经 `pingora-boringssl` 再导出。
+#   从 crates.io 另拿一份会得到**两个同名不同物的类型**。
+#   ⚠ `pingora-rustls` 曾经也在这里，三处 TLS 全换之后根 workspace 没有任何 crate 依赖它，
+#     按上面那条纪律删掉；fork 里那个 crate 本身还在（vendor 成员、回归网照跑）。
+pingora-boringssl = { path = "vendor/pingora/pingora-boringssl" }
+
+# 依赖版本策略见 PLAN.md G29：`>=` 下界、不设上界、`Cargo.lock` 入库、
+# 每周由 tools/dep-check.py 检查并跟进最新，且任何版本必须已发布满 24 小时才允许采纳。
+#
+# ★ 下界抬到「实际锁定并跑过验证的那个版本」，不是随手写的旧值。
+#   G29 不设上界，Cargo 会自己往上跳；下界的意义是记录「这个版本我们验过」。
+[workspace.dependencies]
+pingora-core = ">=0.8.1"
+async-trait = ">=0.1.92"
+# ★ `process` 是为 DNS-01 的 exec hook（G57）加的：那条路要起一个外部程序，
+#   而 `std::process` 是阻塞的——在巡检任务里同步等一个外部命令会占住整条 runtime 线程。
+# ★ `signal` 是显式写上的，**不是新能力**：此前靠 pingora-core 打开它、由 cargo 的
+#   特性合并捎带生效。⚠ 「能编过是因为别人替我开了」一旦上游改了 feature 组合就会变成
+#   一堆看不懂的编译错误，而根因在别人的清单里。**新增 0 个包。**
+tokio = { version = ">=1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync", "process", "signal"] }
+log = ">=0.4.33"
+env_logger = ">=0.11.11"
+# G31 指定的 sd_notify 实现：纯 Rust、零非 libc 依赖、可 musl 静态链接（G13）。
+# 只有 M1 spike 用它。
+sd-notify = ">=0.5.0"
+# 只为 `kill(2)`（给自己发 SIGQUIT）。sd-notify 与 pingora 本来就把它拖进依赖树，
+# 这里只是把它变成一条显式的直接依赖。
+libc = ">=0.2.189"
+# 结构化配置那一层是 JSON（G48）。serde 本来就在依赖图里（pingora 拖进来的），
+# serde_json 是这一轮新加的直接依赖。
+# ★ 只开 `derive`，不开 default 之外的任何东西——「上游 crate 的 default 是一条静默的
+#   供应链入口」在本仓库已经现身四次（rustls / tokio-rustls / pingora-core 的 dev-dep /
+#   instant-acme）。这两条由 crates/fulcrum/tests/supply_gates.rs 的结构门守着，不是靠这行注释。
+serde = { version = ">=1.0.229", features = ["derive"] }
+serde_json = ">=1.0.151"
+# `path_regexp`（G60 的指令清单里就有）需要一个正则引擎。
+# ★ 不自己写：正则引擎的坏法是**指数级回溯**，而 `regex` 的卖点恰恰是线性时间保证——
+#   拿一个会被配置里一行 `(a+)+$` 打挂的手写实现去服务公网入口，不是省依赖，是留后门。
+regex = ">=1.13.1"
+# 数据面直接用到的 pingora 类型与它们的底层类型。三条都已经在依赖图里
+# （pingora-core 拖进来的），这里只是把它们变成显式的直接依赖。
+pingora-http = ">=0.8.1"
+bytes = ">=1.12.1"
+http = ">=1.5.0"
+# TLS 层：BoringSSL 的类型只经 pingora-boringssl 拿（见 crates/fulcrum-tls 的说明）。
+pingora-boringssl = ">=0.8.1"
+# HTTP/3 的传输层与语义层（**G103** 取 quiche，**G105** 语义层不自研）。
+#
+# ⚠ ⚠ **`default-features = false` 在这一条上是那条硬约束的执行者。**
+#   要的是 `boringssl-boring-crate`：它走 `boring` crate，于是与 `pingora-boringssl`
+#   **解到同一个 `boring`**，`SslContextBuilder` 才是同一个类型，G104 那句「两个入口共用
+#   同一个 `select_certificate_callback`」才机械成立。
+#   ★ 而它另有一个 `boringssl-vendored`，那条会让 quiche 自己从源码编一份 BoringSSL
+#   ⇒ 产物里就是**两套 BoringSSL**，「统一 BoringSSL」按字面读就成了假话。
+#   ⚠ 守它的不是这段注释：`quiche` 在 `supply_gates.rs` 门 2 的名单里，漏写当场红；
+#     而「图里只有一个 boring」由门 5（读 `cargo tree`）守。
+quiche = { version = ">=0.29.3", default-features = false, features = [
+    "boringssl-boring-crate",
+] }
+# ⚠ ★ **G111：`boring` 破例成为直接依赖**（纪律本是「BoringSSL 的类型只经
+#   `pingora-boringssl` 拿」）。理由与代价：
+# · **要的是 `symm` 的 AEAD**（AES-256-GCM）—— Retry token 的地址验证（RFC 9000 §8.1）。
+#   `pingora-boringssl` 只 re-export 了 `error`/`hash`/`nid`/`pkey`/`ssl`/`x509`，够不到它。
+#   ★ 认证由 AEAD 的 tag 校验完成（常数时间比较在 BoringSSL 内部），我们这边一行密码学都不写。
+# · **那条纪律的目的是类型同一性，而它没有变**：图里三个 `boring` 消费者
+#   （`pingora-boringssl` / `quiche` / 本仓库）都是 `^4`，cargo 统一到同一个版本；
+#   解成两份的话 `SslContextBuilder` 当场编不过。**目的由编译器执行，不由纪律执行。**
+# · **另两条路都更贵**：给 fork 加一行 re-export（每次 rebase 手工重贴）／走 `ssl_sys`
+#   裸 FFI（手写密码学 FFI，违反安全基线第 5 条）。
+# · **新增 0 个包**。
+boring = ">=4.22.0"
+# 连接 ID 与 Retry token 的随机源（M2 批 J）。
+#
+# ★ **新增 0 个包**：`rand 0.10.2` 本来就是 `pingora-core` 的 **normal** 依赖
+#   （实测 `cargo tree -e normal -i rand`：rand ← pingora-core ← fulcrum-server），
+#   这里只是把一条早就编进产物的依赖变成显式的直接依赖。
+# ⚠ ⚠ **随机性在这里是安全属性不是便利**：RFC 9000 §5.1 要求连接 ID 不可被关联，
+#   而 Retry token 可被预测等于地址验证形同虚设。⇒ 取的是 `rand::rng()`
+#   （`ThreadRng`，OS 播种的 ChaCha，`impl TryCryptoRng`），**不是** `SmallRng`。
+#   ★ 挑 `ThreadRng` 而不是每次都走 `SysRng` 系统调用：CID 是每条连接都要发的东西。
+rand = ">=0.10.2"
+# `futures::Stream` —— 只为了**写得出** `SessionCustom` 那两个方法的签名
+# （`take/restore_custom_message_reader` 收发的是 `Box<dyn Stream<…>>`）。
+# ★ **新增 0 个包**：`futures 0.3.34` 本来就是 `pingora-core` 的 normal 依赖。
+# ⚠ 它**不代表本仓库开始用 futures 的组合子**：数据面一律 tokio + async/await。
+futures = ">=0.3.34"
+# 从 DER 里读证书有效期与 SAN。★ 它本来就在依赖图里（pingora-core 的 rustls feature 拖进来的）。
+x509-parser = ">=0.16.0"
+# ★ **纯类型定义 crate**（DER/证书那几个 newtype），没有 crypto、没有 provider。
+#   ⚠ 与 G41/G45 点名的 `rustls` / `tokio-rustls` **不是一类东西**：那两条是
+#   「default feature 会把 aws-lc-rs 拖进来」，这一条一个 feature 都没有。
+#   直接依赖它是因为 `instant-acme` 的 `CertificateIdentifier` 只有
+#   `TryFrom<&CertificateDer>` 一个入口，而我们的证书类型是 BoringSSL 的 `X509`。
+#   ★ **新增 0 个包**。
+rustls-pki-types = ">=1.9"
+# 造 TLS-ALPN-01 的挑战证书（RFC 8737，G54 的「主」）。
+#
+# ★ **新增 0 个包**：`instant-acme` 本来就把它当正常依赖拉进来
+#   （实测 `cargo tree -e normal -i rcgen`：rcgen ← instant-acme ← fulcrum-acme）。
+# ⚠ ⚠ **`default-features = false` 同样不是风格问题**：rcgen 有一个 `aws_lc_rs` feature，
+#   而本仓库刚把 aws-lc-rs 赶出依赖图（G41/G45）。这里显式只要 `ring`。
+#   ★ 守它的是 `crates/fulcrum/tests/supply_gates.rs`（`rcgen` 已在门 2 的名单里），不是这行注释。
+rcgen = { version = ">=0.14.9", default-features = false, features = ["ring"] }
+# 出站 HTTPS：ACME 协议本身，外加原生 Cloudflare / DNSPod（G57）的 API 调用。
+#
+# ★ ★ 出站那条路的 TLS 是 BoringSSL（`crates/fulcrum-acme/src/https.rs`：自己写的
+#   `tower_service::Service<Uri>` 连接器 + fork 里已有的 `pingora_boringssl::tokio_ssl`）
+#   ⇒ `hyper-rustls` / `rustls` / `tokio-rustls` / `schannel` 都不在**依赖图**里。
+#   ⚠ ⚠ **离开的是依赖图，不是这把锁**：它们仍然写在 `Cargo.lock` 里
+#     （`instant-acme` 的 `ring` feature 里那句 `"hyper-rustls?/ring"`）——
+#     **`Cargo.lock` 是依赖图的超集** ⇒ 判「图里有没有」要用 `cargo tree`
+#     （`supply_gates.rs` 门 5），不能读这把锁。
+#   ⚠ **不走 `hyper-boring`**：它把 `hyper 0.14` 那一整套拖进来（**+9 个包**），因为它的
+#     feature 表里 `hyper_old` **没有 `dep:` 前缀** ⇒ `default-features = false` 拦不住。
+#
+# ⚠ ★ **`hyper-util` 的 `http1` 是显式写上的，不是新能力**：此前由 `instant-acme` 的
+#   `hyper-rustls` feature 替我们打开。关掉它之后不自己写上，`Client` 里那一片
+#   `#[cfg(feature = "http1")]` 全部落空 —— **一个连 HTTP/1 都不会说的 HTTP 客户端**。
+#   ★ `http2` **有意不加**：出站那条路的 ALPN 钉死 `http/1.1`（见 `https.rs`），
+#     加上它等于把 `h2` 那一串又拉回来。
+hyper = { version = ">=1.11.0", features = ["client", "http1"] }
+hyper-util = { version = ">=0.1.20", features = ["client", "client-legacy", "http1", "tokio"] }
+http-body-util = ">=0.1.5"
+# ★ **新增 0 个包**：`hyper-util` 的 `client` feature 本来就把它当必需依赖拉进来
+#   （`client = [..., "dep:tower-service"]`）。这里只是把它变成一条显式的直接依赖 ——
+#   出站连接器要实现的正是 `tower_service::Service<Uri>`，那是 `hyper-util` 的
+#   `Connect` 唯一认得的形状。
+# ⚠ 它与 §5.1 第 2 条（「tower 中间件生态用不上」）**不冲突**：那一条说的是
+#   tower 的 `Service`/`Layer` 插不进 Pingora 的 `ProxyHttp` 阶段模型，
+#   而这里用的是 hyper 客户端那一侧，两者同名不同物 —— 这正是那条约束原话里的用词。
+tower-service = ">=0.3.3"
+# ACME 客户端（G53）。它只做 RFC 8555 协议本身；挑战求解、证书存储、续期调度都是枢衡自己写的。
+#
+# ⚠ ⚠ **`default-features = false` 不是风格问题**：`instant-acme` 的 default feature
+#   里**就含 `aws-lc-rs`**（实测 0.8.5 的 `default = ["aws-lc-rs", "hyper-rustls"]`），
+#   照默认写一行，G41/G45 把 aws-lc-rs 赶出依赖图的成果当场作废。
+#   ★ 守它的不是这行注释，是 `crates/fulcrum/tests/supply_gates.rs` 的门 1（查两把锁）
+#     与门 2（查清单写法）——**门 2 从今天起不再是空跑的**。
+# ★ `x509-parser` + `time` 两个 feature 是给 **ARI**（RFC 9773）用的：
+#   G56 的顺序是「先问 ARI，问不到才用比例」，而 `CertificateIdentifier` 要从证书 DER
+#   里抠 AKI 与序列号，那正是 `x509-parser` feature 提供的 `TryFrom`。
+#
+# ⚠ ★ **`hyper-rustls` 这个 feature 关掉了**（它 gate 的是 `dep:hyper` /
+#   `dep:hyper-rustls` / `dep:hyper-util` / `dep:rustls`）。★ 关掉之后
+#   `Account::builder()` / `builder_with_root()` / `BytesResponse::try_from` 一起没了
+#   ⇒ 走 `Account::builder_with_http()`，并自己实现 `instant_acme::HttpClient`
+#   （`crates/fulcrum-acme/src/https.rs` 的 `AcmeHttpClient`，十来行）。
+instant-acme = { version = ">=0.8.5", default-features = false, features = ["ring", "x509-parser", "time"] }

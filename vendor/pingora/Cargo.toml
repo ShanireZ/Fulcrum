@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "pingora-core",
+    "pingora-error",
+    "pingora-http",
+    "pingora-pool",
+    "pingora-runtime",
+    "pingora-timeout",
+    "pingora-rustls",
+    # ★ 2026-08-25（G104）：加回来的第八个 crate。fork 当初把它删掉的理由是
+    #   「PLAN.md §5.1 第 1 条锁死 rustls」，而那条约束已被 G104 推翻。
+    "pingora-boringssl",
+]
+
+[workspace.dependencies]
+bstr = "1.12.0"
+tokio = "1"
+tokio-stream = { version = "0.1" }
+async-trait = "0.1.42"
+httparse = "1"
+bytes = "1.0"
+# ★ 替代已失维的 derivative（RUSTSEC-2024-0388）。见 FORK.md。
+educe = "0.7.6"
+http = "1"
+log = "0.4"
+h2 = ">=0.4.11"
+once_cell = "1"
+lru = "0.18.2"
+ahash = ">=0.8.9"
+
+[profile.bench]
+debug = true

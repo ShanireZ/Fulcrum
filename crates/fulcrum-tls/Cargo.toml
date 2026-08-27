@@ -1,0 +1,28 @@
+[package]
+name = "fulcrum-tls"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "枢衡的 TLS 层：证书存储（G55）、按 SNI 的动态证书解析（§5.1 第 1 条）、续期判定（G56）"
+
+[dependencies]
+# ★ 只为一件事：主机名通配的语义（D18 / G66）必须与站点索引**共用同一份实现**。
+#   它是纯逻辑（只带 serde），不引入任何供应链面。
+fulcrum-config = { path = "../fulcrum-config" }
+# ★ ★ ★ **（G104）：从 `pingora-rustls` 换成 `pingora-boringssl`。**
+#   BoringSSL 的类型**只经这一个 crate 拿**，不直接依赖 `boring`。
+#   理由与「只经 `pingora-rustls` 拿 rustls」完全一样，而且更硬：
+#   ⚠ ⚠ `boring` 的版本必须与 `quiche` 解到**同一个**（G103/G104），
+#   而**多一处版本声明就多一个把它们劈成两份的机会** ——
+#   劈开之后 `SslContextBuilder` 同名却是两个类型，编译期一堆看不懂的类型不匹配。
+pingora-boringssl = { workspace = true }
+# 从 DER 里读证书的有效期与 SAN。
+# ★ ★ **G104 之后它留着不是没改干净**：换掉它等于同时换掉「我们对证书的理解」
+#   （SAN 取法、时间边界、非 DNS 类型 SAN 怎么处理），而这一批换的是 TLS 后端。
+#   两件事分开做，红了才分得清是哪一件。
+x509-parser = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+# `flock(2)`：跨进程串行化同一域名的签发（G55 第 2 条）。
+libc = { workspace = true }

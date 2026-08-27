@@ -1,0 +1,65 @@
+[Unit]
+Description=Fulcrum（产品二进制）—— systemd 托管与零停机换代
+
+# ★ ★ ★ 这个 unit 与 `fulcrum-m1.service` 的关系是本批的**全部要点**。
+#
+#   那一份跑的是 spike（`target/release/m1-systemd`），而 spike 把
+#   sd_notify / pid 文件 / SIGUSR2 换代**自己实现了一遍**。
+#   于是 M1 的三个场景全绿，而**产品二进制 `systemctl start` 会超时失败**
+#   （2026-08-20 实测：MainPID=0、Result=timeout、/run/fulcrum/ 是空的）。
+#
+#   > ★ 一个 spike 证明的是「这条路走得通」，不是「产品走在这条路上」。
+#     夹具喂给门的那个二进制，本身也是夹具的一部分。
+#
+#   这一份**只跑产品二进制**，形状与 fulcrum-m1.service 逐项相同（有意的：
+#   两份如果长得不一样，红了之后分不清是产品的问题还是 unit 写法的问题）。
+
+[Service]
+# G31 的形状：前台 + notify。没有 PIDFile=（那是给 systemd 跟踪用的，这里不需要）。
+Type=notify
+
+# ★ 让 unit 活过换代的是这一行，不是 MainPID 交接（G37 否掉了交接，
+#   理由与实测对照表见 fulcrum-m1.service 与 docs/architecture/process-model.md）。
+ExitType=cgroup
+
+NotifyAccess=main
+
+# ★ 配置放在 /etc/fulcrum（形状同 G33 的 `ConfigurationDirectory=`），由场景脚本写入。
+#   ⚠ 换代是 fork+exec **同一条命令行**，所以下一代会**重新读一遍这个文件** ——
+#   「改配置 + systemctl reload」这条路的判据就建在这上面（M1 退出条件第 3 条）。
+# ★ ★ 有意**不直接指 /w/target/release/fulcrum**：那个文件在共享的 target 卷里，
+#   而本场景要做一次「把二进制换掉再 reload」（升级的标准做法）。
+#   场景脚本先把它装到这个容器本地的路径上，于是换掉它不会影响别的场景。
+#   ⚠ 这也更像真实部署：生产里就是 /usr/local/bin/fulcrum。
+ExecStart=/opt/fulcrum/fulcrum serve /etc/fulcrum/Fulcrumfile
+
+# ★ **不能写成 `/bin/kill -USR2 $MAINPID`**：`ExitType=cgroup` 下第一次换代之后
+#   `$MAINPID` 就是空的（实测：第二次 reload 退出码 1、journal 里是 kill 的 Usage，
+#   而 unit 仍 active —— 报错了，但换代没发生）。改从 pid 文件找当前这一代。
+ExecReload=/bin/sh -c 'kill -USR2 "$(cat /run/fulcrum/fulcrum.pid)"'
+
+# G33：runtime / state 目录交给 systemd 建。
+# ★ RuntimeDirectory 里放 pid 文件、升级 socket 与管理面 socket；
+#   StateDirectory 里放证书（本场景不签证书，但 serve 启动时会去看那个目录）。
+RuntimeDirectory=fulcrum
+RuntimeDirectoryPreserve=yes
+StateDirectory=fulcrum
+
+KillMode=control-group
+
+# ★ ★ 这个 60 是**判据的一部分，不是富余量**。
+#   产品默认排空窗口 30s + 收尾 5s ≈ 35s（crates/fulcrum-server/src/process.rs 里那两个常量），
+#   所以 60 足够。⚠ 而在批 12 之前，`grace_period_seconds` 没配就是 `None`，
+#   pingora 会用它自己的 `EXIT_TIMEOUT = 300` —— 那时这一行会让 systemd 在排空
+#   进行到 1/5 时 SIGKILL，`systemctl stop` 以 failed(signal) 收场。
+#   ⇒ 本场景**有意不在 Fulcrumfile 里写 `grace_period`**，就是为了让默认值走这条路。
+TimeoutStopSec=60
+
+# ★ 显式关掉自动重启：判据要看的是「它自己起没起来」，
+#   自动拉起会把一次失败的 start 变成「过一会儿就 active 了」。
+Restart=no
+
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,3 @@
+# ★ 构建上下文只该有源码。`target/` 是本机跑探针时留下的（几 GB），
+#   不排掉的话每次 `docker build` 都要把它整个塞给 daemon。
+target/

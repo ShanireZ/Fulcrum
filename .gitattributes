@@ -1,0 +1,28 @@
+# 枢衡的目标平台只有 Linux（G13），而构建与测试全在容器里跑（G26），
+# 工作树是从 Windows 宿主机 bind-mount 进去的。
+#
+# ★ 因此行尾必须无条件是 LF。开发机上 `core.autocrlf=true` 且没有本文件时，
+#   checkout 会把 `tests/m0/*.sh` 转成 CRLF，容器里的 bash 会当场报
+#   `\r: command not found` —— 而且是克隆之后才发作，写代码时看不出来。
+#
+# ★ 行尾转换发生在 checkout，不在提交 —— 所以 `git status` 干净并不能证明什么。
+
+* text=auto eol=lf
+
+# 二进制/不可转换
+#
+# ⚠ `* text=auto` 会让 git 靠**内容启发式**（前 8000 字节里有没有 NUL）去猜二进制，
+#   大多数时候猜得对 —— 但这个仓库的纪律是**能写死规则就别靠启发式**。
+#   ★ 顺带：`tests/m0/docker-run.sh` 里那条不依赖 git 的 CRLF 兜底扫描
+#   也有一张按扩展名跳过的表，两张表要一起改。
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.pdf binary
+
+# ★ `upstream-pr/*.patch` 是 `git format-patch` 的原样输出，**行尾空格是格式的一部分**：
+#   diff 里的空上下文行就是**一个空格**，而签名分隔线就是 `-- `（尾随一个空格）。
+#   把它们「清理」掉，`git am` 当场就吃不下了。
+#   ⚠ 所以关掉 whitespace 检查，而不是去改文件——`git diff --check` 在这里报的不是缺陷。
+*.patch -whitespace
