@@ -7,7 +7,9 @@
 use fulcrum_config::compile_str;
 use fulcrum_runtime::request::{HeaderList, RequestCtx};
 use fulcrum_runtime::template::Template;
-use fulcrum_runtime::{LbPolicy, Outcome, Routed, Runtime, SiteMatch};
+use fulcrum_runtime::{
+    LbPolicy, Outcome, Routed, Runtime, SiteMatch, ip_hash_source, less_loaded, weighted_slot,
+};
 use std::net::IpAddr;
 use std::time::UNIX_EPOCH;
 
@@ -853,7 +855,272 @@ fn least_conn_选在飞连接最少的() {
     assert_eq!(t.pick(&ctx).unwrap().addr, "10.0.0.1:1");
 }
 
+// ── 加权调度（M2 批 N 任务 2；裁决 R4 / R5）──────────────────────────────────
+//
+// ★ ★ ★ 这一组里**最要紧的是「等权回归护栏」那四条**：全部权重为 1 时，
+// 逐个请求的落点必须与这一批之前**逐字一致**。它保证接权重这件事
+// **没有顺手改掉已经在生产上跑着的行为** —— 而那正是一次「顺手」最容易毁掉的东西。
+//
+// ⚠ 四条护栏都把**今天的规则**（`x % n`）逐字写在判据里，再与实现的输出比，
+// ⛔ 不拿 `weighted_slot` 去算期望 —— 那是拿被测的东西证明被测的东西。
+// ★ `ip_hash` 与 `random` 的「取数」因此被拆成 `ip_hash_source` / `random_source`
+// 两个纯函数：判据自己再实现一遍哈希就是第二份实现，而两份实现迟早分家。
+
+/// ★ ★ ★ **等权回归护栏（纯函数那一半，穷举）**：权重全是 1 时，
+/// [`weighted_slot`] 逐字等于四条分支这一批之前各自写的 `% n`。
+#[test]
+fn 等权时_weighted_slot_就是取模() {
+    for n in 1..=8usize {
+        let w = vec![1u32; n];
+        for pos in 0..1000usize {
+            assert_eq!(
+                weighted_slot(pos, &w),
+                pos % n,
+                "n={n} pos={pos}：等权时累积权重必须退化成取模"
+            );
+        }
+    }
+}
+
+/// 不等权时的落点是**累积区间**，并且**连发**（裁决 R5 的代价，写在判据里）。
+#[test]
+fn 累积权重的落点是连发而不是平滑() {
+    // 3:1 ⇒ 一轮四个位置是 a a a b。⛔ 平滑加权会给 a a b a。
+    let got: Vec<usize> = (0..8).map(|k| weighted_slot(k, &[3, 1])).collect();
+    assert_eq!(got, vec![0, 0, 0, 1, 0, 0, 0, 1]);
+    // 中间那一格宽 2：1:2:1 的一轮是 a b b c。
+    let got: Vec<usize> = (0..4).map(|k| weighted_slot(k, &[1, 2, 1])).collect();
+    assert_eq!(got, vec![0, 1, 1, 2]);
+}
+
+/// ★ ★ **等权回归 ①/四**：`round_robin` 的游标序列逐字不变。
+#[test]
+fn 等权回归_round_robin_的游标序列逐字不变() {
+    let r = rt("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 10.0.0.3:3\n}\n");
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    // ★ 这一批之前的规则，逐字写出来：游标从 0 起，落点 = `游标 % 3`。
+    let expected: Vec<usize> = (0..12).map(|c| c % 3).collect();
+    let got: Vec<usize> = (0..12).map(|_| t.pick_index_by(None).unwrap()).collect();
+    assert_eq!(got, expected);
+}
+
+/// ★ ★ **等权回归 ②/四**：`ip_hash` 同一个 IP 的落点 = 这一批之前的 `hash % n`。
+#[test]
+fn 等权回归_ip_hash_的落点等于哈希取模() {
+    let r = rt(
+        "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 10.0.0.3:3 {\n    lb_policy ip_hash\n  }\n}\n",
+    );
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    for i in 0..64u32 {
+        let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0A09_0000 + i * 7919));
+        assert_eq!(
+            t.pick_index_by(Some(ip)).unwrap(),
+            (ip_hash_source(ip) as usize) % 3,
+            "{ip} 的落点变了"
+        );
+    }
+}
+
+/// ★ ★ **等权回归 ③/四**：`least_conn` 逐个请求的落点，含**平票取下标最小**。
+#[test]
+fn 等权回归_least_conn_平票取下标最小() {
+    let r = rt(
+        "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 10.0.0.3:3 {\n    lb_policy least_conn\n  }\n}\n",
+    );
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    // 全 0 ⇒ 恒取下标最小的那个，问多少次都是它（`least_conn` 不消耗游标）。
+    for _ in 0..5 {
+        assert_eq!(t.pick_index_by(None), Some(0));
+    }
+    t.upstreams[0].acquire();
+    assert_eq!(t.pick_index_by(None), Some(1));
+    t.upstreams[1].acquire();
+    assert_eq!(t.pick_index_by(None), Some(2));
+    t.upstreams[2].acquire();
+    // 三家都在飞 1 条 ⇒ 又是平票 ⇒ 下标最小。
+    assert_eq!(t.pick_index_by(None), Some(0));
+}
+
+/// ★ ★ **等权回归 ④/四**：`random` 的序列逐字不变。
+///
+/// ⚠ 种子每进程随机（`RandomState::new()`），所以**没有跨进程字面量可钉**；
+/// 判据写成「同一个进程里，落点 = `random_source(游标) % n`」——
+/// 右边那个 `% n` 正是这一批之前的那一行。
+#[test]
+fn 等权回归_random_的序列逐字不变() {
+    let r = rt(
+        "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 10.0.0.3:3 {\n    lb_policy random\n  }\n}\n",
+    );
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    let expected: Vec<usize> = (0..300u64)
+        .map(|c| (t.random_source(c) as usize) % 3)
+        .collect();
+    let got: Vec<usize> = (0..300).map(|_| t.pick_index_by(None).unwrap()).collect();
+    assert_eq!(got, expected);
+    // ★ 顺带钉住它没退化成常数（一个恒返回 0 的实现也会让上面那条绿）。
+    let mut seen: std::collections::BTreeSet<usize> = Default::default();
+    seen.extend(got.iter().copied());
+    assert_eq!(seen.len(), 3, "300 次抽样只落到 {seen:?}");
+}
+
+/// **比例判据 ①**：`round_robin` 的 3:1。样本量写死在判据里。
+#[test]
+fn 三比一下_round_robin_的落点比例() {
+    const N: usize = 4000;
+    let r =
+        rt("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 {\n    weight 10.0.0.1:1 3\n  }\n}\n");
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    let picks: Vec<usize> = (0..N).map(|_| t.pick_index_by(None).unwrap()).collect();
+    // 连发（R5 的代价）：头八个是 a a a b a a a b。
+    assert_eq!(picks[..8], [0, 0, 0, 1, 0, 0, 0, 1]);
+    let a = picks.iter().filter(|i| **i == 0).count();
+    let b = N - a;
+    assert!(
+        a.abs_diff(N * 3 / 4) * 100 <= N * 3 / 4 * 5 && b.abs_diff(N / 4) * 100 <= N / 4 * 5,
+        "3:1 打了 {N} 次，落点 {a}:{b}（要 {}:{}，±5%）",
+        N * 3 / 4,
+        N / 4
+    );
+}
+
+/// **比例判据 ②**：`ip_hash` 的 3:1，用**一批不同的客户端 IP**。
+///
+/// ⚠ IP 取一串**散开**的地址而不是连续地址：连续地址的低位与总权重同周期，
+/// 读数会恰好等于理想值，而一把只在特意挑过的输入上准的尺子不算尺子。
+#[test]
+fn 三比一下_ip_hash_的落点比例() {
+    const N: usize = 8000;
+    let r = rt(
+        "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 {\n    lb_policy ip_hash\n    weight 10.0.0.1:1 3\n  }\n}\n",
+    );
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    let mut a = 0usize;
+    for i in 0..N as u32 {
+        let scattered = i.wrapping_mul(2_654_435_761) & 0x00FF_FFFF;
+        let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0A00_0000 | scattered));
+        if t.pick_index_by(Some(ip)).unwrap() == 0 {
+            a += 1;
+        }
+    }
+    let b = N - a;
+    assert!(
+        a.abs_diff(N * 3 / 4) * 100 <= N * 3 / 4 * 5 && b.abs_diff(N / 4) * 100 <= N / 4 * 5,
+        "3:1 打了 {N} 个不同的客户端 IP，落点 {a}:{b}（要 {}:{}，±5%）",
+        N * 3 / 4,
+        N / 4
+    );
+}
+
+/// ★ ★ ★ **权重与可用性筛选的交互**：被摘掉的上游**连它的权重一起出局**。
+///
+/// ⚠ 这一条是「先筛可用集、再按权重挑」那个顺序的**全部意义**：
+/// 反过来的话，「按 3:1 分而那个 3 没在跑」会让 3/4 的请求落空 ——
+/// 而现场只看得到「一部分请求 502」，配置、健康检查、权重全都读起来正常。
+#[test]
+fn 摘掉的上游的权重不再计入总权重() {
+    const N: usize = 100;
+    let r = rt(
+        "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 10.0.0.3:3 {\n    weight 10.0.0.1:1 3\n  }\n}\n",
+    );
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    let count = |t: &fulcrum_runtime::ProxyTarget| {
+        let mut hits = [0usize; 3];
+        for _ in 0..N {
+            hits[t.pick_index_by(None).unwrap()] += 1;
+        }
+        hits
+    };
+    // 摘之前：3:1:1（总权重 5）。★ 先证明这一半成立，否则下面的对比说明不了什么。
+    assert_eq!(count(t), [60, 20, 20]);
+    // 把**权重最大的那个**判死。
+    t.upstreams[0].set_healthy(false);
+    // 之后：总权重是 2 而不是 5 ⇒ 剩下两个严格 1:1，**一次都不落空**。
+    assert_eq!(count(t), [0, 50, 50]);
+}
+
+/// `least_conn` 认权重：比的是 `inflight / weight`。
+#[test]
+fn least_conn_比的是_inflight_除以权重() {
+    let r = rt(
+        "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 {\n    lb_policy least_conn\n    weight 10.0.0.2:2 3\n  }\n}\n",
+    );
+    let h = no_headers();
+    let t = proxy_of(&r, &Req::new("a.com", "/"), &h);
+    // 两边都在飞 3 条：3/1 = 3 对 3/3 = 1 ⇒ 取权重大的那个。
+    for _ in 0..3 {
+        t.upstreams[0].acquire();
+        t.upstreams[1].acquire();
+    }
+    assert_eq!(t.pick_index_by(None), Some(1));
+    // 比值相等（1/1 与 3/3）⇒ 平票，取**下标最小**。
+    t.upstreams[0].release();
+    t.upstreams[0].release();
+    assert_eq!(
+        (t.upstreams[0].inflight(), t.upstreams[1].inflight()),
+        (1, 3)
+    );
+    assert_eq!(t.pick_index_by(None), Some(0));
+}
+
+/// ★ ★ `least_conn` 的比较**不许走浮点**。
+///
+/// ⚠ 判据挑的是一对 `f64` **分不开、而整数分得开**的数：`2⁵³` 与 `2⁵³ + 1`
+/// 在 `f64` 里是同一个数 ⇒ 一个改用浮点的实现会在这里判反。
+#[test]
+fn least_conn_的比较不许走浮点() {
+    let a = 1usize << 53;
+    assert!(
+        less_loaded(a, 1, a + 1, 1),
+        "2⁵³ 比 2⁵³+1 更空 —— 整数比得出来，浮点比不出来"
+    );
+    assert!(!less_loaded(a + 1, 1, a, 1));
+    // 反证这一对数**确实**能咬到浮点：它们在 f64 里连位模式都一模一样
+    //   ⇒ 任何走浮点的比较都分不开它们，于是上面那条断言会判反。
+    assert_eq!(
+        (a as f64).to_bits(),
+        ((a + 1) as f64).to_bits(),
+        "这一对数在 f64 里应当是同一个数，否则这条判据钉不住任何东西"
+    );
+    // 乘上权重也不许溢出：`inflight` 是 usize，乘 65535 会把 u64 撑爆
+    // （debug 下 panic、release 下静默回绕成「这个上游永远被选中」）。
+    assert!(less_loaded(usize::MAX - 1, 65_535, usize::MAX, 65_535));
+}
+
 // ── 构建期校验：DSL 层查不到、而结构化层是公开入口 ──────────────────────────
+
+/// ⚠ 权重的值域在 DSL 那边由 `FUL-DSL-0040` 挡、在 JSON 那边由 `UpstreamSpec`
+/// 的反序列化挡，而一份**在进程里手搓**的结构化配置两道都不经过（G11）。
+/// ★ 权重 0 的表现不是报错而是**这台机器永远不被选中**，静默。
+#[test]
+fn 结构化层写进一个越界权重是构建期错误() {
+    let o = compile_str("t.Fulcrumfile", "a.com {\n  reverse_proxy 10.0.0.1:1\n}\n");
+    let mut cfg = o.config.expect("夹具应当能编译");
+    let mut patched = false;
+    for s in &mut cfg.sites {
+        for st in &mut s.chain {
+            if let fulcrum_config::model::StepBody::ReverseProxy { upstreams, .. } = &mut st.body {
+                upstreams[0].weight = 0;
+                patched = true;
+            }
+        }
+    }
+    assert!(patched, "夹具里应当有一条 reverse_proxy");
+    let errs = match Runtime::build(&cfg) {
+        Ok(_) => panic!("权重 0 应当在构建期被拒，却建起来了"),
+        Err(e) => e,
+    };
+    assert!(
+        errs.iter().any(|e| e.to_string().contains("权重")),
+        "报的不是权重那条：{errs:?}"
+    );
+}
 
 #[test]
 fn 坏的_cidr_在构建期报错() {

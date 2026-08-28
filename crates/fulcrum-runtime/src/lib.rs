@@ -67,13 +67,10 @@ pub const UNWIRED: &[(&str, &str)] = &[
         "passive_fail",
         "被动熔断不在 M1 清单上（G17 里它与健康检查是两件事）；等 M2 排期",
     ),
-    // ★ ★ **M2 批 N 任务 1**：DSL 写得出、结构化模型带得动、诊断挡得住三种写错法，
-    //   而 `pick_index_by` 还没有权重这一格 ⇒ 它现在正是这张表管的那个形状。
-    //   ⚠ 任务 2 接线时**必须同一笔**把这一行删掉（`tests/unwired_contract.rs` 两头都钉着）。
-    (
-        "weight",
-        "上游权重的调度那一半在批 N 任务 2 接；DSL 与结构化模型已就位",
-    ),
+    // ★ ★ **`weight` 在 M2 批 N 任务 2 销号**：四种 `lb_policy` 全部按累积权重挑
+    //   （[`weighted_slot`] / [`less_loaded`]），于是它不再是「DSL 认得、运行时不做」。
+    //   ⚠ 与它一起删掉的还有文档那句未接线清单里的 `weight`（`tests/unwired_contract.rs`
+    //   两个方向都钉着），以及子指令表那一行的收尾话。
 ];
 
 /// 负载均衡策略。
@@ -110,6 +107,14 @@ pub struct Upstream {
     ///
     /// ⚠ 它仍然是 **SNI 的来源**：上游走 https 时要拿域名去握手，不能拿 IP。
     pub addr: String,
+    /// **配置权重**（`weight` 子指令，裁决 R1/R3），值域
+    /// `[fulcrum_config::model::MIN_UPSTREAM_WEIGHT, MAX_UPSTREAM_WEIGHT]`，没写就是 1。
+    ///
+    /// ★ 私有 + [`Upstream::weight`] 取值，是为了让「调度实际用哪个权重」**只有一个出口**：
+    /// M2 批 N 任务 3 的临时覆盖层要让运维改过的权重盖过配置权重，那时改的是那个方法，
+    /// 而不是让每个调用点各自记得「先看覆盖层再看配置」——后者迟早漏一处，
+    /// 而漏掉的表现是「改了权重没生效」，不报错。
+    weight: u32,
     /// 解析好的地址。`None` = 还没解析出来，或上一次解析失败。
     ///
     /// ★ IP 字面量在 [`Runtime::build`] 里就填好了（那不需要 DNS，也不会变）；
@@ -133,6 +138,15 @@ pub struct Upstream {
 impl Upstream {
     pub fn inflight(&self) -> usize {
         self.inflight.load(Ordering::Relaxed)
+    }
+
+    /// 调度用的权重。
+    ///
+    /// ★ ★ **调度只从这里取权重**（[`ProxyTarget::pick_index_by`] 的四条分支都走它）。
+    /// M2 批 N 任务 3 的临时覆盖层就接在这一处：那时它返回「覆盖过的权重，没覆盖就是配置权重」，
+    /// 调用点一行都不用改。
+    pub fn weight(&self) -> u32 {
+        self.weight
     }
 
     /// 这个上游当前的**全部**候选地址。空 = 现在用不了。
@@ -290,7 +304,83 @@ pub fn probe_due(
     }
 }
 
+/// 在**累积权重**上落一个点：`pos` 先对总权重取模，再看它掉进第几段。
+///
+/// ★ ★ **这是裁决 R5 的全部内容**：加权轮询取「累积权重 + 游标」，
+/// ⛔ **不取平滑加权（smooth WRR）**。⚠ 代价写在明处：3:1 的落点是 `a a a b`
+/// 而不是 `a a b a`（**连发**）。换成平滑加权只是换这一个函数体，判据一条都不用改。
+///
+/// ★ ★ ★ **等权回归**：`weights` 全是 1 时，总权重就是 `weights.len()`，
+/// 每一段宽度都是 1 ⇒ 返回值**逐字等于 `pos % weights.len()`**，
+/// 也就是这一批之前四种策略各自那一行的原样。这条恒等式由
+/// `tests/routing.rs::等权时_weighted_slot_就是取模` 穷举钉住 ——
+/// 它是「这一批没有顺手改掉已经在生产上的行为」唯一可测的形式。
+///
+/// ⚠ ⚠ **`pos` 收 `usize` 不收 `u64`**：调用点此前写的是 `(x as usize) % n`，
+/// 收 `u64` 会在 32 位目标上与旧行为分家（`as usize` 会截断），
+/// 而那种分家在 64 位机上一辈子测不出来。
+///
+/// `weights` 为空时返回 0（调用方保证非空；这里不 panic 也不除零）。
+pub fn weighted_slot(pos: usize, weights: &[u32]) -> usize {
+    let total: usize = weights.iter().map(|w| *w as usize).sum();
+    if total == 0 {
+        // 走不到：可用集非空、且权重下界是 1（[`fulcrum_config::model::MIN_UPSTREAM_WEIGHT`]）。
+        // ⚠ 但「走不到」不该由一次除零来证明。
+        return 0;
+    }
+    let mut k = pos % total;
+    for (i, w) in weights.iter().enumerate() {
+        let w = *w as usize;
+        if k < w {
+            return i;
+        }
+        k -= w;
+    }
+    // 同样走不到（`k < total`）。取最后一格而不是 panic。
+    weights.len() - 1
+}
+
+/// `least_conn` 的比较：`a` 比 `b` **更空**吗（`inflight / weight` 更小）。
+///
+/// ★ ★ **交叉相乘，⛔ 不许有浮点**：`a.inflight * b.weight < b.inflight * a.weight`。
+/// 浮点在这里不是「精度差一点」而是**判反**——
+/// `tests/routing.rs::least_conn_的比较不许走浮点` 拿一对 `f64` 分不开、
+/// 而整数分得开的数钉住这一点。
+/// ⚠ 提升到 `u128`：`inflight` 是 `usize`（可到 2⁶⁴），乘 65535 会溢出 `u64`，
+/// 而溢出在 release 下是**静默回绕**，表现为「某个上游突然永远被选中」。
+///
+/// ★ **严格小于**：等值时**不换**，于是平票取**下标最小**的那个 —— 与这一批之前逐字相同。
+pub fn less_loaded(a_inflight: usize, a_weight: u32, b_inflight: usize, b_weight: u32) -> bool {
+    (a_inflight as u128) * (b_weight as u128) < (b_inflight as u128) * (a_weight as u128)
+}
+
+/// `ip_hash` 的取数：把客户端 IP 哈希成一个 64 位数。
+///
+/// ★ **纯函数、公开**（同 [`probe_due`] 的老规矩）：等权回归护栏要能把**今天的规则**
+/// （`hash % n`）逐字写在判据里，而那要求「取数」与「落点」分得开。
+/// 判据自己再实现一遍哈希是不行的——那就是第二份实现。
+pub fn ip_hash_source(ip: IpAddr) -> u64 {
+    let mut h = RandomStateless::default();
+    ip.hash(&mut h);
+    h.finish()
+}
+
 impl ProxyTarget {
+    /// `random` 的取数：由这条 `reverse_proxy` 的种子与一个游标值算一个 64 位数。
+    ///
+    /// ★ 理由同 [`ip_hash_source`]，只是种子在目标身上（构建期取一次）⇒ 它是个方法。
+    /// ⚠ 种子**每进程随机**，所以 `random` 的落点没有跨进程字面量可钉；
+    /// 等权回归护栏因此只能写成「同一个进程里，落点等于 `本函数(c) % n`」。
+    pub fn random_source(&self, cursor: u64) -> u64 {
+        // xorshift，种子在构建期取一次。不引 `rand`：这里要的是「大致均匀」，
+        // 不是密码学随机，而多一条依赖要按 G29 的整套流程养。
+        let mut x = self.seed ^ cursor.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        x ^= x >> 33;
+        x
+    }
+
     /// 选一个上游。返回 `None` = **一个可用的都没有**，调用方回 502。
     ///
     /// 筛子有两条：地址解析得出来，**且**主动健康检查没把它判死（见 [`HealthPolicy`]）。
@@ -337,17 +427,36 @@ impl ProxyTarget {
         if n == 0 {
             return None;
         }
+        // ★ ★ **权重只在可用集上算**（裁决 R4/R5）：被摘掉的上游连同它的权重一起出局。
+        //   ⚠ 顺序反过来（先按全表的总权重挑、再看挑中的能不能用）会让「按 3:1 分、
+        //   而那个 3 没在跑」变成 **3/4 的请求落空**——那正是「先筛再挑」这个顺序的全部意义。
+        //   下标与 `eligible` 一一对应，`weighted_slot` 返回的是**可用集里的第几个**。
+        let weights = || -> Vec<u32> {
+            eligible
+                .iter()
+                .map(|i| self.upstreams[*i].weight())
+                .collect()
+        };
         let slot = match self.policy {
-            LbPolicy::RoundRobin => self.cursor.fetch_add(1, Ordering::Relaxed) % n,
+            LbPolicy::RoundRobin => {
+                weighted_slot(self.cursor.fetch_add(1, Ordering::Relaxed), &weights())
+            }
             LbPolicy::LeastConn => {
-                // ★ 平票时取**下标最小**的那个，不取「第一个碰到的」——
+                // ★ 比的是 `inflight / weight`（[`less_loaded`]，整数交叉相乘）。
+                //   ★ 平票时取**下标最小**的那个，不取「第一个碰到的」——
                 //   后者依赖迭代顺序，读起来像一样，但一旦并行遍历就不确定了。
+                //   ⚠ 全部权重为 1 时它退化成「比 `inflight`」，与这一批之前逐字相同。
                 let mut best = 0usize;
-                let mut best_v = usize::MAX;
+                let mut best_load: Option<(usize, u32)> = None;
                 for (slot, i) in eligible.iter().enumerate() {
-                    let v = self.upstreams[*i].inflight();
-                    if v < best_v {
-                        best_v = v;
+                    let u = &self.upstreams[*i];
+                    let (v, w) = (u.inflight(), u.weight());
+                    let better = match best_load {
+                        None => true,
+                        Some((bv, bw)) => less_loaded(v, w, bv, bw),
+                    };
+                    if better {
+                        best_load = Some((v, w));
                         best = slot;
                     }
                 }
@@ -360,24 +469,15 @@ impl ProxyTarget {
                 // ⚠ **一个上游掉出可用集时，哈希映射会整体错位**（同 nginx）。
                 //   这是 `ip_hash` 与「可用性筛选」组合的固有性质，不是缺陷——
                 //   但要写下来：会话粘性在上游变动时**不保证保持**。
+                // ⚠ ⚠ **改权重是同一个性质**：总权重变了，落点整体错位（裁决 R4 明写代价）。
                 match client_ip {
-                    None => self.cursor.fetch_add(1, Ordering::Relaxed) % n,
-                    Some(ip) => {
-                        let mut h = RandomStateless::default();
-                        ip.hash(&mut h);
-                        (h.finish() as usize) % n
-                    }
+                    None => weighted_slot(self.cursor.fetch_add(1, Ordering::Relaxed), &weights()),
+                    Some(ip) => weighted_slot(ip_hash_source(ip) as usize, &weights()),
                 }
             }
             LbPolicy::Random => {
-                // xorshift，种子在构建期取一次。不引 `rand`：这里要的是「大致均匀」，
-                // 不是密码学随机，而多一条依赖要按 G29 的整套流程养。
                 let c = self.cursor.fetch_add(1, Ordering::Relaxed) as u64;
-                let mut x = self.seed ^ c.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-                x ^= x >> 33;
-                x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
-                x ^= x >> 33;
-                (x as usize) % n
+                weighted_slot(self.random_source(c) as usize, &weights())
             }
         };
         Some(eligible[slot])
@@ -1756,25 +1856,15 @@ impl Runtime {
                     StepBody::Tracing => {
                         used.insert("tracing");
                     }
-                    StepBody::ReverseProxy {
-                        passive, upstreams, ..
-                    } => {
+                    StepBody::ReverseProxy { passive, .. } => {
                         // ★ 批 11：`health_uri` 接上了，这一条删掉。
                         if passive.fail_threshold.is_some() {
                             used.insert("passive_fail");
                         }
-                        // ★ ★ 批 N 任务 1：`weight` 的 DSL 面与结构化模型就位、
-                        //   **调度还不认它**（任务 2 才接）⇒ 写了就报出来。
-                        // ⚠ ⚠ 判据是「有没有**非默认**权重」，不是「有没有写过 `weight`」：
-                        //   按 R2 的序列化契约，`weight 1` 与不写在结构化配置里**完全同形**，
-                        //   到这一层已经分不出来。★ 而那不是缺口 —— 全是 1 的调度与今天
-                        //   逐字相同，两种情形本来就没有任何行为差别，报出来才是假警告。
-                        if upstreams
-                            .iter()
-                            .any(|u| u.weight != fulcrum_config::model::DEFAULT_UPSTREAM_WEIGHT)
-                        {
-                            used.insert("weight");
-                        }
+                        // ★ ★ 批 N 任务 2：`weight` **接线了**（四种 `lb_policy` 全部按累积
+                        //   权重挑）⇒ 这里原先那一格连同 `UNWIRED` 里那一行一起删掉。
+                        //   ⚠ 留着就是一条假警告，而假警告会训练人忽略整张表
+                        //   （`dns_refresh` / `encode` / `health_uri` 都是这么翻的方向）。
                         // ★ 批 10：这里原先无条件报一条 `dns_refresh`
                         //   （它有默认值 30s，等于对每条 reverse_proxy 都承诺了定期重解析）。
                         //   现在它**接上了**，所以这一条删掉 —— 留着就是一条假警告，
@@ -2199,11 +2289,27 @@ fn build_step(
             }
             let mut ups = Vec::new();
             for spec in upstreams {
-                // ⚠ ⚠ **`spec.weight` 在这里被丢掉，这是有意的**（M2 批 N 任务 1）：
-                //   `weight` 现在只到 DSL 与结构化模型为止，调度那一半是任务 2 的活，
-                //   所以它登记在 [`UNWIRED`] 里、装载时会打出「写了但还没接线」。
-                //   ★ 任务 2 接线时改的就是这一处：权重要跟着进 `Upstream`。
                 let u = &spec.addr;
+                // ★ ★ **值域在这里再查一遍**（G11：结构化层是公开入口）：
+                //   DSL 那边 `FUL-DSL-0040` 挡过一次、`UpstreamSpec` 的反序列化也挡过一次，
+                //   而一份**在进程里手搓**的 `StructuredConfig` 两道都不经过。
+                //   ⚠ 权重 0 的表现不是报错而是**这台机器永远不被选中**，
+                //   全是 0 时更是连总权重都没有 —— 静默，且现场只看得到「流量不均」。
+                //   ⛔ 不在这里再写一个 `65535`：值域常量只有一份。
+                if !(fulcrum_config::model::MIN_UPSTREAM_WEIGHT
+                    ..=fulcrum_config::model::MAX_UPSTREAM_WEIGHT)
+                    .contains(&spec.weight)
+                {
+                    errors.push(BuildError::new(
+                        at,
+                        format!(
+                            "上游 `{u}` 的权重 {} 不在 [{}, {}] 内",
+                            spec.weight,
+                            fulcrum_config::model::MIN_UPSTREAM_WEIGHT,
+                            fulcrum_config::model::MAX_UPSTREAM_WEIGHT
+                        ),
+                    ));
+                }
                 // ★ 上游地址必须**在装载时**就能被解析成「主机 + 端口」。
                 //   `10.0.0.1:8080` / `backend:80`；缺端口按 transport 补默认。
                 match normalize_upstream(u, transport) {
@@ -2216,6 +2322,8 @@ fn build_step(
                             addr.parse::<std::net::SocketAddr>().into_iter().collect();
                         ups.push(Upstream {
                             addr,
+                            // ★ ★ 配置权重在这里进运行时（M2 批 N 任务 2，裁决 R4/R5）。
+                            weight: spec.weight,
                             resolved: std::sync::RwLock::new(literal),
                             inflight: AtomicUsize::new(0),
                             // ★ 初值健康。理由见 `Upstream::healthy` 上那张表。
@@ -2383,6 +2491,11 @@ fn build_l4_target(
                     addr.parse::<std::net::SocketAddr>().into_iter().collect();
                 ups.push(Upstream {
                     addr,
+                    // ★ ★ **L4 的上游权重恒为 1**（计划 §2 的 S2）：`l4` 块里没有
+                    //   `lb_policy` 的位置，也就没有权重的位置 —— 给一个用户写不出来的
+                    //   旋钮留一格默认值，与给它留接口是两回事。
+                    //   ⇒ 这条路上 `weighted_slot` 每一段宽度都是 1，落点与批 N 之前逐字相同。
+                    weight: fulcrum_config::model::DEFAULT_UPSTREAM_WEIGHT,
                     resolved: std::sync::RwLock::new(literal),
                     inflight: AtomicUsize::new(0),
                     healthy: std::sync::atomic::AtomicBool::new(true),

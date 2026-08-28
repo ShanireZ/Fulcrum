@@ -550,12 +550,21 @@ fn detail(body: &StepBody) -> String {
             ..
         } => format!(
             "  {} [{lb_policy}, dns_refresh {}s]",
-            // ⚠ ⚠ 只印地址，**不印权重**（M2 批 N 任务 1）：`plan` 说的是「实际会怎么跑」，
-            //   而权重的调度那一半还没接线（`UNWIRED` 里登记着）。在这里印出 `*3`
-            //   等于印一件今天不成立的事。★ 任务 2 接线时把它加进来。
+            // ★ ★ **权重印出来**（M2 批 N 任务 2）：`plan` 说的是「实际会怎么跑」，
+            //   而四种 `lb_policy` 现在全部按累积权重挑 ⇒ 权重就是「怎么跑」的一部分。
+            // ⚠ **权重为 1 的不加后缀**：1 是默认值（`DEFAULT_UPSTREAM_WEIGHT`），
+            //   给每个上游都缀一个 `*1` 会让绝大多数配置的 plan 输出无端变长，
+            //   而 `plan` 的读法是「与配置逐行对照」—— `*3` 只出现在真写了 `weight` 的地方，
+            //   正好指着那一行。★ 于是没配 `weight` 的配置，`plan` 输出**一个字节都不变**。
             upstreams
                 .iter()
-                .map(|u| u.addr.as_str())
+                .map(|u| {
+                    if u.weight == fulcrum_config::model::DEFAULT_UPSTREAM_WEIGHT {
+                        u.addr.clone()
+                    } else {
+                        format!("{}*{}", u.addr, u.weight)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" "),
             dns_refresh_ms / 1000
@@ -611,5 +620,47 @@ fn detail(body: &StepBody) -> String {
         //   ⚠ 编译期那条 `FUL-DSL-0037` 也会说同一件事 —— 两处都说，是因为
         //   `plan` 常常是唯一被读的那一个（诊断只在改配置那一刻出现一次）。
         StepBody::Metrics => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    /// 从一段 DSL 里取出那条 `reverse_proxy` 的 `plan` 明细行。
+    fn detail_of(dsl: &str) -> String {
+        let o = compile_str("t.Fulcrumfile", dsl);
+        assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+        let cfg = o.config.expect("夹具应当能编译");
+        for s in &cfg.sites {
+            for st in &s.chain {
+                if matches!(st.body, StepBody::ReverseProxy { .. }) {
+                    return detail(&st.body);
+                }
+            }
+        }
+        panic!("夹具里应当有一条 reverse_proxy");
+    }
+
+    /// ★ `plan` 说的是「实际会怎么跑」⇒ 权重接线之后**必须印出来**（M2 批 N 任务 2）。
+    /// ⚠ 任务 1 有意没印：那时调度还不认权重，印 `*3` 等于印一件不成立的事。
+    #[test]
+    fn plan_印出非默认的上游权重() {
+        let s = detail_of(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 {\n    weight 10.0.0.1:1 3\n  }\n}\n",
+        );
+        assert_eq!(
+            s,
+            "  10.0.0.1:1*3 10.0.0.2:2 [round_robin, dns_refresh 30s]"
+        );
+    }
+
+    /// ★ ★ 反向：一条 `weight` 都没写的配置，`plan` 那一行**一个字节都不变**。
+    /// ⚠ 少了这一条，一个给每个上游都缀 `*1` 的实现照样绿 —— 而那会让所有人的
+    /// `plan` 输出在这一批里无端漂移，而漂移本身没有任何东西会说。
+    #[test]
+    fn 没写_weight_的配置_plan_那一行逐字不变() {
+        let s = detail_of("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n");
+        assert_eq!(s, "  10.0.0.1:1 10.0.0.2:2 [round_robin, dns_refresh 30s]");
     }
 }

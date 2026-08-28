@@ -26,10 +26,8 @@ const EXPECTED: &[&str] = &[
     "on_demand",
     "tracing",
     "passive_fail",
-    // ★ ★ **M2 批 N 任务 1 加进来的**：`weight` 的 DSL 面与结构化模型就位，
-    //   而 `pick_index_by` 还不认权重。⚠ 任务 2 接线时**必须同一笔**把这一行删掉 ——
-    //   这道门两个方向都挡（留着 = 假警告；删了没接线 = 静默失效）。
-    "weight",
+    // ★ ★ **`weight` 在 M2 批 N 任务 2 销号**：它在任务 1 里进来（DSL 与结构化模型），
+    //   在任务 2 里离开（四种 `lb_policy` 全部按累积权重挑）。⚠ 两头都由这张表挡着。
     // ★ ★ **能力做完就销号**（`encode` / `log` / `l4` / `proxy_protocol_from` 都是这么离开的）。
     //   ⚠ ⚠ 而删掉一行的**同时**必须真的接线 —— 这道门的全部意义就在这里：
     //   「实现了但忘了更新清单」与「删了清单但没实现」**都过不去**。
@@ -93,7 +91,6 @@ fn 文档里那句未接线清单与_unwired_对得上() {
             //   写成「全局的 `proxy_protocol_from`」的话，② 会从文档里抠出裸的那个、
             //   在 `expected` 里找不到，于是**红在一个与事实相反的理由上**。
             "proxy_protocol_from" => "`proxy_protocol_from`",
-            "weight" => "`weight`",
             other => panic!(
                 "`{other}` 在 UNWIRED 里，而这条测试不知道它在文档那句里该写成什么。\
                  先在这里补上对照，再去文档里加 —— 顺序反过来的话，漏写没人看得见。"
@@ -123,6 +120,189 @@ fn 文档里那句未接线清单与_unwired_对得上() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+const DSL_DOC: &str = include_str!("../../../docs/architecture/dsl-reference.md");
+
+/// `dsl-reference.md` 里一张**子指令表**的一行。
+#[derive(Debug, PartialEq, Eq)]
+struct SubRow {
+    /// 第一格里的那些反引号名字。⚠ 一格里**可以有多个**
+    /// （`` `passive_fail` / `passive_window` `` 就是一行）。
+    names: Vec<String>,
+    /// 这一行的行文里提到 `UNWIRED` 了吗。
+    mentions_unwired: bool,
+}
+
+/// 抠出全部**子指令表**的数据行。
+///
+/// ★ 表的集合是**推导**出来的（表头第一格正好是「子指令」），⛔ 不是一张手写清单：
+/// 手写清单会在下一次新加一张子指令表时静静漏掉那一张，而漏掉的那一刻不红。
+fn sub_directive_rows(md: &str) -> Vec<SubRow> {
+    let mut out = Vec::new();
+    let mut in_table = false;
+    for line in md.lines() {
+        let t = line.trim();
+        if !t.starts_with('|') {
+            // 表以第一条非表格行为界。⚠ 不这样的话，紧跟其后的另一张表
+            //   （表头不是「子指令」的那种）会被当成同一张表接着读下去。
+            in_table = false;
+            continue;
+        }
+        let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+        if cells.first().copied() == Some("子指令") {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        // `|---|---|` 那一行。
+        if cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':'))
+        {
+            continue;
+        }
+        let first = cells.first().copied().unwrap_or("");
+        out.push(SubRow {
+            names: first
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .map(|s| s.to_string())
+                .collect(),
+            mentions_unwired: t.contains("UNWIRED"),
+        });
+    }
+    out
+}
+
+/// ★ ★ ★ **子指令表那一行也要与 [`UNWIRED`] 对得上，两个方向都钉住。**
+///
+/// # 这道门补的是一个**实测过的洞**
+///
+/// 批 N 任务 1 给 `dsl-reference.md` 的 `reverse_proxy` 子指令表加了 `weight` 一行，
+/// 行尾写着「现在只到配置层为止……调度还不认」。任务 1 实测：**把那一整行删掉，
+/// 没有任何门会红** —— `doc_contract.rs` 判的是「`` `weight` `` 在**整份文档里**
+/// 出现过没有」，而它当时同时出现在开头那句未接线清单里。
+/// ⇒ 那句收尾话在调度接上之后就是一句**假话**，而没有任何东西会提醒人改它。
+///
+/// # 判据
+///
+/// - ① **文档 → 清单**：子指令表里凡是行文提到 `UNWIRED` 的那一行，
+///   它第一格里的名字**必须**还在 [`UNWIRED`] 里 ⇒ 挡「接线了忘了改文档」。
+/// - ② **清单 → 文档**：[`UNWIRED`] 里凡是在子指令表里有行的那个名字，
+///   那一行**必须**提到 `UNWIRED` ⇒ 挡「文档说得像已经能用了、其实运行时不做」。
+///
+/// ⚠ ⚠ **②那一半才是这次漏掉的方向**（AGENTS.md 门禁纪律第二条：
+/// 「一条锚在**缺失**上的判据，每次那东西发布时都要重新锚定」）——
+/// ①只在文档里**还留着**那句话时才有活干，而它恰好会随着接线一条条哑掉。
+/// ⇒ 下面另有一条断言钉住「今天至少有一行真的提到 `UNWIRED`」，
+/// 否则①会在某一天变成一条空转的门，而空转的那一刻不红。
+#[test]
+fn 子指令表里的_unwired_字样与清单两个方向都对得上() {
+    let rows = sub_directive_rows(DSL_DOC);
+    // 先钉住「确实读到了东西」——比对在两侧都是空的时候也会给绿。
+    assert!(
+        rows.len() >= 25,
+        "只从子指令表里读出 {} 行，表格写法多半变了；本次比对不能采信",
+        rows.len()
+    );
+    // 而且读到的是**几张**表，不是只读了第一张。
+    for must in ["lb_policy", "zones", "output"] {
+        assert!(
+            rows.iter().any(|r| r.names.iter().any(|n| n == must)),
+            "子指令表里没读到 `{must}` —— 扫查器多半只读到了其中一张表"
+        );
+    }
+    let unwired: std::collections::BTreeSet<&str> = UNWIRED.iter().map(|(k, _)| *k).collect();
+
+    let mut problems: Vec<String> = Vec::new();
+    // ① 文档 → 清单
+    for r in &rows {
+        if r.mentions_unwired && !r.names.iter().any(|n| unwired.contains(n.as_str())) {
+            problems.push(format!(
+                "子指令表里 {:?} 那一行说自己在 UNWIRED 里，而 UNWIRED 里已经没有它了 —— \
+                 接线做完就要把那句收尾话改掉。过期的警告比过期的状态更危险。",
+                r.names
+            ));
+        }
+    }
+    // ② 清单 → 文档
+    for (k, _) in UNWIRED {
+        for r in &rows {
+            if r.names.iter().any(|n| n == k) && !r.mentions_unwired {
+                problems.push(format!(
+                    "`{k}` 还没接线，而子指令表里它那一行一个字都没说 —— \
+                     照着文档写配置的人会以为它能用。"
+                ));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+
+    // ★ ★ 最后钉住这道门**今天真的有活可干**：①那一半只在文档里还留着那句话时才生效。
+    //   ⚠ 没有这一条的话，某天最后一条未接线能力接完、文档里那几句一起删掉，
+    //   ①就变成一条空转的门 —— 而它会一直是绿的。
+    assert!(
+        rows.iter().any(|r| r.mentions_unwired),
+        "子指令表里现在一行都没提到 UNWIRED ⇒ 上面①那一半是空转的。\
+         若 UNWIRED 真的清空了，把这道门连同那张表一起销号；\
+         若没有，那就是文档漏了。"
+    );
+}
+
+/// ★ ★ 扫查器自证：一致时给绿，四种不一致各给红。
+///
+/// ⚠ 一个自己瞎了的扫查器照样会打印一份很像结论的报告 ——
+/// 这条教训在 `AGENTS.md` 与 `doc_contract.rs` 里各记着一遍。
+#[test]
+fn 子指令表扫查器能命中也能落空() {
+    const FIXTURE: &str = "\
+### `x` 的子块
+
+| 子指令 | 说明 |
+|---|---|
+| `a` | 平平无奇的一条 |
+| `b` / `b2` | 一格里两个名字，且这一行提到 UNWIRED |
+
+一段正文，表到此为止。
+
+| 指令 | 形式 |
+|---|---|
+| `c` | ⚠ 这不是子指令表，`c` 不该被读到（哪怕它提到 UNWIRED）|
+
+### `y` 的子块
+
+| 子指令 | 说明 |
+|---|---|
+| `d` | 第二张表也要读到 |
+";
+    let rows = sub_directive_rows(FIXTURE);
+    // ① 只读子指令表，且读全了两张。
+    let names: Vec<Vec<String>> = rows.iter().map(|r| r.names.clone()).collect();
+    assert_eq!(
+        names,
+        vec![
+            vec!["a".to_string()],
+            vec!["b".to_string(), "b2".to_string()],
+            vec!["d".to_string()],
+        ],
+        "读出来的行不对：{rows:?}"
+    );
+    // ② `UNWIRED` 字样按行认，不按整份文档认。
+    assert_eq!(
+        rows.iter().map(|r| r.mentions_unwired).collect::<Vec<_>>(),
+        vec![false, true, false]
+    );
+    // ③ 一格里有多个名字时**每一个**都算数（`passive_fail` / `passive_window` 就是这形状）。
+    assert!(rows[1].names.iter().any(|n| n == "b2"));
+    // ④ 表头与分隔行不当成数据行（否则「子指令」会被当成一条子指令）。
+    assert!(
+        !rows.iter().any(|r| r.names.is_empty()),
+        "分隔行或表头被当成数据行了：{rows:?}"
+    );
 }
 
 #[test]
@@ -296,24 +476,18 @@ fn 只报本次配置真的用到的那几条() {
         Vec::<&str>::new()
     );
 
-    // ★ ★ **批 N 任务 1**：配置里写了权重 ⇒ 装载时必须报「写了但还没接线」。
-    //   ⚠ 这一条不是想当然能过的：扫描是**按结构**走的，`weight` 不是 `StepBody` 上的
-    //   一个字段而是 `upstreams` 每一项里的一格 —— 少写这一格，一份配了权重的配置
-    //   会静静地按等权轮询跑，而装载日志一个字都不说。
+    // ★ ★ **批 N 任务 2 把这一条翻了个方向**（与 `dns_refresh` / `encode` / `health_uri`
+    //   那三次同款）：任务 1 里「写了 `weight` ⇒ 报未接线」，任务 2 接线之后
+    //   **写了权重的配置一条都不该报**。
+    //   ⚠ 留着旧期望的话，这道门会把一件已经做完的事继续报成没做 ——
+    //   而假警告会训练人忽略整张表。
     assert_eq!(
-        unwired_for("http://a.com {\n  reverse_proxy x:1 {\n    weight x:1 3\n  }\n}\n"),
-        vec!["weight"]
-    );
-    // 反向 ①：没写 `weight` ⇒ 不该报（否则每一条 reverse_proxy 都会挂上一条假警告）。
-    assert_eq!(
-        unwired_for("http://a.com {\n  reverse_proxy x:1 x:2\n}\n"),
+        unwired_for("http://a.com {\n  reverse_proxy x:1 x:2 {\n    weight x:1 3\n  }\n}\n"),
         Vec::<&str>::new()
     );
-    // 反向 ②：★ 显式写 `weight … 1` 也不报 —— 那不是漏报。
-    //   按 R2 的序列化契约，权重 1 在结构化配置里就是一个裸字符串，与不写**完全同形**；
-    //   而全是 1 的调度与今天逐字相同 ⇒ 报出来才是假警告。
+    // 没写 `weight` 的那条同样一条都不报。
     assert_eq!(
-        unwired_for("http://a.com {\n  reverse_proxy x:1 {\n    weight x:1 1\n  }\n}\n"),
+        unwired_for("http://a.com {\n  reverse_proxy x:1 x:2\n}\n"),
         Vec::<&str>::new()
     );
 

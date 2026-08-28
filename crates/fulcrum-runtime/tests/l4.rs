@@ -77,6 +77,36 @@ fn 纯tcp的块建出监听器并且ip字面量当场解析好() {
     assert_eq!(t.upstreams[0].dial_candidates().len(), 1);
 }
 
+/// ★ ★ **L4 那条路的上游权重恒为 1**（M2 批 N 任务 2，计划 §2 的 S2）。
+///
+/// `l4` 块里**没有 `lb_policy` 的位置**（dsl-reference §4.5），也就没有权重的位置。
+/// ⇒ 累积权重在这条路上每一段宽度都是 1，`pick_index_by` 退化成 `游标 % n` ——
+/// 与批 N 之前**逐字相同**。
+/// ⚠ 这条判据是「加权调度没有溢进 L4」唯一的结构性证明：`pick_index_by` 是**共用的**
+/// （HTTP 与 L4 同一份实现，见 `crates/fulcrum-server/src/l4.rs` 的模块注释），
+/// 所以「HTTP 那边改了、L4 这边没事」不是自动成立的。
+#[test]
+fn l4的上游权重恒为一而且轮转序列不变() {
+    let rt = build("l4 {\n  tcp :3306 {\n    proxy 10.0.0.5:3306 10.0.0.6:3306\n  }\n}\n").unwrap();
+    let ups = rt.all_upstreams();
+    assert_eq!(ups.len(), 2, "夹具里应当有两个 L4 上游");
+    for u in &ups {
+        assert_eq!(
+            u.weight(),
+            fulcrum_config::model::DEFAULT_UPSTREAM_WEIGHT,
+            "L4 上游 {} 的权重不是默认值",
+            u.addr
+        );
+    }
+    // 落点逐字不变：游标从 0 起，两个上游轮着来。
+    let t = rt.l4_listeners[0]
+        .target
+        .as_ref()
+        .expect("这份配置写了兜底 proxy");
+    let got: Vec<usize> = (0..6).map(|_| t.pick_index_by(None).unwrap()).collect();
+    assert_eq!(got, (0..6).map(|c| c % 2).collect::<Vec<_>>());
+}
+
 /// ★ ★ **L4 的上游必须出现在 `all_upstreams()` 里**，否则域名形式的 L4 上游
 /// 永远不会被解析、也不会被后台重解析 —— 而现场表现是「那个端口连上就断」，
 /// 配置、日志、健康检查全都正常。
