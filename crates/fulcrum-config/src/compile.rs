@@ -379,7 +379,8 @@ impl Cx<'_> {
             tls.mode = TlsMode::Off;
         }
 
-        let chain = self.chain(&chain_nodes, &matchers, Ctx::Request, true);
+        // ★ `guarded = false`：站点块顶层没有任何外层匹配器罩着。
+        let chain = self.chain(&chain_nodes, &matchers, Ctx::Request, true, false);
 
         if chain.is_empty() && error_handler.is_empty() {
             self.diags.push(
@@ -494,12 +495,19 @@ impl Cx<'_> {
     ///
     /// `sorted = true` 时按执行顺序表排序（站点块顶层、`handle` 的每个 arm）；
     /// `sorted = false` 时保持书写顺序（`route { … }` 内部——**G49 的逃生口**）。
+    ///
+    /// `guarded` = **外层容器已经带了匹配器**。★ 它只服务于 G116 那条诊断
+    /// （`metrics` 有没有被匹配器圈住），而那条诊断问的是「这一步会不会对
+    /// 任何人开着」——`handle @internal { metrics }` 里那一步自己没有匹配器，
+    /// ⚠ 但它显然是被圈住的。**只看这一步自己的匹配器就会把它误报成裸奔**，
+    /// 而一条稳定误报的诊断很快就没人看了。
     fn chain(
         &mut self,
         nodes: &[&Node],
         matchers: &BTreeMap<String, Matcher>,
         ctx: Ctx,
         sorted: bool,
+        guarded: bool,
     ) -> Vec<Step> {
         // ★ 所有 `handle` 合成**一个**互斥组，放在 `handle` 的表位上。
         //   它们分散写在各处也是同一组——这正是「互斥容器」的含义。
@@ -558,13 +566,13 @@ impl Cx<'_> {
 
             if d == ChainDirective::Handle {
                 handle_span.get_or_insert(node.name_span);
-                if let Some(arm) = self.handle_arm(node, matchers, ctx) {
+                if let Some(arm) = self.handle_arm(node, matchers, ctx, guarded) {
                     handle_arms.push(arm);
                 }
                 continue;
             }
 
-            if let Some(step) = self.step(d, node, matchers, ctx) {
+            if let Some(step) = self.step(d, node, matchers, ctx, guarded) {
                 steps.push((step, node.name_span));
             }
         }
@@ -598,8 +606,13 @@ impl Cx<'_> {
         node: &Node,
         matchers: &BTreeMap<String, Matcher>,
         ctx: Ctx,
+        guarded: bool,
     ) -> Option<HandleArm> {
         let matcher = self.matcher_ref(node, matchers);
+        // 这个分支自己带了匹配器 ⇒ 块里的每一步都被它罩着。
+        // ⚠ 用 `is_unconditional` 而不是 `matcher.is_some()`：`handle * { … }` 里那个 `*`
+        //   写出来是个匹配器、罩住的却是所有人 —— 与 `warn_unreachable` 同一条口径。
+        let guarded = guarded || !is_unconditional(&matcher);
         let Some(block) = &node.block else {
             self.diags.push(
                 Diagnostic::error(
@@ -631,7 +644,7 @@ impl Cx<'_> {
             .collect();
         Some(HandleArm {
             matcher,
-            steps: self.chain(&inner, matchers, ctx, true),
+            steps: self.chain(&inner, matchers, ctx, true, guarded),
         })
     }
 
@@ -646,9 +659,13 @@ impl Cx<'_> {
         node: &Node,
         matchers: &BTreeMap<String, Matcher>,
         ctx: Ctx,
+        guarded: bool,
     ) -> Option<Step> {
         let matcher = self.matcher_ref(node, matchers);
         let args = node.rest_args();
+        // 这一步身上有没有匹配器约束：自己写了一个，或者外层容器带着一个。
+        // ⚠ `*` 不算（见 `is_unconditional` 上那段）。
+        let guarded = guarded || !is_unconditional(&matcher);
 
         let body = match d {
             ChainDirective::Tracing => {
@@ -739,7 +756,7 @@ impl Cx<'_> {
                     .collect();
                 // ★ `sorted = false`：这就是逃生口本身。
                 StepBody::Route {
-                    steps: self.chain(&inner, matchers, ctx, false),
+                    steps: self.chain(&inner, matchers, ctx, false, guarded),
                 }
             }
             ChainDirective::Redir => {
@@ -800,6 +817,35 @@ impl Cx<'_> {
                     status,
                     body: args.get(1).map(|a| a.value.clone()),
                 }
+            }
+            // ── Prometheus 抓取端点（**M2 批 M**，G116）──────────────────────
+            ChainDirective::Metrics => {
+                self.expect_no_block(node, d);
+                if !args.is_empty() {
+                    // ⚠ 一个参数都不收。⇒ `metrics /x` 里那个 `/x` 走的是**行内匹配器**
+                    //   那条路（G50），压根到不了这里；到这里的都是真的多余参数。
+                    self.arity_error(node, "写法就是 `metrics`，它不收任何参数");
+                    return None;
+                }
+                if !guarded {
+                    self.diags.push(
+                        Diagnostic::warning(
+                            DiagCode::METRICS_UNGUARDED,
+                            node.name_span,
+                            "`metrics` 没有任何匹配器圈住",
+                        )
+                        .label("凡是连得到这个监听端口的人都能抓走全部指标")
+                        .help(
+                            "圈住来源，例如：`@internal remote_ip 10.0.0.0/8` \
+                             加上 `handle @internal { metrics }`",
+                        )
+                        .note(
+                            "G116：指标端点与业务共用监听器，这一条只能靠文档与诊断兜。\
+                             ⚠ 本诊断只判「一个匹配器都没有」——匹配器写得对不对判不动",
+                        ),
+                    );
+                }
+                StepBody::Metrics
             }
             ChainDirective::ReverseProxy => self.reverse_proxy(node, args, ctx),
             ChainDirective::FileServer => self.file_server(node, args),
@@ -1382,7 +1428,10 @@ impl Cx<'_> {
             })
             .collect();
         // ★ 块内一律按 `ErrorHandler` 上下文校验占位符——`{status}` 只在这里可用。
-        self.chain(&inner, matchers, Ctx::ErrorHandler, true)
+        // ⚠ `guarded = false`：`handle_errors` 是**按状态码**进来的，不是按匹配器 ——
+        //   它对「谁能连到这个端口」一个字都没说。★ 把它算成一层保护，等于让
+        //   一句 `handle_errors { metrics }` 悄悄躲开 G116 那条诊断。
+        self.chain(&inner, matchers, Ctx::ErrorHandler, true, false)
     }
 
     // ── L4（M2 自研，M1 编译成回落）─────────────────────────────────────────

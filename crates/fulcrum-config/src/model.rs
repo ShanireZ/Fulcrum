@@ -337,6 +337,16 @@ pub enum StepBody {
         status: u16,
         body: Option<String>,
     },
+    /// Prometheus 抓取端点（**M2 批 M**，G116）。**一个字段都没有。**
+    ///
+    /// ★ 它是**终结类**（序号 75），不是站点级属性也不是独立监听器：
+    /// 访问控制、TLS、访问日志、压缩因此全部复用现有机制，
+    /// 而 G14「管理面只绑 Unix socket」的口径一个字不动 —— 指标面不属于管理面。
+    ///
+    /// ⚠ 结构化配置是**公开入口**（G11），所以这个无字段变体的 JSON 形状也是契约：
+    /// 内部标签制 ⇒ 它序列化成 `{"order":75,"matcher":null,"directive":"metrics"}`,
+    /// **没有第二个键**。★ 与 `Tracing` 同款，不是新写法。
+    Metrics,
     ReverseProxy {
         upstreams: Vec<String>,
         lb_policy: String,
@@ -401,6 +411,7 @@ impl StepBody {
             StepBody::Route { .. } => "route",
             StepBody::Redir { .. } => "redir",
             StepBody::Respond { .. } => "respond",
+            StepBody::Metrics => "metrics",
             StepBody::ReverseProxy { .. } => "reverse_proxy",
             StepBody::FileServer { .. } => "file_server",
         }

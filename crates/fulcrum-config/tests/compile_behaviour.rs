@@ -1187,3 +1187,110 @@ fn 敏感头的诊断指着那个名字_不是指着整个块() {
     let at = &src[d.span.start..d.span.end];
     assert_eq!(at, "Cookie", "诊断指着的是「{at}」，不是那个敏感头本身");
 }
+
+// ── M2 批 M：`metrics` 是站点块里的终结指令（G116）─────────────────────────────
+
+#[test]
+fn metrics进链且夹在respond与reverse_proxy之间() {
+    // ★ 三条**倒着写**，让排序有活干：只断言「编译得过」的话，序号写成 65 或 85
+    //   照样全绿，而那时 `metrics` 已经跑在错误的位置上了（G49 点名的那个形状）。
+    // ⚠ 三条都带匹配器 —— 否则第一条终结类会把后面两条挡死，测的就不是排序了。
+    let cfg = ok(
+        "http://a.com {\n  reverse_proxy /api 127.0.0.1:3000\n  metrics /metrics\n  \
+         respond /x 200\n}\n",
+    );
+    let steps: Vec<(u16, &str)> = cfg.sites[0]
+        .chain
+        .iter()
+        .map(|s| (s.order, s.body.directive_name()))
+        .collect();
+    assert_eq!(
+        steps,
+        vec![(70, "respond"), (75, "metrics"), (80, "reverse_proxy")]
+    );
+    assert!(matches!(cfg.sites[0].chain[1].body, StepBody::Metrics));
+}
+
+#[test]
+fn metrics不收参数() {
+    // ⚠ `abc` 不以 `/` `@` `*` 开头 ⇒ 它到不了行内匹配器那条路，是真的多余参数。
+    let cs = codes("http://a.com {\n  metrics abc\n}\n");
+    assert!(
+        cs.contains(&DiagCode::BAD_ARITY),
+        "`metrics abc` 该报 arity 错误，实际：{cs:?}"
+    );
+}
+
+#[test]
+fn 没有匹配器的metrics要出警告() {
+    let o = compile_str("t.Fulcrumfile", "http://a.com {\n  metrics\n}\n");
+    // ★ 是 **warning** 不是 error：开在内网可信段上的指标端点是正当配置。
+    assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+    let d = o
+        .diagnostics
+        .items()
+        .iter()
+        .find(|d| d.code == DiagCode::METRICS_UNGUARDED)
+        .expect("裸 `metrics` 该出 G116 那条警告");
+    // 文案要说出后果，不是只说「建议加个匹配器」。
+    assert!(d.label.contains("指标"), "{}", d.label);
+}
+
+#[test]
+fn 被匹配器圈住的metrics不出警告() {
+    // ★ ★ **反证，两个方向缺一不可。** ⚠ 少了这一条，把诊断写成「见 `metrics` 就报」
+    //   也能让上面那条全绿 —— 而一条恒报的警告等于没有警告。
+    //   ⇒ 三种圈法各走一遍：外层容器带匹配器、这一步自己带、行内路径匹配器。
+    for src in [
+        // 外层 `handle` 带匹配器（文档里印的就是这一种）
+        "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  handle @i {\n    metrics\n  }\n  \
+         respond 403\n}\n",
+        // 这一步自己带命名匹配器
+        "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  metrics @i\n}\n",
+        // 行内路径匹配器（G50）
+        "http://a.com {\n  metrics /metrics\n}\n",
+        // 外层 `route` 带匹配器（保序逃生口里也算圈住了）
+        "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  route @i {\n    metrics\n  }\n}\n",
+    ] {
+        let o = compile_str("t.Fulcrumfile", src);
+        assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+        let hit: Vec<DiagCode> = o
+            .diagnostics
+            .items()
+            .iter()
+            .map(|d| d.code)
+            .filter(|c| *c == DiagCode::METRICS_UNGUARDED)
+            .collect();
+        assert!(hit.is_empty(), "这一份不该出警告：\n{src}");
+    }
+}
+
+#[test]
+fn 圈不住的三种写法照样要出警告() {
+    // ⚠ ⚠ 判据不是「外面套了个容器」，而是「**那一层真的带了匹配器**」。
+    //   ★ 少了这几条，一个「见到 handle 就算圈住了」的实现会让上面那条反证全绿，
+    //   而它给的是一句「已保护」的假话 —— 比没有诊断更坏。
+    for (what, src) in [
+        // ① `handle` 的兜底分支：对所有人都开着，与裸写一模一样
+        (
+            "兜底 handle 分支",
+            "http://a.com {\n  handle {\n    metrics\n  }\n}\n",
+        ),
+        // ② `route` 没带匹配器
+        (
+            "裸 route",
+            "http://a.com {\n  route {\n    metrics\n  }\n}\n",
+        ),
+        // ③ ★ `*` 写出来是个匹配器、罩住的却是所有人（与 `warn_unreachable` 同一口径）
+        ("显式 `*`", "http://a.com {\n  metrics *\n}\n"),
+    ] {
+        let o = compile_str("t.Fulcrumfile", src);
+        assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+        let hit = o
+            .diagnostics
+            .items()
+            .iter()
+            .any(|d| d.code == DiagCode::METRICS_UNGUARDED);
+        assert!(hit, "{what} 不构成保护，该出警告：\n{src}");
+    }
+}

@@ -141,6 +141,7 @@ chain_directives! {
     56 Route        "route"         Container  SelfBuilt,
     60 Redir        "redir"         Terminal   SelfBuilt,
     70 Respond      "respond"       Terminal   SelfBuilt,
+    75 Metrics      "metrics"       Terminal   SelfBuiltM2,
     80 ReverseProxy "reverse_proxy" Terminal   SelfBuilt,
     90 FileServer   "file_server"   Terminal   SelfBuiltM2,
 }
@@ -410,7 +411,11 @@ pub const fn subs_of(d: ChainDirective) -> Option<&'static [SubSpec]> {
         | ChainDirective::Rewrite
         | ChainDirective::Encode
         | ChainDirective::Redir
-        | ChainDirective::Respond => None,
+        | ChainDirective::Respond
+        // ★ `metrics` 一个子指令都没有，也**不打算**有：抓取端要什么由抓取端决定，
+        //   而「在配置里挑要暴露哪几个族」会让两次抓取的字段集由配置说了算 ——
+        //   ⚠ 那种缺口的现场是「Grafana 上这条线断了」，而服务本身一切正常。
+        | ChainDirective::Metrics => None,
     }
 }
 
@@ -645,6 +650,28 @@ mod tests {
         // 否则 403 恒胜，handle 块永远进不去——而配置能装载、请求能通、日志一行不报。
         assert!(ChainDirective::Handle.order() < ChainDirective::Respond.order());
         assert!(ChainDirective::Route.order() < ChainDirective::Respond.order());
+    }
+
+    /// `metrics` 的三项身份（**M2 批 M**，G116）。
+    ///
+    /// ⚠ 上面那两条自测（序号严格递增、终结类全排在中间件与容器之后）**已经自动
+    /// 覆盖了新加的这一行**，所以这里只钉它自己的三项：认得出、序号 75、终结类。
+    /// ★ 序号 75 是契约的一部分（它必须夹在 `respond` 70 与 `reverse_proxy` 80 之间）
+    /// —— 写死 70 < 75 < 80 而不是只写 `== 75`，是因为**光有等号看不出它排在哪**：
+    /// 有朝一日 `respond` 挪到 76，等号照样绿，而那时 `metrics` 已经跑在它前面了。
+    #[test]
+    fn metrics是序号75的终结指令() {
+        assert_eq!(
+            ChainDirective::from_name("metrics"),
+            Some(ChainDirective::Metrics)
+        );
+        assert_eq!(ChainDirective::Metrics.order(), 75);
+        assert_eq!(ChainDirective::Metrics.kind(), Kind::Terminal);
+        assert_eq!(ChainDirective::Metrics.owner(), Owner::SelfBuiltM2);
+        assert!(ChainDirective::Respond.order() < ChainDirective::Metrics.order());
+        assert!(ChainDirective::Metrics.order() < ChainDirective::ReverseProxy.order());
+        // 它不收子块 —— 与 `respond` / `redir` 同一档。
+        assert!(subs_of(ChainDirective::Metrics).is_none());
     }
 
     #[test]

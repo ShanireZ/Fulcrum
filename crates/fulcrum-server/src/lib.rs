@@ -551,6 +551,34 @@ impl FulcrumApp {
                 );
                 write_with_headers(session, *code, None, extra).await;
             }
+            // ── Prometheus 抓取端点（M2 批 M，G116）────────────────────────
+            //
+            // ★ 走的是 `Outcome::Redirect` 那条一模一样的路：先摆自己那个头，
+            //   再让站点的 `header` 指令叠上去，最后交给 `write_with_headers`。
+            //   ⚠ **不新开一条写响应的路** —— 另起一条的代价不是重复代码，
+            //   而是访问日志的 `resp_size`、压缩、头处理三件事会在这一条路上
+            //   与别的终结类**慢慢长得不一样**，而不一样的那天没有任何东西会说。
+            // ⚠ `Content-Type` 摆在 `collect_ops` **之前**：写了
+            //   `header Content-Type …` 的人是在明确要求换掉它，而
+            //   `write_with_headers` 里那个 `insert_header` 是覆盖语义。
+            Outcome::Metrics => {
+                let rc = resp_ctx(200, None);
+                let mut extra: Vec<(String, String)> = vec![(
+                    "Content-Type".into(),
+                    // ⚠ 这一串是 exposition 格式的版本标识，**不是随便写的 MIME**：
+                    //   抓取端按它决定用哪个解析器。
+                    "text/plain; version=0.0.4; charset=utf-8".into(),
+                )];
+                collect_ops(
+                    routed.response_headers.iter().copied(),
+                    &ctx,
+                    &rc,
+                    &routed.captures,
+                    started,
+                    &mut extra,
+                );
+                write_with_headers(session, 200, Some(metrics::render()), extra).await;
+            }
             Outcome::NoRouteMatch => {
                 let status = rt.defaults.no_route_match;
                 self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
@@ -1393,6 +1421,8 @@ fn outcome_name(o: &Outcome<'_>) -> &'static str {
         Outcome::Redirect { .. } => "redir",
         Outcome::Proxy(_) => "reverse_proxy",
         Outcome::FileServer(_) => "file_server",
+        // ★ 闭集的**第 8 个值**（M2 批 M，G116）。
+        Outcome::Metrics => "metrics",
         Outcome::NoRouteMatch => "error",
     }
 }

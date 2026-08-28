@@ -92,6 +92,7 @@ fn outcome_name(o: &Outcome<'_>) -> &'static str {
         Outcome::Redirect { .. } => "redirect",
         Outcome::Proxy(_) => "proxy",
         Outcome::FileServer(_) => "file_server",
+        Outcome::Metrics => "metrics",
         Outcome::NoRouteMatch => "no_route",
     }
 }
@@ -1164,4 +1165,32 @@ fn 容器里面的目标也要被扫到() {
         .filter(|t| t.health.is_some())
         .count();
     assert_eq!(with_health, 2);
+}
+
+// ── M2 批 M：`metrics` 终结指令（G116）───────────────────────────────────────
+
+#[test]
+fn metrics终结在自己的表位上() {
+    // ★ 两件事一起验，因为它们只有一起成立才有意义：
+    //   ① `metrics` 真的终结（`Outcome::Metrics`）；
+    //   ② 它排在第 75 步 ⇒ **书写在前面的 `respond 403` 先跑**（顺序表 70 < 75），
+    //      于是「圈不住的人拿到 403」这件事是由顺序表保证的，不是靠书写顺序。
+    let r = rt(
+        "a.com {\n  @i remote_ip 10.0.0.0/8\n  handle @i {\n    metrics\n  }\n  \
+         respond 403\n}\n",
+    );
+    let h = no_headers();
+    let inside = route(&r, &Req::new("a.com", "/m").ip("10.1.2.3"), &h).unwrap();
+    assert_eq!(outcome_name(&inside.outcome), "metrics");
+
+    let outside = route(&r, &Req::new("a.com", "/m").ip("203.0.113.9"), &h).unwrap();
+    assert_eq!(
+        outcome_name(&outside.outcome),
+        "respond",
+        "圈外的请求该落到兜底 respond 上"
+    );
+    let Outcome::Respond { status, .. } = outside.outcome else {
+        unreachable!()
+    };
+    assert_eq!(status, 403);
 }

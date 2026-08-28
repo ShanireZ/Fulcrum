@@ -596,5 +596,10 @@ fn detail(body: &StepBody) -> String {
             },
         ),
         StepBody::Tracing => String::new(),
+        // ★ `metrics` 没有参数可打，但**它有没有被匹配器圈住**恰恰是要看的那件事，
+        //   而那一格由 `render_step` 统一打（每一步的匹配器都印在名字后面）。
+        //   ⚠ 编译期那条 `FUL-DSL-0037` 也会说同一件事 —— 两处都说，是因为
+        //   `plan` 常常是唯一被读的那一个（诊断只在改配置那一刻出现一次）。
+        StepBody::Metrics => String::new(),
     }
 }

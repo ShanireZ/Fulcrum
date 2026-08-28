@@ -211,6 +211,7 @@ http://example.com {
 | 56 | `route` | 容器 | M1 自研 |
 | 60 | `redir` | 终结 | M1 自研 |
 | 70 | `respond` | 终结 | M1 自研 |
+| 75 | `metrics` | 终结 | M2 自研 |
 | 80 | `reverse_proxy` | 终结 | M1 自研 |
 | 90 | `file_server` | 终结 | M2 自研 |
 
@@ -275,6 +276,43 @@ respond 403                            # 兜底
 | `respond` | `respond [matcher] <status> [body]` | **M1 自研** |
 | `redir` | `redir [matcher] <to> [code]`，默认 302 | **M1 自研** |
 | `file_server` | `file_server [matcher] [browse] { root … }` | **M2 自研**（批 F）|
+| `metrics` | `metrics [matcher]` —— **不收任何参数、没有子块** | **M2 自研**（批 M）|
+
+### `metrics`：Prometheus 抓取端点（G116）
+
+```text
+metrics.example:9443 {
+    tls /etc/fulcrum/m.crt /etc/fulcrum/m.key
+    @internal remote_ip 10.0.0.0/8
+    handle @internal { metrics }
+    respond 403
+}
+```
+
+它是**普通站点块里的终结指令**，不是独立监听器、也不是站点级属性。
+⇒ 访问控制（匹配器）、TLS、访问日志、压缩**全部复用现有机制**，
+而 [G14「管理面只绑 Unix socket」的口径一个字不动](/platform/security-baseline.md)
+—— 指标面不属于管理面。响应是 `200`，`Content-Type: text/plain; version=0.0.4; charset=utf-8`。
+
+⚠ ⚠ **代价说在明处：指标与业务共用监听器，匹配器写错就会把指标暴露出去。**
+这一条**架构兜不住，只能靠文档与诊断兜** —— 上面这段就是文档那一半，
+`FUL-DSL-0037` 是诊断那一半：`metrics` 身上**一个匹配器都没有**时报一条 warning
+（`handle` / `route` 那层带了匹配器也算；⚠ 兜底分支与显式 `*` **不算**）。
+★ 它**只判「一个都没有」**：匹配器写得对不对（网段圈没圈对、这台机器摆在谁后面）
+编译期两样都不知道，而一条报「已保护」的假话比没有诊断更坏。
+
+⚠ 它排在 **75**，也就是 `respond` 之后。所以 `metrics @internal` 与一条兜底 `respond 403`
+**并排写在站点块顶层是错的** —— 403 在第 70 步先终结。示例里那个 `handle`（第 55 步）
+不是排版习惯，是唯一正确的写法；写错时 `FUL-DSL-0028` 会说出来。
+
+★ 访问日志 `outcome` 那个闭集因此**从 7 个值变成 8 个**，多的是 `metrics`
+（`reverse_proxy` · `file_server` · `respond` · `redir` · `error` · `no_site_match` ·
+`acme_http01` · **`metrics`**）。闭集靠数据面一个穷尽 `match` 守着：加一种就编不过。
+
+⚠ 结构化配置是**公开入口**（G11），所以它的 JSON 形状也是契约：这一步序列化成
+`{"order":75,"matcher":…,"directive":"metrics"}`，**没有第二个键**。
+
+指标清单、每一格的基数上界与取数点见[可观测性](/architecture/observability.md)。
 
 ### `reverse_proxy` 的子块
 

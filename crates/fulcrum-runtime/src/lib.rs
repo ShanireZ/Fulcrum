@@ -475,6 +475,12 @@ enum BodyRt {
         status: u16,
         body: Option<Template>,
     },
+    /// Prometheus 抓取端点（**M2 批 M**，G116）。**没有任何运行时状态。**
+    ///
+    /// ★ 指标注册表是**进程级**的（在 `fulcrum-server` 那一侧），不挂在运行时图上 ——
+    /// ⚠ 挂上去的话，一次 `POST /load` 就会把计数器整个换掉，
+    /// 而 counter 归零在抓取端读起来与「进程重启过」一模一样。
+    Metrics,
     Proxy(ProxyTarget),
     /// 自研静态文件服务（M2 批 F）。
     FileServer(FileServerRt),
@@ -989,6 +995,11 @@ pub enum Outcome<'r> {
     Proxy(&'r ProxyTarget),
     /// 自研静态文件服务（M2 批 F）。数据面按 [`FileServerRt`] 发文件。
     FileServer(&'r FileServerRt),
+    /// Prometheus 抓取端点（**M2 批 M**，G116）。数据面渲染当前指标并 200 发出去。
+    ///
+    /// ⚠ 它让访问日志 `outcome` 那个闭集**多第 8 个值 `metrics`**。
+    /// ★ 闭集是靠数据面那个穷尽 `match` 守着的：加这一种就编不过。
+    Metrics,
     /// 站点内没有任何路由匹配 → [`Defaults::no_route_match`]。
     NoRouteMatch,
 }
@@ -1927,6 +1938,11 @@ impl<'r, 'q> Walk<'r, 'q> {
                     self.outcome = Some(Outcome::FileServer(fs));
                     return true;
                 }
+                BodyRt::Metrics => {
+                    self.terminal_order = Some(step.order);
+                    self.outcome = Some(Outcome::Metrics);
+                    return true;
+                }
             }
         }
         self.outcome.is_some()
@@ -2087,6 +2103,7 @@ fn build_step(
             status: *status,
             body: body.as_deref().map(Template::parse),
         },
+        StepBody::Metrics => BodyRt::Metrics,
         StepBody::ReverseProxy {
             upstreams,
             lb_policy,

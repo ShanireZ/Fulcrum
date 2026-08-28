@@ -272,7 +272,10 @@ fn 文档里印出来的示例必须真能编译() {
     // ★ ★ 这一条是**契约测试里最直接的一个**：文档里那份配置是给人抄的，
     //   抄下来编不过就是文档在骗人。而它同时还是 G49 那条容器排位的活判据——
     //   §一的示例只有在 `handle` 跑在 `respond` 之前时才成立。
-    for heading in ["# 一、总览", "## 4.5 顶层非站点块"] {
+    // ★ `### \`metrics\``（批 M）：那一份示例正是 G116 教人怎么把指标圈起来的那一份，
+    //   ⚠ 而它同时是**唯一**印出「`handle` 必须罩住 `metrics`」的地方 ——
+    //   抄下来编不过，等于把唯一那份正确写法印错了。
+    for heading in ["# 一、总览", "## 4.5 顶层非站点块", "### `metrics`"] {
         let src = code_block_after(DOC, heading);
         assert!(src.len() > 40, "{heading} 抽出来的代码块太短：{src:?}");
         let o = fulcrum_config::compile_str("docs/architecture/dsl-reference.md", &src);

@@ -71,7 +71,7 @@ sources:
 | `remote_port` | number | 同上 |
 
 `outcome` 的取值是**闭集**：`reverse_proxy` · `file_server` · `respond` · `redir` ·
-`error` · `no_site_match` · `acme_http01`。
+`error` · `no_site_match` · `acme_http01` · `metrics`（**第 8 个，批 M / G116**，见下）。
 ★ 闭集意味着**新增一种终结方式必须来改这里**，而不是悄悄多出一个没人认得的值。
 （落法：数据面从 `Outcome` 那个枚举**一次算出来**，穷尽 `match` ⇒ 加一种就编不过。）
 
