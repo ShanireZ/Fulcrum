@@ -1,0 +1,754 @@
+#!/usr/bin/env bash
+# Prometheus 指标端到端（**M2 批 M**；G116–G121，裁决 R1–R8）。
+#
+# ★ ★ 为什么它是**独立一格**：与 `tests/log/` 同一个理由 —— 它验的不是「响应对不对」，
+#   而是**响应之外的那份计数**。它有自己的格式契约（text exposition 0.0.4）、
+#   自己的访问控制（`metrics` 是站点块里的终结指令，序号 75）、自己的基数上界。
+#   ⚠ 混进 `tests/serve/run.sh` 的话，一条指标断言红了，读日志的人会先去看路由。
+#
+# ★ ★ ★ **判据挂在「谁在数、数出来的和别处对不对得上」，不挂在「抓到了东西」**：
+#   一个把整份指标硬编码成字符串的实现，能通过每一条只问「正文里有没有那几个字」的判据。
+#   ⇒ 本格的重量全在**增量**与**交叉对照**上：
+#     · 增量：抓两次做差（⚠ 计数发生在 `Record::finish`，即**响应写完之后**
+#       ⇒ 第 N 次抓取看到的是前 N−1 次的量）；
+#     · 交叉对照：同一批请求，指标那一侧的增量必须与**访问日志**那一侧的新增行数对得上。
+#
+# 端口（★ 与其余场景全都错开，见 AGENTS.md 那张端口表）：
+#   9920 站点 A —— **两条地址** `a.example` / `a2.example`（★ G121 的正面判据要第二条）；
+#        配 `log { output file … level info }`（一致性门要它记全部）；
+#        `@internal { remote_ip 127.0.0.0/8 · path /metrics }` + `handle @internal { metrics }`
+#        + 兜底 `respond 403`。
+#   9921 站点 B —— `b.example`，**整块里一个 `metrics` 都没有**（反向判据 ① 要它）。
+#   9921 站点 C —— `c.example`，`@outsider remote_ip 10.0.0.0/8` + `handle @outsider { metrics }`
+#        + 兜底 `respond 403`。★ 我们打不进 10.0.0.0/8 ⇒ 拿到的是 403 而不是指标
+#        （访问控制的**反向**那一半，在容器里真的造得出来的形状）。
+#
+# ⚠ ⚠ **`@internal` 里那条 `path /metrics` 是有意加的，不是从 brief 抄漏的**：
+#   只写 `remote_ip 127.0.0.0/8` 的话，本格所有请求都来自 127.0.0.1 ⇒ 站点 A 上
+#   **任何路径都会命中 `metrics`**，兜底的 `respond 403` 一次也走不到 ——
+#   而一致性门要求同一个站点上至少出现 `metrics` 与 `respond` 两种 `outcome`。
+#   ★ 顺带：它让「站点 B 上打**同一路径**」这句话有了确定的所指。
+#
+# ⚠ 三个站点全部写 `http://` ⇒ **不触发自动 HTTPS、不合成 `:80` 重定向站点**，
+#   本场景与那个共享端口无关。★ 但 cleanup 仍然断言 9920/9921 已经还回去
+#   （照 `tests/quic-relay/run.sh`：判据挂在「端口还回去了没有」，不挂在「进程还在不在」）。
+
+set -euo pipefail
+
+REPO=${REPO:-/w}
+cd "$REPO"
+BIN="$REPO/target/release/fulcrum"
+WORK=$(mktemp -d)
+HOST=127.0.0.1
+A_PORT=${A_PORT:-9920}
+# ★ 站点 B 与站点 C **共用**这一个端口：站点按 `(host, port)` 匹配，同端口不同主机名
+#   是合法的两个站点。⇒ 反向判据 ① 与访问控制的反向半边在同一个监听器上量，
+#   「监听器不一样」这条解释被排除掉了。
+BC_PORT=${BC_PORT:-9921}
+LOGFILE="$WORK/access.json"
+EXPO="$WORK/expo.py"
+# 抓取路径。★ 它同时是「站点 B 上打的同一路径」。
+MPATH=/metrics
+
+FAILS=0
+PIDS=()
+
+fail() {
+  echo "  ✗ $*" >&2
+  FAILS=$((FAILS + 1))
+}
+ok() { echo "  ✓ $*"; }
+
+cleanup() {
+  local pid waited
+  for pid in "${PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    kill -INT "$pid" 2>/dev/null || true
+  done
+  for pid in "${PIDS[@]:-}"; do
+    [ -n "$pid" ] || continue
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  done
+
+  # ── ★ ★ 收尾自证：本场景用过的端口，走的时候必须全部还回去 ──────────────────
+  #
+  # 照 `tests/quic-relay/run.sh` 那段。⚠ 它守的是**上面那个 `PIDS` 收全了没有**，
+  # 而判据挂在「端口还回去了没有」而不是「进程还在不在」：前者才是下一个场景真会
+  # 被绊到的东西，后者要先知道该找哪个 pid —— 而一个没被登记的 pid 恰恰最找不到。
+  # ⚠ 本格不碰 `:80`（三个站点都是 `http://`，不合成重定向站点）⇒ 单子里没有它。
+  local p leaked=""
+  for p in "$A_PORT" "$BC_PORT"; do
+    waited=0
+    while port_listening "$p" && [ "$waited" -lt 30 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    if port_listening "$p"; then leaked="$leaked $p"; fi
+  done
+  rm -rf "$WORK"
+
+  if [ -n "$leaked" ]; then
+    echo >&2
+    echo "METRICS TESTS FAILED: 收尾没干净 —— 退出时这些端口还有人在听：$leaked" >&2
+    echo "  ⇒ 多半是某个 pid 没进 \$PIDS（经典写法：\`X=\$(start …)\`，\$(…) 是子 shell，" >&2
+    echo "     数组改的是副本）。⚠ 后果不在本场景：泄漏的进程活到下一个场景去。" >&2
+    # ★ 用 `pgrep -af` 而不是 `ps | grep`：一个 defunct 进程攥不住监听 socket，
+    #   所以这里要的只是「还活着的是哪几个」——而那正好是 pgrep 答得了的。
+    pgrep -af "fulcrum serve" >&2 || true
+    exit 1
+  fi
+}
+trap cleanup EXIT
+
+port_listening() {
+  timeout 1 bash -c "exec 3<>/dev/tcp/$HOST/$1" 2>/dev/null
+}
+
+wait_port() {
+  local port=$1 tries=0
+  while [ "$tries" -lt 100 ]; do
+    if port_listening "$port"; then return 0; fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# 访问日志那一侧的两个读数。★ 与 `tests/log/run.sh` 逐字同一套写法。
+lines() { wc -l < "$LOGFILE" | tr -d ' '; }
+
+# 取访问日志**最后一行**的某个字段。⚠ 用 python3 而不是 grep：一个
+# `grep '"site":"http://a.example:9920"'` 会在字段顺序、空格、转义任一处变化时静默漏判。
+field() {
+  python3 -c '
+import json, sys
+line = open(sys.argv[1], encoding="utf-8").read().strip().split("\n")[-1]
+o = json.loads(line)
+k = sys.argv[2]
+print(o[k] if k in o else "<缺>")
+' "$LOGFILE" "$1"
+}
+
+# 一条普通请求，只回 HTTP 码。$1 端口 · $2 Host · $3 路径。
+req() {
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $2" \
+    "http://$HOST:$1$3" 2>/dev/null || echo 000
+}
+
+# 一条请求，正文落到 $4、响应头落到 $4.hdr，回 HTTP 码。
+get() {
+  curl -sS -o "$4" -D "$4.hdr" -w '%{http_code}' --max-time 5 -H "Host: $2" \
+    "http://$HOST:$1$3" 2>/dev/null || echo 000
+}
+
+# 抓一次指标（Host: a.example，来源自然是 127.0.0.1 ⇒ `@internal` 命中）。
+scrape() { get "$A_PORT" a.example "$MPATH" "$1"; }
+
+# 响应头里 `Content-Type` 的**原文**。★ 不走 curl 的 `%{content_type}`：那是 curl
+# 规整过的，而这一格判的恰恰是**我们写出去的那一串逐字对不对**（抓取端按它挑解析器）。
+content_type() {
+  python3 - "$1" <<'PY'
+import sys
+
+val = ""
+with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        k, sep, v = line.partition(":")
+        if sep and k.strip().lower() == "content-type":
+            val = v.strip()
+print(val)
+PY
+}
+
+expo() { python3 "$EXPO" "$@"; }
+
+# 一个数值断言。$1 说明 · $2 期望 · $3 实际。
+eq() {
+  if [ "$2" = "$3" ]; then
+    ok "$1（$3）"
+  else
+    fail "$1：期望「$2」实际「$3」"
+  fi
+}
+
+# ── exposition 的读取端 ─────────────────────────────────────────────────────
+#
+# ★ ★ **判据要问的是「这个 series 的值涨了多少」，而不是「正文里有没有那几个字」**：
+#   后者对「把指标硬编码成一段常量」的实现完全无效。⇒ 需要一个真的解析器。
+# ⚠ 它自己也可能坏。坏了的表现是**恒答 0 / 恒答有**，而那会让下面每一条判据变成空转
+#   ⇒ 它带一个 `selftest`，每次开跑先证「它命中得了，也落空得了」。
+cat > "$EXPO" <<'PY'
+#!/usr/bin/env python3
+"""Prometheus text exposition（0.0.4）的读取端 —— 只服务于 tests/metrics/run.sh。
+
+★ 只做一件事：把正文解析成 `(族名, 标签表, 值)` 的清单，然后按标签筛。
+⚠ 读不懂的行**当场抛**，不跳过 —— 「跳过读不懂的」等于让一份撕坏的 exposition
+  在每一条判据上都表现得像一份好的。
+"""
+
+import re
+import sys
+
+# `name{k="v",…} value` 或 `name value`。
+# ⚠ 标签段用贪婪 `.*` 再回退到最后一个 `}`：标签**值**里允许出现 `}`，
+#   写成 `[^}]*` 的话那种行会被判成「读不懂」——一个只在少见输入上发作的假红。
+_SAMPLE = re.compile(
+    r"^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)"
+    r"(?:\{(?P<labels>.*)\})?"
+    r"[ \t]+(?P<value>[^ \t]+)[ \t]*$"
+)
+_LABEL = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
+_UNESC = {"n": "\n", "\\": "\\", '"': '"'}
+# 直方图的三种派生名。★ 它们的族是**去掉后缀**那个名字。
+_HIST_SUFFIX = ("_bucket", "_sum", "_count")
+
+
+def unescape(s):
+    return re.sub(r"\\(.)", lambda m: _UNESC.get(m.group(1), m.group(1)), s)
+
+
+def parse(text):
+    """→ (samples, meta)。
+
+    samples = [(名字, {标签: 值}, 值字符串)]
+    meta    = {族名: {"HELP": …, "TYPE": …}}
+    """
+    samples = []
+    meta = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            parts = line.split(None, 3)
+            if len(parts) >= 3 and parts[1] in ("HELP", "TYPE"):
+                meta.setdefault(parts[2], {})[parts[1]] = parts[3] if len(parts) > 3 else ""
+            continue
+        m = _SAMPLE.match(line)
+        if not m:
+            raise SystemExit("exposition 里有一行读不懂：%r" % raw)
+        labels = {}
+        if m.group("labels"):
+            for k, v in _LABEL.findall(m.group("labels")):
+                labels[k] = unescape(v)
+        samples.append((m.group("name"), labels, m.group("value")))
+    return samples, meta
+
+
+def read(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return parse(f.read())
+
+
+def family_of(name, meta):
+    """一条样本属于哪个族。★ 直方图的 `_bucket`/`_sum`/`_count` 归到本族名下。"""
+    if name in meta:
+        return name
+    for suf in _HIST_SUFFIX:
+        if name.endswith(suf):
+            base = name[: -len(suf)]
+            if meta.get(base, {}).get("TYPE") == "histogram":
+                return base
+    return None
+
+
+def matched(samples, family, filters):
+    want = dict(kv.split("=", 1) for kv in filters)
+    out = []
+    for name, labels, value in samples:
+        if name != family:
+            continue
+        if all(labels.get(k) == v for k, v in want.items()):
+            out.append((labels, value))
+    return out
+
+
+def main(argv):
+    cmd = argv[1]
+
+    if cmd == "selftest":
+        return selftest()
+
+    if cmd == "lint":
+        samples, meta = read(argv[2])
+        bad = []
+        for fam, kinds in sorted(meta.items()):
+            for need in ("HELP", "TYPE"):
+                if need not in kinds:
+                    bad.append("族 %s 缺 # %s" % (fam, need))
+            if kinds.get("TYPE") == "counter" and not fam.endswith("_total"):
+                bad.append("counter 族 %s 的名字不以 _total 收尾" % fam)
+        seen = set()
+        for name, labels, _ in samples:
+            if family_of(name, meta) is None:
+                bad.append("样本 %s 没有对应的 # HELP / # TYPE 声明" % name)
+            key = (name, tuple(sorted(labels.items())))
+            if key in seen:
+                bad.append("同一条 series 出现了两次：%s%s" % (name, labels))
+            seen.add(key)
+        for line in bad:
+            print(line)
+        return 1 if bad else 0
+
+    if cmd == "meta":
+        _, meta = read(argv[2])
+        kinds = meta.get(argv[3], {})
+        return 0 if ("HELP" in kinds and "TYPE" in kinds) else 1
+
+    samples, _ = read(argv[2])
+    family = argv[3]
+    filters = argv[4:]
+
+    if cmd == "series":
+        print(len(matched(samples, family, filters)))
+        return 0
+    if cmd == "sum":
+        total = 0.0
+        for _, value in matched(samples, family, filters):
+            total += float(value)
+        # ★ 全是计数器/量表的整数值 ⇒ 打成整数，免得判据去比 "50" 和 "50.0"。
+        print(int(total) if total == int(total) else total)
+        return 0
+    if cmd == "labelkeys":
+        keys = set()
+        for labels, _ in matched(samples, family, filters):
+            keys.add(",".join(sorted(labels)))
+        for k in sorted(keys):
+            print(k)
+        return 0
+    if cmd == "labelvalues":
+        # $4 = 族，$5 = 标签名 ⇒ 打出该标签**出现过的全部取值**，排序去重。
+        vals = set()
+        for name, labels, _ in samples:
+            if name == family and argv[4] in labels:
+                vals.add(labels[argv[4]])
+        for v in sorted(vals):
+            print(v)
+        return 0
+
+    raise SystemExit("不认识的子命令：%s" % cmd)
+
+
+# ── ★ ★ 自证：它命中得了，也落空得了 ────────────────────────────────────────
+#
+# ⚠ 一个恒答 0 的 `sum` 会让「涨了 50」变成「0 == 0 + 50」当场红 —— 那还算好的；
+#   而一个恒答「有」的 `meta` 会让格式那几条**永远绿**，那才是这里真正要挡的形状。
+_FIXTURE = """\
+# HELP t_requests_total 请求数。
+# TYPE t_requests_total counter
+t_requests_total{site="a.example",outcome="metrics"} 3
+t_requests_total{site="a.example",outcome="respond"} 4
+t_requests_total{site="<none>",outcome="no_site_match"} 5
+# HELP t_empty_total 一次都没发生过。
+# TYPE t_empty_total counter
+# HELP t_latency_seconds 时延，秒。
+# TYPE t_latency_seconds histogram
+t_latency_seconds_bucket{le="+Inf"} 12
+t_latency_seconds_sum 1.5
+t_latency_seconds_count 12
+"""
+
+
+def _check(cond, what):
+    if not cond:
+        print("★ expo.py 自证未过：%s" % what)
+        return 1
+    return 0
+
+
+def selftest():
+    rc = 0
+    samples, meta = parse(_FIXTURE)
+
+    # 命中。
+    rc |= _check(len(matched(samples, "t_requests_total", [])) == 3, "三条 series 数不对")
+    rc |= _check(
+        sum(float(v) for _, v in matched(samples, "t_requests_total", ['site=a.example'])) == 7.0,
+        "按 site 筛出来的和不对",
+    )
+    rc |= _check(
+        len(matched(samples, "t_requests_total", ['site=a.example'])) == 2, "按 site 筛出来的条数不对"
+    )
+    # 落空 —— ⚠ 这几条才是「它会不会恒答有」的判据。
+    rc |= _check(len(matched(samples, "t_empty_total", [])) == 0, "空族竟然筛出了样本")
+    rc |= _check(
+        len(matched(samples, "t_requests_total", ["site=不存在"])) == 0, "不存在的标签值竟然命中了"
+    )
+    rc |= _check("t_empty_total" in meta, "空族的 HELP/TYPE 没被读到")
+    rc |= _check("t_不存在_total" not in meta, "不存在的族竟然读出了声明")
+    # 直方图的派生名归到本族。
+    rc |= _check(family_of("t_latency_seconds_bucket", meta) == "t_latency_seconds", "直方图后缀没归族")
+    rc |= _check(family_of("t_野生_total", meta) is None, "没声明过的样本名竟然归到了某个族")
+
+    # 读不懂的行必须**抛**，不许静默跳过。
+    try:
+        parse("# TYPE t_x counter\nt_x 这不是一行合法样本 还多一段\n")
+        rc |= _check(False, "撕坏的 exposition 竟然解析通过了")
+    except SystemExit:
+        pass
+
+    if rc == 0:
+        print("expo.py 自证通过（命中与落空各证一遍）")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+PY
+
+# ── [0/8] 基线 ──────────────────────────────────────────────────────────────
+#
+# ★ ★ 三条自证：端口没被占（否则量的是别人的服务）；访问日志此刻不存在
+#   （否则「多了几行」分不出「刚写的」与「本来就有的」）；读取端量得了东西。
+echo "=== [0/8] 基线：端口空着 · 日志文件还不存在 · exposition 读取端自证 ==="
+for p in "$A_PORT" "$BC_PORT"; do
+  if port_listening "$p"; then
+    echo "METRICS TESTS FAILED: 端口 $p 已经被占，本次结果不可采信。" >&2
+    exit 1
+  fi
+done
+ok "两个端口都空着"
+if [ -e "$LOGFILE" ]; then
+  echo "METRICS TESTS FAILED: $LOGFILE 已经存在，本次结果不可采信。" >&2
+  exit 1
+fi
+ok "访问日志还不存在（「多了几行」才说得清）"
+if expo selftest; then
+  ok "★★ exposition 读取端自证通过 —— 下面每一条增量判据才有意义"
+else
+  echo "METRICS TESTS FAILED: expo.py 自证未过，本次结果一律不可采信。" >&2
+  exit 1
+fi
+
+# ── 配置 ────────────────────────────────────────────────────────────────────
+cat > "$WORK/a.Fulcrumfile" <<CONF
+http://a.example:$A_PORT, http://a2.example:$A_PORT {
+    log {
+        output file $LOGFILE
+        level info
+    }
+    @internal {
+        remote_ip 127.0.0.0/8
+        path $MPATH
+    }
+    handle @internal {
+        metrics
+    }
+    respond 403
+}
+
+http://b.example:$BC_PORT {
+    respond 200 "b-ok"
+}
+
+http://c.example:$BC_PORT {
+    @outsider remote_ip 10.0.0.0/8
+    handle @outsider {
+        metrics
+    }
+    respond 403
+}
+CONF
+
+# 一份**没有任何来源匹配器**的 metrics 配置 —— 只用来证那条诊断真的会说话。
+cat > "$WORK/unguarded.Fulcrumfile" <<CONF
+http://a.example:$A_PORT {
+    metrics
+}
+CONF
+
+# ── [1/8] 起服务 ────────────────────────────────────────────────────────────
+echo "=== [1/8] 起被测实例 ==="
+RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/a.Fulcrumfile" \
+  --bind-host "$HOST" \
+  --pid-file "$WORK/a.pid" \
+  --upgrade-sock "$WORK/a.sock" \
+  > "$WORK/a.log" 2>&1 &
+PIDS+=($!)
+
+for p in "$A_PORT" "$BC_PORT"; do
+  wait_port "$p" || {
+    echo "METRICS TESTS FAILED: 端口 $p 起不来。日志：" >&2
+    cat "$WORK"/*.log >&2
+    exit 1
+  }
+done
+ok "两个监听都起来了"
+
+if [ -f "$LOGFILE" ] && [ "$(lines)" = "0" ]; then
+  ok "访问日志装载时就开好了，此刻 0 行（一致性门的基线）"
+else
+  fail "访问日志此刻不是「存在且空」—— 一致性门的基线不成立"
+fi
+
+# ★ 那条诊断的**两个方向**：本格这份配置圈住了来源 ⇒ 不该报；
+#   而一份没圈的配置**必须**报。⚠ 只验前者的话，一条从来不会说话的诊断也全绿 ——
+#   而 G116 明写「matcher 写错就会把指标暴露出去，只能靠文档与诊断兜」。
+if "$BIN" validate "$WORK/a.Fulcrumfile" > "$WORK/validate.out" 2>&1; then
+  if grep -q "FUL-DSL-0037" "$WORK/validate.out"; then
+    fail "★★ 本格的 metrics 被 remote_ip 圈住了，却仍报 FUL-DSL-0037"
+  else
+    ok "★★ 圈住了来源的 metrics：没有 FUL-DSL-0037"
+  fi
+else
+  fail "被测配置连 validate 都没过：$(head -5 "$WORK/validate.out" | tr '\n' ' ')"
+fi
+"$BIN" validate "$WORK/unguarded.Fulcrumfile" > "$WORK/unguarded.out" 2>&1 || true
+if grep -q "FUL-DSL-0037" "$WORK/unguarded.out"; then
+  ok "★★★ 而没圈来源的 metrics ⇒ FUL-DSL-0037（这条诊断真的会说话）"
+else
+  fail "★★★ 没圈来源的 metrics 竟然一声不吭：$(head -5 "$WORK/unguarded.out" | tr '\n' ' ')"
+fi
+
+# ── [2/8] 判据 1：格式 ──────────────────────────────────────────────────────
+echo "=== [2/8] 判据 1：抓到的正文是合法 exposition ==="
+#
+# ⚠ ⚠ **先打三条预热请求再抓**：计数发生在 `Record::finish`（响应写完之后）
+#   ⇒ 第一次抓取的正文里 `fulcrum_requests_total` **一条样本都没有**，
+#   而「四个标签都在」这条判据在没有样本时会退化成空转。
+CODE=$(req "$A_PORT" a.example "/")
+eq "预热①：站点 A 上非 /metrics 的路径走兜底 respond" 403 "$CODE"
+CODE=$(req "$A_PORT" nobody-warm.invalid "$MPATH")
+eq "预热②：9920 上的未知 Host ⇒ 无站点匹配" 421 "$CODE"
+# ★ 预热③是**已知地址字面量、错端口**：`b.example` 只配在 9921 上 ⇒ 9920 上它无站点匹配，
+#   而它**是**一条地址字面量 ⇒ G118 给它自己一格，而不是并进 `<other>`。
+#   ⚠ 少了它，判据 4 里「series 条数不增长」在一个「把 host 恒写成 <other>」的实现上也全绿。
+CODE=$(req "$A_PORT" b.example "$MPATH")
+eq "预热③：已知字面量打错端口 ⇒ 无站点匹配" 421 "$CODE"
+sleep 0.2
+
+S1="$WORK/s1.txt"
+CODE=$(scrape "$S1")
+eq "抓取端点回 200" 200 "$CODE"
+
+CT=$(content_type "$S1.hdr")
+eq "★★ Content-Type 逐字" "text/plain; version=0.0.4; charset=utf-8" "$CT"
+
+# 九个族的 `# HELP` / `# TYPE` 一个都不许少。
+for f in fulcrum_requests_total fulcrum_request_duration_seconds fulcrum_cache_events_total \
+  fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy \
+  fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info; do
+  if expo meta "$S1" "$f"; then
+    ok "族 $f 的 HELP/TYPE 都在"
+  else
+    fail "族 $f 缺 HELP 或 TYPE"
+  fi
+done
+
+# ★ 整份正文过一遍结构检查：每条样本都有声明 · 没有重复的 series · counter 名字带 `_total`。
+#   ⚠ 「重复的 series」这一条尤其值钱：抓取端会把它算成两条，而正文读起来完全正常。
+LINT=$(expo lint "$S1" || true)
+if [ -z "$LINT" ]; then
+  ok "★★ 整份 exposition 结构检查通过（声明齐全 · 无重复 series · counter 名字带 _total）"
+else
+  fail "★★ exposition 结构检查没过：$(echo "$LINT" | tr '\n' '；')"
+fi
+
+# `fulcrum_requests_total` 的**每一条**样本都必须正好带那四个标签。
+# ★ 判的是**键的集合逐字相等**，不是「含有」——「含有」在多出一个 `uri` 标签时照样绿，
+#   而「任何形态都不加 uri 标签」是 G116 那张基数表写死的一条。
+KEYS=$(expo labelkeys "$S1" fulcrum_requests_total)
+eq "★★★ fulcrum_requests_total 的标签键集合（每条样本都一样）" \
+  "outcome,proto,site,status_class" "$KEYS"
+
+# ★ ★ 上游那两族：**族在、样本无**。
+#   本配置里一个 `reverse_proxy` 都没有 ⇒ 它们没有任何数据源。
+#   ⚠ 这一条分得开「没接上」与「没数据」：族都不出现才是没接上，而那正是
+#   「一个指标存在、只是还没发生过」与「这个指标根本没做」之间唯一的区别。
+for f in fulcrum_upstream_inflight fulcrum_upstream_healthy; do
+  eq "★★★ $f 有 HELP/TYPE 但零条样本（没有上游 ⇒ 没数据，不是没接上）" \
+    0 "$(expo series "$S1" "$f")"
+done
+
+# ── [3/8] 判据 2：访问控制的两个方向 ────────────────────────────────────────
+echo "=== [3/8] 判据 2：够得着的抓得到，够不着的拿到 403 ==="
+if grep -q '^# TYPE ' "$S1"; then
+  ok "正向：127.0.0.1 打站点 A ⇒ 200 且正文真的是指标（有 # TYPE 行）"
+else
+  fail "正向：抓到的正文里没有 # TYPE 行 —— 那它不是一份 exposition"
+fi
+
+# 反向：站点 C 把 `metrics` 圈在 10.0.0.0/8 里，而我们从 127.0.0.1 打过去 ——
+# ⇒ `@outsider` 不命中，落到兜底那条 `respond 403`。
+# ★ 这是本格里**在容器里真的造得出来**的那个反向形状：不需要第二块网卡，
+#   只需要一个我们不可能来自的网段。
+C_OUT="$WORK/c.txt"
+CODE=$(get "$BC_PORT" c.example "$MPATH" "$C_OUT")
+eq "★★★ 反向：来源不在 10.0.0.0/8 ⇒ 站点 C 给的是兜底 403" 403 "$CODE"
+if grep -q '^# TYPE ' "$C_OUT"; then
+  fail "★★★ 403 的正文里竟然有 # TYPE —— 指标从一个够不着的匹配器后面漏出来了"
+else
+  ok "★★★ 而那份 403 的正文里一个 # TYPE 都没有"
+fi
+CT=$(content_type "$C_OUT.hdr")
+if [ "$CT" = "text/plain; version=0.0.4; charset=utf-8" ]; then
+  fail "★★ 403 的 Content-Type 竟然是 exposition 那一串"
+else
+  ok "★★ 而它的 Content-Type 也不是 exposition 那一串（$CT）"
+fi
+
+# ── [4/8] 判据 3（反向 ①）：没写 metrics 的站点 ─────────────────────────────
+echo "=== [4/8] 判据 3：站点 B 没写 metrics ⇒ 同一路径拿到的不是指标 ==="
+#
+# ★ ★ ★ 少了这一条，「抓到了指标」证明不了是 `metrics` 这条指令干的 ——
+#   一个「见到 /metrics 就渲染指标」的实现（把端点做成了硬编码路径）在上面每一条判据上全绿。
+B_OUT="$WORK/b.txt"
+CODE=$(get "$BC_PORT" b.example "$MPATH" "$B_OUT")
+eq "站点 B 上打 $MPATH 回 200" 200 "$CODE"
+if grep -q '^# TYPE ' "$B_OUT"; then
+  fail "★★★ 没写 metrics 的站点上竟然抓到了指标 —— 那个端点不是这条指令给的"
+else
+  ok "★★★ 没写 metrics 的站点：同一路径的正文里一个 # TYPE 都没有"
+fi
+eq "★★ 而它给的是自己那条 respond 的正文" "b-ok" "$(cat "$B_OUT")"
+
+# ── [5/8] 判据 4（反向 ②）：50 个互不相同的未知 Host ────────────────────────
+echo "=== [5/8] 判据 4：未知 Host 打 50 次 ⇒ series 不增长，而那一格正好 +50 ==="
+#
+# ⚠ ⚠ **两句都要断言**。只断言前半（「series 条数不增长」）的话，
+#   一个「计数器根本没在加」的实现也能过 —— 而那时 series 条数当然不增长。
+S2="$WORK/s2.txt"
+CODE=$(scrape "$S2")
+eq "抓取回 200（取基线）" 200 "$CODE"
+N1=$(expo series "$S2" fulcrum_no_site_match_total)
+V1=$(expo sum "$S2" fulcrum_no_site_match_total 'host=<other>')
+W1=$(expo sum "$S2" fulcrum_no_site_match_total host=b.example)
+# ★ 尺子自证：两格都得有值 —— 一个把 host 恒写成 `<other>` 的实现在这里当场红，
+#   而它在「series 不增长」那一句上是全绿的。
+if [ "$V1" -ge 1 ] && [ "$W1" -ge 1 ]; then
+  ok "★★★ 基线上两格都有值：host=<other> 是 $V1，host=b.example 是 $W1（尺子读得出两种值）"
+else
+  fail "★★★ 基线不成立：host=<other> 是 $V1，host=b.example 是 $W1 —— 至少一格没在数"
+fi
+
+for ((i = 0; i < 50; i++)); do
+  req "$A_PORT" "nobody-$i.invalid" "$MPATH" > /dev/null
+done
+sleep 0.3
+
+S3="$WORK/s3.txt"
+CODE=$(scrape "$S3")
+eq "抓取回 200（取增量）" 200 "$CODE"
+eq "★★★ 50 个互不相同的未知 Host 之后，series 条数不增长（上界由配置定）" \
+  "$N1" "$(expo series "$S3" fulcrum_no_site_match_total)"
+eq "★★★ 而 host=<other> 那一格正好 +50（计数器真的在加）" \
+  "$((V1 + 50))" "$(expo sum "$S3" fulcrum_no_site_match_total 'host=<other>')"
+eq "★★ 已知字面量那一格没被这 50 条带动" \
+  "$W1" "$(expo sum "$S3" fulcrum_no_site_match_total host=b.example)"
+
+# ── [6/8] 判据 5：一致性门 ──────────────────────────────────────────────────
+echo "=== [6/8] 判据 5：指标的增量与访问日志新增的行数逐条对得上 ==="
+#
+# ★ ★ ★ 它守的是「两处不分家」：`fulcrum_requests_total` 与访问日志那一行
+#   由**同一个 `Record::finish`** 喂出来。⚠ 各算各的话，两个数字都会言之凿凿、
+#   却对不上 —— 而那正是 D18 / G66 那个形状。
+#
+# ⚠ 三件要算清楚的事：
+#   ① 站点 A 配的是 `level info` ⇒ 它记全部（`LogLevel::All`）；
+#   ② `no_site_match` 的请求**不属于任何站点** ⇒ 记不进访问日志，它们在指标里是
+#      `site="<none>"` —— **两边都不算它**；
+#   ③ 抓取那一条请求自己也会被计一次、也会被记一行（`outcome="metrics"`），
+#      而计数在**渲染之后** ⇒ 第 N 次抓取看到的是前 N−1 次的量。⇒ 抓两次做差。
+site_a_total() {
+  local a b
+  a=$(expo sum "$1" fulcrum_requests_total site=a.example)
+  b=$(expo sum "$1" fulcrum_requests_total site=a2.example)
+  echo "$((a + b))"
+}
+
+S4="$WORK/s4.txt"
+CODE=$(scrape "$S4")
+eq "抓取回 200（一致性门的左端）" 200 "$CODE"
+M_A=$(site_a_total "$S4")
+NONE_A=$(expo sum "$S4" fulcrum_requests_total 'site=<none>')
+sleep 0.3
+L_A=$(lines)
+
+# 一串**已知形状**的请求：站点 A 上两种 outcome 各两条，外加一条不属于任何站点的。
+CODE=$(req "$A_PORT" a.example "$MPATH"); eq "  k1 站点 A · metrics" 200 "$CODE"
+CODE=$(req "$A_PORT" a.example "/nope"); eq "  k2 站点 A · respond" 403 "$CODE"
+CODE=$(req "$A_PORT" a2.example "/nope"); eq "  k3 站点 A（第二条地址）· respond" 403 "$CODE"
+CODE=$(req "$A_PORT" nobody-gate.invalid "/nope"); eq "  k4 无站点匹配（两边都不算它）" 421 "$CODE"
+CODE=$(req "$A_PORT" a2.example "$MPATH"); eq "  k5 站点 A（第二条地址）· metrics" 200 "$CODE"
+sleep 0.3
+
+L_B=$(lines)
+eq "★★ 访问日志新增行数 = 落在站点 A 上的那 4 条（k4 不属于任何站点 ⇒ 记不进去）" \
+  4 "$((L_B - L_A))"
+
+S5="$WORK/s5.txt"
+CODE=$(scrape "$S5")
+eq "抓取回 200（一致性门的右端）" 200 "$CODE"
+M_B=$(site_a_total "$S5")
+# ⇒ 指标那一侧多出来的是：k1 k2 k3 k5 这 4 条，**加上 S4 那次抓取自己**（它在渲染之后才计）。
+eq "★★★ fulcrum_requests_total 在站点 A 上的增量 = 日志新增行数 + 1（+1 是左端那次抓取自己）" \
+  "$((L_B - L_A + 1))" "$((M_B - M_A))"
+eq "★★ 而 site=<none> 那一格只涨了 1（k4），它一行日志都没多" \
+  1 "$(($(expo sum "$S5" fulcrum_requests_total 'site=<none>') - NONE_A))"
+
+# ── [7/8] 判据 6：G121 的正面判据 ───────────────────────────────────────────
+echo "=== [7/8] 判据 6：同一条请求上，指标的 site 与日志的 site 给出不同的值 ==="
+#
+# ★ ★ ★ 这是本批**最容易被做成同一件事**的地方：两者共用「site」这个名字纯属巧合。
+#   · 指标的 `site` 标签（G121）= 请求**实际命中的那条地址字面量** ⇒ `a2.example`；
+#   · 访问日志的 `site` 字段（R3）= **站点的名字** = 第一个地址的原文 ⇒ `http://a.example:9920`。
+#   ⚠ 一个把指标的 site 直接取自日志那个字段的实现，在别的每一条判据上都是绿的。
+S6="$WORK/s6.txt"
+CODE=$(scrape "$S6")
+eq "抓取回 200（取 a2.example 那一格的基线）" 200 "$CODE"
+X1=$(expo sum "$S6" fulcrum_requests_total site=a2.example)
+
+CODE=$(req "$A_PORT" a2.example "/g121")
+eq "用 Host: a2.example 打一条（落到兜底 respond）" 403 "$CODE"
+sleep 0.3
+
+# 同一条请求的**日志那一面**：`host` 是 a2.example，而 `site` 仍是第一条地址的原文。
+eq "★★★ 这条请求的日志行：host" "a2.example" "$(field host)"
+eq "★★★ 这条请求的日志行：site（= 站点的名字 = 第一条地址的原文）" \
+  "http://a.example:$A_PORT" "$(field site)"
+
+S7="$WORK/s7.txt"
+CODE=$(scrape "$S7")
+eq "抓取回 200（取 a2.example 那一格的增量）" 200 "$CODE"
+eq "★★★ 同一条请求的**指标那一面**：site=\"a2.example\" 正好 +1" \
+  1 "$(($(expo sum "$S7" fulcrum_requests_total site=a2.example) - X1))"
+
+# ★ ★ 封口：`site` 这个标签**出现过的全部取值**是一个闭集，正好 = 四条地址字面量 + `<none>`。
+#   ⇒ ① 同一个站点的两条地址各自成格（G121，不并成一格）；
+#      ② 日志那种带 scheme 与端口的写法**一次都没出现**在标签里；
+#      ③ 上界 = 地址数 + 1，由配置定、不由访问者定（R2）。
+#   ⚠ 判的是**集合逐字相等**，不是「含有 a2.example」——「含有」在多冒出一格时照样绿。
+eq "★★★ site 标签的取值是闭集：四条地址字面量 + <none>" \
+  "<none> a.example a2.example b.example c.example" \
+  "$(expo labelvalues "$S7" fulcrum_requests_total site | tr '\n' ' ' | sed 's/ $//')"
+
+# ── [8/8] 收尾前的一条：抓取自己也被计进去了 ────────────────────────────────
+echo "=== [8/8] 抓取端点自己也在被计（它不是一条特权请求）==="
+#
+# ★ 它把「第 N 次抓取看到的是前 N−1 次的量」这句话钉成判据：`outcome="metrics"`
+#   那一格必须随着抓取次数增长。⚠ 一个「抓取不计数」的实现会让上面那条一致性门
+#   的 `+1` 变成 `+0`，而那条判据会红得像是别的地方出了问题 —— 这里说清楚它。
+Y1=$(expo sum "$S7" fulcrum_requests_total site=a.example outcome=metrics)
+S8="$WORK/s8.txt"
+CODE=$(scrape "$S8")
+eq "抓取回 200" 200 "$CODE"
+eq "★★ outcome=metrics 那一格随抓取增长（上一次抓取被这一次看见了）" \
+  1 "$(($(expo sum "$S8" fulcrum_requests_total site=a.example outcome=metrics) - Y1))"
+
+echo
+if [ "$FAILS" -ne 0 ]; then
+  echo "METRICS TESTS FAILED：$FAILS 条断言没过。" >&2
+  echo "--- 被测实例日志 ---" >&2
+  tail -30 "$WORK/a.log" >&2 || true
+  echo "--- 最后一次抓到的正文 ---" >&2
+  tail -40 "$WORK/s8.txt" >&2 || true
+  echo "--- 访问日志 ---" >&2
+  tail -10 "$LOGFILE" >&2 || true
+  exit 1
+fi
+echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值）。"

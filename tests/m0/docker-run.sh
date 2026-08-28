@@ -7,7 +7,8 @@
 #
 #   BUILD · LINT · UNIT · VENDOR             构建 · fmt+clippy+shellcheck · 自研 crate 测试 · fork 回归网
 #   SERVE · L4 · FILES · CACHE · CACHEDISK   数据面 · L4 面 · 静态文件 · 缓存 · 缓存磁盘后端
-#   ENCODE · H3 · PP · LOG · RELAY           压缩 · HTTP/3 · PROXY protocol（HTTP 面）· 访问日志 · QUIC 跨进程转交
+#   ENCODE · H3 · PP · LOG                   压缩 · HTTP/3 · PROXY protocol（HTTP 面）· 访问日志
+#   METRICS · RELAY                          Prometheus 指标 · QUIC 跨进程转交
 #   ACME · RENEW · SMOKE · STRESS · MUSL     签发 · 续期 · 冒烟 · 压力 · musl 静态产物
 #   UNCLAIMED                                未被认领的继承 fd
 #
@@ -92,6 +93,7 @@ selftest_only_mode() {
   # ★ **新加一个 `*_ONLY` 就要在这里加一条**，否则这个自测覆盖的
   #   仍然是加它之前的那些 —— 与「不自省的名单」同一个形状。
   printf 'MUSL_ONLY=1\n'      | only_mode_in || { echo "★ only_mode_in 认不出 MUSL_ONLY=1" >&2; rc=1; }
+  printf 'METRICS_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 METRICS_ONLY=1" >&2; rc=1; }
   [ "$rc" -eq 0 ] || {
     echo "  *_ONLY 判据自测未通过——**本次跑不跑 M1 场景的结论一律不可信**。" >&2
     exit 1
@@ -323,7 +325,7 @@ LINT_CMD="$LINT_CMD && cargo clippy --workspace --all-targets --locked -- -D war
 # ★ `tests/musl/` 里那份探针跑在门禁外（
 #   理由写在 tests/musl/probe.sh 顶部）。⚠ 它照样要进这张扫描表 ——
 #   「不在门禁里跑」与「不被 lint 看」是两件事，而一份没人 lint 的脚本坏起来是安静的。
-LINT_CMD="$LINT_CMD && LC_ALL=C.UTF-8 shellcheck tests/acme/*.sh tests/cache/*.sh tests/ci/*.sh tests/encode/*.sh tests/files/*.sh tests/h3/*.sh tests/l4/*.sh tests/log/*.sh tests/m0/*.sh tests/m1/*.sh tests/musl/*.sh tests/proxyproto/*.sh tests/serve/*.sh tests/smoke/*.sh tests/stress/*.sh tests/unit/*.sh tests/vendor/*.sh"
+LINT_CMD="$LINT_CMD && LC_ALL=C.UTF-8 shellcheck tests/acme/*.sh tests/cache/*.sh tests/ci/*.sh tests/encode/*.sh tests/files/*.sh tests/h3/*.sh tests/l4/*.sh tests/log/*.sh tests/m0/*.sh tests/m1/*.sh tests/metrics/*.sh tests/musl/*.sh tests/proxyproto/*.sh tests/serve/*.sh tests/smoke/*.sh tests/stress/*.sh tests/unit/*.sh tests/vendor/*.sh"
 # ★ ★ CI 那段搬运代码的自证（G94）。**挂在 lint 这一格而不是新开一个场景**：
 #   它只花毫秒、不需要 docker、也不需要网络，而且它验的是**门自己的管道**
 #   （退出码是怎么取的），与各场景验的产品行为不是一回事。
@@ -360,6 +362,8 @@ elif [ "${PP_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/proxyproto/run.sh"
 elif [ "${LOG_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/log/run.sh"
+elif [ "${METRICS_ONLY:-0}" = "1" ]; then
+  CMD="$CMD && bash tests/metrics/run.sh"
 elif [ "${RELAY_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/quic-relay/run.sh"
 elif [ "${ACME_ONLY:-0}" = "1" ]; then
@@ -409,6 +413,13 @@ elif [ "${BUILD_ONLY:-0}" != "1" ]; then
   #   ② `uri` 是 `rewrite` **之前**那个（取改写后的也编得过、也「有值」，
   #      只是它说出的是一个客户端从没请求过的地址）；③ 日志路径打不开 ⇒ 装载时就红。
   [ "${LOG_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/log/run.sh"
+  # Prometheus 指标：响应之外的那份**计数**。★ 排在访问日志**之后**不是风格 ——
+  #   它的一致性门拿访问日志当对照物（同一个 `Record::finish` 喂出来的两侧），
+  #   日志那一格先成立，这一格红了才指得准。★ 独有判据：
+  #   ① 没写 `metrics` 的站点上同一路径**不是**指标（否则「抓到了」证明不了是这条指令干的）；
+  #   ② 50 个未知 Host 之后 series 条数不增长**且**那一格正好 +50（只判前半的话，
+  #      「计数器根本没在加」也能过）；③ 两个「site」在同一条请求上给出不同的值（G121 / R3）。
+  [ "${METRICS_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/metrics/run.sh"
   # 换代时的 QUIC 跨进程转交。⚠ 唯一一格会在一次跑里起两代产品进程（SIGQUIT + `-u`）。
   [ "${RELAY_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/quic-relay/run.sh"
   # ACME：产品里唯一一条「要有一个真的对端才算数」的路（G64 加 pebble 的全部理由）。

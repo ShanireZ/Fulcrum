@@ -63,6 +63,7 @@ Narrow it with one `*_ONLY=1`:
 | `FILES_ONLY` / `CACHE_ONLY` / `CACHEDISK_ONLY` / `ENCODE_ONLY` | static files · cache · disk backend · compression |
 | `H3_ONLY` / `RELAY_ONLY` | HTTP/3 end-to-end · cross-generation QUIC relay |
 | `PP_ONLY` / `LOG_ONLY` | PROXY protocol on the HTTP side · structured access log |
+| `METRICS_ONLY` | the Prometheus scrape endpoint (`metrics`, a terminal directive) end-to-end |
 | `ACME_ONLY` / `RENEW_ONLY` | ACME against pebble (a real local CA) · renewal |
 | `SMOKE_ONLY` / `STRESS_ONLY` / `MUSL_ONLY` / `UNCLAIMED_ONLY` | smoke self-check · sustained load · musl static artifact · unclaimed inherited fd |
 
@@ -96,6 +97,7 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/proxyproto/` | 9800–9803 |
 | `tests/log/` | 9900–9906 |
 | `tests/quic-relay/` | 9910–9911 |
+| `tests/metrics/` | 9920–9921 |
 | *(shared, hardcoded)* | 80 — see below |
 
 **Port 80 is the one exception, and it is shared on purpose.** `synthesize_http_redirect`
