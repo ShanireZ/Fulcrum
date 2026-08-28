@@ -23,6 +23,7 @@
 //! `fulcrum_request_duration_seconds`，再调 [`Record::emit`]（照旧按 `log` 早退）。
 //! ★ 绑在一处的理由与代价都写在 `finish` 的文档上，一句话：
 //! **两处各算一遍 `outcome` / `status` 迟早分家，而分家的表现是两个数字都言之凿凿、却对不上。**
+//! ⚠ 收尾路径上**只读一次时钟** ⇒ 直方图那一格与 `duration_ms` 是同一个读数的两种单位。
 //!
 //! # ⚠ ⚠ 「取不到的字段不出现，而不是给 `null`」
 //!
@@ -376,7 +377,12 @@ impl Record {
     }
 
     /// 记一行 —— 如果这个站点配了 `log`，而且这条状态码过得了阈值。
-    pub(crate) fn emit(&self, status: u16, resp_size: usize) {
+    ///
+    /// ⚠ ⚠ `now` **由调用方给**，不在这里现取：它与耗时直方图那一格用的是
+    /// **同一个时钟读数**（见 [`Record::finish_at`]）。★ 自己现取一次的话，
+    /// `duration_ms` 与 `fulcrum_request_duration_seconds` 就成了同一条请求上
+    /// **两次不同的测量** —— 而两边的注释都会写着「它们说的是同一件事」。
+    pub(crate) fn emit(&self, status: u16, resp_size: usize, now: SystemTime) {
         let Some(cfg) = self.target.as_ref() else {
             return;
         };
@@ -392,7 +398,7 @@ impl Record {
             );
             return;
         };
-        sink.write_line(&self.to_json_line(status, resp_size, SystemTime::now()));
+        sink.write_line(&self.to_json_line(status, resp_size, now));
     }
 
     /// 一次请求的**收尾**：先喂指标，再记那一行（**M2 批 M**，G116–G121）。
@@ -415,16 +421,34 @@ impl Record {
     /// ★ 代价写在明处：**「指标增量 == 访问日志行数」这条一致性只在配了
     /// `log { level info }` 的站点上成立**，判据场景里写死这一点。
     ///
-    /// ⚠ [`Record::emit`] 从此**只剩这一个调用方**。
+    /// # ⚠ ⚠ 整条收尾路径上**只读一次时钟**
+    ///
+    /// 这个函数唯一做的事就是把 `SystemTime::now()` 取出来交给 [`Record::finish_at`]。
+    /// ★ 「一处算完两处用」里的**耗时**也在内：`fulcrum_request_duration_seconds`
+    /// 与日志行里的 `duration_ms` 是同一个读数的两种单位（秒 / 毫秒）。
+    /// ⚠ 各取各的话，两边**处置一致而输入不一致** —— 注释会写着「它们说的是同一件事」，
+    /// 而它们给不出同一个答案。那比差几微秒本身糟得多：**代码说的和它做的成了两回事**。
+    ///
+    /// ⚠ [`Record::emit`] 从此**只剩 [`Record::finish_at`] 一个调用方**。
     pub(crate) fn finish(&self, status: u16, resp_size: usize) {
-        self.meter(status, SystemTime::now());
-        self.emit(status, resp_size);
+        self.finish_at(status, resp_size, SystemTime::now());
+    }
+
+    /// [`Record::finish`] 的全部实现，**收尾时刻由调用方给**。
+    ///
+    /// ★ 拆出这一层，是为了让「两条路拿到的是同一个 `now`」变成**判据量得到的事**：
+    /// 判据喂一个已知时刻进来，然后同时量指标那一格与日志那一行。
+    /// ⚠ 不拆的话，那条判据只能去比两次真实时钟读数的差 —— 而那个差是微秒级的，
+    /// **一条在理论上成立、实际上永远红不起来的断言**比没有断言更坏。
+    fn finish_at(&self, status: u16, resp_size: usize, now: SystemTime) {
+        self.meter(status, now);
+        self.emit(status, resp_size, now);
     }
 
     /// 把这一条喂给指标注册表。
     ///
-    /// ★ 拆成一个收 `now` 的函数，理由与 [`Record::to_json_line`] 一样：
-    /// 判据要能不靠真实时钟量它。
+    /// ★ 收 `now` 而不是自己取，理由与 [`Record::to_json_line`] 一样：
+    /// 判据要能不靠真实时钟量它。⚠ 而且它与 [`Record::emit`] 收的是**同一个**读数。
     fn meter(&self, status: u16, now: SystemTime) {
         // ★ `site` 取**请求实际命中的那条地址字面量**（G121）；没匹配到站点时取
         //   `<none>`（R2）—— 于是 `fulcrum_requests_total` 是**真的总数**，
@@ -434,8 +458,9 @@ impl Record {
         // ⚠ 标签的个数与顺序照 `metrics::FAMILIES` 的声明，对不上就地 panic。
         crate::metrics::REQUESTS_TOTAL.inc(&[site, self.outcome, status_class(status), self.proto]);
         // ⚠ 单位是**秒**，与桶边界和名字里的 `_seconds` 同一口径。
-        // ⚠ `duration_since` 失败（时钟回拨）按 0 记 —— 与 `to_json_line` 里
-        //   `duration_ms` 的处置**逐字一致**：两处对同一件事必须给同一个答案。
+        // ⚠ ⚠ 与 `to_json_line` 里的 `duration_ms` **同一个 `now`、同一种处置**
+        //   （`duration_since` 失败即时钟回拨时按 0 记）⇒ 两处对同一件事给同一个答案。
+        //   ★ 只对齐处置、不对齐输入，是一句读起来完全成立而实际不成立的话。
         let secs = now
             .duration_since(self.started)
             .map(|d| d.as_secs_f64())
@@ -618,7 +643,7 @@ mod tests {
         //   真正「有没有写出去」由第二十三个场景在真文件上量。
         let r = rec();
         assert!(r.target.is_none());
-        r.emit(200, 0); // 不该有任何副作用
+        r.emit(200, 0, r.started); // 不该有任何副作用
     }
 
     #[test]
@@ -857,6 +882,26 @@ mod tests_batch_m {
             .unwrap_or(0)
     }
 
+    /// 这条 histogram series 的 `_sum`（**秒**）；没有这条 series 就是 0。
+    fn hist_sum(site: &str, outcome: &str) -> f64 {
+        let want = format!(
+            "fulcrum_request_duration_seconds_sum{{site=\"{site}\",outcome=\"{outcome}\"}} "
+        );
+        let out = crate::metrics::render();
+        out.lines()
+            .find_map(|l| l.strip_prefix(&want))
+            .map(|v| v.parse().expect("读数不是个数"))
+            .unwrap_or(0.0)
+    }
+
+    /// 日志文件最后一行里的 `duration_ms`（**毫秒**）。
+    fn last_duration_ms(path: &str) -> f64 {
+        let s = std::fs::read_to_string(path).expect("日志文件要读得到");
+        let line = s.lines().next_back().expect("至少要有一行");
+        let v: serde_json::Value = serde_json::from_str(line).expect("必须是合法 JSON");
+        v["duration_ms"].as_f64().expect("`duration_ms` 不是个数")
+    }
+
     #[test]
     fn status_class_是六个值的闭集_而_0_取_none_r1() {
         // ★ R1 的**前提**：`status = 0` 可达，而且会被记进访问日志。
@@ -1006,5 +1051,51 @@ mod tests_batch_m {
             !out.contains("first.example"),
             "站点名字漏进了指标标签：{out}"
         );
+    }
+
+    #[test]
+    fn 指标的耗时与日志的_duration_ms_来自同一次时钟读数() {
+        // ★ ★ ★ 「处置一致」不等于「答案一致」。`duration_since` 失败按 0 记那一条
+        //   两边逐字相同（上一条判据钉的就是它），可只要**输入**是两次不同的
+        //   `SystemTime::now()`，同一条请求上就会有两个耗时 ——
+        //   而两边的注释都写着「它们说的是同一件事」。
+        //   ⇒ 这一条钉的是**输入**：两边拿到的是同一个读数。
+        let dir =
+            std::env::temp_dir().join(format!("fulcrum-metrics-clock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clock.json").to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        open_file(&path).expect("测试用的日志文件要开得起来");
+
+        let mut r = rec("<ut-m-clock>");
+        // ⚠ ⚠ `started` 有意钉在 1970 年代：**任何一侧若偷偷去读真实时钟**，
+        //   它算出来的就是十几亿秒而不是 0.25 秒 —— 这条判据因此按**九个数量级**红，
+        //   而不是按微秒红。★ 那正是「反证要红得起来」的意思：一条只在理论上
+        //   成立、实际上永远红不起来的断言，比没有断言更坏。
+        r.started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        r.target = Some(Arc::new(LogRt {
+            output: LogOutput::File(path.clone()),
+            level: LogLevel::All,
+            req_headers: Vec::new(),
+            resp_headers: Vec::new(),
+        }));
+
+        let 收尾时刻 = r.started + Duration::from_millis(250);
+        r.finish_at(200, 12, 收尾时刻);
+
+        let 秒 = hist_sum("<ut-m-clock>", "respond");
+        let 毫秒 = last_duration_ms(&path);
+        // ★ ★ 本判据真正要钉的那一条**排在最前面**：两边换算后逐位对得上。
+        //   ⚠ 排在下面两条之后的话，注入缺陷时先红的是它们，而这一条究竟判不判得动
+        //     就从来没有被验过 —— 一条被别的断言挡在后面的断言，与不存在没有区别。
+        assert!(
+            (秒 * 1000.0 - 毫秒).abs() < 1e-9,
+            "指标说 {秒} 秒、日志说 {毫秒} 毫秒 —— 它们不是同一个读数"
+        );
+        // ★ 再钉住那个读数**就是喂进来的那一个**（否则「两边一致地错」也能通过上面那条）。
+        assert_eq!(秒, 0.25, "指标那一格没用喂进来的那个收尾时刻");
+        assert_eq!(毫秒, 250.0, "日志那一格没用喂进来的那个收尾时刻");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
