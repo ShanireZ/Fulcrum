@@ -989,10 +989,11 @@ impl Cx<'_> {
     }
 
     fn reverse_proxy(&mut self, node: &Node, args: &[Arg], ctx: Ctx) -> StepBody {
-        let mut upstreams: Vec<String> = Vec::new();
+        let mut upstreams: Vec<UpstreamSpec> = Vec::new();
         for a in args {
             self.check_placeholders(a, ctx);
-            upstreams.push(a.value.clone());
+            // ★ 权重先都是默认的 1；子块里的 `weight` 再按**逐字相同的地址**改其中几格。
+            upstreams.push(UpstreamSpec::new(a.value.clone()));
         }
         if upstreams.is_empty() {
             self.arity_error(node, "至少写一个上游，如 `reverse_proxy 127.0.0.1:3000`");
@@ -1010,6 +1011,9 @@ impl Cx<'_> {
         let mut transport = "http".to_string();
         let mut tls_insecure_skip_verify = false;
         let mut proxy_protocol: Option<String> = None;
+        // 已经被 `weight` 指过一次的上游地址（**逐字**）。★ 不能拿「权重 != 1」当判据：
+        // `weight x 1` 是合法的写法，而它与「没写过」在产物上完全同形。
+        let mut weighted: std::collections::BTreeSet<String> = Default::default();
 
         if let Some(block) = &node.block {
             for stmt in block {
@@ -1076,6 +1080,8 @@ impl Cx<'_> {
                                 .unwrap_or_else(|| DEFAULT_PROXY_PROTOCOL.to_string()),
                         );
                     }
+                    // ★ M2 批 N：`weight <上游地址> <正整数>`。三条诊断都在这里面。
+                    "weight" => self.upstream_weight(sub, &mut upstreams, &mut weighted),
                     _ => {}
                 }
             }
@@ -1092,6 +1098,96 @@ impl Cx<'_> {
             transport,
             tls_insecure_skip_verify,
             proxy_protocol,
+        }
+    }
+
+    /// `reverse_proxy { weight <上游地址> <正整数> }`（**M2 批 N**，裁决 R1/R3）。
+    ///
+    /// 三条都是**装载期错误**，⛔ 一条都不回落成默认值：
+    ///
+    /// 1. 地址不在这条 `reverse_proxy` 的上游清单里 ⇒ [`DiagCode::UNKNOWN_WEIGHT_UPSTREAM`]，
+    ///    **并把清单原样列出来**；
+    /// 2. 同一个上游写了两次 ⇒ [`DiagCode::DUPLICATE_WEIGHT`]（⛔ 不是「后写的赢」）；
+    /// 3. 值不在 `[1, 65535]` 里 ⇒ [`DiagCode::BAD_WEIGHT`]。
+    ///
+    /// ⚠ 三条各自 `return`，所以一行 `weight` 只报一条 —— 但**每一行都会被看**，
+    /// 「一次报全」（G51）说的是那件事。
+    fn upstream_weight(
+        &mut self,
+        sub: &Node,
+        upstreams: &mut [UpstreamSpec],
+        weighted: &mut std::collections::BTreeSet<String>,
+    ) {
+        // `check_sub_args` 已经保证正好两个参数。
+        let (addr_arg, weight_arg) = (&sub.args[0], &sub.args[1]);
+        let addr = &addr_arg.value;
+
+        // ⚠ 上游清单是空的 = `reverse_proxy` 那一行本身就写错了，已经报过 BAD_ARITY。
+        //   这里再报一条「不在清单里」只是噪音，而噪音会把真的那条埋掉。
+        if upstreams.is_empty() {
+            return;
+        }
+
+        let Some(idx) = upstreams.iter().position(|u| u.addr == *addr) else {
+            let list: Vec<&str> = upstreams.iter().map(|u| u.addr.as_str()).collect();
+            self.diags.push(
+                Diagnostic::error(
+                    DiagCode::UNKNOWN_WEIGHT_UPSTREAM,
+                    addr_arg.span,
+                    format!("`weight` 指着 `{addr}`，而这条 `reverse_proxy` 没有这个上游"),
+                )
+                .label(format!("这条 `reverse_proxy` 的上游是：{}", list.join(" ")))
+                .help(
+                    "★ 地址要与 `reverse_proxy` 那一行上的 token **逐字相同** —— \
+                     这里不做任何归一化，`backend` 与 `backend:80` 是两个不同的写法",
+                )
+                .note(
+                    "归一化住在运行时那一层；配置层再写一份「差不多的」就会分家，\
+                     而分家的现场是「配置照过、权重没生效」，没有任何东西会说",
+                ),
+            );
+            return;
+        };
+
+        if !weighted.insert(addr.clone()) {
+            self.diags.push(
+                Diagnostic::error(
+                    DiagCode::DUPLICATE_WEIGHT,
+                    sub.name_span,
+                    format!("`{addr}` 的 `weight` 在这个块里写了两次"),
+                )
+                .label("同一个上游只能有一条 `weight`")
+                .note(
+                    "⛔ 不取「后写的赢」：那种规则下删掉或挪动其中一行会**静默**改掉权重，\
+                     而它与「两行本来就一样」在配置里长得一模一样",
+                ),
+            );
+            return;
+        }
+
+        match weight_arg.value.parse::<u32>() {
+            Ok(w) if (MIN_UPSTREAM_WEIGHT..=MAX_UPSTREAM_WEIGHT).contains(&w) => {
+                upstreams[idx].weight = w;
+            }
+            _ => self.diags.push(
+                Diagnostic::error(
+                    DiagCode::BAD_WEIGHT,
+                    weight_arg.span,
+                    format!(
+                        "`weight` 要一个 {MIN_UPSTREAM_WEIGHT}–{MAX_UPSTREAM_WEIGHT} 的整数，`{}` 不是",
+                        weight_arg.value
+                    ),
+                )
+                .label("权重是不带单位的正整数，如 `3`")
+                .help(
+                    "★ `0` 也不合法：把一个上游摘出调度**只有一种写法** —— \
+                     管理面临时覆盖层的 `disable`",
+                )
+                .note(
+                    "两条路做同一件事就会分家（改了一条忘了另一条），\
+                     而分家那天没有任何东西会说",
+                ),
+            ),
         }
     }
 

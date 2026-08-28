@@ -602,6 +602,13 @@ fn reverse_proxy子指令全部有人接() {
                 "proxy_protocol v1",
                 |b| matches!(b, StepBody::ReverseProxy { proxy_protocol, .. } if proxy_protocol.as_deref() == Some("v1")),
             ),
+            // ★ 批 N。判据写 **3** 而不是 1：默认就是 1，写 1 的话「落到了」与
+            //   「被丢掉了」在产物上完全同形 —— 与上面 `dns_refresh` 写 5s 同一条理由。
+            //   ⚠ 地址必须与上面那份夹具的 `reverse_proxy 127.0.0.1:1` **逐字相同**。
+            "weight" => (
+                "weight 127.0.0.1:1 3",
+                |b| matches!(b, StepBody::ReverseProxy { upstreams, .. } if upstreams.len() == 1 && upstreams[0].weight == 3),
+            ),
             other => panic!(
                 "`reverse_proxy {other}` 是新加的子指令，而这条测试没有它的判据。\
                  先在这里写明「它该落到 StepBody::ReverseProxy 的哪个字段」，\
@@ -1375,4 +1382,141 @@ fn 两条判据问的是两件事_同一份配置上给出不同答案() {
     let cs = codes(bare);
     assert!(cs.contains(&DiagCode::METRICS_UNGUARDED), "{cs:?}");
     assert!(cs.contains(&DiagCode::UNREACHABLE_STEP), "{cs:?}");
+}
+
+// ── M2 批 N 任务 1：`weight` 的三条诊断（裁决 R1 / R3）──────────────────────
+
+#[test]
+fn weight_的地址对不上时报错并且把上游清单原样列出来() {
+    // ★ ★ 地址比对是**逐字相同**，不做归一化：这份配置里写的是 `backend:80`，
+    //   而 `weight` 指的是 `backend` —— 运行时那边它们会归一成同一个，
+    //   但归一化住在 `fulcrum-runtime`，在配置层再写一份「差不多的」就是分家。
+    let src =
+        "http://a.com {\n  reverse_proxy backend:80 other:80 {\n    weight backend 3\n  }\n}\n";
+    let o = compile_str("test.Fulcrumfile", src);
+    let d = o
+        .diagnostics
+        .items()
+        .iter()
+        .find(|d| d.code == DiagCode::UNKNOWN_WEIGHT_UPSTREAM)
+        .unwrap_or_else(|| panic!("该报 FUL-DSL-0038，实际：\n{}", o.render_diagnostics()));
+    // ⚠ ⚠ 判据不是「报了一条」，是**那条错误里真的把清单列出来了**：
+    //   只说「找不到」等于让人去猜自己上一行写的到底是什么，
+    //   而这条错误最常见的成因恰恰是两处写法差了一个端口。
+    let 全文 = format!("{} {} {:?} {:?}", d.message, d.label, d.help, d.note);
+    for up in ["backend:80", "other:80"] {
+        assert!(全文.contains(up), "错误里没有把上游 `{up}` 列出来：{全文}");
+    }
+    assert!(o.diagnostics.has_errors(), "这是装载期错误，不是 warning");
+    // ★ 反向那一半：**逐字相同**的那条不许被拦（否则功能整个是死的）。
+    let cfg = ok(
+        "http://a.com {\n  reverse_proxy backend:80 other:80 {\n    weight backend:80 3\n  }\n}\n",
+    );
+    let StepBody::ReverseProxy { upstreams, .. } = &cfg.sites[0].chain[0].body else {
+        panic!("应当是 reverse_proxy")
+    };
+    assert_eq!(upstreams[0].weight, 3);
+    assert_eq!(upstreams[1].weight, 1, "没写 weight 的上游权重是 1");
+}
+
+#[test]
+fn 同一个上游写两次_weight_是错误而不是后写的赢() {
+    let src =
+        "http://a.com {\n  reverse_proxy x:1 x:2 {\n    weight x:1 3\n    weight x:1 5\n  }\n}\n";
+    let cs = codes(src);
+    assert!(
+        cs.contains(&DiagCode::DUPLICATE_WEIGHT),
+        "重复的 weight 没被拦下：{cs:?}"
+    );
+    // ⛔ 「后写的赢」是静默的：删掉或挪动其中一行会改掉权重，而配置里看不出异常。
+    let o = compile_str("t.Fulcrumfile", src);
+    assert!(o.diagnostics.has_errors(), "重复必须是 error");
+    // ★ 反向那一半：两条 `weight` 指着**不同**的上游是正常写法，不许被拦。
+    let cfg = ok(
+        "http://a.com {\n  reverse_proxy x:1 x:2 {\n    weight x:1 3\n    weight x:2 7\n  }\n}\n",
+    );
+    let StepBody::ReverseProxy { upstreams, .. } = &cfg.sites[0].chain[0].body else {
+        panic!("应当是 reverse_proxy")
+    };
+    assert_eq!(
+        upstreams.iter().map(|u| u.weight).collect::<Vec<_>>(),
+        vec![3, 7]
+    );
+}
+
+#[test]
+fn 权重值域外的写法一律是错误_包括零() {
+    // ★ ★ `0` 不合法是**有意的**：「不参与调度」只有一种表达方式 —— 覆盖层的 `disable`。
+    //   两条路做同一件事就是分家，而分家那天没有任何东西会说。
+    for bad in ["0", "-1", "65536", "3s", "abc", "1.5"] {
+        let src =
+            format!("http://a.com {{\n  reverse_proxy x:1 {{\n    weight x:1 {bad}\n  }}\n}}\n");
+        let cs = codes(&src);
+        assert!(
+            cs.contains(&DiagCode::BAD_WEIGHT),
+            "`weight x:1 {bad}` 没被拦下：{cs:?}"
+        );
+    }
+    // ★ 边界的两头必须收：1 与 65535。
+    //   ⚠ 少了这一半，一条「见 weight 就报错」的实现照样能让上面全绿。
+    for good in ["1", "65535", "3"] {
+        let src =
+            format!("http://a.com {{\n  reverse_proxy x:1 {{\n    weight x:1 {good}\n  }}\n}}\n");
+        let cfg = ok(&src);
+        let StepBody::ReverseProxy { upstreams, .. } = &cfg.sites[0].chain[0].body else {
+            panic!("应当是 reverse_proxy")
+        };
+        assert_eq!(upstreams[0].weight, good.parse::<u32>().unwrap());
+    }
+}
+
+#[test]
+fn 零的那条诊断要说清摘节点该写什么() {
+    // ★ 一条只说「不合法」的错误会把人推向「那我写 1 好了」，而他真正想要的是摘掉这台。
+    let o = compile_str(
+        "t.Fulcrumfile",
+        "http://a.com {\n  reverse_proxy x:1 {\n    weight x:1 0\n  }\n}\n",
+    );
+    let d = o
+        .diagnostics
+        .items()
+        .iter()
+        .find(|d| d.code == DiagCode::BAD_WEIGHT)
+        .expect("该有这条诊断");
+    let 全文 = format!("{} {} {:?} {:?}", d.message, d.label, d.help, d.note);
+    assert!(全文.contains("disable"), "没说摘节点该写什么：{全文}");
+}
+
+#[test]
+fn 没写_weight_的配置产物一个字节都不变() {
+    // ★ ★ 这是本任务的**回归护栏**（裁决 R2 的②）：权重为 1 时序列化回裸字符串，
+    //   于是现有夹具、磁盘上那份结构化配置、`/load` 的载荷全都逐字不变。
+    //   ⚠ 反过来说：这条一红，就是「所有现有配置的 JSON 都漂移了」。
+    let cfg = ok("http://a.com {\n  reverse_proxy 10.0.0.1:8080 10.0.0.2:8080\n}\n");
+    // ⚠ 用紧凑形态比对，不用 pretty：判据要钉的是**形状**（裸字符串数组），
+    //   拿 pretty 去比会连缩进层数一起钉进来，而那与本条要说的事无关。
+    let j = serde_json::to_string(&cfg).expect("该能序列化");
+    assert!(
+        j.contains(r#""upstreams":["10.0.0.1:8080","10.0.0.2:8080"]"#),
+        "上游必须仍是裸字符串数组：\n{j}"
+    );
+    assert!(
+        !j.contains("weight"),
+        "没配权重时 JSON 里不许出现 weight：\n{j}"
+    );
+}
+
+#[test]
+fn 配了_weight_的配置序列化成对象并且能读回来() {
+    let cfg = ok(
+        "http://a.com {\n  reverse_proxy 10.0.0.1:8080 10.0.0.2:8080 {\n    weight 10.0.0.1:8080 3\n  }\n}\n",
+    );
+    let j = serde_json::to_string(&cfg).expect("该能序列化");
+    assert!(
+        j.contains(r#""upstreams":[{"addr":"10.0.0.1:8080","weight":3},"10.0.0.2:8080"]"#),
+        "配了权重的那一项写成对象、没配的那一项仍是裸字符串：\n{j}"
+    );
+    let back: fulcrum_config::model::StructuredConfig =
+        serde_json::from_str(&j).expect("结构化配置是公开入口，必须读得回来");
+    assert_eq!(back, cfg, "往返必须无损");
 }

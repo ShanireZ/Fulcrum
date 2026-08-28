@@ -550,7 +550,14 @@ fn detail(body: &StepBody) -> String {
             ..
         } => format!(
             "  {} [{lb_policy}, dns_refresh {}s]",
-            upstreams.join(" "),
+            // ⚠ ⚠ 只印地址，**不印权重**（M2 批 N 任务 1）：`plan` 说的是「实际会怎么跑」，
+            //   而权重的调度那一半还没接线（`UNWIRED` 里登记着）。在这里印出 `*3`
+            //   等于印一件今天不成立的事。★ 任务 2 接线时把它加进来。
+            upstreams
+                .iter()
+                .map(|u| u.addr.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
             dns_refresh_ms / 1000
         ),
         StepBody::Respond { status, .. } => format!("  {status}"),

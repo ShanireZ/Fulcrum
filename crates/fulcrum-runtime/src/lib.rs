@@ -67,6 +67,13 @@ pub const UNWIRED: &[(&str, &str)] = &[
         "passive_fail",
         "被动熔断不在 M1 清单上（G17 里它与健康检查是两件事）；等 M2 排期",
     ),
+    // ★ ★ **M2 批 N 任务 1**：DSL 写得出、结构化模型带得动、诊断挡得住三种写错法，
+    //   而 `pick_index_by` 还没有权重这一格 ⇒ 它现在正是这张表管的那个形状。
+    //   ⚠ 任务 2 接线时**必须同一笔**把这一行删掉（`tests/unwired_contract.rs` 两头都钉着）。
+    (
+        "weight",
+        "上游权重的调度那一半在批 N 任务 2 接；DSL 与结构化模型已就位",
+    ),
 ];
 
 /// 负载均衡策略。
@@ -1749,10 +1756,24 @@ impl Runtime {
                     StepBody::Tracing => {
                         used.insert("tracing");
                     }
-                    StepBody::ReverseProxy { passive, .. } => {
+                    StepBody::ReverseProxy {
+                        passive, upstreams, ..
+                    } => {
                         // ★ 批 11：`health_uri` 接上了，这一条删掉。
                         if passive.fail_threshold.is_some() {
                             used.insert("passive_fail");
+                        }
+                        // ★ ★ 批 N 任务 1：`weight` 的 DSL 面与结构化模型就位、
+                        //   **调度还不认它**（任务 2 才接）⇒ 写了就报出来。
+                        // ⚠ ⚠ 判据是「有没有**非默认**权重」，不是「有没有写过 `weight`」：
+                        //   按 R2 的序列化契约，`weight 1` 与不写在结构化配置里**完全同形**，
+                        //   到这一层已经分不出来。★ 而那不是缺口 —— 全是 1 的调度与今天
+                        //   逐字相同，两种情形本来就没有任何行为差别，报出来才是假警告。
+                        if upstreams
+                            .iter()
+                            .any(|u| u.weight != fulcrum_config::model::DEFAULT_UPSTREAM_WEIGHT)
+                        {
+                            used.insert("weight");
                         }
                         // ★ 批 10：这里原先无条件报一条 `dns_refresh`
                         //   （它有默认值 30s，等于对每条 reverse_proxy 都承诺了定期重解析）。
@@ -2177,7 +2198,12 @@ fn build_step(
                 return None;
             }
             let mut ups = Vec::new();
-            for u in upstreams {
+            for spec in upstreams {
+                // ⚠ ⚠ **`spec.weight` 在这里被丢掉，这是有意的**（M2 批 N 任务 1）：
+                //   `weight` 现在只到 DSL 与结构化模型为止，调度那一半是任务 2 的活，
+                //   所以它登记在 [`UNWIRED`] 里、装载时会打出「写了但还没接线」。
+                //   ★ 任务 2 接线时改的就是这一处：权重要跟着进 `Upstream`。
+                let u = &spec.addr;
                 // ★ 上游地址必须**在装载时**就能被解析成「主机 + 端口」。
                 //   `10.0.0.1:8080` / `backend:80`；缺端口按 transport 补默认。
                 match normalize_upstream(u, transport) {

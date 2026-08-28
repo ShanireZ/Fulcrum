@@ -26,6 +26,10 @@ const EXPECTED: &[&str] = &[
     "on_demand",
     "tracing",
     "passive_fail",
+    // ★ ★ **M2 批 N 任务 1 加进来的**：`weight` 的 DSL 面与结构化模型就位，
+    //   而 `pick_index_by` 还不认权重。⚠ 任务 2 接线时**必须同一笔**把这一行删掉 ——
+    //   这道门两个方向都挡（留着 = 假警告；删了没接线 = 静默失效）。
+    "weight",
     // ★ ★ **能力做完就销号**（`encode` / `log` / `l4` / `proxy_protocol_from` 都是这么离开的）。
     //   ⚠ ⚠ 而删掉一行的**同时**必须真的接线 —— 这道门的全部意义就在这里：
     //   「实现了但忘了更新清单」与「删了清单但没实现」**都过不去**。
@@ -89,6 +93,7 @@ fn 文档里那句未接线清单与_unwired_对得上() {
             //   写成「全局的 `proxy_protocol_from`」的话，② 会从文档里抠出裸的那个、
             //   在 `expected` 里找不到，于是**红在一个与事实相反的理由上**。
             "proxy_protocol_from" => "`proxy_protocol_from`",
+            "weight" => "`weight`",
             other => panic!(
                 "`{other}` 在 UNWIRED 里，而这条测试不知道它在文档那句里该写成什么。\
                  先在这里补上对照，再去文档里加 —— 顺序反过来的话，漏写没人看得见。"
@@ -288,6 +293,27 @@ fn 只报本次配置真的用到的那几条() {
     //   ⚠ 少了它，一个「见到任何 health_* 就报 passive_fail」的实现照样绿。
     assert_eq!(
         unwired_for("http://a.com {\n  reverse_proxy x:1 {\n    health_uri /h\n  }\n}\n"),
+        Vec::<&str>::new()
+    );
+
+    // ★ ★ **批 N 任务 1**：配置里写了权重 ⇒ 装载时必须报「写了但还没接线」。
+    //   ⚠ 这一条不是想当然能过的：扫描是**按结构**走的，`weight` 不是 `StepBody` 上的
+    //   一个字段而是 `upstreams` 每一项里的一格 —— 少写这一格，一份配了权重的配置
+    //   会静静地按等权轮询跑，而装载日志一个字都不说。
+    assert_eq!(
+        unwired_for("http://a.com {\n  reverse_proxy x:1 {\n    weight x:1 3\n  }\n}\n"),
+        vec!["weight"]
+    );
+    // 反向 ①：没写 `weight` ⇒ 不该报（否则每一条 reverse_proxy 都会挂上一条假警告）。
+    assert_eq!(
+        unwired_for("http://a.com {\n  reverse_proxy x:1 x:2\n}\n"),
+        Vec::<&str>::new()
+    );
+    // 反向 ②：★ 显式写 `weight … 1` 也不报 —— 那不是漏报。
+    //   按 R2 的序列化契约，权重 1 在结构化配置里就是一个裸字符串，与不写**完全同形**；
+    //   而全是 1 的调度与今天逐字相同 ⇒ 报出来才是假警告。
+    assert_eq!(
+        unwired_for("http://a.com {\n  reverse_proxy x:1 {\n    weight x:1 1\n  }\n}\n"),
         Vec::<&str>::new()
     );
 

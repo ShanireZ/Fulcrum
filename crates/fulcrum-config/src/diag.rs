@@ -274,6 +274,29 @@ impl DiagCode {
     /// ★ warning 而不是 error：把指标开在内网可信段上、或者开在只有自己连得到的
     /// 环回地址上，都是正当配置 —— 一个拒绝装载的门会把它们一起挡掉。
     pub const METRICS_UNGUARDED: DiagCode = DiagCode(37);
+    /// `reverse_proxy { weight <地址> … }` 里那个地址**不在这条 `reverse_proxy` 的上游清单里**
+    /// （**M2 批 N**，裁决 R1）。
+    ///
+    /// ★ ★ 比对是**逐字相同**，不做归一化：`normalize_upstream`（`backend` → `backend:80`）
+    /// 住在 `fulcrum-runtime`，而这一步在 `fulcrum-config`。在这边再写一份「差不多的」
+    /// 就是分家，而分家的现场是「写了 `weight backend 3`，配置照过，权重没生效」。
+    /// ⇒ 对不上就在装载期拒绝。
+    ///
+    /// ⚠ ⚠ **这条诊断必须把那条 `reverse_proxy` 的上游清单原样列出来**：
+    /// 只说「找不到」等于让人去猜自己上一行写的到底是什么 —— 而这条错误最常见的成因
+    /// 恰恰是两处写法差了一个端口。
+    pub const UNKNOWN_WEIGHT_UPSTREAM: DiagCode = DiagCode(38);
+    /// 同一个上游写了两条 `weight`（**M2 批 N**）。
+    ///
+    /// ★ ★ 必须是 error，⛔ **不许「后写的赢」**：那种规则下删掉或挪动其中一行
+    /// 会**静默**改掉权重，而它与「两行本来就是一样的」在配置里长得一模一样。
+    pub const DUPLICATE_WEIGHT: DiagCode = DiagCode(39);
+    /// 权重不在 `[1, 65535]` 里 —— 含 `0`、负数、带单位、不是数字（**M2 批 N**，裁决 R3）。
+    ///
+    /// ★ ★ **`0` 不合法是有意的**：「这台不参与调度」**只有一种表达方式**，
+    /// 就是管理面临时覆盖层的 `disable`（G18）。让 `weight 0` 也表示摘掉，
+    /// 就是两条路做同一件事 —— 而两条路迟早分家，且分家那天没有任何东西会说。
+    pub const BAD_WEIGHT: DiagCode = DiagCode(40);
 
     pub fn as_str(&self) -> String {
         format!("FUL-DSL-{:04}", self.0)

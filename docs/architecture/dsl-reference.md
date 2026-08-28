@@ -26,7 +26,7 @@ sources:
 > 而它真正被执行这件事由 `crates/fulcrum-runtime/tests/routing.rs` 与
 > `tests/serve/run.sh`（真流量）钉住。
 > ⚠ **仍有几条只是「解析得过」**：`tls internal`、`on_demand`、
-> `tracing`、`passive_*`——
+> `tracing`、`passive_*`、`weight`——
 > 它们由 `fulcrum_runtime::UNWIRED` 逐条登记、装载时打出来，并有契约测试钉住那份清单。
 > **别把「文档里写了」当成「运行时会做」。**
 > ✅ ★ **`proxy_protocol_from` （M2 批 L 第 ① 步）从这句话里删掉**：
@@ -348,6 +348,7 @@ warning（`handle` / `route` 那层带着也算 —— 它罩住块内每一步�
 | `transport` | `http`（默认）／`https` | M1 |
 | `tls_insecure_skip_verify` | 上游用 https 时跳过证书校验。⚠ 只给自签的内网上游用 | M1 |
 | `proxy_protocol` | ★ **给上游发一个 PROXY 头**，`v1` / `v2`；**省略参数就是 `v2`**（M2 批 D）。⚠ 它与 `header_up X-Forwarded-For` 解决同一件事但**层不同** —— 对**不解析 HTTP 的上游**它是唯一可用的那个。★ 枢衡自己收到过 PROXY 头时，发出去的是**那个头里的地址**（链式传递），不是自己的 | M2 |
+| `weight` | **上游权重**：`weight <上游地址> <正整数>`，可写多行，**没写的上游是 1**，值域 **`[1, 65535]`**。<br>⚠ ⚠ **地址必须与 `reverse_proxy` 那一行上的 token 逐字相同** —— 这里**不做任何归一化**：写 `weight backend 3` 而上面写的是 `backend:80`，是**装载期错误**（`FUL-DSL-0038`，并把那条 `reverse_proxy` 的上游清单原样列出来）。★ 归一化住在运行时那一层，配置层再写一份「差不多的」就会分家，而分家的现场是「配置照过、权重没生效」。<br>⚠ 同一个上游写两次是错误（`FUL-DSL-0039`），⛔ **不是「后写的赢」**：那种规则下挪动一行就会静默改掉权重。<br>⛔ **`0` 不合法**（`FUL-DSL-0040`）：把一台机器摘出调度**只有一种写法** —— 管理面临时覆盖层的 `disable`。两条路做同一件事就会分家。<br>⚠ ⚠ **现在只到配置层为止**：DSL 认得它、结构化配置带着它，而**调度还不认**（在 `fulcrum_runtime::UNWIRED` 里登记着，装载时会打出来）| M2 |
 
 ### `file_server` 的子块
 

@@ -348,7 +348,11 @@ pub enum StepBody {
     /// **没有第二个键**。★ 与 `Tracing` 同款，不是新写法。
     Metrics,
     ReverseProxy {
-        upstreams: Vec<String>,
+        /// 上游清单。★ 每一项自带**配置权重**（[`UpstreamSpec`]，**M2 批 N**）。
+        ///
+        /// ⚠ ⚠ 取「每项自带权重」而不是「再加一个平行的 `weights: Vec<u32>`」：
+        /// 两个等长向量迟早不等长，而不等长的表现是**权重悄悄错位**，不是报错。
+        upstreams: Vec<UpstreamSpec>,
         lb_policy: String,
         health: HealthCheck,
         /// ★ 上游域名定期重解析（G17）。**这条直接消灭 nginx OSS 那个经典事故源**。
@@ -415,6 +419,138 @@ impl StepBody {
             StepBody::ReverseProxy { .. } => "reverse_proxy",
             StepBody::FileServer { .. } => "file_server",
         }
+    }
+}
+
+/// 没写 `weight` 的上游是这个权重（**M2 批 N**，裁决 R1）。
+pub const DEFAULT_UPSTREAM_WEIGHT: u32 = 1;
+
+/// 权重值域的下界（裁决 R3）。
+///
+/// ★ ★ **`0` 有意不合法**：「这台不参与调度」**只有一种表达方式** —— 管理面覆盖层的
+/// `disable`。让 `weight 0` 也表示摘掉，就是两条路做同一件事，
+/// 而两条路迟早分家（一条改了、另一条没改，且没有任何东西会说）。
+pub const MIN_UPSTREAM_WEIGHT: u32 = 1;
+
+/// 权重值域的上界（裁决 R3）。
+///
+/// ★ 它与管理面 `set_weight` 的值域**是同一对常量**，不是两处各写一个 65535。
+pub const MAX_UPSTREAM_WEIGHT: u32 = 65_535;
+
+/// 一条 `reverse_proxy` 上的一个上游：地址 + **配置权重**（**M2 批 N**，裁决 R1/R2）。
+///
+/// # ★ ★ 序列化契约（G11 的公开入口，两个方向都钉住）
+///
+/// | 情形 | JSON |
+/// |---|---|
+/// | 反序列化：裸字符串 `"10.0.0.1:8080"` | 收，权重 = [`DEFAULT_UPSTREAM_WEIGHT`] |
+/// | 反序列化：对象 `{"addr":"10.0.0.1:8080","weight":3}` | 收 |
+/// | 序列化：权重 == 1 | **写回裸字符串** |
+/// | 序列化：权重 != 1 | 写成对象 |
+///
+/// ⇒ ① 旧载荷继续能 `POST /load`（那是个活着的接口，不是内部结构）；
+/// ② 没配 `weight` 的配置 `compile` 出来的 JSON **一个字节都不变**。
+/// ⚠ ②不是「省事」，它是**判据的一部分**：现有夹具、`plan` 的输出与磁盘上那份结构化配置
+/// 全都因此逐字不变，于是这一批**有没有顺手改掉别的东西**看得出来。
+///
+/// ⚠ 代价写在明处：**`weight 1` 与不写 `weight` 在结构化配置里完全同形**，
+/// 装载时也就分不出来。★ 这不是缺口 —— 全部权重都是 1 的调度与今天逐字相同，
+/// 「分不出来」的那两种情形本来就没有任何行为差别。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamSpec {
+    /// DSL 里 `reverse_proxy` 那一行上写的**原文 token**。
+    ///
+    /// ⚠ ⚠ **这一层不做任何归一化**（`backend` 不会变成 `backend:80`）：
+    /// 归一化住在 `fulcrum_runtime::normalize_upstream`，在这边再写一份「差不多的」
+    /// 就是分家，而分家的现场是「写了 `weight backend 3`，配置照过，权重没生效」。
+    /// ⇒ `weight` 的地址比对因此是**逐字相同**，对不上是装载期错误。
+    pub addr: String,
+    /// 配置权重，值域 `[MIN_UPSTREAM_WEIGHT, MAX_UPSTREAM_WEIGHT]`。
+    pub weight: u32,
+}
+
+impl UpstreamSpec {
+    /// 一个默认权重的上游。
+    pub fn new(addr: impl Into<String>) -> Self {
+        Self {
+            addr: addr.into(),
+            weight: DEFAULT_UPSTREAM_WEIGHT,
+        }
+    }
+}
+
+impl Serialize for UpstreamSpec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        if self.weight == DEFAULT_UPSTREAM_WEIGHT {
+            // ★ 这一支是「没配 weight 的配置一个字节都不变」的全部实现。
+            return s.serialize_str(&self.addr);
+        }
+        let mut st = s.serialize_struct("UpstreamSpec", 2)?;
+        st.serialize_field("addr", &self.addr)?;
+        st.serialize_field("weight", &self.weight)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for UpstreamSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // ⚠ 手写 visitor 而不是 `#[serde(untagged)]`：untagged 在两支都不匹配时
+        //   只会说「data did not match any variant」，而这里是 `POST /load` 的入口 ——
+        //   一条说不清哪里错了的 400 会把排查成本整个推给对面。
+        d.deserialize_any(UpstreamSpecVisitor)
+    }
+}
+
+struct UpstreamSpecVisitor;
+
+impl<'de> serde::de::Visitor<'de> for UpstreamSpecVisitor {
+    type Value = UpstreamSpec;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("一个上游地址字符串，或 {\"addr\":\"host:port\",\"weight\":正整数}")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(UpstreamSpec::new(v))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error as _;
+        let mut addr: Option<String> = None;
+        let mut weight: Option<u32> = None;
+        while let Some(k) = m.next_key::<String>()? {
+            match k.as_str() {
+                "addr" => {
+                    if addr.is_some() {
+                        return Err(A::Error::duplicate_field("addr"));
+                    }
+                    addr = Some(m.next_value()?);
+                }
+                "weight" => {
+                    if weight.is_some() {
+                        return Err(A::Error::duplicate_field("weight"));
+                    }
+                    weight = Some(m.next_value()?);
+                }
+                // ⚠ 不静默吞掉不认识的键：一个拼错的 `weigth` 会让权重回落成 1，
+                //   而那份配置在每一处都显得正常。
+                other => {
+                    return Err(A::Error::unknown_field(other, &["addr", "weight"]));
+                }
+            }
+        }
+        let addr = addr.ok_or_else(|| A::Error::missing_field("addr"))?;
+        let weight = weight.unwrap_or(DEFAULT_UPSTREAM_WEIGHT);
+        if !(MIN_UPSTREAM_WEIGHT..=MAX_UPSTREAM_WEIGHT).contains(&weight) {
+            // ★ 与 DSL 那条诊断（`FUL-DSL-0040`）同一个值域：机器写这一层时
+            //   也得撞上同一堵墙，否则「DSL 拒绝、JSON 收下」就是两套规则。
+            return Err(A::Error::custom(format!(
+                "上游 `{addr}` 的 weight 是 {weight}，要在 {MIN_UPSTREAM_WEIGHT}–{MAX_UPSTREAM_WEIGHT} 之间；\
+                 0 不合法 —— 把一个上游摘出调度用管理面的 `disable`"
+            )));
+        }
+        Ok(UpstreamSpec { addr, weight })
     }
 }
 
@@ -535,6 +671,66 @@ mod tests {
         let g = Global::default();
         let j = serde_json::to_string(&g).unwrap();
         assert!(j.contains("\"acme_email\":null"), "{j}");
+    }
+
+    // ── 上游权重的序列化契约（M2 批 N 任务 1，裁决 R2）────────────────────
+
+    #[test]
+    fn 裸字符串上游收得下并且权重是一() {
+        // ★ 这一条守的是**旧载荷**：`POST /load` 是活着的接口，
+        //   在 `weight` 出现之前发出去的那些 JSON 必须继续能进来。
+        let u: UpstreamSpec = serde_json::from_str("\"10.0.0.1:8080\"").unwrap();
+        assert_eq!(u.addr, "10.0.0.1:8080");
+        assert_eq!(u.weight, DEFAULT_UPSTREAM_WEIGHT);
+    }
+
+    #[test]
+    fn 对象形态的上游收得下并且权重留住了() {
+        let u: UpstreamSpec = serde_json::from_str(r#"{"addr":"x:1","weight":3}"#).unwrap();
+        assert_eq!(u.addr, "x:1");
+        assert_eq!(u.weight, 3);
+        // 往返回去仍是对象，且权重还是 3。
+        let j = serde_json::to_string(&u).unwrap();
+        assert_eq!(j, r#"{"addr":"x:1","weight":3}"#);
+    }
+
+    #[test]
+    fn 权重为一时序列化回裸字符串而不是对象() {
+        // ★ ★ **反向判据**：少了它，一个「永远写对象」的实现照样能让上面两条绿，
+        //   而它会让现有的每一份夹具、每一份磁盘上的结构化配置集体漂移。
+        let j = serde_json::to_string(&UpstreamSpec::new("x:1")).unwrap();
+        assert_eq!(j, "\"x:1\"", "权重为 1 必须写回裸字符串");
+        assert!(
+            !j.contains("weight"),
+            "权重为 1 时不许出现 weight 这个键：{j}"
+        );
+        assert!(!j.contains('{'), "权重为 1 时不许序列化成对象：{j}");
+    }
+
+    #[test]
+    fn 裸字符串往返之后仍是裸字符串() {
+        let j = "\"10.0.0.1:8080\"";
+        let u: UpstreamSpec = serde_json::from_str(j).unwrap();
+        assert_eq!(serde_json::to_string(&u).unwrap(), j);
+    }
+
+    #[test]
+    fn json_那一侧的权重值域与_dsl_那一侧是同一堵墙() {
+        // ⚠ 机器直接写结构化配置也是**公开入口**（G11）：DSL 拒绝而 JSON 收下的话，
+        //   就是两套规则，而 `weight 0` 在其中一条路上会悄悄变成「摘掉」。
+        for bad in [
+            r#"{"addr":"x:1","weight":0}"#,
+            r#"{"addr":"x:1","weight":65536}"#,
+        ] {
+            let e = serde_json::from_str::<UpstreamSpec>(bad).unwrap_err();
+            assert!(
+                e.to_string().contains("disable"),
+                "0 / 越界要说清怎么改对，实际：{e}"
+            );
+        }
+        // 拼错的键不许被静默吞掉 —— 吞掉的表现是权重回落成 1，而配置看起来完全正常。
+        let e = serde_json::from_str::<UpstreamSpec>(r#"{"addr":"x:1","weigth":3}"#).unwrap_err();
+        assert!(e.to_string().contains("weigth"), "{e}");
     }
 
     #[test]

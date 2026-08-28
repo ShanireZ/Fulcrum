@@ -278,6 +278,13 @@ pub const REVERSE_PROXY_SUBS: &[SubSpec] = &[
     sub("dns_refresh", 1, 1, ArgType::Duration),
     sub("passive_fail", 1, 1, ArgType::Word),
     sub("passive_window", 1, 1, ArgType::Duration),
+    // ★ ★ **M2 批 N**：`weight <上游地址> <正整数>`，可写多行，没写的上游权重是 1。
+    //   ⚠ 取「地址 + 值」而不是 Caddy 那种位置式（`lb_policy weighted_round_robin 3 1`）：
+    //   位置式一改地址的书写顺序就**静默换了权重**，而配置里一个字都看不出问题。
+    //   ⚠ `arg_type` 是 `Word` 而不是某种「整数」：`check_sub_args` 只给**第一个**参数
+    //   套类型，而第一个参数是地址。权重那一格的值域检查在 `compile.rs` 里做 ——
+    //   它要说的话（值域、`0` 为什么不合法、摘节点该写什么）远超一句类型错误。
+    sub("weight", 2, 2, ArgType::Word),
     sub("header_up", 1, 2, ArgType::Word),
     sub("header_down", 1, 2, ArgType::Word),
     sub("transport", 1, 1, ArgType::Enum(&["http", "https"])),
