@@ -57,7 +57,7 @@
 //!
 //! | 族 | 问谁 |
 //! |---|---|
-//! | `fulcrum_upstream_inflight` · `fulcrum_upstream_healthy` | 当前 `Runtime` 快照里的每个 `Upstream`（**按地址去重**）|
+//! | `fulcrum_upstream_inflight` · `fulcrum_upstream_healthy` | 当前 `Runtime` 快照里的每个 `Upstream`，**按地址归并**：在途数求和、健康位取合取 |
 //! | `fulcrum_cert_expiry_seconds` | `SniResolver::expiries()`（R5：值是 `notAfter` 的**绝对 Unix 秒**）|
 //! | `fulcrum_acme_issue_total` | `AcmeManager::issue_counts()` |
 //! | `fulcrum_build_info` | 这个二进制自己（`CARGO_PKG_VERSION`），不需要任何活体源 |
@@ -77,7 +77,7 @@ use fulcrum_acme::AcmeManager;
 use fulcrum_runtime::SharedRuntime;
 use fulcrum_tls::SniResolver;
 use log::warn;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -178,14 +178,14 @@ const FAMILIES: [Family; 9] = [
         name: "fulcrum_upstream_inflight",
         kind: Kind::Gauge,
         source: Source::Live,
-        help: "每个上游当前在飞的连接数；同一个上游被多个站点引用时只出一条。",
+        help: "每个上游地址当前在飞的连接数；同一地址被多处引用时求和。",
         labels: &["upstream"],
     },
     Family {
         name: "fulcrum_upstream_healthy",
         kind: Kind::Gauge,
         source: Source::Live,
-        help: "主动健康检查对每个上游的判定，1 为健康；没配 health_uri 的恒为 1。",
+        help: "上游地址的健康位，1 为健康；同一地址被多处引用时全都健康才为 1；没配 health_uri 的恒为 1。",
         labels: &["upstream"],
     },
     Family {
@@ -228,10 +228,14 @@ pub const CACHE_EVENTS_TOTAL: &Family = &FAMILIES[2];
 /// 其余一律 `<other>`：**上界由配置定、不由访问者定**。
 pub const NO_SITE_MATCH_TOTAL: &Family = &FAMILIES[3];
 
-/// 每个上游当前在飞的连接数。⚠ 抓取时问 `Upstream::inflight()`，**不在这里另记一份**。
+/// 每个上游**地址**当前在飞的连接数。⚠ 抓取时问 `Upstream::inflight()`，**不在这里另记一份**。
+///
+/// ★ 同一个地址被多处引用时**求和** —— 它是个计数，聚合只有这一种说得通的做法。
 const UPSTREAM_INFLIGHT: &Family = &FAMILIES[4];
 
-/// 每个上游的健康位。★ 没配 `health_uri` 的上游恒为 1（那与运行时那一侧的初值同一口径）。
+/// 每个上游**地址**的健康位。★ 没配 `health_uri` 的上游恒为 1（那与运行时那一侧的初值同一口径）。
+///
+/// ★ 同一个地址被多处引用时取**合取**（全都健康才是 1）—— 它是个布尔，⛔ 不求和。
 const UPSTREAM_HEALTHY: &Family = &FAMILIES[5];
 
 /// 已装载证书的 `notAfter`，**绝对 Unix 秒**（裁决 R5）。
@@ -348,31 +352,36 @@ fn snapshot(src: &LiveSources) -> Registry {
         // ⚠ 一次抓取只取一份快照：分两次取的话，两个族可能落在**两份不同的配置**上，
         //   于是同一个上游在 `inflight` 里在、在 `healthy` 里不在。
         let snap = rt.current();
-        // ⚠ ⚠ 同一个上游被多个站点（或同一个站点的多条 `reverse_proxy`）引用时
-        //   **只出一条 series**：键是**上游地址串**，也就是 `least_conn` 与健康检查
-        //   共用的那个身份。
+        // ⚠ ⚠ 同一个地址被多个站点（或同一个站点的多条 `reverse_proxy`）写到时，
+        //   在运行时图里是**多个 `Upstream` 对象、多份各自独立的状态** ——
+        //   而这两个族按**地址**出一条 series（`upstream` 标签就是那个地址串，
+        //   也是 `least_conn` 与健康检查共用的那个身份）。
+        //   ⇒ 先归并，再出样本。**两个族的归并方式不一样，各有各的理由**：
         //
-        // ★ ★ **代价写在明处**：写在两条 `reverse_proxy` 里的同一个地址，在运行时图里
-        //   是**两个 `Upstream` 对象、两个各自独立的在途计数**。这一族按地址合并，
-        //   于是它报的是**遍历序里第一个**那一份，⛔ 不是两份之和。
-        //   ⚠ 想要「打到这个地址的连接一共有多少」得另立一个族 —— 那时 `healthy`
-        //   也要跟着换语义（两份健康位求和会得到 2），所以这里不顺手做。
-        // ★ `seen` 不是为了省事：去掉它之后 `BTreeMap` 照样只留一条，
-        //   只不过留下的变成**最后**那一份，而「第一份还是最后一份」从输出里看不出来。
-        //   ⇒ 让这个选择显式，并由判据钉住（`同一个上游被两个站点引用时只出一条_series`）。
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        // ★ ★ `inflight` 是**计数** ⇒ **求和**。挑其中一份报出去，得到的是一个
+        //   **错的数，而它长得和对的数一模一样** —— 读这条 series 的人只会有一个理解
+        //   （「打到这个地址、现在还在飞的连接一共有多少」），没有任何东西会说它只算了一半。
+        //   ⚠ 共享后端（两个站点各写一条 `reverse_proxy 127.0.0.1:3000`）是很常见的配置。
+        //
+        // ★ ★ `healthy` 是**布尔** ⇒ **取合取**（全都健康才算健康），⛔ 不是求和
+        //   （两份健康位求和会得到 2，那根本不是这个族的值域）。
+        //   ★ 取合取而不是析取，是因为**混配**：站点 A 配了 `health_uri`、站点 B 没配
+        //   ⇒ B 那一份**恒为 1**（运行时那侧的初值，「没配就永不探测」）。
+        //   合取给出的是**真的探过的那一侧**探到的状态；析取会让一个
+        //   **根本没在探测**的对象把一次真实的故障盖掉。⇒ 悲观那一侧是安全的那一侧。
+        //
+        // ★ 归并之后「留第一份还是留最后一份」这个问题不再存在 —— 它本来就不该存在。
+        let mut by_addr: BTreeMap<&str, (u64, bool)> = BTreeMap::new();
         for t in snap.all_proxy_targets() {
             for up in &t.upstreams {
-                if !seen.insert(up.addr.as_str()) {
-                    continue;
-                }
-                r.set(UPSTREAM_INFLIGHT, &[up.addr.as_str()], up.inflight() as f64);
-                r.set(
-                    UPSTREAM_HEALTHY,
-                    &[up.addr.as_str()],
-                    if up.is_healthy() { 1.0 } else { 0.0 },
-                );
+                let e = by_addr.entry(up.addr.as_str()).or_insert((0, true));
+                e.0 += up.inflight() as u64;
+                e.1 &= up.is_healthy();
             }
+        }
+        for (addr, (inflight, healthy)) in by_addr {
+            r.set(UPSTREAM_INFLIGHT, &[addr], inflight as f64);
+            r.set(UPSTREAM_HEALTHY, &[addr], if healthy { 1.0 } else { 0.0 });
         }
     }
 
@@ -1112,44 +1121,60 @@ mod tests {
         }
     }
 
-    #[test]
-    fn 同一个上游被两个站点引用时只出一条_series() {
-        // ⚠ ⚠ 去重的键是**上游地址串**，也就是 `least_conn` 与健康检查共用的那个身份。
+    /// 两个站点引用同一个地址的那份运行时图。
+    ///
+    /// ★ `127.0.0.1:9001` 被 `a.example` 与 `b.example` 各写一条（共享后端，很常见的配置），
+    /// `127.0.0.1:9002` 只有一处 —— 于是同一次渲染里「归并过的」与「没归并过的」都在。
+    fn 共享后端的运行时图() -> std::sync::Arc<fulcrum_runtime::Runtime> {
         let outcome = fulcrum_config::compile_str(
             "t.Fulcrumfile",
             "http://a.example {\n  reverse_proxy 127.0.0.1:9001 127.0.0.1:9002\n}\n\
              http://b.example {\n  reverse_proxy 127.0.0.1:9001\n}\n",
         );
         let cfg = outcome.config.expect("配置编译不过");
-        let rt = fulcrum_runtime::Runtime::build(&cfg).expect("运行时图建不起来");
-        {
-            // ★ ★ **先证样本里真有那件事**：`127.0.0.1:9001` 在运行时图里是
-            //   **两个各自独立的 `Upstream` 对象**。前提不成立的话，下面「只出一条」
-            //   是在量一张压根没有重复的表 —— 那种判据永远绿，而它什么都没守。
-            let 重复: Vec<&fulcrum_runtime::Upstream> = rt
-                .all_proxy_targets()
-                .into_iter()
-                .flat_map(|t| t.upstreams.iter())
-                .filter(|u| u.addr == "127.0.0.1:9001")
-                .collect();
-            assert_eq!(重复.len(), 2, "前提没成立：夹具里没有被重复引用的上游");
-            // ★ ★ 只给**遍历序里第一份**加在途数：这样「留第一份还是留最后一份」
-            //   在输出里就分得出来了。⚠ 去掉 `seen` 之后 `BTreeMap` 照样只留一条，
-            //   但留下的会是第二份（0），这一条当场变红 —— 这就是它守的东西。
-            重复[0].acquire();
-            重复[0].acquire();
-            assert_eq!(重复[1].inflight(), 0, "两个对象共用了同一个计数器？");
-        }
-        let shared = SharedRuntime::new(std::sync::Arc::new(rt));
-        let out = 按活体源渲真表(&LiveSources {
-            runtime: Some(shared),
-            ..Default::default()
-        });
+        std::sync::Arc::new(fulcrum_runtime::Runtime::build(&cfg).expect("运行时图建不起来"))
+    }
 
+    /// 运行时图里地址等于 `addr` 的那些 `Upstream`，**按遍历序**。
+    ///
+    /// ★ ★ 每条判据都先拿它证一次「样本里真有两个对象」：前提不成立的话，
+    /// 「求和」「合取」都是在量一张压根没有重复的表 —— 那种判据永远绿，什么都没守。
+    fn 同址上游<'a>(
+        rt: &'a fulcrum_runtime::Runtime,
+        addr: &str,
+    ) -> Vec<&'a fulcrum_runtime::Upstream> {
+        rt.all_proxy_targets()
+            .into_iter()
+            .flat_map(|t| t.upstreams.iter())
+            .filter(|u| u.addr == addr)
+            .collect()
+    }
+
+    fn 按运行时图渲真表(rt: std::sync::Arc<fulcrum_runtime::Runtime>) -> String {
+        按活体源渲真表(&LiveSources {
+            runtime: Some(SharedRuntime::new(rt)),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn 同一个上游被两个站点引用时只出一条_series() {
+        // ⚠ ⚠ series 的键是**上游地址串**，也就是 `least_conn` 与健康检查共用的那个身份。
+        let rt = 共享后端的运行时图();
+        assert_eq!(
+            同址上游(&rt, "127.0.0.1:9001").len(),
+            2,
+            "前提没成立：夹具里没有被重复引用的上游"
+        );
+        let out = 按运行时图渲真表(rt);
+
+        // 两个族各出**两条** —— 三个 `Upstream` 对象归并成两个地址。
+        assert_eq!(样本行(&out, "fulcrum_upstream_inflight").len(), 2, "{out}");
+        assert_eq!(样本行(&out, "fulcrum_upstream_healthy").len(), 2, "{out}");
         assert_eq!(
             样本行(&out, "fulcrum_upstream_inflight"),
             vec![
-                "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9001\"} 2".to_string(),
+                "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9001\"} 0".to_string(),
                 "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9002\"} 0".to_string(),
             ],
             "{out}"
@@ -1159,6 +1184,74 @@ mod tests {
             样本行(&out, "fulcrum_upstream_healthy"),
             vec![
                 "fulcrum_upstream_healthy{upstream=\"127.0.0.1:9001\"} 1".to_string(),
+                "fulcrum_upstream_healthy{upstream=\"127.0.0.1:9002\"} 1".to_string(),
+            ],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn 同一个地址的在途数是全部_upstream_之和() {
+        // ★ ★ `inflight` 是个**计数**，聚合只有一种说得通的做法：求和。
+        //   报其中一份等于报一个**错的数，而它长得和对的数一模一样** ——
+        //   读这条 series 的人只会有一个理解：打到这个地址的连接一共有多少。
+        let rt = 共享后端的运行时图();
+        let 两份 = 同址上游(&rt, "127.0.0.1:9001");
+        assert_eq!(两份.len(), 2, "前提没成立：夹具里没有被重复引用的上游");
+
+        // ⚠ ⚠ 两份**都非 0 且互不相等**（2 与 3 ⇒ 期望 5）：
+        //   取 0 与 N 的话，「只取第一份」或「只取最后一份」在某个遍历序下会**碰巧**通过 ——
+        //   而碰巧通过的判据与不存在的判据无法区分。
+        两份[0].acquire();
+        两份[0].acquire();
+        两份[1].acquire();
+        两份[1].acquire();
+        两份[1].acquire();
+        assert_eq!((两份[0].inflight(), 两份[1].inflight()), (2, 3));
+
+        let out = 按运行时图渲真表(rt);
+        assert_eq!(
+            样本行(&out, "fulcrum_upstream_inflight"),
+            vec![
+                "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9001\"} 5".to_string(),
+                "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9002\"} 0".to_string(),
+            ],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn 同一个地址的健康位取合取_有一份不健康就是_0() {
+        // ★ ★ `healthy` 是个**布尔**，聚合是**取合取**，⛔ 不是求和（求和会得到 2，
+        //   那根本不在这个族的值域里）。
+        // ★ 取合取而不是析取，因为**混配**：一个站点配了 `health_uri`、另一个没配
+        //   ⇒ 后者恒为 1（「没配就永不探测」）。合取给出的是真的探过的那一侧探到的状态；
+        //   析取会让一个**根本没在探测**的对象把一次真实的故障盖掉。
+        //   ⇒ 悲观那一侧是安全的那一侧。
+        let rt = 共享后端的运行时图();
+        let 两份 = 同址上游(&rt, "127.0.0.1:9001");
+        assert_eq!(两份.len(), 2, "前提没成立：夹具里没有被重复引用的上游");
+
+        // ── 方向一：两份都健康 ⇒ 1（也就是上面那条判据的初态，这里显式再走一遍）
+        assert!(
+            两份[0].is_healthy() && 两份[1].is_healthy(),
+            "初值应当都是健康"
+        );
+        assert!(
+            按运行时图渲真表(rt.clone())
+                .contains("fulcrum_upstream_healthy{upstream=\"127.0.0.1:9001\"} 1\n")
+        );
+
+        // ── 方向二：只有**第二份**被探测判成不健康 ⇒ 0
+        //   ⚠ 挑第二份而不是第一份：挑第一份的话，一个「只看第一份」的实现照样能过。
+        两份[1].set_healthy(false);
+        assert!(两份[0].is_healthy(), "第一份不该被连带改掉");
+        let out = 按运行时图渲真表(rt);
+        assert_eq!(
+            样本行(&out, "fulcrum_upstream_healthy"),
+            vec![
+                "fulcrum_upstream_healthy{upstream=\"127.0.0.1:9001\"} 0".to_string(),
+                // ★ 没被碰过的那个地址不受影响 —— 否则「全判成 0」也能过上面那条。
                 "fulcrum_upstream_healthy{upstream=\"127.0.0.1:9002\"} 1".to_string(),
             ],
             "{out}"
