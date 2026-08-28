@@ -201,6 +201,59 @@ fn host_大小写不敏感() {
     assert!(route(&r, &Req::new("A.EXAMPLE.COM", "/"), &h).is_some());
 }
 
+// ── G121：`site_addr` = 请求实际匹配到的那条地址字面量 ─────────────────────────
+
+#[test]
+fn site_addr取命中的那条地址而不是站点的第一条_g121() {
+    // ★ ★ ★ 本任务唯一非做不可的判据：G121 明文「不能用站点块的第一个地址」。
+    //   一个站点配两条地址，请求命中第二条时 `site_addr` 必须是第二条的字面量，
+    //   而 `site.name`（访问日志的 `site` 字段用它，R3）**仍然**是第一条地址的原文——
+    //   两者在这里必须给出不同的值。那不是巧合，是 R3 那条裁决明写的形状：
+    //   访问日志的 `site` 与指标的 `site_addr` 长得像是同一件事，其实不是。
+    let r = rt("http://a.example:9000, http://b.example:9000 {\n  respond 200\n}\n");
+    let h = no_headers();
+    let got = route(&r, &Req::new("b.example", "/").port(9000), &h).unwrap();
+    assert_eq!(
+        &*got.site_addr, "b.example",
+        "应当取命中的那一条，而不是站点的第一条"
+    );
+    assert_eq!(
+        got.site.name, "http://a.example:9000",
+        "site.name 不该受影响——它按契约仍是第一条地址的原文"
+    );
+}
+
+#[test]
+fn site_addr在通配站点上折叠成自己的字面量而不是请求的_host() {
+    // ⚠ 反向判据：`site_addr` 若不慎取成请求的 host，通配站点下的 series
+    //   会随子域名无限增长——这正是 G121 要挡的那个基数坑。
+    let r = rt("http://*.wild.example:9000 {\n  respond 200\n}\n");
+    let h = no_headers();
+    let got = route(&r, &Req::new("x.wild.example", "/").port(9000), &h).unwrap();
+    assert_eq!(
+        &*got.site_addr, "*.wild.example",
+        "通配地址折叠成它自己的字面量，不是命中它的那个具体 host"
+    );
+}
+
+#[test]
+fn site_addr在兜底地址上是冒号加端口() {
+    let r = rt(":9000 {\n  respond 200\n}\n");
+    let h = no_headers();
+    let got = route(&r, &Req::new("whatever", "/").port(9000), &h).unwrap();
+    assert_eq!(&*got.site_addr, ":9000");
+}
+
+#[test]
+fn site_addr按小写折叠_r6() {
+    // ★ 取小写而不是原文：路由本来就按小写匹配（同上 `host_大小写不敏感`），
+    //   保留原文会让只有大小写不同的两份配置在指标上产生两条时序。
+    let r = rt("A.Example {\n  respond 200\n}\n");
+    let h = no_headers();
+    let got = route(&r, &Req::new("a.example", "/"), &h).unwrap();
+    assert_eq!(&*got.site_addr, "a.example");
+}
+
 #[test]
 fn 默认响应码就是_g63_写下的那三个() {
     let r = rt("a.com {\n  respond 200\n}\n");

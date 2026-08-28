@@ -204,6 +204,14 @@ pub(crate) struct Record {
     pub remote_port: u16,
     pub outcome: &'static str,
     pub site: Option<String>,
+    /// 请求**实际匹配到的那条地址字面量**（G121），批 M 的 `fulcrum_requests_total`
+    /// 取数点用它当 `site` 标签 —— **不进 `to_json_line`**，只是个中转站。
+    ///
+    /// ⚠ ⚠ 它与上面的 `site` 是两件不同的事，长得像是巧合：`site` = 站点的名字 =
+    /// 第一个地址的原文（访问日志的字段契约，一个字不动）；这一格 = 命中的那一条，
+    /// 只留主机名。两者同名纯属巧合，互不派生，见 [`fulcrum_runtime::Routed`] 的
+    /// `site_addr` 字段文档。
+    pub site_addr: Option<Arc<str>>,
     pub upstream: Option<String>,
     pub cache: Option<String>,
     /// TLS 那四格（**M2 批 L 第 ③ 步**）。`None` = 这条连接不是 TLS。
@@ -289,6 +297,7 @@ impl Record {
             //   在日志里读起来像「字段丢了」，而这里的事实是「什么都没发生」。
             outcome: "aborted",
             site: None,
+            site_addr: None,
             upstream: None,
             cache: None,
             tls: None,
@@ -437,6 +446,25 @@ mod tests {
         assert_eq!(o["remote_ip"], "192.0.2.7");
         assert_eq!(o["remote_port"], 56324);
         assert_eq!(o["duration_ms"], 1.5);
+    }
+
+    // ★ ★ ★ R3 的反向判据（任务 2 · G121）：`site_addr` 是 `fulcrum_requests_total`
+    //   取数的中转站，**不属于**访问日志的字段契约。少了这一条，日后有人往
+    //   `to_json_line` 里顺手补一行 `j.opt_str("site_addr", ...)`，会静默地把
+    //   访问日志字段契约改掉——而这正是任务 2 明令「一个字都不许改」的那一处。
+    #[test]
+    fn site_addr_不进访问日志的_json_行() {
+        let mut r = rec();
+        r.site_addr = Some(Arc::from("a.example"));
+        let s = r.to_json_line(200, 0, r.started);
+        let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
+        let o = v.as_object().unwrap();
+        assert!(
+            !o.contains_key("site_addr"),
+            "`site_addr` 不该出现在访问日志的 JSON 行里——它只是指标取数的中转站"
+        );
+        // `site` 字段本身不受影响，仍然是契约里那个「站点名字 = 第一个地址原文」。
+        assert_eq!(o["site"], "a.example");
     }
 
     #[test]

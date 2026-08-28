@@ -773,6 +773,19 @@ pub struct SiteRt {
     /// 本站点的全部主机名（含 `*.` 形式），**不含**不带主机名的 `:port` 那种。
     /// ★ TLS 层要用它决定「这张证书该装在哪些 SNI 上」。
     pub hostnames: Vec<String>,
+    /// 每条地址的**标签字面量**（G121 · `fulcrum_requests_total{site=...}` 取数用它）：
+    /// `host` 非空取其小写（通配保留 `*.` 前缀，与上面 `hostnames` 同一口径），
+    /// `host` 为空（`:8080` 这种不带主机名的兜底地址）取 `format!(":{port}")`。
+    /// 下标与结构化配置里的 `s.addresses` 一一对应，[`Runtime::resolve_site`]
+    /// 返回值的第三项就是这份下标。
+    ///
+    /// ⚠ ⚠ **它与 [`SiteRt::name`] 是两件不同的事，长得像是巧合**：`name` 取
+    /// **第一条**地址的原文（带 scheme 与端口，访问日志的 `site` 字段用它），
+    /// 这里取的是**命中的那一条**、只留主机名 —— G121 明文要求不能用第一个地址，
+    /// 否则同一块里的两条地址会被混成一格，且改地址书写顺序会让时序断裂。
+    /// ★ 用 `Arc<str>` 是为了让每条请求带走它时只是一次引用计数
+    /// （与下面 [`SiteRt::log`] 同一条理由，这里连 `String` 的分配都省了）。
+    pub addresses: Vec<std::sync::Arc<str>>,
     pub tls: TlsConfig,
     /// 本站点的访问日志设置（**M2 批 L 第 ② 步**）。`None` = 这个站点不记访问日志。
     ///
@@ -791,12 +804,13 @@ pub struct SiteRt {
 #[derive(Debug)]
 pub struct Runtime {
     sites: Vec<SiteRt>,
-    /// `(host, port) → 站点下标`
-    exact: BTreeMap<(String, u16), usize>,
-    /// `(".example.com", port, 站点下标)`，**按后缀长度降序**。
-    wildcard: Vec<(String, u16, usize)>,
-    /// `port → 站点下标`，来自 `:8080` 这种不带主机名的地址。
-    catch_all: BTreeMap<u16, usize>,
+    /// `(host, port) → (站点下标, 命中的地址在该站点 `addresses` 里的下标)`。
+    /// ⚠ 后一项是 G121 的全部落点 —— 见 [`SiteRt::addresses`]。
+    exact: BTreeMap<(String, u16), (usize, usize)>,
+    /// `(".example.com", port, 站点下标, 命中的地址下标)`，**按后缀长度降序**。
+    wildcard: Vec<(String, u16, usize, usize)>,
+    /// `port → (站点下标, 命中的地址下标)`，来自 `:8080` 这种不带主机名的地址。
+    catch_all: BTreeMap<u16, (usize, usize)>,
     pub defaults: Defaults,
     pub l4: Option<L4Config>,
     /// L4 面建好的监听器（M2 批 A：TCP；批 B：UDP）。
@@ -983,6 +997,13 @@ pub enum Outcome<'r> {
 pub struct Routed<'r> {
     pub site: &'r SiteRt,
     pub site_match: SiteMatch,
+    /// 这次请求**实际匹配到的那条地址字面量**（G121）。
+    ///
+    /// ⚠ ⚠ 它**不是** `site.name`：`name` 是「站点的名字 = 第一个地址的原文」
+    /// （访问日志的 `site` 字段用这个），这里取的是**命中的那一条**——
+    /// 同一个站点配多条地址时两者会给出不同的值，那不是巧合，是 G121 明文
+    /// 要求「不能用站点块的第一个地址」换来的。
+    pub site_addr: std::sync::Arc<str>,
     /// 要施加到**响应**上的头操作，按施加顺序。
     pub response_headers: Vec<&'r HeaderOpRt>,
     /// `rewrite` 之后的路径（含查询串按原样保留）。`None` = 没被改写。
@@ -1252,7 +1273,7 @@ impl Runtime {
         let mut errors: Vec<BuildError> = Vec::new();
         let mut sites = Vec::new();
         let mut exact = BTreeMap::new();
-        let mut wildcard: Vec<(String, u16, usize)> = Vec::new();
+        let mut wildcard: Vec<(String, u16, usize, usize)> = Vec::new();
         let mut catch_all = BTreeMap::new();
         let mut listen: BTreeMap<u16, bool> = BTreeMap::new();
 
@@ -1285,7 +1306,17 @@ impl Runtime {
                 }
             }
 
-            for a in &s.addresses {
+            // ★ ★ 每条地址的标签字面量（G121），下标与 `s.addresses` 一一对应 ——
+            //   完整的取舍写在 `SiteRt::addresses` 的类型文档上，这里只管算。
+            let mut addresses: Vec<std::sync::Arc<str>> = Vec::new();
+            for (ai, a) in s.addresses.iter().enumerate() {
+                let label = if a.host.is_empty() {
+                    format!(":{}", a.port)
+                } else {
+                    a.host.to_ascii_lowercase()
+                };
+                addresses.push(std::sync::Arc::<str>::from(label));
+
                 let needs_tls = a.scheme == "https";
                 // ★ ★ 同一个端口不能既有 http:// 又有 https:// 的站点。
                 //   ⚠ 这不是洁癖：一个监听 socket 只能说一种协议。写成
@@ -1309,7 +1340,7 @@ impl Runtime {
                     }
                 }
                 if a.host.is_empty() {
-                    if catch_all.insert(a.port, si).is_some() {
+                    if catch_all.insert(a.port, (si, ai)).is_some() {
                         errors.push(BuildError::new(
                             &at,
                             format!("端口 {} 上已经有一个不带主机名的站点了", a.port),
@@ -1318,9 +1349,9 @@ impl Runtime {
                 } else if a.wildcard {
                     // `*.example.com` → 后缀 `.example.com`
                     let suffix = a.host.trim_start_matches('*').to_string();
-                    wildcard.push((suffix, a.port, si));
+                    wildcard.push((suffix, a.port, si, ai));
                 } else if exact
-                    .insert((a.host.to_ascii_lowercase(), a.port), si)
+                    .insert((a.host.to_ascii_lowercase(), a.port), (si, ai))
                     .is_some()
                 {
                     errors.push(BuildError::new(
@@ -1338,6 +1369,7 @@ impl Runtime {
                     .filter(|a| !a.host.is_empty())
                     .map(|a| a.host.to_ascii_lowercase())
                     .collect(),
+                addresses,
                 tls: s.tls.clone(),
                 log: s
                     .log
@@ -1689,12 +1721,16 @@ impl Runtime {
     ///
     /// 顺序：精确 → 通配（长后缀优先）→ 端口兜底。都不中返回 `None`
     /// → 调用方回 [`Defaults::no_site_match`]（**421**，G63）。
-    pub fn resolve_site(&self, host: &str, port: u16) -> Option<(usize, SiteMatch)> {
+    ///
+    /// ★ 返回值的第三项是**命中的是该站点第几条地址**（下标进 [`SiteRt::addresses`]）——
+    /// G121 要指标标签取「实际匹配到的那条地址字面量」而不是站点的第一条地址，
+    /// 这个下标是那条字面量的唯一来源。
+    pub fn resolve_site(&self, host: &str, port: u16) -> Option<(usize, SiteMatch, usize)> {
         let h = host.to_ascii_lowercase();
-        if let Some(i) = self.exact.get(&(h.clone(), port)) {
-            return Some((*i, SiteMatch::Exact));
+        if let Some(&(i, ai)) = self.exact.get(&(h.clone(), port)) {
+            return Some((i, SiteMatch::Exact, ai));
         }
-        for (suffix, p, i) in &self.wildcard {
+        for (suffix, p, i, ai) in &self.wildcard {
             // ★ ★ **只吃一层**（D18 / G66）：`*.example.com` 覆盖 `a.example.com`，
             //   **不**覆盖 `example.com` 自己，也**不**覆盖 `a.b.example.com`。
             //   ⚠ 这里原先是 `ends_with` 的后缀匹配，而证书那侧按 RFC 6125 只吃一层，
@@ -1703,15 +1739,17 @@ impl Runtime {
             //   ★ 判据只有一份，就在 `fulcrum_config::host`：两边都调它，
             //   **分家变成结构上做不到的事**，而不是靠一条契约测试碰巧发现。
             if *p == port && wildcard_covers(suffix, &h) {
-                return Some((*i, SiteMatch::Wildcard));
+                return Some((*i, SiteMatch::Wildcard, *ai));
             }
         }
-        self.catch_all.get(&port).map(|i| (*i, SiteMatch::CatchAll))
+        self.catch_all
+            .get(&port)
+            .map(|&(i, ai)| (i, SiteMatch::CatchAll, ai))
     }
 
     /// 走一次完整路由。
     pub fn route<'r>(&'r self, req: &RequestCtx<'_>) -> Option<Routed<'r>> {
-        let (idx, how) = self.resolve_site(req.host, req.port)?;
+        let (idx, how, addr_idx) = self.resolve_site(req.host, req.port)?;
         let site = &self.sites[idx];
         let mut w = Walk {
             site,
@@ -1740,6 +1778,7 @@ impl Runtime {
         Some(Routed {
             site,
             site_match: how,
+            site_addr: site.addresses[addr_idx].clone(),
             response_headers,
             rewritten_path: if rewritten {
                 Some(path.into_owned())

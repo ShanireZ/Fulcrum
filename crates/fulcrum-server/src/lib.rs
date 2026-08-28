@@ -513,6 +513,7 @@ impl FulcrumApp {
         //   `outcome_name` 的穷尽匹配会**编不过**，而那正是契约里
         //   「`outcome` 是闭集」那句话的落法。
         session.record.site = Some(routed.site.name.clone());
+        session.record.site_addr = Some(routed.site_addr.clone());
         session.record.target = routed.site.log.clone();
         session.record.outcome = outcome_name(&routed.outcome);
 
