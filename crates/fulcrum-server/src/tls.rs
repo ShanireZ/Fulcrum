@@ -34,7 +34,18 @@ pub const DEFAULT_ISSUER: &str = "letsencrypt";
 /// 软提示（进 `notes`）：站点要自动签发而存储里还没有那张证书。
 ///
 /// `issuer` 是证书存储里的签发者目录名，由 `acme_ca` 决定。
-pub fn plan_tls(rt: &Runtime, cert_root: &Path, issuer: &str) -> Result<TlsPlan, Vec<String>> {
+/// `default_sni` 是全局选项那一格，**客户端不带 SNI 时当作它报了这个名字**。
+///
+/// ⚠ 它按参数收、不从 `rt` 上取：`Runtime` 只带路由要用的那几格全局选项，
+/// 而 `issuer`（来自全局块的 `acme_ca`）本来就是这么收的 —— 同一类东西走同一条路。
+/// ★ 代价是**多一处「调用方可能忘了传」**，而 `None` 与「没配」在类型上分不开
+/// ⇒ 「装载路径上真的传了」这件事由 `tests/serve/run.sh` 9d 在真流量上判。
+pub fn plan_tls(
+    rt: &Runtime,
+    cert_root: &Path,
+    issuer: &str,
+    default_sni: Option<&str>,
+) -> Result<TlsPlan, Vec<String>> {
     let resolver = Arc::new(SniResolver::new());
     let store = CertStore::new(cert_root);
     let mut errors: Vec<String> = Vec::new();
@@ -152,6 +163,33 @@ pub fn plan_tls(rt: &Runtime, cert_root: &Path, issuer: &str) -> Result<TlsPlan,
         }
     }
 
+    // ── 全局 `default_sni`：客户端不带 SNI 时当作它报了哪个名字 ────────────────
+    //
+    // ★ ★ **这里是这条指令唯一的接线点。** 在它之前两头都在——DSL 认得、编译进
+    //   `Global.default_sni`、`SniResolver` 那侧的槽与握手期的取数也都在——
+    //   **中间没有人接**：`set_default` 全仓唯一的调用方在一条 `#[cfg(test)]` 里。
+    // ⚠ ⚠ 而它**也不在 `UNWIRED` 里**，所以装载日志一个字都不会说 ⇒ 配了它的人
+    //   只会看到不带 SNI 的客户端照样被拒绝握手，且日志还在说「你没配 default_sni」。
+    //   ★ 那正是那张清单存在的全部理由所要防的形状：**要么真的做，要么被说出来**。
+    if let Some(name) = default_sni {
+        resolver.set_default_name(name);
+        // ⚠ 判「配置面上有没有站点服务这个名字」，**不判「现在有没有证书」**：
+        //   自动签发那张多半是启动之后才签下来的，按证书判会把一个正常的启动瞬态
+        //   报成配置错误 —— 而假警告会训练人忽略整张表。
+        // ★ 于是两种缺口分得开：名字打错是**永久缺口**，在这里说；证书还没签下来是
+        //   **启动瞬态**，由上面那条「存储里还没有它的证书」说。两条同时出现也不重复。
+        let served = rt
+            .sites()
+            .iter()
+            .any(|s| !matches!(s.tls.mode, TlsMode::Off) && covers(&s.hostnames, name));
+        if !served {
+            notes.push(format!(
+                "全局 `default_sni {name}`：本配置里没有任何 TLS 站点服务这个名字 —— \
+                 不带 SNI 的客户端仍然会被拒绝握手"
+            ));
+        }
+    }
+
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -224,6 +262,12 @@ pub fn log_tls_notes(plan: &TlsPlan, resolver_desc: &str) {
             known
         );
     }
+    // ★ 「不带 SNI 的握手会怎样」也要说出来：那是 `default_sni` 在运行中**唯一**
+    //   看得见的地方。⚠ 不说的话，「配了它」与「它生效了」在现场分不开 ——
+    //   而这条指令此前正是卡在这两者之间：写得下、编译得过、运行时零调用方。
+    if let Some(d) = plan.resolver.default_name() {
+        info!("{resolver_desc}：不带 SNI 的握手按 `default_sni {d}` 挑证书");
+    }
 }
 
 #[cfg(test)]
@@ -243,5 +287,111 @@ mod tests {
         assert!(covers(&sans, "*.example.com"));
         // 配置里写通配符、证书上只有裸域 → 不覆盖
         assert!(!covers(&["example.com".to_string()], "*.example.com"));
+    }
+
+    // ── 全局 `default_sni` 的装载判据 ──────────────────────────────────────────
+
+    fn 临时目录(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("fulcrum-plan-tls-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("建临时目录");
+        p
+    }
+
+    /// 现签一对 PEM 放进 `dir`，返回 `(证书路径, 私钥路径)`。
+    /// ★ 现签而不是提交一张进仓库：提交的那张迟早过期，而过期那天红的是「TLS 坏了」。
+    fn 现签一对pem(dir: &Path, domain: &str) -> (String, String) {
+        let key = rcgen::KeyPair::generate().expect("测试密钥");
+        let params = rcgen::CertificateParams::new(vec![domain.to_string()]).expect("测试参数");
+        let cert = params.self_signed(&key).expect("自签");
+        let crt = dir.join(format!("{domain}.crt"));
+        let pkey = dir.join(format!("{domain}.key"));
+        std::fs::write(&crt, cert.pem()).expect("写证书");
+        std::fs::write(&pkey, key.serialize_pem()).expect("写私钥");
+        (crt.display().to_string(), pkey.display().to_string())
+    }
+
+    fn 建运行时(dsl: &str) -> Runtime {
+        let o = fulcrum_config::compile_str("t.Fulcrumfile", dsl);
+        assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+        Runtime::build(&o.config.expect("配置")).expect("运行时图建不起来")
+    }
+
+    #[test]
+    fn 装载时把_default_sni_接到解析器上() {
+        // ★ ★ 这一条钉的就是那个缺口本身：`default_sni` 曾经 DSL 认得、编译得过、
+        //   `SniResolver` 那侧也备好了槽，**而装载路径上没有任何人接** ——
+        //   全仓唯一的 `set_default` 调用方在一条 `#[cfg(test)]` 里。
+        let dir = 临时目录("default-sni");
+        let (crt, key) = 现签一对pem(&dir, "a.com");
+        let rt = 建运行时(&format!(
+            "a.com:8443 {{\n  tls {crt} {key}\n  respond 200\n}}\n"
+        ));
+
+        let plan = plan_tls(&rt, &dir, DEFAULT_ISSUER, Some("A.COM")).expect("装载");
+        assert_eq!(
+            plan.resolver.default_name().as_deref(),
+            Some("a.com"),
+            "`default_sni` 没被接到解析器上 —— 配了它的人仍然会被拒绝握手"
+        );
+        assert!(
+            plan.notes.is_empty(),
+            "配得好好的不该有话说：{:?}",
+            plan.notes
+        );
+
+        // ★ 反向那半：没配就**不许**有默认名字。少了它，一个恒填一个名字的实现照样绿。
+        let plan = plan_tls(&rt, &dir, DEFAULT_ISSUER, None).expect("装载");
+        assert_eq!(plan.resolver.default_name(), None);
+    }
+
+    #[test]
+    fn default_sni_指着没人服务的名字要在装载时说出来() {
+        // ⚠ 名字打错是**永久缺口**：它与「证书还没签下来」（启动瞬态）必须分开说，
+        //   否则运维只能看着一条「握手被拒」去猜是哪一种。
+        let dir = 临时目录("default-sni-orphan");
+        let (crt, key) = 现签一对pem(&dir, "a.com");
+        let rt = 建运行时(&format!(
+            "a.com:8443 {{\n  tls {crt} {key}\n  respond 200\n}}\n"
+        ));
+
+        let plan = plan_tls(&rt, &dir, DEFAULT_ISSUER, Some("typo.example")).expect("装载");
+        assert!(
+            plan.notes.iter().any(|n| n.contains("typo.example")),
+            "打错的 default_sni 一个字都没说：{:?}",
+            plan.notes
+        );
+        // ⚠ 名字照样装上去：装载时说清楚，运行时按配置办 —— 不替用户改配置。
+        assert_eq!(
+            plan.resolver.default_name().as_deref(),
+            Some("typo.example")
+        );
+    }
+
+    #[test]
+    fn default_sni_指着通配站点下的名字不算没人服务() {
+        // ⚠ 反向判据：「有没有站点服务这个名字」若写成「与某个 hostname 逐字相等」，
+        //   一份 `*.a.com` + `default_sni www.a.com` 的**正确**配置每次装载都会挨一句假警告，
+        //   而假警告会训练人忽略整张表。
+        let dir = 临时目录("default-sni-wild");
+        let rt = 建运行时("*.a.com {\n  respond 200\n}\n");
+        let plan = plan_tls(&rt, &dir, DEFAULT_ISSUER, Some("www.a.com")).expect("装载");
+        assert!(
+            !plan
+                .notes
+                .iter()
+                .any(|n| n.contains("没有任何 TLS 站点服务")),
+            "{:?}",
+            plan.notes
+        );
+        // ★ 而通配只吃一层这件事对它同样成立 —— 两层的名字确实没人服务。
+        let plan = plan_tls(&rt, &dir, DEFAULT_ISSUER, Some("x.y.a.com")).expect("装载");
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("没有任何 TLS 站点服务")),
+            "{:?}",
+            plan.notes
+        );
     }
 }

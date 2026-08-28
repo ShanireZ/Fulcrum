@@ -248,7 +248,10 @@ fn prepare<'a>(
             .and_then(|c| c.global.acme_ca.as_deref())
             .unwrap_or(fulcrum_acme::LETSENCRYPT_PRODUCTION),
     );
-    match fulcrum_server::tls::plan_tls(&rt, &cert_root, &issuer) {
+    // ★ `default_sni` 与 `issuer` 一样从**这份配置**的全局块取：`validate` 要回答的是
+    //   「这份配置起来之后会怎样」，而不是某个写死的默认值。
+    match fulcrum_server::tls::plan_tls(&rt, &cert_root, &issuer, cfg.global.default_sni.as_deref())
+    {
         Ok(plan) => {
             for n in &plan.notes {
                 eprintln!("⏳ {n}");

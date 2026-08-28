@@ -71,6 +71,12 @@ sources:
 > 按 SNI 动态挑证书、每域一目录的 PEM 存储（原子写 + `flock`）、续期判定（ARI → 1/3 → 退避）、
 > `tls <cert> <key>`。端到端由 `tests/serve/run.sh` 验过：`--cacert` 验签通过、
 > ALPN 协商到 h2、未知 SNI 被拒绝握手。
+> ✅ ★ **全局 `default_sni`（不带 SNI 的客户端）也接上了** —— 装载时把**名字**交给
+> `SniResolver`（不是当时那张证书：存证书的话，自动签发那张会因为「装载时还没签下来」
+> 而永远取不到，续期换掉之后那份副本还会一直发旧的）。⚠ 它此前是本仓库
+> 「DSL 认得、编译得过、运行时零调用方」的活样本，**而且不在 `UNWIRED` 里**
+> ⇒ 装载日志一个字都不说。判据：`tests/serve/run.sh` 9d（真流量，不带 SNI 要拿到
+> 那张证书）＋ 9c 的反向那半（配着它，未知 SNI 仍须被拒 —— 它不是 `fallback_sni`）。
 > ✅ **ACME 本体（自动签发/续期）已全部接线**——三种挑战（TLS-ALPN-01 主、
 > HTTP-01 备、DNS-01 通配符）、原生 Cloudflare / DNSPod、ARI 续期，门禁里对着真 CA（pebble）
 > 跑两个端到端场景；**并且已经在真实域名上对生产 Let's Encrypt 真用着**。

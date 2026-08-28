@@ -93,8 +93,17 @@ struct Table {
     exact: BTreeMap<String, Arc<CertKey>>,
     /// `(".example.com", 证书)`，**按后缀长度降序**。
     wildcard: Vec<(String, Arc<CertKey>)>,
-    /// 客户端不带 SNI 时用哪一张（全局选项 `default_sni`）。
-    default: Option<Arc<CertKey>>,
+    /// 客户端不带 SNI 时**当作**它报了哪个名字（全局选项 `default_sni`）。键一律小写。
+    ///
+    /// ★ ★ **存的是名字，不是那张证书。** 存 `Arc<CertKey>` 的话它就是上面两张表里
+    /// 那张的第二份副本，而副本会在两个方向上分家，两次都没有任何东西会说：
+    ///   · 自动签发的那张多半在**装载之后**才装进表 —— 装载时按名字取一次是空的，
+    ///     于是 `default_sni` 对一个自动签发的站点等于没配；
+    ///   · 续期换掉表里那张之后，副本仍指着**旧证书** —— 不带 SNI 的客户端拿到一张
+    ///     过期证书，而 [`SniResolver::expiries`] 只走 exact/wildcard，
+    ///     `fulcrum_cert_expiry_seconds` 上一切正常。
+    /// ⇒ 让分家在结构上做不到（D18/G66 同一条理由）。
+    default_name: Option<String>,
 }
 
 /// ACME 的 TLS-ALPN-01 用的那个 ALPN 协议名（RFC 8737 §3）。写死，不可配置。
@@ -177,7 +186,19 @@ impl SniResolver {
             let got = self.lookup(sni.as_deref());
             match (&sni, &got) {
                 (Some(n), None) => debug!("SNI {n} 没有可用证书，拒绝握手"),
-                (None, None) => debug!("客户端没给 SNI，且没有配 default_sni，拒绝握手"),
+                // ⚠ ⚠ 这一句以前**恒说「没有配 default_sni」**，而在配了的时候它是**假的**：
+                //   `default_sni` 那时编译得过、结构化配置里也写着，却**没有任何人接**
+                //   （`set_default` 全仓唯一的调用方在一条 `#[cfg(test)]` 里）⇒ 现场是
+                //   「配了它，握手照样被拒，而日志说你没配」——最难查的那一种。
+                // ★ 现在这句话只说**解析器自己知道的东西**：默认名字有没有、够不够得到证书。
+                //   两件事分开说，因为处置完全不同：前者要去加一行配置，
+                //   后者要去看那个名字的证书为什么没签下来。
+                (None, None) => match self.default_name() {
+                    None => debug!("客户端没给 SNI，且没有配 default_sni，拒绝握手"),
+                    Some(d) => {
+                        debug!("客户端没给 SNI，而 default_sni 指的 {d} 现在没有可用证书，拒绝握手")
+                    }
+                },
                 _ => {}
             }
             got
@@ -224,11 +245,22 @@ impl SniResolver {
             .sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
     }
 
-    /// 客户端不带 SNI 时用哪一张。
-    pub fn set_default(&self, ck: Arc<CertKey>) {
+    /// 客户端不带 SNI 时**当作**它报了这个名字（全局选项 `default_sni`）。
+    ///
+    /// ⚠ **这里不检查这个名字现在有没有证书**：自动签发的那张多半是启动之后才签下来的，
+    /// 装载时按「取不到就报错」处置，等于把一个正常的启动瞬态说成配置错误。
+    /// 够不够得到由**每次握手现查**；装载时该说的那句话由
+    /// `fulcrum_server::tls::plan_tls` 说 —— 它看得见配置里有没有站点服务这个名字，
+    /// 而这里只看得见证书表。
+    pub fn set_default_name(&self, name: &str) {
         if let Ok(mut t) = self.table.write() {
-            t.default = Some(ck);
+            t.default_name = Some(name.to_ascii_lowercase());
         }
+    }
+
+    /// 现在配着的 `default_sni` 是哪个名字。给装载日志与握手日志用。
+    pub fn default_name(&self) -> Option<String> {
+        self.table.read().ok()?.default_name.clone()
     }
 
     /// 已装载的精确域名与通配后缀，给装载日志用。
@@ -261,10 +293,15 @@ impl SniResolver {
         out
     }
 
+    /// 一张证书都没装上。
+    ///
+    /// ⚠ `default_sni` **不算**：它是个名字，不是一张证书。把它算进来的话，一份
+    /// 「配了 `default_sni`、而一张证书都没签下来」的部署会被说成「装上了东西」，
+    /// 而那正是装载日志最该喊的一种情形。
     pub fn is_empty(&self) -> bool {
         self.table
             .read()
-            .map(|t| t.exact.is_empty() && t.wildcard.is_empty() && t.default.is_none())
+            .map(|t| t.exact.is_empty() && t.wildcard.is_empty())
             .unwrap_or(true)
     }
 
@@ -302,21 +339,39 @@ impl SniResolver {
 
     fn lookup(&self, sni: Option<&str>) -> Option<Arc<CertKey>> {
         let t = self.table.read().ok()?;
-        let Some(name) = sni else {
-            // 不带 SNI（老客户端、或直接用 IP 访问）→ default_sni。
-            return t.default.clone();
-        };
-        let name = name.to_ascii_lowercase();
-        if let Some(ck) = t.exact.get(&name) {
-            return Some(ck.clone());
-        }
-        for (suffix, ck) in &t.wildcard {
-            if wildcard_covers(suffix, &name) {
-                return Some(ck.clone());
+        let lowered;
+        let name = match sni {
+            Some(n) => {
+                lowered = n.to_ascii_lowercase();
+                lowered.as_str()
             }
-        }
-        t.default.clone()
+            // 不带 SNI（老客户端、或直接用 IP 访问）→ **当作它报了 `default_sni` 那个名字**。
+            // ★ 「当作报了这个名字」而不是「取那张存好的证书」，是这条指令唯一正确的形状：
+            //   名字每次现查，于是后来才签下来的、以及续期换过的，都自动跟着走。
+            None => t.default_name.as_deref()?,
+        };
+        lookup_named(&t, name)
     }
+}
+
+/// 一个**已经折成小写**的名字，在这张表里对应哪张证书。精确 → 通配（长后缀优先）。
+///
+/// ⚠ ⚠ **它不回落到 `default_sni`。** 客户端报了一个我们没有证书的名字，正确处置是
+/// 拒绝握手（理由见 `SniResolver::select` 上面那段：拿一张不匹配的证书去应答，
+/// 客户端看到证书错误，而运维在服务端只看到一次成功的握手）。
+/// ★ Caddy 把这两件事分成两个选项：`default_sni`（客户端**没报**名字）与
+/// `fallback_sni`（报了、但没有对应的证书）。**我们只有前者**，
+/// `dsl-reference.md` 全局选项那一行也是这么写的 —— 两边一致。
+/// 反向那半由 `tests/serve/run.sh` 9c 与 `tests/smoke/run.sh` 4c 钉着：
+/// **配着 `default_sni` 的部署上，未知 SNI 仍然必须被拒绝握手。**
+fn lookup_named(t: &Table, name: &str) -> Option<Arc<CertKey>> {
+    if let Some(ck) = t.exact.get(name) {
+        return Some(ck.clone());
+    }
+    t.wildcard
+        .iter()
+        .find(|(suffix, _)| wildcard_covers(suffix, name))
+        .map(|(_, ck)| ck.clone())
 }
 
 /// 客户端在 ALPN 扩展里提供的**全部**协议名，按原顺序。
@@ -428,6 +483,79 @@ mod tests {
         assert!(r.lookup(Some("a.com")).is_none());
         assert!(r.lookup(None).is_none());
         assert!(r.known().is_empty());
+        assert_eq!(r.default_name(), None);
+    }
+
+    /// 一张现造的自签证书。★ 每次调都是**新的**一张，所以下面可以按 `Arc::ptr_eq` 判身份。
+    fn 自签(domains: &[&str]) -> Arc<CertKey> {
+        let key = rcgen::KeyPair::generate().expect("测试密钥");
+        let names: Vec<String> = domains.iter().map(|d| d.to_string()).collect();
+        let params = rcgen::CertificateParams::new(names).expect("测试参数");
+        let cert = params.self_signed(&key).expect("自签");
+        crate::cert_key_from_der(cert.der().to_vec(), key.serialize_der()).expect("造 CertKey")
+    }
+
+    #[test]
+    fn default_sni_存的是名字而不是配它那一刻的那张证书() {
+        // ★ ★ 这一条钉的是 `default_name` 那段注释里说的两次分家。一个存
+        //   `Arc<CertKey>` 的实现在①就取到空、在③还发着旧证书，而两处都没人会说。
+        let r = SniResolver::new();
+
+        // ① 先配 default_sni，此刻表里还没有它的证书 —— 自动签发就是这个时序：
+        //    证书要等后台巡检签下来，那是**装载之后**的事。
+        r.set_default_name("A.Com");
+        assert_eq!(r.default_name().as_deref(), Some("a.com"), "名字要折成小写");
+        assert!(r.lookup(None).is_none(), "还没有证书，这时候不该挑出东西来");
+
+        // ② 证书后来才装进来 ⇒ 不带 SNI 的握手必须**跟着**有。
+        let 第一张 = 自签(&["a.com"]);
+        r.install(&["a.com".to_string()], 第一张.clone());
+        let got = r.lookup(None).expect("装上了就该挑得到");
+        assert!(
+            Arc::ptr_eq(&got, &第一张),
+            "default_sni 指的名字后来才有证书，而不带 SNI 的握手没跟上"
+        );
+
+        // ③ 续期换掉表里那张 ⇒ 必须发**新的**那张。
+        //    ⚠ 发旧的那张的表现是「不带 SNI 的客户端拿到一张过期证书」，
+        //    而 `expiries()` 里看不到它 —— 到期指标上一切正常。
+        let 续期后 = 自签(&["a.com"]);
+        r.install(&["a.com".to_string()], 续期后.clone());
+        let got = r.lookup(None).expect("续期后照样该挑得到");
+        assert!(
+            Arc::ptr_eq(&got, &续期后),
+            "续期换了证书，而不带 SNI 的握手还在发旧的那张"
+        );
+    }
+
+    #[test]
+    fn default_sni_不给未知的_sni_兜底() {
+        // ⚠ 反向那半：配了 `default_sni` 之后，**报了名字**的客户端不许被兜底。
+        //   兜底会让客户端看到证书错误，而服务端日志里是一次**成功**的握手。
+        //   ★ 同一条纪律在真流量上由 `tests/serve/run.sh` 9c 与 `tests/smoke/run.sh` 4c 钉着；
+        //   少了这一条，把 `lookup_named` 的结果 `.or(default)` 一下，两边都还是绿的
+        //   （那两个场景的部署此前根本没配 `default_sni`）。
+        let r = SniResolver::new();
+        r.install(&["a.com".to_string()], 自签(&["a.com"]));
+        r.set_default_name("a.com");
+        assert!(
+            r.lookup(Some("b.com")).is_none(),
+            "未知 SNI 被 default_sni 兜住了 —— 它必须被拒绝握手"
+        );
+        assert!(r.lookup(None).is_some(), "不带 SNI 的那一半仍然要挑得到");
+    }
+
+    #[test]
+    fn default_sni_走的是与_sni_同一套匹配() {
+        // ★ 通配站点下的一个名字也能当 default_sni —— 因为两条路查的是**同一份**
+        //   `lookup_named`。另写一份「只查精确表」的实现，这一条会红。
+        let r = SniResolver::new();
+        r.install(&["*.a.com".to_string()], 自签(&["*.a.com"]));
+        r.set_default_name("www.a.com");
+        assert!(r.lookup(None).is_some());
+        // 通配只吃一层，这一条对 default_sni 同样成立。
+        r.set_default_name("x.y.a.com");
+        assert!(r.lookup(None).is_none());
     }
 
     /// 造一份合法的 ALPN 扩展体。

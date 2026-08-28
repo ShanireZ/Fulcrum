@@ -795,6 +795,7 @@ dependencies = [
  "libc",
  "log",
  "pingora-boringssl",
+ "rcgen",
  "serde",
  "serde_json",
  "x509-parser",
