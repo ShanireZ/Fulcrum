@@ -1680,18 +1680,41 @@ impl Runtime {
     /// M1 认得但这一批没接线的能力，按本次配置**实际用到的**筛过一遍。
     ///
     /// ★ 只报配置里真的写了的那些：全打出来会变成噪音，而噪音会把真的那几条一起埋掉。
+    pub fn unwired_in_use(&self, cfg: &StructuredConfig) -> Vec<(&'static str, &'static str)> {
+        self.unwired_in_use_of(UNWIRED, cfg)
+    }
+
+    /// 同 [`Self::unwired_in_use`]，只是**清单由调用方给**。
+    ///
     /// ⚠ ⚠ **按结构走，不按 JSON 文本搜** —— 文本搜法一条都认不出（键名在 JSON 里叫
     /// `uri` / `dns_refresh_ms` / `fail_threshold`，而 `"log": null` 又永远在）。
     /// ★ 一个「看起来在筛、实际上筛错了」的清单比没有清单更糟。
-    pub fn unwired_in_use(&self, cfg: &StructuredConfig) -> Vec<(&'static str, &'static str)> {
+    ///
+    /// # ★ ★ 产品里只有一个调用方，那个参数是给**门**用的
+    ///
+    /// 扫描的结果最后要与清单求交 ⇒ **清单里没有的键，扫出来也看不见**：
+    /// 一格扫描写对了、写反了、根本没写，三种情况的外部表现完全一样。
+    /// ⚠ 而「清单里今天有哪几条」随接线进度变 ⇒ 拿 [`UNWIRED`] 本身当判据的门
+    /// **会随着能力一条条接线而哑掉，且哑掉的那一刻不红**。
+    /// ⇒ `tests/unwired_contract.rs` 从这里喂一张形状相同、内容与接线进度无关的合成表，
+    /// 于是判据不依赖今天恰好哪几条没接线。
+    pub fn unwired_in_use_of(
+        &self,
+        table: &[(&'static str, &'static str)],
+        cfg: &StructuredConfig,
+    ) -> Vec<(&'static str, &'static str)> {
         let mut used: std::collections::BTreeSet<&'static str> = Default::default();
-        // ★ **一条判据的寿命常常比写它的人预期的短**，而过期的判据长得和有效的一模一样。
-        // ⚠ **全局选项也要看** —— 只扫站点的话，`admin` 这种全局项一行代码没人接
-        //   也永远不会被报出来。一张只扫一半的表，在没扫的那一半上与不存在没有区别。
+        // ★ ★ 全局选项这一半：拿真表看，它**一条也报不出来** —— 而那不等于没在扫。
+        //   `admin` 在批 9 就接线了 ⇒ 它不在 [`UNWIRED`] 里 ⇒ 下面这一格认不认得它，
+        //   求交之后都是空的。⚠ **一段谁也看不见的代码与一段不存在的代码无从分辨**，
+        //   这里的注释上一版就是这么烂掉的：它说「全局那一半有人守着」，
+        //   而那句话在 `admin` 接线的同一刻起就不再成立，没有任何东西会为此变红。
+        //   ⇒ 守它的是合成表那条判据，见本函数的类型文档。
+        // ⚠ 这一格留着不删：全局选项迟早会有「DSL 认得、运行时不做」的那一条，
+        //   那时这半边是它唯一的出口 —— 而到那天补一段从来没存在过的扫描，没人会想起来。
         if cfg.global.admin.is_some() {
             used.insert("admin");
         }
-        // HTTP-01 只可能被验在 **80 端口**上（RFC 8555 §8.3：CA 固定连 80）。
         for s in &cfg.sites {
             if s.log.is_some() {
                 used.insert("log");
@@ -1746,7 +1769,7 @@ impl Runtime {
                 }
             }
         }
-        UNWIRED
+        table
             .iter()
             .filter(|(k, _)| used.contains(k))
             .copied()
