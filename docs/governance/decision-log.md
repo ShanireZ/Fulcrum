@@ -35,7 +35,7 @@ sources:
 | 自动 HTTPS 怎么做 | G12 · G15 → [TLS](/architecture/tls.md) |
 | 怎么分发 | G13 → [技术栈](/platform/tech-stack.md) |
 | 管理面怎么保证安全 | G14 → [安全基线](/platform/security-baseline.md) |
-| 能看到什么指标 | G16（基线）· **G116 · G117 · G118 · G121**（Prometheus 指标怎么落的）→ [观测](/architecture/observability.md) |
+| 能看到什么指标 | G16（基线）· **G116 · G117 · G118 · G121**（Prometheus 指标怎么落的）· **G122 · G123 · G124**（D32 / D31 / D30 结案：TLS 与连接两族 · `purge` 拆族 · `status_class` 的 `none`）→ [观测](/architecture/observability.md) |
 | 上游节点怎么发现与摘除 | G17 → [数据路径](/architecture/data-path.md) |
 | 性能怎么算达标 | G19 → [性能验收标准](/verification/performance-bar.md) |
 | 名字的来历 | G21 |
