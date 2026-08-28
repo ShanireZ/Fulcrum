@@ -28,6 +28,13 @@ set -euo pipefail
 IMAGE=${IMAGE:-fulcrum-build:local}
 REPO_UNIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# target 卷叫什么、以及「同一棵树同一时刻只许跑一次门禁」那把锁，都在这里。
+# ★ 三处（本文件 · tests/m1/systemd-run.sh · tests/ci/cache.sh）共用同一份推导，
+#   不各写一遍 —— 各写一遍的失效形态是安静地指向两个不同的卷。
+VOL_LOCK_LIB="$REPO_UNIX/tests/lib/vol-lock.sh"
+# shellcheck source=tests/lib/vol-lock.sh
+. "$VOL_LOCK_LIB"
+
 # ★ 行尾前置检查 —— **必须放在 `export MSYS_NO_PATHCONV=1` 之前**。
 #
 #   `.gitattributes` 声明「行尾无条件 LF」，但它只在 checkout / commit 时生效——
@@ -100,6 +107,112 @@ selftest_only_mode() {
   }
 }
 selftest_only_mode
+
+# ── ★ ★ 卷名推导的自测 ──────────────────────────────────────────────────────
+#
+# 四条，**两组各自两个方向**：
+#   ① 两棵不同的工作树 ⇒ 两个卷名（这是本次修的那件事）；
+#   ② 同一棵工作树两次 ⇒ 同一个卷名 —— 不稳的话每次都从零编，而且没有一行字会说；
+#   ③ 换构建镜像仍然换卷 —— 这条性质本来就有（cargo 的 fingerprint 不覆盖 C 工具链），
+#      **不许在加树标签的时候把它丢掉**；
+#   ④ 名字必须是合法的 docker 卷名。⚠ 这条不是洁癖：名字里一旦混进 `/`，
+#      `docker run -v "$名字:/w/target"` 会被当成**绑定挂载**而不是命名卷 —— 照跑、不报错。
+selftest_target_vol() {
+  local rc=0 a b c d
+  a=$(fulcrum_target_vol "deadbeefcafe1111" "/tmp/fulcrum-selftest-tree-a")
+  b=$(fulcrum_target_vol "deadbeefcafe1111" "/tmp/fulcrum-selftest-tree-b")
+  c=$(fulcrum_target_vol "deadbeefcafe1111" "/tmp/fulcrum-selftest-tree-a")
+  d=$(fulcrum_target_vol "0000face0000ffff" "/tmp/fulcrum-selftest-tree-a")
+  [ "$a" != "$b" ] || { echo "★ 两棵不同的工作树算出了同一个 target 卷名（$a）" >&2; rc=1; }
+  [ "$a" = "$c" ]  || { echo "★ 同一棵工作树两次算出了不同的卷名（$a ≠ $c）"    >&2; rc=1; }
+  [ "$a" != "$d" ] || { echo "★ 换了构建镜像却还是同一个卷名（$a）——「跟着镜像走」丢了" >&2; rc=1; }
+  [[ "$a" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { echo "★ 算出来的卷名不合法：$a" >&2; rc=1; }
+  [ "$rc" -eq 0 ] || {
+    echo "  卷名自测未通过——**「本次跑的是这棵树自己的产物」这个前提一律不可信**。" >&2
+    exit 1
+  }
+}
+selftest_target_vol
+
+# ── ★ ★ 门禁互斥的自测 ──────────────────────────────────────────────────────
+#
+# 卷分开之后还剩一种：**同一棵树上并发跑两次门禁**，两次仍然共用那一个卷。
+# 这里同样两个方向都验，外加两条这把锁特有的失效形态。
+#
+# ★ 每条都起一个真的子 shell 去调真的 `fulcrum_lock_acquire` —— 不做桩。
+#   这把锁在这台宿主上到底成不成立（`flock` 在 MSYS 上根本没有），
+#   只有让它真的去 `mkdir` 一次才知道。
+selftest_gate_lock() {
+  local rc=0 root out dead
+  root=$(mktemp -d)
+
+  # ① 锁被一个**活着的**进程拿着 ⇒ 第二次必须失败，并且**说出为什么**。
+  #   ★ 拿本进程自己的 pid 当「活着的持有者」：不必起后台进程，而 `kill -0 $$` 必然为真。
+  mkdir -p "$root/probe.lock"
+  printf '%s\n' "$$" > "$root/probe.lock/pid"
+  if out=$(FULCRUM_LOCK_ROOT="$root" FULCRUM_GATE_LOCK_HELD='' \
+             bash -c '. "$1" && fulcrum_lock_acquire probe /selftest/tree' _ "$VOL_LOCK_LIB" 2>&1); then
+    echo "★ 锁已被占用，fulcrum_lock_acquire 却成功了 —— 这把锁等于不存在" >&2; rc=1
+  else
+    case "$out" in
+      *"另一次门禁正在这棵工作树上跑"*) ;;
+      *)
+        echo "★ 它拒绝了，却没说出为什么——拿不到锁必须说人话，不是静默失败：" >&2
+        printf '%s\n' "$out" >&2; rc=1
+        ;;
+    esac
+  fi
+  [ -d "$root/probe.lock" ] || { echo "★ 抢锁失败的那一次把**别人的**锁删掉了" >&2; rc=1; }
+
+  # ② 锁放开之后必须拿得到；★ 并且拿到的那一次**退出时要还回来**。
+  #   ⚠ trap 没生效的话，第一次跑完就把这棵树永久锁死了，而症状要到下一次才出现。
+  rm -rf "$root/probe.lock"
+  if ! out=$(FULCRUM_LOCK_ROOT="$root" FULCRUM_GATE_LOCK_HELD='' \
+               bash -c '. "$1" && fulcrum_lock_acquire probe /selftest/tree && [ -d "$2/probe.lock" ]' \
+               _ "$VOL_LOCK_LIB" "$root" 2>&1); then
+    echo "★ 锁放开之后仍然拿不到（或拿到了却没有建出锁目录）：" >&2
+    printf '%s\n' "$out" >&2; rc=1
+  fi
+  [ ! -d "$root/probe.lock" ] || { echo "★ 持锁的进程退出了、锁却没还回来 —— trap 没生效" >&2; rc=1; }
+
+  # ③ 可重入：`docker-run.sh` 持锁期间要能调 `tests/m1/systemd-run.sh`，
+  #   而后者单独跑时必须自己上锁 —— 少了这一条，M1 那一格会被自己锁死。
+  mkdir -p "$root/probe.lock"
+  printf '%s\n' "$$" > "$root/probe.lock/pid"
+  FULCRUM_LOCK_ROOT="$root" FULCRUM_GATE_LOCK_HELD="$root/probe.lock" \
+    bash -c '. "$1" && fulcrum_lock_acquire probe /selftest/tree' _ "$VOL_LOCK_LIB" >/dev/null 2>&1 \
+    || { echo "★ 已经持锁的进程树里再取一次被挡住了 —— M1 那一格会被自己锁死" >&2; rc=1; }
+  rm -rf "$root/probe.lock"
+
+  # ④ 陈旧锁（上一次被 Ctrl-C 掉、没走到 trap）⇒ 接管，并且**说出来**。
+  #   ⚠ 先证明这个 pid 真的已经不在——「造不出现场」不算「判据通过」。
+  ( : ) &
+  dead=$!
+  wait "$dead" 2>/dev/null || true
+  if kill -0 "$dead" 2>/dev/null; then
+    echo "★ 造不出「持有者已死」的现场（pid $dead 居然还在）——本条这次等于没验" >&2; rc=1
+  else
+    mkdir -p "$root/stale.lock"
+    printf '%s\n' "$dead" > "$root/stale.lock/pid"
+    if out=$(FULCRUM_LOCK_ROOT="$root" FULCRUM_GATE_LOCK_HELD='' \
+               bash -c '. "$1" && fulcrum_lock_acquire stale /selftest/tree' _ "$VOL_LOCK_LIB" 2>&1); then
+      case "$out" in
+        *接管*) ;;
+        *) echo "★ 接管了一把陈旧锁却没说 —— 一次没人知道的接管与没有锁无异" >&2; rc=1 ;;
+      esac
+    else
+      echo "★ 持有者已经不在，锁却接管不了 —— 一次 Ctrl-C 就能把这棵树永久锁死：" >&2
+      printf '%s\n' "$out" >&2; rc=1
+    fi
+  fi
+
+  rm -rf "$root"
+  [ "$rc" -eq 0 ] || {
+    echo "  门禁互斥自测未通过——**「这棵树上没有第二次门禁在跑」这个前提一律不可信**。" >&2
+    exit 1
+  }
+}
+selftest_gate_lock
 
 # 不依赖 git 的兜底扫描：先一次性判「整棵树有没有 CR」（一遍就够，常见情况到此为止），
 # 有才逐个找是哪些文件（这时候慢一点无所谓，因为已经要人来看了）。
@@ -264,15 +377,45 @@ fi
 #   **但不覆盖 C 工具链** —— build script 产出的东西只在自身声明的输入变化时才重建，
 #   于是「换基础镜像但 rustc 不变」会**沿用旧镜像编出来的 C 目标文件**。
 #   ⇒ 卷名带上 Dockerfile 的内容哈希：换镜像自动换卷，旧卷留着还能回退。
-TARGET_VOL="fulcrum-target-${DOCKERFILE_SHA:0:12}"
+#
+# ★ ★ ★ **它还必须跟着「哪一棵工作树」走。** 上面那条理由一个字都没变，只是它当年
+#   成立的前提是「一台机器上只有一棵源码树」——而那个前提今天不成立了：本机有主树
+#   加 `.claude/worktrees/` 下若干棵，各自的 `/w` 是不同的源码，`/w/target` 却是同一个卷。
+#   ⇒ 卷名再拼上这棵树路径的短哈希，两条性质同时成立（换镜像换卷、换树也换卷）。
+#   ⚠ ⚠ 失效形态不是「编得慢」，是**门给出别人家的读数、而两边都不红**：实测撞见两次，
+#     一次编译错误指向一个只存在于另一棵树的符号；另一次报「696 条全绿、退出码 0」，
+#     跑的却是**没有本次新判据**的旧测试二进制 —— 它不报错，它给一个像样的绿的错答案。
+#   推导只有一份（tests/lib/vol-lock.sh），四条自测在本文件开头的 selftest_target_vol。
+TREE_TAG="$(fulcrum_tree_tag "$REPO_UNIX")"
+TARGET_VOL="$(fulcrum_target_vol "$DOCKERFILE_SHA" "$REPO_UNIX")"
+
+# ── ★ ★ 同一棵树上同一时刻只许跑一次 ────────────────────────────────────────
+#
+# 卷分开只解决「别的树」。同一棵树上并发跑两次门禁，两次仍然共用这一个卷 —— 回到同一种坏法。
+# ⇒ **拿卷之前**先取一把与卷同名的锁；拿不到就当场说清楚并退出，不排队、不静默继续。
+# ★ 用 `mkdir` 而不是 `flock`：这台宿主（Windows + Git Bash / MSYS）上没有 flock，
+#   写一把其实不生效的锁比没有锁更坏。机制与自测都在 tests/lib/vol-lock.sh。
+fulcrum_lock_acquire "$TARGET_VOL" "$REPO_UNIX" || exit 1
+
 docker volume create fulcrum-cargo  >/dev/null
 docker volume create "$TARGET_VOL"  >/dev/null
 
 # 旧卷不自动删（可能还想回退），但要说出来——不然它们会无声地占满磁盘。
-STALE_VOLS=$(docker volume ls -q --filter name=fulcrum-target | grep -v "^${TARGET_VOL}$" || true)
-if [ -n "$STALE_VOLS" ]; then
-  echo "[docker-run] 另有 $(printf '%s\n' "$STALE_VOLS" | wc -l) 个旧的 target 卷（对应更早的构建镜像），确认不再回退就删："
-  printf '%s\n' "$STALE_VOLS" | sed 's/^/      docker volume rm /'
+#
+# ⚠ ⚠ **只劝人删「本树的」旧卷。** 带上树标签之后，`fulcrum-target-*` 里躺着的多数是
+#   **别的工作树正在用的卷**；照旧一股脑列成「旧卷」并附上 `docker volume rm`，
+#   那就成了一条教人去刨别人工作树的提示 —— 而受害者那边只会看到一次莫名的全量重编。
+#   判据是后缀：`-<本树标签>` 结尾的才是本树的。
+ALL_VOLS=$(docker volume ls -q --filter name=fulcrum-target || true)
+MINE_STALE=$(printf '%s\n' "$ALL_VOLS" | grep -- "-${TREE_TAG}\$" | grep -v "^${TARGET_VOL}\$" || true)
+OTHER_VOLS=$(printf '%s\n' "$ALL_VOLS" | grep -v -- "-${TREE_TAG}\$" | grep -v '^$' || true)
+if [ -n "$MINE_STALE" ]; then
+  echo "[docker-run] 这棵树另有 $(printf '%s\n' "$MINE_STALE" | wc -l) 个旧的 target 卷（对应更早的构建镜像），确认不再回退就删："
+  printf '%s\n' "$MINE_STALE" | sed 's/^/      docker volume rm /'
+fi
+if [ -n "$OTHER_VOLS" ]; then
+  echo "[docker-run] 另有 $(printf '%s\n' "$OTHER_VOLS" | wc -l) 个 target 卷**不属于这棵工作树**（别的工作树在用，或是加树标签之前留下的）。"
+  echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
 fi
 
 # ★ ★ ★ 这里的花括号**不是风格，是判据本身**（实测的一次假绿）。
@@ -322,10 +465,15 @@ LINT_CMD="$LINT_CMD && cargo clippy --workspace --all-targets --locked -- -D war
 # ⚠ 新加的 tests/<x>/*.sh 必须同时加进这张扫描表，否则它**不被 shellcheck 看**——
 #   而 shell 的失败模式是安静的（`bash -n` 全部放行）。的 tests/m1/lib.sh
 #   正是这么带着一处 SC2045 躺进来的。
+# ⚠ ⚠ ⚠ **`tests/quic-relay/*.sh` 现在不在这张表里，而它应该在。** 这不是遗漏被发现之前的状态，
+#   是发现之后的登记：把它加进去实测会让 lint 当场红 4 条（`run.sh` 的 SC2009:113 ·
+#   SC2015:226 · SC2012:245 · SC2015:368），其中两条 SC2015 正是本文件下面那段
+#   「`&&` 与 `||` 同优先级」教训的同一个形状。⇒ 它是一处**独立的**待办，不是本次改动的一部分。
+#   ★ 在它补进来之前，那一格的脚本**没有任何 lint 看着**，而 shell 的坏法是安静的。
 # ★ `tests/musl/` 里那份探针跑在门禁外（
 #   理由写在 tests/musl/probe.sh 顶部）。⚠ 它照样要进这张扫描表 ——
 #   「不在门禁里跑」与「不被 lint 看」是两件事，而一份没人 lint 的脚本坏起来是安静的。
-LINT_CMD="$LINT_CMD && LC_ALL=C.UTF-8 shellcheck tests/acme/*.sh tests/cache/*.sh tests/ci/*.sh tests/encode/*.sh tests/files/*.sh tests/h3/*.sh tests/l4/*.sh tests/log/*.sh tests/m0/*.sh tests/m1/*.sh tests/metrics/*.sh tests/musl/*.sh tests/proxyproto/*.sh tests/serve/*.sh tests/smoke/*.sh tests/stress/*.sh tests/unit/*.sh tests/vendor/*.sh"
+LINT_CMD="$LINT_CMD && LC_ALL=C.UTF-8 shellcheck tests/acme/*.sh tests/cache/*.sh tests/ci/*.sh tests/encode/*.sh tests/files/*.sh tests/h3/*.sh tests/l4/*.sh tests/lib/*.sh tests/log/*.sh tests/m0/*.sh tests/m1/*.sh tests/metrics/*.sh tests/musl/*.sh tests/proxyproto/*.sh tests/serve/*.sh tests/smoke/*.sh tests/stress/*.sh tests/unit/*.sh tests/vendor/*.sh"
 # ★ ★ CI 那段搬运代码的自证（G94）。**挂在 lint 这一格而不是新开一个场景**：
 #   它只花毫秒、不需要 docker、也不需要网络，而且它验的是**门自己的管道**
 #   （退出码是怎么取的），与各场景验的产品行为不是一回事。

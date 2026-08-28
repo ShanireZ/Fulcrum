@@ -33,8 +33,15 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DOCKERFILE="$REPO/docker/Dockerfile.build"
 [ -f "$DOCKERFILE" ] || { echo "找不到 $DOCKERFILE" >&2; exit 1; }
 
+# shellcheck source=tests/lib/vol-lock.sh
+. "$REPO/tests/lib/vol-lock.sh"
+
 DOCKERFILE_SHA=$(sha256sum "$DOCKERFILE" | cut -d' ' -f1)
-TARGET_VOL="fulcrum-target-${DOCKERFILE_SHA:0:12}"
+# ★ 卷名从共用的那一份推导来（`fulcrum_target_vol`），本文件一个字符都不拼 ——
+#   顶上那句「不自己再造一套卷名算法」现在是结构上做不到，而不是靠人记得。
+# ⚠ 名字里除了 Dockerfile 哈希还有**工作树路径**的短哈希：CI 上一棵树一个 checkout 路径，
+#   所以命中与否不受影响；本机上多棵工作树才是它存在的理由。
+TARGET_VOL="$(fulcrum_target_vol "$DOCKERFILE_SHA" "$REPO")"
 CARGO_VOL=fulcrum-cargo
 
 # ★ 搬运用的镜像**不另外钉一个**：直接从 `docker/Dockerfile.systemd` 的 FROM 行读回来。

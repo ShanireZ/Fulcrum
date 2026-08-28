@@ -27,6 +27,11 @@ set -euo pipefail
 
 REPO_UNIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# 卷名的推导与门禁互斥锁：与 tests/m0/docker-run.sh 共用同一份，不在这里重算。
+VOL_LOCK_LIB="$REPO_UNIX/tests/lib/vol-lock.sh"
+# shellcheck source=tests/lib/vol-lock.sh
+. "$VOL_LOCK_LIB"
+
 # ── 构建 ────────────────────────────────────────────────────────────────────
 # ★ 不自己写一份构建逻辑：行尾检查、构建镜像的内容哈希重建、缓存卷，全都在 docker-run.sh 里，
 #   抄一份过来必然分头长歪（本仓库已经在 lifecycle.sh 上吃过一次）。
@@ -68,7 +73,16 @@ if command -v sha256sum >/dev/null 2>&1; then
     exit 1
   }
 fi
-TARGET_VOL="fulcrum-target-${IMAGE_SHA:0:12}"
+# ★ ★ 卷名还带着**这棵工作树**的短哈希（理由写在 tests/lib/vol-lock.sh 顶部：
+#   一台机器上有好几棵工作树，而它们曾经共用同一个 /w/target）。
+#   ⚠ 这里同样**不自己拼字符串** —— 拼一遍就是给下一次改名埋一处安静的分叉，
+#     而分叉的表现是本格挂上一个自动新建的**空卷**，然后抱怨找不到产品二进制。
+TARGET_VOL="$(fulcrum_target_vol "$IMAGE_SHA" "$REPO_UNIX")"
+
+# ★ 与 M0 同一把锁（锁名＝卷名）：本格与 M0 挂的是同一个卷，并发跑一样会互相踩。
+# ⚠ 由 docker-run.sh 调进来时它已经持锁，靠导出的 FULCRUM_GATE_LOCK_HELD 直接放行；
+#   上面那次 `BUILD_ONLY=1 docker-run.sh` 也是它自己取自己放，所以取锁必须排在构建之后。
+fulcrum_lock_acquire "$TARGET_VOL" "$REPO_UNIX" || exit 1
 
 # ── 测试宿主镜像（systemd）─────────────────────────────────────────────────
 #
