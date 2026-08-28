@@ -28,6 +28,7 @@ sources:
 |---|---|---|
 | **构建镜像编不出 musl 产物** | 实测：Debian trixie 只有 `musl-gcc`（C），没有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ⏳ 挂号 **D21**（构建宿主口径）。★ 不挡开工 —— 发布流水线本身还不存在 |
 | **产物里真的链接了哪几套 TLS** | 依赖图里只有一套（`cargo tree -e all --target all` 为空） | ⏳ 挂号 **D23**。「图里有 ≠ 产物里链接了」，而这一步没有判据 |
+| **`bind()` 攥着全局 `ListenFds` 锁**（本仓 vendor 的 0.8.1 里） | `ListenerEndpoint::listen` 先 `fds_table.lock().await` 再在**持锁状态下** `bind()`，而 `bind_tcp` 重试 30 次 × 1 秒 ⇒ 一个被占端口把整把锁停住 30 秒，**所有还没拿到锁的监听器一起起不来**（2026-08-28 实测：现场报的是另一个端口起不来）| ✅ **上游 `main` 已修**（`1d9371191`，2026-03-25：`ListenFds` 换 `parking_lot::Mutex` + 按地址的异步锁）。⏳ 但上游最新 release 仍是 **0.8.1**（＝本仓 vendor 的那个）⇒ **下一次 rebase 时随之解除**。⚠ 上游修法新增 `flurry` 依赖 ⇒ 「现在就 backport」要先过供应链门，不是顺手的事 |
 | **上游 `listen_addresses()` 落地后的接线** | 上游 main 上有一条尚未发版的改动：给 `Service` 加 `listen_addresses()`，用来在换代后关掉没人认领的 fd | ⏳ rebase 上去之后，**枢衡的每一个自建 `Service` 都要显式实现它**。⚠ 它带默认实现（返回 `None` = 关掉清理）⇒ **漏实现不会有任何编译错误**，而一个服务没实现就会关掉整个进程的清理 |
 
 # ✅ 已解除的
