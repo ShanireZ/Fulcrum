@@ -63,7 +63,7 @@ sources:
 | `method` | string | 请求方法，原样 |
 | `host` | string | `Host` / `:authority`，**去掉端口** |
 | `uri` | string | **原始**请求目标（path + query），`rewrite` **之前** |
-| `status` | number | 下游看到的状态码。⚠ **一个响应头都没写出去时是 `0`** —— 那不是「未知」，是「这条连接上什么都没发生」（此时 `outcome` 是 `aborted`）|
+| `status` | number | 下游看到的状态码。⚠ **一个响应头都没写出去时是 `0`** —— 那不是「未知」，是「这条连接上什么都没发生」。⚠ ⚠ 此时 `outcome` **仍是执行链给的那个值**（站点匹配上了、链跑完了，只是下游在我们写响应之前断开）—— **不是 `aborted`**：数据面在**每一条**返回路径上都把 `outcome` 写掉了，`Record` 里那个 `"aborted"` 默认值在今天的数据面上到不了。⇒ 下面那个闭集里没有 `aborted`，那是对的 |
 | `resp_size` | number | 响应**体**字节数（**不含头**）。⚠ ⚠ 这一句需要 fork **第 13 处**改动才成立：上游 h1 的 `body_bytes_sent` 把序列化后的响应头也加了进去，而 **h2 与 h3 只数体** ⇒ 同一个请求走两种协议会给出两个数。★ 那处改动连同一条长在上游测试模块里的回归守卫，见 [`FORK.md`](../../vendor/pingora/FORK.md) |
 | `duration_ms` | number | 从读到请求头到响应写完，毫秒，三位小数 |
 | `outcome` | string | 闭集，见下 |
@@ -200,9 +200,17 @@ metrics.example:9443 {
 ```
 
 ★ ★ **取这条而不是「独立的 metrics 监听器」，是为了不长出第二个网络管理面。**
-访问控制（`remote_ip` 匹配器）、TLS、访问日志、压缩**全部复用现有机制** ⇒
+访问控制（`remote_ip` 匹配器）、TLS、访问日志**全部复用现有机制**（G116 就是这三样）⇒
 [G14「管理面只绑 Unix socket」的口径一个字不动](/platform/security-baseline.md) ——
 指标面根本不属于管理面。
+
+⛔ **压缩不在这三样里**：`metrics` 与 `respond` / `redir` 同病 —— 三者都终结在
+`write_with_headers` 上，而那条路上**没有 encoder**（`encode` 今天只接在
+`file_server` 与转发那两处）。⇒ 站点里写一条 `encode gzip`，对抓取端点
+**一个字节都不影响**。⚠ 而它不会以任何方式说出来：响应仍是 `200`、正文仍然正确，
+只是 `Content-Encoding` 那一格不出现 —— **没有人会去看一个成功抓取的响应头**。
+★ 代价说在明处：exposition 是高度可压缩的纯文本（重复的族名与标签名），
+几百条 series 时压不压差一个数量级，而 15 秒抓一次的话那是**持续**带宽。
 
 ⛔ **不挂在 admin socket 上当唯一出口**：Prometheus 抓不了 Unix domain socket，
 那样用户必须再装一个 exporter，直接撞设计原则 1（「任何让用户再装一个东西的设计都要被质疑」）。
@@ -259,7 +267,7 @@ metrics.example:9443 {
 | `fulcrum_no_site_match_total` | counter | 事件点 | `host` | 见下（G118）|
 | `fulcrum_upstream_inflight` | gauge | 活体 | `upstream` | 配置定 |
 | `fulcrum_upstream_healthy` | gauge | 活体 | `upstream` | 配置定 |
-| `fulcrum_cert_expiry_seconds` | gauge | 活体 | `domain` | 配置定 |
+| `fulcrum_cert_expiry_seconds` | gauge | 活体 | `domain` | 配置定 —— ⚠ **前提是 `on_demand` 未接线**，接线那一批要回来重算这一行（见下）|
 | `fulcrum_acme_issue_total` | counter | 活体 | `result` | `ok`/`fail`/`deferred` |
 | `fulcrum_build_info` | gauge(=1) | 活体 | `version` | 1 |
 
@@ -323,6 +331,11 @@ metrics.example:9443 {
 
 ★ `<none>` 与 G118 的 `<other>` 是**同一族写法**：尖括号形式在合法地址字面量里
 不可能出现 ⇒ 它不会与任何一条真地址撞车。⇒ `site` 的上界 = **address 数 + 1**，仍由配置定。
+
+⚠ **`<none>` 比这一节的标题宽**：ACME 的 HTTP-01 应答**也归它** —— 那条路在路由**之前**
+就返回了，于是它同样没有站点。⇒ `fulcrum_requests_total{site="<none>"}` 里混着
+`outcome="no_site_match"` 与 `outcome="acme_http01"` 两种，要哪一种就把 `outcome` 也写上。
+★ 不影响基数（`<none>` 本来就只占一格），但**按 `site` 过滤时它会多给你一类请求**。
 
 ⚠ ⚠ **这一格与访问日志的 `site` 字段（见上面「条件字段」一节）是两件不同的事，
 长得像是巧合**：访问日志的 `site` = 站点的名字 = 第一个地址的原文
@@ -390,6 +403,20 @@ metrics.example:9443 {
 ⛔ **挑战证书不进这一族**（TLS-ALPN-01 那种临时自签）：它们几分钟就没了，
 进来只会在时序库里留下一串永远快到期的噪声。★ 这一条不靠过滤 ——
 挑战证书本来就存在**另一张表**里，而这一族取的是已装载证书那张表。
+
+### ⚠ ⚠ ⚠ `domain` 的上界是九个族里**唯一一个不由本仓代码封顶**的
+
+它来自证书解析器手里那张已装载表，而**表里有哪些域名由「装了哪些证书」决定**。
+今天由配置定，理由只有一条：**`on_demand`（G15 的握手期按 SNI 现签）还挂在
+[`fulcrum_runtime::UNWIRED`](../../crates/fulcrum-runtime/src/lib.rs) 里**。
+它一接线，装进去的域名就由**访问者的 SNI** 决定（准入控制之外那一层），
+这一格立刻变成 G118 刚刚为 `host` 挡下的同一件事 ——
+每一个被现签过的域名在这一族里留一条**永久** series。
+
+⚠ 而钉住这张表的那道门**有意只钉族名、不钉上界**（`fulcrum-server/src/metrics.rs`
+那条测试写了为什么）⇒ 「配置定」这三个字漂成假话的那一天，**没有任何东西会红**。
+★ ⇒ 接 `on_demand` 的那一批必须回到上面那张表重算这一行，
+而这句话就是这件事**唯一**的提示。
 
 ## 上游那两个族**按地址归并**
 

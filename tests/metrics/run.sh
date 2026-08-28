@@ -22,6 +22,13 @@
 #   9921 站点 C —— `c.example`，`@outsider remote_ip 10.0.0.0/8` + `handle @outsider { metrics }`
 #        + 兜底 `respond 403`。★ 我们打不进 10.0.0.0/8 ⇒ 拿到的是 403 而不是指标
 #        （访问控制的**反向**那一半，在容器里真的造得出来的形状）。
+#   9921 站点 W —— `*.wild.example`，**一条通配地址**（G121 的折叠判据要它，判据 6）。
+#
+# ⚠ ⚠ ★ **站点 W 补的是夹具形状上的洞，不是多一条覆盖。** 另外四条地址全是**精确**
+#   字面量 ⇒ 对每一条命中站点的请求，`ctx.host` 与命中的那条地址**逐字相等**。
+#   于是一个把 `site` 标签取成 `ctx.host` 的实现（G121 明令禁止的正是这一个）
+#   在本格别的每一条判据上都是绿的 —— 连那条「取值闭集」也绿，因为两者给出同一个集合。
+#   ★ ★ **盲区在夹具里，而判据的条数说明不了这件事**（AGENTS.md「Gate discipline」第一条）。
 #
 # ⚠ ⚠ **`@internal` 里那条 `path /metrics` 是有意加的，不是从 brief 抄漏的**：
 #   只写 `remote_ip 127.0.0.0/8` 的话，本格所有请求都来自 127.0.0.1 ⇒ 站点 A 上
@@ -453,6 +460,10 @@ http://c.example:$BC_PORT {
     }
     respond 403
 }
+
+http://*.wild.example:$BC_PORT {
+    respond 200 "wild-ok"
+}
 CONF
 
 # 一份**没有任何来源匹配器**的 metrics 配置 —— 只用来证那条诊断真的会说话。
@@ -691,8 +702,26 @@ eq "★★★ fulcrum_requests_total 在站点 A 上的增量 = 日志新增行�
 eq "★★ 而 site=<none> 那一格只涨了 1（k4），它一行日志都没多" \
   1 "$(($(expo sum "$S5" fulcrum_requests_total 'site=<none>') - NONE_A))"
 
+# ── ★ ★ ★ 顺带把**两个族**的数对起来 ────────────────────────────────────────
+#
+# `fulcrum_no_site_match_total`（G118，记在写 `outcome` 的同一处）与
+# `fulcrum_requests_total{site="<none>",outcome="no_site_match"}`（收尾那一处）
+# 数的是**同一批事件**，只是前者按 `host` 分、后者按 `status_class` / `proto` 分
+# ⇒ **两个族的总和必须恒等**。而它们由两个文件里的两条语句各加一次。
+#
+# ⚠ 今天两处一致 —— 这条断言防的不是今天，是**将来多一条「不算命中站点」的早退路径**
+#   （批 N 的 stats 端点、第二种 421 场景……）时有人只写了其中一句：
+#   两个数字各自都在涨、各自都言之凿凿，而从此差一个常数，**没有任何东西会说**。
+#   ★ 这正是 D18 / G66 那个形状：批 M 为请求那两族躲开了它，却在这两族之间留了同一个口子。
+# ★ 上面两节把两个读数都已经量过了（判据 4 量前者、本节量后者）——**只差这一条把它俩对起来**。
+# ⚠ 判据读的是**同一份抓取正文**，不是两次抓取：两句 `inc` 一前一后（一句在早退处、
+#   一句在收尾），跨两次抓取比会把一条在途请求读成假红。
+eq "★★★ 两个族数的是同一批事件：sum(no_site_match_total) = requests_total{site=<none>,outcome=no_site_match}" \
+  "$(expo sum "$S5" fulcrum_no_site_match_total)" \
+  "$(expo sum "$S5" fulcrum_requests_total 'site=<none>' outcome=no_site_match)"
+
 # ── [7/8] 判据 6：G121 的正面判据 ───────────────────────────────────────────
-echo "=== [7/8] 判据 6：同一条请求上，指标的 site 与日志的 site 给出不同的值 ==="
+echo "=== [7/8] 判据 6：两个「site」给出不同的值 · 通配站点折叠成自己的字面量 ==="
 #
 # ★ ★ ★ 这是本批**最容易被做成同一件事**的地方：两者共用「site」这个名字纯属巧合。
 #   · 指标的 `site` 标签（G121）= 请求**实际命中的那条地址字面量** ⇒ `a2.example`；
@@ -702,6 +731,7 @@ S6="$WORK/s6.txt"
 CODE=$(scrape "$S6")
 eq "抓取回 200（取 a2.example 那一格的基线）" 200 "$CODE"
 X1=$(expo sum "$S6" fulcrum_requests_total site=a2.example)
+WILD1=$(expo sum "$S6" fulcrum_requests_total 'site=*.wild.example')
 
 CODE=$(req "$A_PORT" a2.example "/g121")
 eq "用 Host: a2.example 打一条（落到兜底 respond）" 403 "$CODE"
@@ -712,19 +742,43 @@ eq "★★★ 这条请求的日志行：host" "a2.example" "$(field host)"
 eq "★★★ 这条请求的日志行：site（= 站点的名字 = 第一条地址的原文）" \
   "http://a.example:$A_PORT" "$(field site)"
 
+# ── ★ ★ ★ 通配站点：两个不同的子域名，指标上必须折叠成同一格 ────────────────
+#
+# ★ ★ ★ **这几行守的是 `site_addr` 那个赋值点本身**（`fulcrum-server/src/lib.rs` 里
+#   `session.record.site_addr = Some(routed.site_addr.clone())` —— 整批里 `site` 标签
+#   **唯一**的赋值点）。把它换成 `Arc::from(host.as_str())`，运行时单测（够不到 server 这一层）、
+#   access_log 单测（夹具自己塞值，绕开了这一行）与本文件其余每一条判据**全都仍然绿**：
+#   四条精确地址上 `host` 与地址字面量逐字相等，两者在那份配置上是同一个字符串。
+# ⚠ ⚠ **必须两个不同的子域名各打一次**：只打一个的话，「取 host」在那一次上也只产生
+#   一格 —— 闭集断言照样绿，错的只是那一格的名字，而名字对不对没有第二条判据在问。
+#   ⇒ 两个子域名之后，「取 host」的实现会多出**两格**，三条断言一起红。
+CODE=$(req "$BC_PORT" w1.wild.example "/g121-wild")
+eq "  通配站点 · 子域名 ①" 200 "$CODE"
+CODE=$(req "$BC_PORT" w2.wild.example "/g121-wild")
+eq "  通配站点 · 子域名 ②（★ 与 ① 不同 —— 「取 host」只有在这里才露得出来）" 200 "$CODE"
+sleep 0.3
+
 S7="$WORK/s7.txt"
 CODE=$(scrape "$S7")
 eq "抓取回 200（取 a2.example 那一格的增量）" 200 "$CODE"
 eq "★★★ 同一条请求的**指标那一面**：site=\"a2.example\" 正好 +1" \
   1 "$(($(expo sum "$S7" fulcrum_requests_total site=a2.example) - X1))"
 
-# ★ ★ 封口：`site` 这个标签**出现过的全部取值**是一个闭集，正好 = 四条地址字面量 + `<none>`。
+eq "★★★ 两个子域名折叠成通配符自己的字面量：site=\"*.wild.example\" 正好 +2" \
+  2 "$(($(expo sum "$S7" fulcrum_requests_total 'site=*.wild.example') - WILD1))"
+for sub in w1.wild.example w2.wild.example; do
+  eq "★★★ 而 site=\"$sub\" 一条 series 都没有（请求方给的 host 没有漏进标签）" \
+    0 "$(expo series "$S7" fulcrum_requests_total "site=$sub")"
+done
+
+# ★ ★ 封口：`site` 这个标签**出现过的全部取值**是一个闭集，正好 = 五条地址字面量 + `<none>`。
 #   ⇒ ① 同一个站点的两条地址各自成格（G121，不并成一格）；
 #      ② 日志那种带 scheme 与端口的写法**一次都没出现**在标签里；
-#      ③ 上界 = 地址数 + 1，由配置定、不由访问者定（R2）。
+#      ③ 通配站点占的是**它自己那条字面量**那一格，两个子域名各自都不在集合里；
+#      ④ 上界 = 地址数 + 1，由配置定、不由访问者定（R2）。
 #   ⚠ 判的是**集合逐字相等**，不是「含有 a2.example」——「含有」在多冒出一格时照样绿。
-eq "★★★ site 标签的取值是闭集：四条地址字面量 + <none>" \
-  "<none> a.example a2.example b.example c.example" \
+eq "★★★ site 标签的取值是闭集：五条地址字面量 + <none>" \
+  "*.wild.example <none> a.example a2.example b.example c.example" \
   "$(expo labelvalues "$S7" fulcrum_requests_total site | tr '\n' ' ' | sed 's/ $//')"
 
 # ── [8/8] 收尾前的一条：抓取自己也被计进去了 ────────────────────────────────
@@ -751,4 +805,4 @@ if [ "$FAILS" -ne 0 ]; then
   tail -10 "$LOGFILE" >&2 || true
   exit 1
 fi
-echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值）。"
+echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格）。"

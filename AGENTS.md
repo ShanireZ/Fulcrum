@@ -54,6 +54,15 @@ bash tests/m0/docker-run.sh    # build + lint + unit + fork regression + every e
 ⚠ **A green run right after a `git rebase` or a branch switch is not to be trusted on its own** —
 cargo can reuse a stale test binary and the new tests never run. See **Gate discipline**.
 
+★ **The cargo `target` cache lives in a docker volume named after *both* the build image and the
+checkout path**, so every git worktree gets its own and the first run in a fresh worktree is a
+cold build. One shared volume let cargo reuse another worktree's `.rlib` by mtime, and the
+compile error that came out of it named an innocent file. Splitting by tree only handles *other*
+trees: two gates on the **same** tree still share that one volume, so a run first takes a lock
+named after it — ⚠ **it refuses and exits, naming the holding pid. It does not queue.** The
+naming rule and the lock are both in `tests/lib/vol-lock.sh`, and `docker-run.sh` self-tests
+both on every run.
+
 Narrow it with one `*_ONLY=1`:
 
 | flag | scenario |

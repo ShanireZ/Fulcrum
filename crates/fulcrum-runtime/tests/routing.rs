@@ -1219,8 +1219,15 @@ fn 容器里面的目标也要被扫到() {
 fn metrics终结在自己的表位上() {
     // ★ 两件事一起验，因为它们只有一起成立才有意义：
     //   ① `metrics` 真的终结（`Outcome::Metrics`）；
-    //   ② 它排在第 75 步 ⇒ **书写在前面的 `respond 403` 先跑**（顺序表 70 < 75），
-    //      于是「圈不住的人拿到 403」这件事是由顺序表保证的，不是靠书写顺序。
+    //   ② 圈不住的人落到兜底 `respond 403` 上，**而这不是靠书写顺序** ——
+    //      夹具里 `respond` 本来就写在 `handle` 后面。管事的是顺序表：
+    //      `handle` 占第 **55** 位，比 `respond` 的 70 早 ⇒ 命中 `@i` 的请求
+    //      在 `handle` 那一步就终结在块内的 `metrics` 上；圈外的请求没有分支命中，
+    //      `handle` 什么都不产出，才轮到 70 的 `respond`。
+    //   ⚠ ⚠ 所以 `metrics @internal` 与兜底 `respond 403` **并排写在站点块顶层是错的**：
+    //      `metrics` 自己排 75，403 在第 70 步就先终结了，`metrics` 一次也跑不到。
+    //      ⇒ 示例里那个 `handle` 不是排版习惯，是唯一正确的写法；写错时
+    //      `FUL-DSL-0028` 会说出来（口径在 `docs/architecture/dsl-reference.md`）。
     let r = rt(
         "a.com {\n  @i remote_ip 10.0.0.0/8\n  handle @i {\n    metrics\n  }\n  \
          respond 403\n}\n",

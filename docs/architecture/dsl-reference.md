@@ -290,9 +290,15 @@ metrics.example:9443 {
 ```
 
 它是**普通站点块里的终结指令**，不是独立监听器、也不是站点级属性。
-⇒ 访问控制（匹配器）、TLS、访问日志、压缩**全部复用现有机制**，
+⇒ 访问控制（匹配器）、TLS、访问日志**全部复用现有机制**（G116 就是这三样），
 而 [G14「管理面只绑 Unix socket」的口径一个字不动](/platform/security-baseline.md)
 —— 指标面不属于管理面。响应是 `200`，`Content-Type: text/plain; version=0.0.4; charset=utf-8`。
+
+⛔ **压缩不在其中**：`metrics` 与 `respond` / `redir` 同病 —— 三者写响应走的是同一条
+没有 encoder 的路（`encode` 今天只接在 `file_server` 与转发那两处）。⇒ 在这个站点里
+写一条 `encode gzip`，**对抓取端点一个字节都不影响**：响应仍是 `200`、正文仍然正确，
+只是 `Content-Encoding` 那一格不出现，而没有人会去看一个成功抓取的响应头。
+代价见[可观测性](/architecture/observability.md)。
 
 ⚠ ⚠ **代价说在明处：指标与业务共用监听器，匹配器写错就会把指标暴露出去。**
 这一条**架构兜不住，只能靠文档与诊断兜** —— 上面这段就是文档那一半，
