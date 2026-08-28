@@ -496,11 +496,17 @@ impl Cx<'_> {
     /// `sorted = true` 时按执行顺序表排序（站点块顶层、`handle` 的每个 arm）；
     /// `sorted = false` 时保持书写顺序（`route { … }` 内部——**G49 的逃生口**）。
     ///
-    /// `guarded` = **外层容器已经带了匹配器**。★ 它只服务于 G116 那条诊断
-    /// （`metrics` 有没有被匹配器圈住），而那条诊断问的是「这一步会不会对
-    /// 任何人开着」——`handle @internal { metrics }` 里那一步自己没有匹配器，
-    /// ⚠ 但它显然是被圈住的。**只看这一步自己的匹配器就会把它误报成裸奔**，
+    /// `guarded` = **外层容器已经把来源限制住了**（[`restricts_source`]）。
+    /// ★ 它只服务于 G116 那条诊断，而那条诊断问的是「这一步对**谁**开着」。
+    ///
+    /// 要沿链下传，是因为 `handle @internal { metrics }` 里那一步**自己**没有匹配器，
+    /// ⚠ 但它显然是被圈住的 —— 只看这一步自己的匹配器会把它误报成裸奔，
     /// 而一条稳定误报的诊断很快就没人看了。
+    ///
+    /// ⚠ ⚠ **口径是「限制得了来源」，不是「有没有匹配器」。**
+    /// `handle /metrics { … }` 里那个路径匹配器是**任何客户端都能照着发**的东西，
+    /// 它一个人都挡不住。⇒ 判据落在 [`restricts_source`] 上，
+    /// **不是** [`is_unconditional`]（那一条问的是另一件事，见它自己的文档）。
     fn chain(
         &mut self,
         nodes: &[&Node],
@@ -609,10 +615,8 @@ impl Cx<'_> {
         guarded: bool,
     ) -> Option<HandleArm> {
         let matcher = self.matcher_ref(node, matchers);
-        // 这个分支自己带了匹配器 ⇒ 块里的每一步都被它罩着。
-        // ⚠ 用 `is_unconditional` 而不是 `matcher.is_some()`：`handle * { … }` 里那个 `*`
-        //   写出来是个匹配器、罩住的却是所有人 —— 与 `warn_unreachable` 同一条口径。
-        let guarded = guarded || !is_unconditional(&matcher);
+        // 这个分支限制得了来源 ⇒ 块里的每一步都被它罩着。见 `restricts_source`。
+        let guarded = guarded || restricts_source(&matcher, matchers);
         let Some(block) = &node.block else {
             self.diags.push(
                 Diagnostic::error(
@@ -663,9 +667,9 @@ impl Cx<'_> {
     ) -> Option<Step> {
         let matcher = self.matcher_ref(node, matchers);
         let args = node.rest_args();
-        // 这一步身上有没有匹配器约束：自己写了一个，或者外层容器带着一个。
-        // ⚠ `*` 不算（见 `is_unconditional` 上那段）。
-        let guarded = guarded || !is_unconditional(&matcher);
+        // 这一步的来源被限制住了吗：自己写了一个限制得了来源的匹配器，
+        // 或者外层容器带着一个。⚠ 「有匹配器」不等于「限制了来源」，见 `restricts_source`。
+        let guarded = guarded || restricts_source(&matcher, matchers);
 
         let body = match d {
             ChainDirective::Tracing => {
@@ -832,16 +836,21 @@ impl Cx<'_> {
                         Diagnostic::warning(
                             DiagCode::METRICS_UNGUARDED,
                             node.name_span,
-                            "`metrics` 没有任何匹配器圈住",
+                            "`metrics` 的来源没有被任何匹配器限制住",
                         )
                         .label("凡是连得到这个监听端口的人都能抓走全部指标")
                         .help(
-                            "圈住来源，例如：`@internal remote_ip 10.0.0.0/8` \
-                             加上 `handle @internal { metrics }`",
+                            "用 `remote_ip` 或 `header` 圈住来源，例如：\
+                             `@internal remote_ip 10.0.0.0/8` 加上 \
+                             `handle @internal { metrics }`",
                         )
                         .note(
                             "G116：指标端点与业务共用监听器，这一条只能靠文档与诊断兜。\
-                             ⚠ 本诊断只判「一个匹配器都没有」——匹配器写得对不对判不动",
+                             ★ 算数的只有 `remote_ip`（socket 对端，伪造不了）与 `header`\
+                             （可以放一个共享密钥）；`path` / `path_regexp` / `host` / \
+                             `method` / `query` **都不算** —— 它们是请求里的东西，\
+                             任何客户端都能照着发一份，只决定端点摆在哪，不减少能碰到它的人。\
+                             ⚠ 匹配器写得**对不对**（网段圈没圈对）本诊断仍然判不动",
                         ),
                     );
                 }
@@ -2018,6 +2027,41 @@ fn is_unconditional(m: &Option<MatcherRef>) -> bool {
         Some(MatcherRef::Path(p)) => p == "*",
         Some(MatcherRef::Named(_)) => false,
     }
+}
+
+/// 一条匹配条件**减少得了「谁能碰到这一步」吗**（只服务于 G116 那条诊断）。
+///
+/// ★ ★ 判据是一句可验证的问话：**它能不能把两个发同样请求的客户端分开？**
+/// - `remote_ip` 能 —— 它读的是 socket 对端，在这一层伪造不了。
+/// - `header` 能 —— 一个共享密钥可以放在这里。
+/// - `path` / `path_regexp` / `host` / `method` / `query` **都不能**：
+///   它们全都是请求行与请求头里的东西，**任何客户端都能照着发一份**
+///   ⇒ 它们只决定端点摆在哪，不减少能碰到它的人。
+///
+/// ⚠ ⚠ `not` **不会出现在这张表要比的位置上**：`condition()` 是把 `not { … }`
+/// 拆开、给里面每一条打上 `negate` 之后再存的，所以 `not { remote_ip … }` 存下来的
+/// `kind` 就是 `remote_ip`。⇒ 按 `kind` 比对时它照样算保护，**不需要为 `not` 写一条特例**。
+const SOURCE_CONDITIONS: &[&str] = &["remote_ip", "header"];
+
+/// 这个匹配器位**限制得了来源吗**（G116 那条诊断专用）。
+///
+/// ⚠ ⚠ **它与 [`is_unconditional`] 问的是两件不同的事，别合并**：
+/// 那一条问「这一步会不会把它后面的都吃掉」（`warn_unreachable` 用），
+/// 这一条问「这一步对谁开着」。两条判据合用一个谓词，就是让它们将来一起漂走。
+///
+/// ★ 只有**命名匹配器**才可能算数：行内匹配器按 G50 只能是路径，而路径不限制来源。
+/// ⚠ 查不到那个名字（引用了没定义过的 `@name`）当作**不算保护** ——
+/// 那条路上 `matcher_ref` 已经报过 `UNKNOWN_MATCHER` 了，这里不必再说一遍；
+/// ★ 而在「不确定」时倒向报警告，是这条诊断唯一安全的那一侧。
+fn restricts_source(m: &Option<MatcherRef>, matchers: &BTreeMap<String, Matcher>) -> bool {
+    let Some(MatcherRef::Named(name)) = m else {
+        return false;
+    };
+    matchers.get(name).is_some_and(|m| {
+        m.conditions
+            .iter()
+            .any(|c| SOURCE_CONDITIONS.contains(&c.kind.as_str()))
+    })
 }
 
 /// 响应侧上下文：在 `handle_errors` 里就还是 `handle_errors`。

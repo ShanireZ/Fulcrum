@@ -1234,63 +1234,145 @@ fn 没有匹配器的metrics要出警告() {
         .expect("裸 `metrics` 该出 G116 那条警告");
     // 文案要说出后果，不是只说「建议加个匹配器」。
     assert!(d.label.contains("指标"), "{}", d.label);
+    // ★ ★ note 里必须把「什么算、什么不算」逐个说出来 —— 那是这条诊断现在的
+    //   全部价值所在：一句笼统的「加个匹配器吧」会把人直接引向
+    //   `handle /metrics { metrics }`，而那正是它要抓的那个裸奔配置本身。
+    let note = d.note.as_deref().unwrap_or("");
+    for word in ["remote_ip", "header", "path", "host", "method", "query"] {
+        assert!(note.contains(word), "note 里没说 `{word}`：{note}");
+    }
+}
+
+/// 这一份里有没有 `FUL-DSL-0037`。⚠ 顺带钉住「它从来不是 error」——
+/// 一条把配置拒掉的门会把「指标开在内网可信段上」这种正当配置一起挡掉。
+fn 有裸奔警告(src: &str) -> bool {
+    let o = compile_str("t.Fulcrumfile", src);
+    assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+    o.diagnostics
+        .items()
+        .iter()
+        .any(|d| d.code == DiagCode::METRICS_UNGUARDED)
 }
 
 #[test]
-fn 被匹配器圈住的metrics不出警告() {
+fn 限制得了来源的匹配器才让metrics免于警告() {
     // ★ ★ **反证，两个方向缺一不可。** ⚠ 少了这一条，把诊断写成「见 `metrics` 就报」
-    //   也能让上面那条全绿 —— 而一条恒报的警告等于没有警告。
-    //   ⇒ 三种圈法各走一遍：外层容器带匹配器、这一步自己带、行内路径匹配器。
-    for src in [
-        // 外层 `handle` 带匹配器（文档里印的就是这一种）
-        "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  handle @i {\n    metrics\n  }\n  \
-         respond 403\n}\n",
-        // 这一步自己带命名匹配器
-        "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  metrics @i\n}\n",
-        // 行内路径匹配器（G50）
-        "http://a.com {\n  metrics /metrics\n}\n",
-        // 外层 `route` 带匹配器（保序逃生口里也算圈住了）
-        "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  route @i {\n    metrics\n  }\n}\n",
+    //   也能让正方向那几条全绿 —— 而一条恒报的警告等于没有警告。
+    for (what, src) in [
+        // 外层 `handle` 带 `remote_ip`（文档里印的就是这一种）
+        (
+            "handle @remote_ip",
+            "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  handle @i {\n    metrics\n  }\n  \
+             respond 403\n}\n",
+        ),
+        // 这一步自己带
+        (
+            "metrics @remote_ip",
+            "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  metrics @i\n}\n",
+        ),
+        // 外层 `route`（保序逃生口里也罩得住）
+        (
+            "route @remote_ip",
+            "http://a.com {\n  @i remote_ip 10.0.0.0/8\n  route @i {\n    metrics\n  }\n}\n",
+        ),
+        // ★ `header`：一个共享密钥可以放在这里 ⇒ 它把两个发同样请求的客户端分得开
+        (
+            "handle @header",
+            "http://a.com {\n  @tok header X-Token abc\n  handle @tok {\n    metrics\n  }\n}\n",
+        ),
+        // ★ `not { remote_ip … }`：`condition()` 把 `not` 拆开、给里面那条打 `negate`，
+        //   ⇒ 存下来的 `kind` 就是 `remote_ip`，它照样算保护（不需要为 `not` 写特例）。
+        (
+            "not { remote_ip … }",
+            "http://a.com {\n  @notlocal {\n    not {\n      remote_ip 127.0.0.1/32\n    }\n  }\n  \
+             handle @notlocal {\n    metrics\n  }\n}\n",
+        ),
+        // ★ AND 里只要有一条限制得了来源就够了（多条件是 AND，见 `Matcher`）
+        (
+            "remote_ip + path 一起写",
+            "http://a.com {\n  @i {\n    remote_ip 10.0.0.0/8\n    path /metrics\n  }\n  \
+             handle @i {\n    metrics\n  }\n}\n",
+        ),
     ] {
-        let o = compile_str("t.Fulcrumfile", src);
-        assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
-        let hit: Vec<DiagCode> = o
-            .diagnostics
-            .items()
-            .iter()
-            .map(|d| d.code)
-            .filter(|c| *c == DiagCode::METRICS_UNGUARDED)
-            .collect();
-        assert!(hit.is_empty(), "这一份不该出警告：\n{src}");
+        assert!(!有裸奔警告(src), "{what} 限制得了来源，不该出警告：\n{src}");
     }
 }
 
 #[test]
-fn 圈不住的三种写法照样要出警告() {
-    // ⚠ ⚠ 判据不是「外面套了个容器」，而是「**那一层真的带了匹配器**」。
-    //   ★ 少了这几条，一个「见到 handle 就算圈住了」的实现会让上面那条反证全绿，
-    //   而它给的是一句「已保护」的假话 —— 比没有诊断更坏。
+fn 限制不了来源的匹配器不算保护() {
+    // ⚠ ⚠ ⚠ **本轮的核心。** 判据不是「有没有匹配器」，而是
+    //   「**它能不能把两个发同样请求的客户端分开**」。
+    //   ★ 路径 / host / method / query 全都是**请求里的东西，任何客户端都能照着发一份**
+    //   —— 把它们算成保护，这条诊断就在它唯一要抓的东西上沉默：
+    //   从 nginx / Caddy 迁过来的人第一反应正是写一条路径。
     for (what, src) in [
-        // ① `handle` 的兜底分支：对所有人都开着，与裸写一模一样
+        // ① ★ 行内路径匹配器 —— **最可能出现的那个裸奔配置**
+        ("行内路径", "http://a.com {\n  metrics /metrics\n}\n"),
+        // ② 命名的路径匹配器，套在 handle 外面（看起来最像「圈住了」的那一种）
+        (
+            "handle @path",
+            "http://a.com {\n  @p path /metrics\n  handle @p {\n    metrics\n  }\n}\n",
+        ),
+        // ③ host：Host 头是请求里的东西，谁都能写
+        (
+            "handle @host",
+            "http://a.com {\n  @byhost host a.example\n  handle @byhost {\n    metrics\n  }\n}\n",
+        ),
+        // ④ method
+        (
+            "handle @method",
+            "http://a.com {\n  @g method GET\n  handle @g {\n    metrics\n  }\n}\n",
+        ),
+        // ⑤ query
+        (
+            "handle @query",
+            "http://a.com {\n  @q query k=v\n  handle @q {\n    metrics\n  }\n}\n",
+        ),
+        // ⑥ 一个匹配器都没有
+        ("裸 metrics", "http://a.com {\n  metrics\n}\n"),
+        // ⑦ `handle` 的兜底分支：对所有人都开着，与裸写一模一样
         (
             "兜底 handle 分支",
             "http://a.com {\n  handle {\n    metrics\n  }\n}\n",
         ),
-        // ② `route` 没带匹配器
+        // ⑧ `route` 没带匹配器
         (
             "裸 route",
             "http://a.com {\n  route {\n    metrics\n  }\n}\n",
         ),
-        // ③ ★ `*` 写出来是个匹配器、罩住的却是所有人（与 `warn_unreachable` 同一口径）
+        // ⑨ 显式 `*`
         ("显式 `*`", "http://a.com {\n  metrics *\n}\n"),
     ] {
-        let o = compile_str("t.Fulcrumfile", src);
-        assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
-        let hit = o
-            .diagnostics
-            .items()
-            .iter()
-            .any(|d| d.code == DiagCode::METRICS_UNGUARDED);
-        assert!(hit, "{what} 不构成保护，该出警告：\n{src}");
+        assert!(有裸奔警告(src), "{what} 限制不了来源，该出警告：\n{src}");
     }
+}
+
+#[test]
+fn 两条判据问的是两件事_同一份配置上给出不同答案() {
+    // ★ ★ ★ **这是「没把两条判据合并」的活证据。**
+    //   `FUL-DSL-0037` 问「这一步对**谁**开着」（`restricts_source`）；
+    //   `FUL-DSL-0028` 问「这一步会不会把它后面的都吃掉」（`is_unconditional`）。
+    //   ⚠ 合用一个谓词的话它们将来会一起漂走，而漂走那天没有任何东西会说。
+    //
+    // 下面这一份里，`metrics /metrics` 让两条判据**必须**给出相反的答案：
+    //   · 对 0037：路径匹配器限制不了来源 ⇒ **报**；
+    //   · 对 0028：它带着匹配器、不会无条件终结 ⇒ 后面那条 `reverse_proxy` **不报**。
+    let src = "http://a.com {\n  metrics /metrics\n  reverse_proxy 127.0.0.1:3000\n}\n";
+    let o = compile_str("t.Fulcrumfile", src);
+    assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
+    let cs: Vec<DiagCode> = o.diagnostics.items().iter().map(|d| d.code).collect();
+    assert!(
+        cs.contains(&DiagCode::METRICS_UNGUARDED),
+        "路径匹配器限制不了来源，0037 该报：{cs:?}"
+    );
+    assert!(
+        !cs.contains(&DiagCode::UNREACHABLE_STEP),
+        "`metrics /metrics` 带着匹配器、不会无条件终结，0028 不该报：{cs:?}"
+    );
+
+    // ⇒ 反向那一半：把匹配器拿掉，两条判据就都该报了（0028 指的是后面那条转发）。
+    let bare = "http://a.com {\n  metrics\n  reverse_proxy 127.0.0.1:3000\n}\n";
+    let cs = codes(bare);
+    assert!(cs.contains(&DiagCode::METRICS_UNGUARDED), "{cs:?}");
+    assert!(cs.contains(&DiagCode::UNREACHABLE_STEP), "{cs:?}");
 }
