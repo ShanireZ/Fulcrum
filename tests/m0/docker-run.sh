@@ -547,21 +547,23 @@ LINT_CMD='cargo fmt --all -- --check'
 #     docs/verification/musl-boringssl.md「这份探针证不了什么」一节。
 LINT_CMD="$LINT_CMD && cargo fmt --manifest-path spikes/musl-boringssl/Cargo.toml --all -- --check"
 LINT_CMD="$LINT_CMD && cargo clippy --workspace --all-targets --locked -- -D warnings"
-# ★ `LC_ALL=C.UTF-8` 不是可选项：本仓库的脚本注释是中文，而 shellcheck 在 POSIX locale 下
-#   会在**输出报告时**炸掉（`commitBuffer: invalid argument (cannot encode character …)`），
-#   退出码 2。那样它红得像是发现了问题，实际是它自己说不出话——排查方向会整个跑偏。
-# ⚠ 新加的 tests/<x>/*.sh 必须同时加进这张扫描表，否则它**不被 shellcheck 看**——
-#   而 shell 的失败模式是安静的（`bash -n` 全部放行）。的 tests/m1/lib.sh
-#   正是这么带着一处 SC2045 躺进来的。
-# ⚠ ⚠ ⚠ **`tests/quic-relay/*.sh` 现在不在这张表里，而它应该在。** 这不是遗漏被发现之前的状态，
-#   是发现之后的登记：把它加进去实测会让 lint 当场红 4 条（`run.sh` 的 SC2009:113 ·
-#   SC2015:226 · SC2012:245 · SC2015:368），其中两条 SC2015 正是本文件下面那段
-#   「`&&` 与 `||` 同优先级」教训的同一个形状。⇒ 它是一处**独立的**待办，不是本次改动的一部分。
-#   ★ 在它补进来之前，那一格的脚本**没有任何 lint 看着**，而 shell 的坏法是安静的。
-# ★ `tests/musl/` 里那份探针跑在门禁外（
-#   理由写在 tests/musl/probe.sh 顶部）。⚠ 它照样要进这张扫描表 ——
-#   「不在门禁里跑」与「不被 lint 看」是两件事，而一份没人 lint 的脚本坏起来是安静的。
-LINT_CMD="$LINT_CMD && LC_ALL=C.UTF-8 shellcheck tests/acme/*.sh tests/cache/*.sh tests/ci/*.sh tests/encode/*.sh tests/files/*.sh tests/h3/*.sh tests/l4/*.sh tests/lib/*.sh tests/log/*.sh tests/m0/*.sh tests/m1/*.sh tests/metrics/*.sh tests/musl/*.sh tests/proxyproto/*.sh tests/serve/*.sh tests/smoke/*.sh tests/stress/*.sh tests/unit/*.sh tests/vendor/*.sh"
+# ★ ★ shell 那半边**扫哪些文件是推导出来的，不是一张手写清单**。
+#
+#   原文在这里写死了 18 个 `tests/<x>/*.sh`。⚠ **清单漏一项时没有任何东西会说** ——
+#   它只是安静地少扫一个目录，而 lint 照常全绿。实测漏的是 `tests/quic-relay/`，
+#   那一格底下压着 4 条真实告警，从来没人看见过。
+#   （更早还栽过一次同形状的：tests/m1/lib.sh 带着一处 SC2045 躺进来。）
+#   ⚠ **不要顺手把它说成「本来能拦住那处子 shell 缺陷」—— 实测拦不住**，
+#     理由与实测记录写在 tests/ci/shellcheck-all.sh 顶部。
+#
+#   ⇒ 照本文件对 `*_ONLY` 的同一条路子（`only_mode_in` / `selftest_only_mode`）改成
+#     **结构性判据 + 每次自证**：判据在 tests/ci/shellcheck-all.sh，它自己拿一棵
+#     答案已知的假树钉住枚举器没瞎（含两层深、含空格的路径）。
+#   ★ 顺带收掉一条旧的手工纪律：`tests/musl/` 那份探针跑在门禁外，但它**照样被 lint 看**
+#     —— 现在这是推导的结果，不再需要谁记得。
+# ★ `LC_ALL=C.UTF-8` 那条（中文注释会让 shellcheck 在 POSIX locale 下报不出话来）
+#   搬进了那个脚本里，谁来调都逃不掉。
+LINT_CMD="$LINT_CMD && bash tests/ci/shellcheck-all.sh"
 # ★ ★ CI 那段搬运代码的自证（G94）。**挂在 lint 这一格而不是新开一个场景**：
 #   它只花毫秒、不需要 docker、也不需要网络，而且它验的是**门自己的管道**
 #   （退出码是怎么取的），与各场景验的产品行为不是一回事。

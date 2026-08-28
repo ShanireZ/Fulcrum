@@ -75,8 +75,9 @@ The systemd scenarios run in a **separate container** (systemd as PID 1) and are
 `M1_TESTS=0` skips them, `bash tests/m1/systemd-run.sh` runs them alone.
 
 ⚠ `docker-run.sh` self-tests its `*_ONLY` dispatch on every run — adding a scenario means adding
-a row to that self-test, a row to the `LINT_CMD` shellcheck list, and the `<NAME>_ONLY` /
-`<NAME>_TESTS` pair.
+a row to that self-test and the `<NAME>_ONLY` / `<NAME>_TESTS` pair. The shellcheck scan is **no
+longer on that list**: it is derived from the tree (`tests/ci/shellcheck-all.sh`), so a new
+directory is covered without anyone remembering.
 
 Per-scenario detail: [docs/platform/build-and-test.md](docs/platform/build-and-test.md).
 
@@ -201,9 +202,17 @@ confident-looking wrong output rather than an error.
 7. **`bash` cannot read a UDP datagram** — one `read()` consumes the datagram and returns its
    first byte. Use a client that reads whole datagrams (the L4 scenario uses a python3 helper).
 8. **`curl --rate N` is per *hour* without a unit**, and `-o` / `-w` apply per URL.
+9. **`shellcheck` does not see a variable mutated inside a function that is called in `$(…)`.**
+   Measured on 0.10: SC2030/SC2031 fire for `( B=1 )` and `X=$(D=9; …)`, and say nothing about
+   `f(){ A+=(x); }; X=$(f)` — the exact shape that leaked a process for three months. Register the
+   pid in the caller, and let `cleanup` assert the ports came back. ⚠ A comment line starting with
+   `# shellcheck` is parsed as a *directive* (SC1073) — reword rather than indent it.
 
-Traps 1 and 2 are gates: `shellcheck` runs over every `tests/**/*.sh`, and `docker-run.sh`
-self-tests its byte probes against known-CRLF, known-LF and known-binary fixtures on every run.
+Traps 1 and 2 are gates: `tests/ci/shellcheck-all.sh` runs `shellcheck` over every
+`tests/**/*.sh` — the file set is **derived** with `find`, never listed, and its enumerator
+self-tests against a fixture tree (two levels deep, a path with a space) on every run — and
+`docker-run.sh` self-tests its byte probes against known-CRLF, known-LF and known-binary fixtures
+on every run.
 
 ## Dependencies
 
