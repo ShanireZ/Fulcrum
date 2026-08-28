@@ -173,8 +173,12 @@ impl<'a> Downstream<'a> {
         }
     }
 
-    /// ★ ★ **跑一次请求，然后一定记一行** —— 两件事绑在同一个方法里，
-    /// 于是「每一条请求都记一行」不是一件要靠记性的事，加新入口时这里不用改。
+    /// ★ ★ **跑一次请求，然后一定收尾一次** —— 两件事绑在同一个方法里，
+    /// 于是「每一条请求都记一行、都记一次数」不是一件要靠记性的事，
+    /// 加新入口时这里不用改。
+    ///
+    /// ⚠ 收尾走 [`access_log::Record::finish`] 而不是 `emit`：**指标不跟着
+    /// `log` 配置早退**（没配日志的站点照样要有指标），理由写在 `finish` 上。
     ///
     /// ⚠ `status` 与 `resp_size` **现问 `ServerSession`**，不在 `Record` 里另存一份 ——
     /// 两份迟早不一致，而不一致的那天没有任何东西会说。
@@ -210,7 +214,7 @@ impl<'a> Downstream<'a> {
             }
             self.record.tls = tls_fields(self.session);
         }
-        self.record.emit(status, size);
+        self.record.finish(status, size);
     }
 
     /// 写下游响应头 —— **本 crate 数据面唯一的一处**。
@@ -502,6 +506,23 @@ impl FulcrumApp {
             let status = rt.defaults.no_site_match;
             debug!("无站点匹配：Host={host} port={}", self.port);
             session.record.outcome = "no_site_match";
+            // ── `fulcrum_no_site_match_total{host}`（G118）─────────────────
+            //
+            // ★ 记在**写 `outcome` 的同一处**：这两句说的是同一件事，
+            //   分开就有一天会有人只改其中一句。
+            // ⚠ ⚠ `host` 由请求方给、攻击者可控 ⇒ **只有出现在配置里的地址字面量
+            //   才带真值**，其余一律 `<other>` —— 上界由配置定、不由访问者定。
+            //   ★ 通配字面量 `*.wild.example` 的子域名判**未知**：它不是一条地址
+            //     字面量，而那正是这一句话的全部含义（见 `has_address_literal`）。
+            // ⚠ 集合**从 `rt` 现问**，不在指标那边另存一份 —— 换一次配置那份就过期，
+            //   而过期的样子是「某个 host 从此归 <other>」，没有任何东西会说。
+            let h = host.to_ascii_lowercase();
+            let label = if rt.has_address_literal(&h) {
+                h.as_str()
+            } else {
+                "<other>"
+            };
+            metrics::NO_SITE_MATCH_TOTAL.inc(&[label]);
             write_simple(session, status, None, &[], &ctx, started).await;
             return;
         };
@@ -811,7 +832,14 @@ impl FulcrumApp {
         let age = (now - entry.stored_at).max(0) as u64;
         match cache::policy::freshness(&entry.cc, req_cc, entry.fresh_for, age) {
             cache::policy::Freshness::Fresh => CacheAttempt::Served(
-                write_cached(session, &entry, now, &self.cache.store.state("HIT")).await,
+                write_cached(
+                    session,
+                    &entry,
+                    now,
+                    cache::CacheState::Hit,
+                    &self.cache.store,
+                )
+                .await,
             ),
             // ⚠ 陈的与「必须重验证」在这里**同一条路**：都去问上游。
             //   ★ 差别在于陈的那条**可以**在上游挂掉时退回来用（stale-if-error），
@@ -1017,9 +1045,26 @@ impl FulcrumApp {
                 session,
                 &entry,
                 now_unix(),
-                &cp.handle.store.state("REVALIDATED"),
+                cache::CacheState::Revalidated,
+                &cp.handle.store,
             )
             .await;
+        }
+
+        // ── 缓存事件：回源（R7 的 `miss`）──────────────────────────────────
+        //
+        // ★ ★ **这一行是「这条响应的内容来自上游」唯一的判定点**，而那正是 `miss`
+        //   的定义。上面那个 304 分支已经把「重验证成功、发出去的还是缓存里那一份」
+        //   摘走了（它在 `write_cached` 里记 `stale`）⇒ 走到这里的每一条都在往下游
+        //   发上游给的字节，无论它此前是没命中还是重验证没验住。
+        // ⚠ 记在这里而不是「查缓存没命中」那一处：那一处之后还可能拐弯 ——
+        //   `only-if-cached` 回 504（根本没回源）、防惊群的 follower 等完重查一次
+        //   **命中了**。在那里记，两种都会被算成 `miss`，而**数字看起来完全正常**。
+        // ⚠ `pass` 是 `None` 说明这个站点根本没配 `cache`：它没有「命中/未命中」
+        //   可言，一条都不记。★ 记了的话，`hit/(hit+miss)` 会被没开缓存的流量
+        //   稀释成一个假比例 —— 而那个比例读起来同样完全正常。
+        if pass.is_some() {
+            cache::CacheEvent::Miss.record(1);
         }
 
         // ★ 存进缓存的是**改完头之后**那一份（`header_down` 已经施加）——
@@ -1264,7 +1309,8 @@ async fn write_cached(
     session: &mut Downstream<'_>,
     entry: &cache::store::Entry,
     now: i64,
-    state: &str,
+    state: cache::CacheState,
+    store: &cache::Backend,
 ) -> Result<(), u16> {
     let age = (now - entry.stored_at).max(0);
     let mut resp = match ResponseHeader::build(entry.status, None) {
@@ -1280,11 +1326,16 @@ async fn write_cached(
     let _ = resp.insert_header("Age", age.to_string());
     // ★ 让「这一条是从哪来的」在**响应里**看得见，而不是只在日志里。
     //   ⚠ 判据也靠它：只看状态码与体，命中与回源长得一模一样。
-    let _ = resp.insert_header("X-Fulcrum-Cache", state);
-    // ★ ★ 日志里那一格与这个响应头**取同一个值、在同一行赋** ——
-    //   分两处取的话，它们哪天不一致，两边都读起来很正常。
-    //   ⚠ 回源那条路**没有**这个头，所以日志里也没有 `cache` 这一格（契约里写死的）。
-    session.record.cache = Some(state.to_string());
+    // ⚠ 后端后缀（`-DISK`）由 `store` 加 —— 它知道本进程挑中了哪个后端。
+    let header = store.state(state);
+    let _ = resp.insert_header("X-Fulcrum-Cache", header.as_str());
+    // ★ ★ ★ 响应头、访问日志那一格、指标那一格**三者取同一个 `state`，在同一处赋** ——
+    //   分几处各算一遍的话，它们哪天不一致，每一处读起来都很正常（G66 的形状）。
+    //   ⚠ 回源那条路**没有**这个头，所以日志里也没有 `cache` 这一格（契约里写死的）；
+    //     它的 `miss` 记在 `proxy_with` 里回源那一处。
+    //   ⚠ 指标那一格比响应头**粗**：`HIT` 与 `HIT-DISK` 折成同一个 `hit`（R7）。
+    session.record.cache = Some(header);
+    state.event().record(1);
     let _ = resp.insert_header("Content-Length", entry.body.len().to_string());
     if let Err(e) = session.write_response_header(Box::new(resp)).await {
         debug!("写缓存响应头失败：{e}");

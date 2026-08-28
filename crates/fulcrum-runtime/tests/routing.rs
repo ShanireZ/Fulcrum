@@ -255,6 +255,52 @@ fn site_addr按小写折叠_r6() {
     assert_eq!(&*got.site_addr, "a.example");
 }
 
+// ── G118：`fulcrum_no_site_match_total{host}` 的封顶 ─────────────────────────
+
+#[test]
+fn has_address_literal只认配置里写着的那些字面量_g118() {
+    let r = rt(
+        "http://a.example:9000, http://B.Example:9000 {\n  respond 200\n}\n\
+                http://*.wild.example:9000 {\n  respond 200\n}\n\
+                :9001 {\n  respond 200\n}\n",
+    );
+
+    // 正向：配置里写着的三种形态都认得。
+    assert!(r.has_address_literal("a.example"));
+    assert!(r.has_address_literal("b.example"), "字面量是折成小写存的");
+    assert!(
+        r.has_address_literal("A.Example"),
+        "传进来的大小写不该影响判定 —— 否则同一个 host 会有两条时序"
+    );
+    assert!(
+        r.has_address_literal("*.wild.example"),
+        "通配地址**自己**是一条字面量"
+    );
+    assert!(
+        r.has_address_literal(":9001"),
+        "不带主机名的兜底地址，字面量是 `:port`（R6）"
+    );
+
+    // ★ ★ ★ 反向那半 —— 这就是 G118 的全部意义：
+    //   通配字面量的**子域名**判**未知**。它路由得到，但它不是一条地址字面量，
+    //   而子域名由请求方随便写 ⇒ 认它就等于把上界重新交回给了访问者。
+    // ⚠ 少了这一条，一个改用 `resolve_site` 实现的版本会让上面全绿，
+    //   而 `fulcrum_no_site_match_total` 的 series 会随子域名无限增长。
+    assert!(!r.has_address_literal("x.wild.example"));
+    assert!(!r.has_address_literal("wild.example"), "通配不覆盖裸域");
+    assert!(!r.has_address_literal("nobody.example"));
+    assert!(!r.has_address_literal(""));
+    assert!(
+        !r.has_address_literal("a.example:9000"),
+        "问的是主机名，不是带端口的原文"
+    );
+
+    // ★ 而 `x.wild.example` 确实**路由得到** —— 这一条让上面那句
+    //   「路由得到、但不是字面量」不是一句空话。
+    let h = no_headers();
+    assert!(route(&r, &Req::new("x.wild.example", "/").port(9000), &h).is_some());
+}
+
 #[test]
 fn 默认响应码就是_g63_写下的那三个() {
     let r = rt("a.com {\n  respond 200\n}\n");

@@ -43,15 +43,24 @@
 //!
 //! # 声明表里的族都在事件点记账
 //!
-//! ⇒ 渲染只是把注册表里的数抄出来。⚠ 「抓取时去问活体」那一类（上游在途数、证书到期时刻）
-//! **还没有接线**，它们也还不在声明表里。
+//! ⇒ 渲染只是把注册表里的数抄出来。四个族的取数点各在何处：
+//!
+//! | 族 | 取数点 |
+//! |---|---|
+//! | `fulcrum_requests_total` · `fulcrum_request_duration_seconds` | [`crate::access_log::Record::finish`]，**只有那一处** |
+//! | `fulcrum_no_site_match_total` | `lib.rs` 里写 `outcome = "no_site_match"` 的同一处 |
+//! | `fulcrum_cache_events_total` | `hit` / `stale` 在 `write_cached`，`miss` 在回源那一处，`purge` 在 `POST /purge` |
+//!
+//! ⚠ 「抓取时去问活体」那一类（上游在途数、证书到期时刻）**还没有接线**，
+//! 它们也还不在声明表里。
 //!
 //! # ⚠ 公开面是 `pub` 而不是 `pub(crate)`
 //!
 //! ★ 不是「对外暴露」的意思：本 crate `publish = false`，`pub` 的作用域就是同一个
 //! workspace 里的那个二进制，而它别的模块（[`crate::access_log`] 一族）本来就是 `pub mod`。
-//! ⚠ 写入 API 现在还没有调用方，`pub(crate)` 会被 `dead_code` 当场判死，
-//! 而本仓库零 `#[allow(dead_code)]` —— 那条路是堵死的。
+//! ⚠ [`Family::set`] 今天还没有调用方（gauge 那一族要等活体取数接上来），
+//! 而 `pub(crate)` 会被 `dead_code` 当场判死 —— 本仓库零 `#[allow(dead_code)]`，
+//! 那条路是堵死的。
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

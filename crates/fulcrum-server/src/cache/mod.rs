@@ -112,10 +112,14 @@ impl Backend {
     /// ★ 但这个头只是**方便**的那一半：它信的是「本进程挑中了哪个后端」。
     /// 真正证明「东西在盘上」的判据是**把进程杀掉再起来，它还在** ——
     /// 那一条内存后端**不可能**通过。两条一起用。
-    pub fn state(&self, base: &str) -> String {
+    ///
+    /// ⚠ 收 [`CacheState`] 而不是 `&str`，理由写在那个枚举上：**这一串与
+    /// `fulcrum_cache_events_total{event}` 那一格是同一件事的两种粒度**，
+    /// 而两处都从同一个枚举穷尽出来时，「加了一种状态却漏了一处」编不过。
+    pub fn state(&self, base: CacheState) -> String {
         match self {
-            Backend::Disk(_) => format!("{base}-DISK"),
-            _ => base.to_string(),
+            Backend::Disk(_) => format!("{}-DISK", base.header_base()),
+            _ => base.header_base().to_string(),
         }
     }
 
@@ -185,6 +189,86 @@ impl Backend {
             Backend::Disk(s) => s.stats(),
             Backend::Off => (0, 0),
         }
+    }
+}
+
+/// 「这一条是从缓存发出去的」有哪几种 —— `X-Fulcrum-Cache` 那个头的**基值**
+/// （不含后端后缀）。
+///
+/// # ★ ★ ★ 为什么是枚举而不是一个 `&str`
+///
+/// 同一件事要在两个粒度上说出来：响应头要分辨内存与磁盘（`HIT` / `HIT-DISK`），
+/// 而 `fulcrum_cache_events_total{event}` 那张表把上界写死成四个值 ⇒ 两者折成一格。
+/// ⚠ ⚠ 若把状态当字符串传，那个折叠就只能写成 `match s { … , _ => … }` ——
+/// 而 `&str` 的 `match` **必须**有兜底臂，于是**将来新增的一种状态会静默地被算成别的**：
+/// 指标数字照涨，只是涨错了格，没有任何东西会说出来（R7 明令禁止的形状）。
+/// ★ 换成枚举之后，[`Backend::state`] 与 [`CacheState::event`] 两处一起穷尽 ——
+/// 加一个变体时**两处都编不过**，那正是我们要的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheState {
+    /// 新鲜，直接从缓存发出去。
+    Hit,
+    /// 陈了，带校验器问过上游拿到 304 之后，把缓存里那份发出去。
+    Revalidated,
+}
+
+impl CacheState {
+    /// `X-Fulcrum-Cache` 里那个基值。⚠ 这两个字符串是**对外契约**
+    /// （判据与用户的告警规则都按它们写），改一个字就是改契约。
+    fn header_base(self) -> &'static str {
+        match self {
+            CacheState::Hit => "HIT",
+            CacheState::Revalidated => "REVALIDATED",
+        }
+    }
+
+    /// 折成 `fulcrum_cache_events_total{event}` 的那一格（R7）。
+    ///
+    /// ⚠ 折得比响应头**粗**：`HIT` 与 `HIT-DISK` 在指标上是同一格。
+    /// ★ 想知道「是哪一种命中」去看访问日志 —— 它记的是 `cache` 的原值。
+    pub fn event(self) -> CacheEvent {
+        match self {
+            CacheState::Hit => CacheEvent::Hit,
+            CacheState::Revalidated => CacheEvent::Stale,
+        }
+    }
+}
+
+/// `fulcrum_cache_events_total{event}` 的取值 —— **闭集，四个**（R7）。
+///
+/// ★ 四个是同一件事的四个去向，**单位都是「条」**：一条请求命中了 / 回源了 /
+/// 重验证后发出去了，或者一条缓存条目被清掉了。
+///
+/// ⚠ 只有 `Hit` 与 `Stale` 在 `X-Fulcrum-Cache` 里露过面（见 [`CacheState`]）：
+/// **回源那条路没有这个头**（契约里写死的，所以访问日志里也没有 `cache` 那一格），
+/// 而 `Purge` 根本不发生在请求路径上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheEvent {
+    /// 从缓存发出去（含磁盘后端）。
+    Hit,
+    /// 回源：这条响应的内容来自上游。
+    Miss,
+    /// 重验证之后把缓存里那份发出去。
+    Stale,
+    /// 被清掉的条目数。
+    Purge,
+}
+
+impl CacheEvent {
+    /// 标签值。⚠ 与 [`CacheState::header_base`] 不同，这几个是**小写**的 ——
+    /// Prometheus 标签值的习惯，而且它们与响应头本来就不是同一套词。
+    pub fn label(self) -> &'static str {
+        match self {
+            CacheEvent::Hit => "hit",
+            CacheEvent::Miss => "miss",
+            CacheEvent::Stale => "stale",
+            CacheEvent::Purge => "purge",
+        }
+    }
+
+    /// 记 `n` 次。★ 收一个 `n` 是因为 `purge` 天生成批（一次清掉了 N 条）。
+    pub fn record(self, n: u64) {
+        crate::metrics::CACHE_EVENTS_TOTAL.inc_by(&[self.label()], n);
     }
 }
 
@@ -322,3 +406,109 @@ impl pingora_core::services::background::BackgroundService for CacheMaintenanceS
 
 // ★ 缓存的装载摘要住在 `lib.rs` 的 `log_load_summary` 里（与 hide 清单、UNWIRED 公告同一处）：
 //   装载结论只有一个出口，而不是两个各说各的。
+
+#[cfg(test)]
+mod tests {
+    //! **M2 批 M**（裁决 R7）：`X-Fulcrum-Cache` 的**完整取值集合** ↔ 四个缓存事件。
+
+    use super::*;
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let p = std::env::temp_dir().join(format!(
+            "fulcrum-cache-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&p).expect("临时目录撞名了 —— 那说明命名不够唯一");
+        p
+    }
+
+    #[test]
+    fn 状态值的完整取值集合_以及它们各自折到哪个事件() {
+        // ★ ★ 一次列全：两个状态 × 三种后端 = `X-Fulcrum-Cache` 能出现的**全部**字符串。
+        //   ⚠ 只列「我见过的那几个」不算数 —— R7 要求的是**取值集合**，
+        //     而集合是由这两个枚举与后端那三档共同定死的。
+        let dir = tmp_dir("state");
+        let mem = Backend::Mem(store::MemStore::new(1 << 20));
+        let off = Backend::Off;
+        let disk = Backend::Disk(disk::DiskStore::open(&dir, 1 << 20).expect("打不开磁盘缓存"));
+
+        assert_eq!(mem.state(CacheState::Hit), "HIT");
+        assert_eq!(off.state(CacheState::Hit), "HIT");
+        assert_eq!(disk.state(CacheState::Hit), "HIT-DISK");
+        assert_eq!(mem.state(CacheState::Revalidated), "REVALIDATED");
+        assert_eq!(off.state(CacheState::Revalidated), "REVALIDATED");
+        assert_eq!(disk.state(CacheState::Revalidated), "REVALIDATED-DISK");
+
+        // ★ ★ 折叠的两个方向都要判：
+        //   ① 后端后缀**不改变**事件那一格（`HIT` 与 `HIT-DISK` 同一个 `hit`）；
+        //   ② 状态**改变**它。
+        //   ⚠ 少了 ②，一个「全折成 `hit`」的实现照样能让 ① 全绿。
+        assert_eq!(CacheState::Hit.event().label(), "hit");
+        assert_eq!(CacheState::Revalidated.event().label(), "stale");
+        assert_ne!(
+            CacheState::Hit.event(),
+            CacheState::Revalidated.event(),
+            "命中与重验证被折成了同一格 —— 那两件事在指标上就再也分不开了"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 四个事件的标签值就是那张表写死的四个_而且互不相同() {
+        // ⚠ 上界是这四个：加一个变体，`label` 的 `match` 当场编不过。
+        //   ★ 这条判据钉住的是**标签值本身** —— 改一个字就是改抓取端的查询语句。
+        assert_eq!(CacheEvent::Hit.label(), "hit");
+        assert_eq!(CacheEvent::Miss.label(), "miss");
+        assert_eq!(CacheEvent::Stale.label(), "stale");
+        assert_eq!(CacheEvent::Purge.label(), "purge");
+
+        // ★ ★ 反向那半：四个标签值**互不相同**。
+        //   ⚠ 一次复制粘贴就能让两个变体共用一个词，而上面四条只要有一条跟着改
+        //     就照样全绿 —— 现场是两件事被加进同一格，数字看起来完全正常。
+        let mut labels: Vec<&str> = [
+            CacheEvent::Hit,
+            CacheEvent::Miss,
+            CacheEvent::Stale,
+            CacheEvent::Purge,
+        ]
+        .iter()
+        .map(|e| e.label())
+        .collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels, ["hit", "miss", "purge", "stale"]);
+    }
+
+    #[test]
+    fn 四个事件都进得了那张进程级的表() {
+        // ★ 只判「这一格存在」，不判读数：别的判据也在往同一张表里写，
+        //   而**存在**是单调的 ⇒ 这条判据不会因为测试跑的顺序而红。
+        // ⚠ `record(0)` 照样把这条 series 建出来 —— counter 在 Prometheus 里
+        //   本来就该尽早存在（「族在、值是 0」与「族根本没出现过」是两件事）。
+        let all = [
+            CacheEvent::Hit,
+            CacheEvent::Miss,
+            CacheEvent::Stale,
+            CacheEvent::Purge,
+        ];
+        for e in all {
+            e.record(0);
+        }
+        let out = crate::metrics::render();
+        for e in all {
+            assert!(
+                out.contains(&format!(
+                    "fulcrum_cache_events_total{{event=\"{}\"}} ",
+                    e.label()
+                )),
+                "缺 {} 这一格：\n{out}",
+                e.label()
+            );
+        }
+    }
+}
