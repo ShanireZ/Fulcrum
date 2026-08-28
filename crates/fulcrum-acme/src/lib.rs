@@ -48,6 +48,7 @@ use fulcrum_tls::renewal::Backoff;
 use fulcrum_tls::{CertStore, SniResolver};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Let's Encrypt 生产目录。`acme_ca` 没写时用它。
@@ -252,6 +253,58 @@ impl Report {
     }
 }
 
+/// 签发尝试的三个计数：`ok` / `fail` / `deferred`（**M2 批 M**）。
+///
+/// ★ ★ **它挂在 [`AcmeManager`] 上，由抓取时来问** —— `fulcrum_acme_issue_total`
+/// 那一族不在指标那一侧另记一份。能从被测对象本身问到的东西，就不要在旁边再记一份：
+/// 两份迟早不一致，而不一致的那天没有任何东西会说。
+///
+/// # ⚠ ⚠ `deferred` 在这里的定义（写死，别按字面猜）
+///
+/// **`deferred` = 这一轮「决定不去找 CA 试」，且原因是一条拦阻规则**，两种：
+///
+/// | 来源 | 什么形状 |
+/// |---|---|
+/// | [`Report::backed_off`] | 上次失败之后还在退避窗口里，本轮根本没去试 |
+/// | [`Report::deferred`] | 这一批接不了（通配符站点没配 `tls { dns … }`）|
+///
+/// ⛔ **不含 [`Report::fresh`]**（证书还新、没到续期点）。那是**稳态**：
+/// 每一轮、每一个健康域名都会落在那里。把它算进来，这个计数器在一切正常时也单调上涨，
+/// 于是「有东西被拦住了」这个信号就没了 —— 与「一条在事实已经变了之后照旧输出的警告
+/// 会训练人忽略整张表」是同一族的错。
+///
+/// ⇒ 三个数**不构成对域名的划分**（`ok + fail + deferred` ≠ 每轮的域名数），这是有意的。
+#[derive(Debug, Default)]
+pub struct IssueCounts {
+    ok: AtomicU64,
+    fail: AtomicU64,
+    deferred: AtomicU64,
+}
+
+impl IssueCounts {
+    /// 把一轮巡检的结果记进来。**每轮一次，在 [`AcmeManager::run_once`] 收尾那一处。**
+    fn record(&self, report: &Report) {
+        let bump = |c: &AtomicU64, n: usize| {
+            c.fetch_add(n as u64, Ordering::Relaxed);
+        };
+        bump(&self.ok, report.issued.len());
+        bump(&self.fail, report.failed.len());
+        bump(
+            &self.deferred,
+            report.backed_off.len() + report.deferred.len(),
+        );
+    }
+
+    /// 只读快照：`(ok, fail, deferred)`。给指标渲染用。
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        (
+            self.ok.load(Ordering::Relaxed),
+            self.fail.load(Ordering::Relaxed),
+            self.deferred.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// 自动签发与续期的执行者。
 pub struct AcmeManager {
     cfg: AcmeConfig,
@@ -274,6 +327,8 @@ pub struct AcmeManager {
     /// 叫醒巡检。★ 没有它，一次强制续期最长要等 12 小时（[`MAX_IDLE`]）才生效——
     /// 而「按了没反应」会让人以为这个口子坏了，然后去动别的东西。
     wake: tokio::sync::Notify,
+    /// 签发尝试的三个计数（**M2 批 M**）。定义见 [`IssueCounts`]。
+    issue_counts: IssueCounts,
 }
 
 impl AcmeManager {
@@ -298,7 +353,13 @@ impl AcmeManager {
             jitter: Jitter::from_clock(),
             force: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             wake: tokio::sync::Notify::new(),
+            issue_counts: IssueCounts::default(),
         }
+    }
+
+    /// 签发尝试的三个计数。★ 只读，**抓取时来问**（`fulcrum_acme_issue_total`）。
+    pub fn issue_counts(&self) -> &IssueCounts {
+        &self.issue_counts
     }
 
     pub fn config(&self) -> &AcmeConfig {
@@ -364,6 +425,35 @@ impl Jitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `deferred` 的定义（**M2 批 M**）：退避 + 这一批接不了，**不含**「还不到续期点」。
+    #[test]
+    fn 签发计数把退避与接不了算成_deferred_而不把_fresh_算进去() {
+        let c = IssueCounts::default();
+        c.record(&Report {
+            issued: vec!["a".into()],
+            // ★ ★ 反向那半：`fresh` 是**稳态** —— 每一轮每个健康域名都落在这里。
+            //   把它算进 `deferred`，这个计数器在一切正常时也单调上涨，
+            //   于是「有东西被拦住了」这个信号就没了。
+            fresh: vec!["b".into(), "c".into(), "d".into()],
+            deferred: vec!["e".into()],
+            backed_off: vec!["f".into(), "g".into()],
+            failed: vec![("h".into(), "why".into())],
+            next_check: None,
+        });
+        assert_eq!(c.snapshot(), (1, 1, 3));
+
+        // ★ 计数是**累加**的（counter 语义），不是每轮覆盖。
+        c.record(&Report {
+            issued: vec!["a".into()],
+            ..Report::default()
+        });
+        assert_eq!(c.snapshot(), (2, 1, 3));
+
+        // ★ 空的一轮什么都不动 —— 否则「巡检跑过一轮」会被记成「尝试过一次」。
+        c.record(&Report::default());
+        assert_eq!(c.snapshot(), (2, 1, 3));
+    }
 
     #[test]
     fn 两家_lets_encrypt_有可读的目录名() {

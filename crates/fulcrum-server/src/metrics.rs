@@ -41,9 +41,10 @@
 //! 地址字面量**。⛔ 任何形态都不加 `uri` 标签。★ 这条纪律的执行者在取数点那一侧；
 //! 本模块的责任是不给它开后门 —— 写入 API 收的是 `&[&str]`，个数与顺序都由声明表定死。
 //!
-//! # 声明表里的族都在事件点记账
+//! # ★ ★ ★ 一个族的数只有两种来处，由声明表里的 [`Source`] 定死
 //!
-//! ⇒ 渲染只是把注册表里的数抄出来。四个族的取数点各在何处：
+//! **① 事件点记账（[`Source::Event`]）** —— 发生一次就往进程级注册表里加一笔，
+//! 渲染只是把数抄出来：
 //!
 //! | 族 | 取数点 |
 //! |---|---|
@@ -51,20 +52,35 @@
 //! | `fulcrum_no_site_match_total` | `lib.rs` 里写 `outcome = "no_site_match"` 的同一处 |
 //! | `fulcrum_cache_events_total` | `hit` / `stale` 在 `write_cached`，`miss` 在回源那一处，`purge` 在 `POST /purge` |
 //!
-//! ⚠ 「抓取时去问活体」那一类（上游在途数、证书到期时刻）**还没有接线**，
-//! 它们也还不在声明表里。
+//! **② 抓取时去问活体（[`Source::Live`]）** —— 注册表里**永远没有它们的数**，
+//! [`render`] 那一刻现问 [`LiveSources`] 里那几个对象：
+//!
+//! | 族 | 问谁 |
+//! |---|---|
+//! | `fulcrum_upstream_inflight` · `fulcrum_upstream_healthy` | 当前 `Runtime` 快照里的每个 `Upstream`（**按地址去重**）|
+//! | `fulcrum_cert_expiry_seconds` | `SniResolver::expiries()`（R5：值是 `notAfter` 的**绝对 Unix 秒**）|
+//! | `fulcrum_acme_issue_total` | `AcmeManager::issue_counts()` |
+//! | `fulcrum_build_info` | 这个二进制自己（`CARGO_PKG_VERSION`），不需要任何活体源 |
+//!
+//! ★ ★ ★ **第二类为什么不在事件点记账**：能从被测对象本身问到的东西，
+//! 就不要在旁边再记一份 —— 否则两份迟早不一致，而**不一致的那天没有任何东西会说**。
+//! （[`crate::access_log`] 已经把这条落在 `status` / `resp_size` 上。）
+//! ⚠ 代价说在明处：读数是**抓取那一刻**的瞬时值，两次抓取之间发生过什么看不见。
+//! 对「在途数」「还有多久到期」这类量而言那本来就是全部真相。
 //!
 //! # ⚠ 公开面是 `pub` 而不是 `pub(crate)`
 //!
 //! ★ 不是「对外暴露」的意思：本 crate `publish = false`，`pub` 的作用域就是同一个
 //! workspace 里的那个二进制，而它别的模块（[`crate::access_log`] 一族）本来就是 `pub mod`。
-//! ⚠ [`Family::set`] 今天还没有调用方（gauge 那一族要等活体取数接上来），
-//! 而 `pub(crate)` 会被 `dead_code` 当场判死 —— 本仓库零 `#[allow(dead_code)]`，
-//! 那条路是堵死的。
 
-use std::collections::BTreeMap;
+use fulcrum_acme::AcmeManager;
+use fulcrum_runtime::SharedRuntime;
+use fulcrum_tls::SniResolver;
+use log::warn;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 族的类型。★ 它同时定死两件事：`# TYPE` 那一行怎么写，以及这个族**能被怎么写入**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,13 +104,28 @@ impl Kind {
     }
 }
 
-/// 一个指标族的**全部声明**：名字、类型、HELP 文本、标签名清单。
+/// 一个族的数**从哪来**。★ 它把本模块那条中心区分写进了声明表本身。
+///
+/// ⚠ ⚠ 一个族**只能有一种来处**：渲染时按它二选一去取数，
+/// 于是「事件点也记一笔、抓取时又问一遍」在结构上做不到 ——
+/// 那种错的表现是**同一条 series 的值忽大忽小**，而两边各自都言之凿凿。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// **事件点记账**：发生一次就往进程级注册表里加一笔。
+    Event,
+    /// **抓取时问活体**：进程级注册表里永远没有它的数，[`render`] 那一刻现问。
+    Live,
+}
+
+/// 一个指标族的**全部声明**：名字、类型、数从哪来、HELP 文本、标签名清单。
 ///
 /// ⚠ ⚠ `labels` 那一行是**契约**：写入时给的标签值要与它**逐项对上**（个数与顺序），
 /// 对不上就地 panic —— 理由见本文件顶部。
 pub struct Family {
     name: &'static str,
     kind: Kind,
+    /// 这个族的数从哪来。见 [`Source`]。
+    source: Source,
     /// `# HELP` 行的原文。⚠ **这一行不转义**（它不是标签值）⇒ 约束落在声明这一侧：
     /// 带换行或反斜杠的 HELP 会当场把 exposition 撕坏。由单测守。
     help: &'static str,
@@ -114,30 +145,69 @@ const BUCKETS: &[f64] = &[
 /// ⚠ 下面那几个 `pub const` 句柄按**下标**指进来 —— 重排这张表就会让某个句柄换个族，
 /// 而那种错**在输出里看起来完全正常**（数字照涨，只是涨在另一条 series 上）。
 /// ⇒ 单测 `族句柄指的就是它名字上那个族` 把每个句柄的名字逐个钉住。
-const FAMILIES: [Family; 4] = [
+const FAMILIES: [Family; 9] = [
     Family {
         name: "fulcrum_requests_total",
         kind: Kind::Counter,
+        source: Source::Event,
         help: "请求总数，按站点地址字面量、结果、状态码类与协议分。",
         labels: &["site", "outcome", "status_class", "proto"],
     },
     Family {
         name: "fulcrum_request_duration_seconds",
         kind: Kind::Histogram,
+        source: Source::Event,
         help: "请求耗时分布，单位秒。",
         labels: &["site", "outcome"],
     },
     Family {
         name: "fulcrum_cache_events_total",
         kind: Kind::Counter,
+        source: Source::Event,
         help: "HTTP 缓存事件数：命中、回源、重验证后发出、被清掉的条目。",
         labels: &["event"],
     },
     Family {
         name: "fulcrum_no_site_match_total",
         kind: Kind::Counter,
+        source: Source::Event,
         help: "没匹配到任何站点的请求数；host 只有出现在配置里的才带真值，其余归 <other>。",
         labels: &["host"],
+    },
+    Family {
+        name: "fulcrum_upstream_inflight",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "每个上游当前在飞的连接数；同一个上游被多个站点引用时只出一条。",
+        labels: &["upstream"],
+    },
+    Family {
+        name: "fulcrum_upstream_healthy",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "主动健康检查对每个上游的判定，1 为健康；没配 health_uri 的恒为 1。",
+        labels: &["upstream"],
+    },
+    Family {
+        name: "fulcrum_cert_expiry_seconds",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "已装载证书的 notAfter，取绝对 Unix 秒；抓取端减去 time() 就是剩余量。",
+        labels: &["domain"],
+    },
+    Family {
+        name: "fulcrum_acme_issue_total",
+        kind: Kind::Counter,
+        source: Source::Live,
+        help: "ACME 巡检的签发结果计数；deferred 是退避中或这一批接不了，不含还不到续期点的。",
+        labels: &["result"],
+    },
+    Family {
+        name: "fulcrum_build_info",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "恒为 1 的版本标记；标签只有 version，别往里加会随换代变化的东西。",
+        labels: &["version"],
     },
 ];
 
@@ -157,6 +227,27 @@ pub const CACHE_EVENTS_TOTAL: &Family = &FAMILIES[2];
 /// 没匹配到站点的请求数（G118）。⚠ `host` 由请求方给 ⇒ 只有出现在配置里的才带真值，
 /// 其余一律 `<other>`：**上界由配置定、不由访问者定**。
 pub const NO_SITE_MATCH_TOTAL: &Family = &FAMILIES[3];
+
+/// 每个上游当前在飞的连接数。⚠ 抓取时问 `Upstream::inflight()`，**不在这里另记一份**。
+const UPSTREAM_INFLIGHT: &Family = &FAMILIES[4];
+
+/// 每个上游的健康位。★ 没配 `health_uri` 的上游恒为 1（那与运行时那一侧的初值同一口径）。
+const UPSTREAM_HEALTHY: &Family = &FAMILIES[5];
+
+/// 已装载证书的 `notAfter`，**绝对 Unix 秒**（裁决 R5）。
+///
+/// ★ 取绝对值而不是「还剩多少秒」：绝对值不随时间漂，抓取端一句 `- time()` 就得到剩余量；
+/// 而「剩余量」需要有人定期刷新 —— 那**等于在旁边再记一份会过期的东西**。
+const CERT_EXPIRY_SECONDS: &Family = &FAMILIES[6];
+
+/// ACME 巡检的签发结果计数。⚠ `deferred` 的定义写死在 `fulcrum_acme::IssueCounts` 上。
+const ACME_ISSUE_TOTAL: &Family = &FAMILIES[7];
+
+/// 恒为 1 的版本标记。
+///
+/// ⛔ **不带 `gen_id`、不带 pid**：那会让每一次换代长出一条新 series，
+/// 而旧的那条从此再也不更新 —— 抓取端看到的是一堆看起来还活着的僵尸时序。
+const BUILD_INFO: &Family = &FAMILIES[8];
 
 /// 一条直方图 series。
 struct Hist {
@@ -203,6 +294,119 @@ fn registry() -> &'static Mutex<Registry> {
 fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> T {
     let mut g = registry().lock().unwrap_or_else(|p| p.into_inner());
     f(&mut g)
+}
+
+/// [`Source::Live`] 那几个族**去问谁**。
+///
+/// ⚠ ⚠ **三个都可以缺席**，缺席的那个族就只出 HELP/TYPE、不出样本：
+/// ⛔ 不 panic（观测面的失效不许升级成数据面的失效），
+/// ⛔ 也不让整族消失 —— 整族消失会让「没接上」与「没数据」在抓取端**看起来一模一样**，
+/// 而那是两件完全不同的事：前者要改代码，后者什么都不用做。
+///
+/// ★ 存 `Arc` 而不是 `Weak`：这三个对象与进程同寿（数据面、TLS 解析器、ACME 巡检
+/// 各自都被别处握着），拿 `Weak` 只会多出一条**永远走不到的** upgrade 失败分支 ——
+/// 而走不到的分支既测不了，也迟早写错。
+#[derive(Default)]
+pub struct LiveSources {
+    /// 上游那两个族。⚠ 存的是 [`SharedRuntime`] 而不是某一份 `Runtime` 快照：
+    /// 全量 load 换掉的正是它里面那一份，握着快照等于指标停在换配置之前。
+    pub runtime: Option<Arc<SharedRuntime>>,
+    /// 证书到期时刻。
+    pub resolver: Option<Arc<SniResolver>>,
+    /// ACME 签发计数。`None` = 这份配置里没有自动签发（`acme::build` 返回 `None`）。
+    pub acme: Option<Arc<AcmeManager>>,
+}
+
+fn live() -> &'static OnceLock<LiveSources> {
+    static LIVE: OnceLock<LiveSources> = OnceLock::new();
+    &LIVE
+}
+
+/// 在接线处登记一次活体源。
+///
+/// ⚠ **只认第一次**，重复登记会被丢掉并打一行 warn。★ 这是有意的：一个能被换掉的
+/// 活体源等于给「指标现在在问谁」再开一条状态通道，而换配置那条通道已经存在 ——
+/// 它就是 [`SharedRuntime`] 自己（全量 load 换的是它里面那一份，不是这个句柄）。
+pub fn register_live(sources: LiveSources) {
+    if live().set(sources).is_err() {
+        warn!("指标的活体源已经登记过一次了，这一次被忽略（登记只认第一次）");
+    }
+}
+
+/// 抓取那一刻去问活体，得到一份**临时**注册表。
+///
+/// ★ 它不进进程级注册表：这几个族的数**不属于我们**，属于被问的那几个对象。
+/// ⚠ 这份表每次抓取新建 ⇒ 下面的 `inc_by` 在这里等价于「写入」，不是「累加」。
+fn snapshot(src: &LiveSources) -> Registry {
+    let mut r = Registry::default();
+
+    // ★ `build_info` 不需要任何活体源 —— 被问的对象就是这个二进制自己。
+    //   ⚠ 于是它是**唯一一个「没登记也照样有样本」**的活体族。
+    r.set(BUILD_INFO, &[env!("CARGO_PKG_VERSION")], 1.0);
+
+    if let Some(rt) = &src.runtime {
+        // ⚠ 一次抓取只取一份快照：分两次取的话，两个族可能落在**两份不同的配置**上，
+        //   于是同一个上游在 `inflight` 里在、在 `healthy` 里不在。
+        let snap = rt.current();
+        // ⚠ ⚠ 同一个上游被多个站点（或同一个站点的多条 `reverse_proxy`）引用时
+        //   **只出一条 series**：键是**上游地址串**，也就是 `least_conn` 与健康检查
+        //   共用的那个身份。
+        //
+        // ★ ★ **代价写在明处**：写在两条 `reverse_proxy` 里的同一个地址，在运行时图里
+        //   是**两个 `Upstream` 对象、两个各自独立的在途计数**。这一族按地址合并，
+        //   于是它报的是**遍历序里第一个**那一份，⛔ 不是两份之和。
+        //   ⚠ 想要「打到这个地址的连接一共有多少」得另立一个族 —— 那时 `healthy`
+        //   也要跟着换语义（两份健康位求和会得到 2），所以这里不顺手做。
+        // ★ `seen` 不是为了省事：去掉它之后 `BTreeMap` 照样只留一条，
+        //   只不过留下的变成**最后**那一份，而「第一份还是最后一份」从输出里看不出来。
+        //   ⇒ 让这个选择显式，并由判据钉住（`同一个上游被两个站点引用时只出一条_series`）。
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for t in snap.all_proxy_targets() {
+            for up in &t.upstreams {
+                if !seen.insert(up.addr.as_str()) {
+                    continue;
+                }
+                r.set(UPSTREAM_INFLIGHT, &[up.addr.as_str()], up.inflight() as f64);
+                r.set(
+                    UPSTREAM_HEALTHY,
+                    &[up.addr.as_str()],
+                    if up.is_healthy() { 1.0 } else { 0.0 },
+                );
+            }
+        }
+    }
+
+    if let Some(resolver) = &src.resolver {
+        for (domain, not_after) in resolver.expiries() {
+            r.set(
+                CERT_EXPIRY_SECONDS,
+                &[domain.as_str()],
+                unix_secs(not_after),
+            );
+        }
+    }
+
+    if let Some(acme) = &src.acme {
+        let (ok, fail, deferred) = acme.issue_counts().snapshot();
+        // ★ 三格**无条件都出**，哪怕是 0：一条从来没出现过的 series 与一条恒为 0 的
+        //   series，在告警规则里是两种完全不同的东西（前者让 `rate()` 直接没有数据）。
+        r.inc_by(ACME_ISSUE_TOTAL, &["ok"], ok);
+        r.inc_by(ACME_ISSUE_TOTAL, &["fail"], fail);
+        r.inc_by(ACME_ISSUE_TOTAL, &["deferred"], deferred);
+    }
+
+    r
+}
+
+/// `SystemTime` → Unix 秒。
+///
+/// ⚠ 1970 之前的 `notAfter` 不可能来自一张真证书，但它在类型上是可表达的 ——
+/// ★ 静静回 0 会把它说成「1970 年到期」，而一个负数一眼就看得出不对。
+fn unix_secs(t: SystemTime) -> f64 {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(e) => -e.duration().as_secs_f64(),
+    }
 }
 
 impl Family {
@@ -289,29 +493,42 @@ impl Registry {
 
     /// 把 `families` 这张声明表按顺序渲染进 `out`。
     ///
+    /// `self` 是进程级注册表（[`Source::Event`] 那一类的数），
+    /// `live` 是这一次抓取现问出来的那份临时表（[`Source::Live`] 那一类）。
+    ///
     /// ★ 收一张表当参数、而不是直接读 `FAMILIES`：单测因此可以拿一张**小表**
     /// 逐字节钉住输出，而不必跟着真表一起长。
-    fn render_into(&self, families: &[Family], out: &mut String) {
+    fn render_into(&self, families: &[Family], live: &Registry, out: &mut String) {
         for f in families {
+            // ★ ★ 一个族的数只从**一处**来，声明表里那个 `source` 说了算 ——
+            //   而不是「两边都找一遍，哪边有用哪边」：后者会让一次误接线
+            //   （在事件点写了一个活体族）静静地变成一条时对时错的 series。
+            let r = match f.source {
+                Source::Event => self,
+                Source::Live => live,
+            };
             // ★ ★ 没有样本的族**照样出 HELP/TYPE**：这样「这个指标存在，只是还没发生过」
             //   与「名字拼错了」在抓取端看得出区别 —— 后者是整族不见。
+            //   ⚠ 活体那几个族在**没登记活体源**时走的正是这一支。
             let _ = writeln!(out, "# HELP {} {}", f.name, f.help);
             let _ = writeln!(out, "# TYPE {} {}", f.name, f.kind.as_str());
             match f.kind {
                 Kind::Counter => {
-                    for (labels, v) in self.counters.get(f.name).into_iter().flatten() {
+                    for (labels, v) in r.counters.get(f.name).into_iter().flatten() {
                         write_series(out, f.name, f.labels, labels, None);
                         let _ = writeln!(out, " {v}");
                     }
                 }
                 Kind::Gauge => {
-                    for (labels, v) in self.gauges.get(f.name).into_iter().flatten() {
+                    for (labels, v) in r.gauges.get(f.name).into_iter().flatten() {
                         write_series(out, f.name, f.labels, labels, None);
-                        let _ = writeln!(out, " {v}");
+                        out.push(' ');
+                        write_f64(out, *v);
+                        out.push('\n');
                     }
                 }
                 Kind::Histogram => {
-                    for (labels, h) in self.histograms.get(f.name).into_iter().flatten() {
+                    for (labels, h) in r.histograms.get(f.name).into_iter().flatten() {
                         let bucket = format!("{}_bucket", f.name);
                         let mut cum = 0u64;
                         for (bound, n) in BUCKETS.iter().zip(&h.per_bucket) {
@@ -325,13 +542,33 @@ impl Registry {
                         write_series(out, &bucket, f.labels, labels, Some("+Inf"));
                         let _ = writeln!(out, " {}", h.count);
                         write_series(out, &format!("{}_sum", f.name), f.labels, labels, None);
-                        let _ = writeln!(out, " {}", h.sum);
+                        out.push(' ');
+                        write_f64(out, h.sum);
+                        out.push('\n');
                         write_series(out, &format!("{}_count", f.name), f.labels, labels, None);
                         let _ = writeln!(out, " {}", h.count);
                     }
                 }
             }
         }
+    }
+}
+
+/// 写一个 `f64` 读数。
+///
+/// # ⚠ ⚠ Rust 的 `Display` 与 exposition 在无穷大上**不一致**
+///
+/// `f64::INFINITY` 被 `Display` 印成 `inf`，而 exposition 要的是 `+Inf`
+/// （`NaN` 两边碰巧一致，不必管）。⚠ 抓取端读到 `inf` 是**解析失败**，
+/// 而解析失败发生在抓取端、不在这里 —— 现场是「这一次抓取整个没了」。
+///
+/// ★ 在批 M 任务 1 那一版里这条路走不到：真表里一个 gauge 族都没有，
+/// 而直方图的 `_sum` 永远是有限秒数。**任务 5 引入 gauge 之后它就走得到了。**
+fn write_f64(out: &mut String, v: f64) {
+    if v.is_infinite() {
+        out.push_str(if v > 0.0 { "+Inf" } else { "-Inf" });
+    } else {
+        let _ = write!(out, "{v}");
     }
 }
 
@@ -388,9 +625,17 @@ fn escape_into(v: &str, out: &mut String) {
 /// 抓取时那一坨文本（Prometheus text exposition，`version=0.0.4`）。
 ///
 /// ⚠ 整个渲染过程握着注册表那把锁：一次抓取是分钟级的事，而请求路径上的写是微秒级的。
+/// ★ ★ **问活体那一步在拿锁之前**：`Upstream::inflight()` 与 `SniResolver::expiries()`
+/// 各有自己的锁，而在注册表这把锁里面去拿别人的锁，就是把两把锁排出了一个顺序 ——
+/// 而那个顺序**没有任何东西在守**。
 pub fn render() -> String {
-    let mut out = String::with_capacity(2048);
-    with_registry(|r| r.render_into(&FAMILIES, &mut out));
+    let live = match live().get() {
+        Some(src) => snapshot(src),
+        // ⚠ 没登记 ⇒ 那几个族只出 HELP/TYPE、不出样本（`build_info` 除外，它不需要活体源）。
+        None => snapshot(&LiveSources::default()),
+    };
+    let mut out = String::with_capacity(4096);
+    with_registry(|r| r.render_into(&FAMILIES, &live, &mut out));
     out
 }
 
@@ -406,6 +651,7 @@ mod tests {
         Family {
             name: "t_requests_total",
             kind: Kind::Counter,
+            source: Source::Event,
             help: "请求数。",
             labels: &["site", "outcome"],
         },
@@ -413,12 +659,14 @@ mod tests {
         Family {
             name: "t_ready",
             kind: Kind::Gauge,
+            source: Source::Event,
             help: "就绪。",
             labels: &[],
         },
         Family {
             name: "t_latency_seconds",
             kind: Kind::Histogram,
+            source: Source::Event,
             help: "时延，秒。",
             labels: &["route"],
         },
@@ -426,6 +674,7 @@ mod tests {
         Family {
             name: "t_never_written_total",
             kind: Kind::Counter,
+            source: Source::Event,
             help: "一次都没发生过。",
             labels: &["x"],
         },
@@ -433,6 +682,13 @@ mod tests {
     const T_REQUESTS: &Family = &T[0];
     const T_READY: &Family = &T[1];
     const T_LATENCY: &Family = &T[2];
+
+    /// 渲染一张**只有事件点记账**的表时，活体那一半是空的。
+    ///
+    /// ★ 抽成一个 helper，是为了让下面那几条 golden 判据读起来仍然只有「表 + 输出」两样。
+    fn render_events(r: &Registry, families: &[Family], out: &mut String) {
+        r.render_into(families, &Registry::default(), out);
+    }
 
     /// counter 的名字必须以 `_total` 结尾；gauge / histogram 一个都不许。
     fn 后缀合规(f: &Family) -> bool {
@@ -470,18 +726,21 @@ mod tests {
             Family {
                 name: "bad_counter",
                 kind: Kind::Counter,
+                source: Source::Event,
                 help: "",
                 labels: &[],
             },
             Family {
                 name: "bad_gauge_total",
                 kind: Kind::Gauge,
+                source: Source::Event,
                 help: "",
                 labels: &[],
             },
             Family {
                 name: "bad_hist_total",
                 kind: Kind::Histogram,
+                source: Source::Event,
                 help: "",
                 labels: &[],
             },
@@ -511,6 +770,37 @@ mod tests {
         assert_eq!(CACHE_EVENTS_TOTAL.labels, &["event"]);
         assert_eq!(NO_SITE_MATCH_TOTAL.name, "fulcrum_no_site_match_total");
         assert_eq!(NO_SITE_MATCH_TOTAL.labels, &["host"]);
+        assert_eq!(UPSTREAM_INFLIGHT.name, "fulcrum_upstream_inflight");
+        assert_eq!(UPSTREAM_INFLIGHT.labels, &["upstream"]);
+        assert_eq!(UPSTREAM_HEALTHY.name, "fulcrum_upstream_healthy");
+        assert_eq!(UPSTREAM_HEALTHY.labels, &["upstream"]);
+        assert_eq!(CERT_EXPIRY_SECONDS.name, "fulcrum_cert_expiry_seconds");
+        assert_eq!(CERT_EXPIRY_SECONDS.labels, &["domain"]);
+        assert_eq!(ACME_ISSUE_TOTAL.name, "fulcrum_acme_issue_total");
+        assert_eq!(ACME_ISSUE_TOTAL.labels, &["result"]);
+        // ⛔ `build_info` 只许带 `version` —— 加上 `gen_id` 或 pid 会让每次换代
+        //   长出一条新 series，而旧的那条从此再也不更新。
+        assert_eq!(BUILD_INFO.name, "fulcrum_build_info");
+        assert_eq!(BUILD_INFO.labels, &["version"]);
+
+        // ★ ★ 每个族的**来处**也逐个钉住：`source` 写错不会让任何一条内容断言变红 ——
+        //   活体族被标成 `Event` 的表现是它**永远没有样本**，而那与「没接上活体源」
+        //   长得一模一样；事件族被标成 `Live` 的表现是它**永远是 0**。
+        let live: Vec<&str> = FAMILIES
+            .iter()
+            .filter(|f| f.source == Source::Live)
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            live,
+            vec![
+                "fulcrum_upstream_inflight",
+                "fulcrum_upstream_healthy",
+                "fulcrum_cert_expiry_seconds",
+                "fulcrum_acme_issue_total",
+                "fulcrum_build_info",
+            ]
+        );
 
         let mut names: Vec<&str> = FAMILIES.iter().map(|f| f.name).collect();
         let n = names.len();
@@ -536,6 +826,7 @@ mod tests {
         const E: [Family; 1] = [Family {
             name: "t_escape_total",
             kind: Kind::Counter,
+            source: Source::Event,
             help: "转义。",
             labels: &["v"],
         }];
@@ -548,7 +839,7 @@ mod tests {
         let mut r = Registry::default();
         r.inc_by(&E[0], &[原值], 1);
         let mut out = String::new();
-        r.render_into(&E, &mut out);
+        render_events(&r, &E, &mut out);
 
         let 期望 = [
             "# HELP t_escape_total 转义。",
@@ -570,7 +861,7 @@ mod tests {
             r.observe(T_LATENCY, &["/x"], v);
         }
         let mut out = String::new();
-        r.render_into(&T, &mut out);
+        render_events(&r, &T, &mut out);
 
         let 期望累积: [u64; 11] = [1, 1, 1, 1, 1, 2, 3, 4, 5, 6, 7];
         assert_eq!(
@@ -613,11 +904,11 @@ mod tests {
         b.inc_by(T_REQUESTS, &["a.example", "files"], 1);
 
         let mut s1 = String::new();
-        a.render_into(&T, &mut s1);
+        render_events(&a, &T, &mut s1);
         let mut s2 = String::new();
-        a.render_into(&T, &mut s2);
+        render_events(&a, &T, &mut s2);
         let mut s3 = String::new();
-        b.render_into(&T, &mut s3);
+        render_events(&b, &T, &mut s3);
 
         assert!(!s1.is_empty());
         assert_eq!(s1, s2, "同一份数据渲染两次不一样");
@@ -635,7 +926,7 @@ mod tests {
         r.observe(T_LATENCY, &["/api"], 3.0);
 
         let mut out = String::new();
-        r.render_into(&T, &mut out);
+        render_events(&r, &T, &mut out);
 
         // ★ 用数组 join 拼期望值，而不是一个多行字符串字面量：宿主是 Windows，
         //   多行字面量会把**源文件的行尾**一起量进判据里（`.gitattributes` 钉了 LF，
@@ -732,12 +1023,244 @@ mod tests {
 
         let 全局按测试表渲染 = with_registry(|r| {
             let mut s = String::new();
-            r.render_into(&T, &mut s);
+            render_events(r, &T, &mut s);
             s
         });
         assert!(
             全局按测试表渲染.contains("\nt_ready 1\n"),
             "{全局按测试表渲染}"
         );
+    }
+
+    // ── 抓取时问活体那一半（**批 M 任务 5**）────────────────────────────────
+
+    /// 把真表按给定的活体源渲一遍。★ 事件那一半用一张**空的**注册表，
+    /// 于是每一条断言看到的都只是活体那一半 —— 否则同一个测试二进制里别的判据
+    /// 写进进程级表的数会漏进来。
+    fn 按活体源渲真表(src: &LiveSources) -> String {
+        let mut out = String::new();
+        Registry::default().render_into(&FAMILIES, &snapshot(src), &mut out);
+        out
+    }
+
+    /// 这个族出了几条样本行（`# HELP` / `# TYPE` 不算）。
+    fn 样本行(out: &str, family: &str) -> Vec<String> {
+        out.lines()
+            .filter(|l| l.starts_with(family) && !l.starts_with('#'))
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    /// 一张现造的自签证书。★ rcgen 已经是本 crate 的 dev-dependency（QUIC 那条判据在用）。
+    fn 自签(domain: &str) -> std::sync::Arc<fulcrum_tls::CertKey> {
+        let key = rcgen::KeyPair::generate().expect("测试密钥");
+        let params = rcgen::CertificateParams::new(vec![domain.to_string()]).expect("测试参数");
+        let cert = params.self_signed(&key).expect("自签");
+        fulcrum_tls::cert_key_from_der(cert.der().to_vec(), key.serialize_der())
+            .expect("造 CertKey")
+    }
+
+    #[test]
+    fn 没登记活体源时那几个族有_help_type_但一条样本都没有() {
+        // ⚠ ⚠ 这一条守的是「**没接上**」与「**没数据**」在抓取端看得出区别：
+        //   整族消失的话两者长得一模一样，而前者要改代码、后者什么都不用做。
+        let out = 按活体源渲真表(&LiveSources::default());
+
+        for name in [
+            "fulcrum_upstream_inflight",
+            "fulcrum_upstream_healthy",
+            "fulcrum_cert_expiry_seconds",
+            "fulcrum_acme_issue_total",
+        ] {
+            assert!(out.contains(&format!("# HELP {name} ")), "缺 HELP：{name}");
+            assert!(out.contains(&format!("# TYPE {name} ")), "缺 TYPE：{name}");
+            assert!(
+                样本行(&out, name).is_empty(),
+                "{name} 在没有活体源时出了样本：{:?}",
+                样本行(&out, name)
+            );
+        }
+        // ★ ★ 反向那半：`build_info` **不需要活体源**，所以它在同一次渲染里必须有样本 ——
+        //   少了这一条，把整个活体渲染删掉，上面那个循环照样全绿。
+        assert_eq!(样本行(&out, "fulcrum_build_info").len(), 1, "{out}");
+    }
+
+    #[test]
+    fn build_info_恒为_1_且只有一条() {
+        // ⛔ 不带 gen_id、不带 pid ⇒ 无论问谁、问几次，都只有这一条。
+        for src in [
+            LiveSources::default(),
+            LiveSources {
+                acme: Some(std::sync::Arc::new(fulcrum_acme::AcmeManager::new(
+                    fulcrum_acme::AcmeConfig::new(None, None, "/nonexistent"),
+                    std::sync::Arc::new(SniResolver::new()),
+                    std::sync::Arc::new(fulcrum_acme::Http01Store::new()),
+                    Vec::new(),
+                ))),
+                ..Default::default()
+            },
+        ] {
+            let out = 按活体源渲真表(&src);
+            assert_eq!(
+                样本行(&out, "fulcrum_build_info"),
+                vec![format!(
+                    "fulcrum_build_info{{version=\"{}\"}} 1",
+                    env!("CARGO_PKG_VERSION")
+                )],
+                "{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn 同一个上游被两个站点引用时只出一条_series() {
+        // ⚠ ⚠ 去重的键是**上游地址串**，也就是 `least_conn` 与健康检查共用的那个身份。
+        let outcome = fulcrum_config::compile_str(
+            "t.Fulcrumfile",
+            "http://a.example {\n  reverse_proxy 127.0.0.1:9001 127.0.0.1:9002\n}\n\
+             http://b.example {\n  reverse_proxy 127.0.0.1:9001\n}\n",
+        );
+        let cfg = outcome.config.expect("配置编译不过");
+        let rt = fulcrum_runtime::Runtime::build(&cfg).expect("运行时图建不起来");
+        {
+            // ★ ★ **先证样本里真有那件事**：`127.0.0.1:9001` 在运行时图里是
+            //   **两个各自独立的 `Upstream` 对象**。前提不成立的话，下面「只出一条」
+            //   是在量一张压根没有重复的表 —— 那种判据永远绿，而它什么都没守。
+            let 重复: Vec<&fulcrum_runtime::Upstream> = rt
+                .all_proxy_targets()
+                .into_iter()
+                .flat_map(|t| t.upstreams.iter())
+                .filter(|u| u.addr == "127.0.0.1:9001")
+                .collect();
+            assert_eq!(重复.len(), 2, "前提没成立：夹具里没有被重复引用的上游");
+            // ★ ★ 只给**遍历序里第一份**加在途数：这样「留第一份还是留最后一份」
+            //   在输出里就分得出来了。⚠ 去掉 `seen` 之后 `BTreeMap` 照样只留一条，
+            //   但留下的会是第二份（0），这一条当场变红 —— 这就是它守的东西。
+            重复[0].acquire();
+            重复[0].acquire();
+            assert_eq!(重复[1].inflight(), 0, "两个对象共用了同一个计数器？");
+        }
+        let shared = SharedRuntime::new(std::sync::Arc::new(rt));
+        let out = 按活体源渲真表(&LiveSources {
+            runtime: Some(shared),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            样本行(&out, "fulcrum_upstream_inflight"),
+            vec![
+                "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9001\"} 2".to_string(),
+                "fulcrum_upstream_inflight{upstream=\"127.0.0.1:9002\"} 0".to_string(),
+            ],
+            "{out}"
+        );
+        // 健康位：没配 `health_uri` 的上游恒为 1（运行时那一侧的初值）。
+        assert_eq!(
+            样本行(&out, "fulcrum_upstream_healthy"),
+            vec![
+                "fulcrum_upstream_healthy{upstream=\"127.0.0.1:9001\"} 1".to_string(),
+                "fulcrum_upstream_healthy{upstream=\"127.0.0.1:9002\"} 1".to_string(),
+            ],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn 证书到期时刻取绝对_unix_秒_而挑战证书不进这个族() {
+        let ck = 自签("cert.example");
+        let 到期 = ck.not_after;
+        let resolver = std::sync::Arc::new(SniResolver::new());
+        resolver.install(&["cert.example".to_string()], ck);
+        // ⛔ 挑战证书是一张只活几秒的一次性自签证书 ——
+        //   混进这个族会让「快过期了」那类告警一直在叫，而叫的是一个不该被续期的东西。
+        let _guard = resolver.provision_challenge("challenge.example", 自签("challenge.example"));
+        assert_eq!(resolver.challenge_len(), 1, "前提没成立：挑战证书没挂上");
+
+        let out = 按活体源渲真表(&LiveSources {
+            resolver: Some(resolver),
+            ..Default::default()
+        });
+        // ★ 值是 `notAfter` 的**绝对 Unix 秒**（裁决 R5），不是「还剩多少秒」。
+        assert_eq!(
+            样本行(&out, "fulcrum_cert_expiry_seconds"),
+            vec![format!(
+                "fulcrum_cert_expiry_seconds{{domain=\"cert.example\"}} {}",
+                到期
+                    .duration_since(UNIX_EPOCH)
+                    .expect("自签证书的 notAfter 在 1970 之后")
+                    .as_secs_f64()
+            )],
+            "{out}"
+        );
+        // ★ 反向那半：绝对值必须**远大于**一个「剩余量」会有的数量级。
+        //   少了这一条，把 `unix_secs` 换成 `notAfter - now` 之后上面那条只需跟着改一次期望。
+        assert!(
+            到期.duration_since(UNIX_EPOCH).expect("同上").as_secs() > 1_700_000_000,
+            "取到的不像一个绝对 Unix 秒"
+        );
+    }
+
+    #[test]
+    fn acme_那三格无条件都出_哪怕一次都没签过() {
+        // ★ 一条**从来没出现过**的 series 与一条**恒为 0** 的 series，在告警规则里
+        //   是两种完全不同的东西：前者让 `rate()` 直接没有数据可算。
+        let m = std::sync::Arc::new(fulcrum_acme::AcmeManager::new(
+            fulcrum_acme::AcmeConfig::new(None, None, "/nonexistent"),
+            std::sync::Arc::new(SniResolver::new()),
+            std::sync::Arc::new(fulcrum_acme::Http01Store::new()),
+            Vec::new(),
+        ));
+        let out = 按活体源渲真表(&LiveSources {
+            acme: Some(m),
+            ..Default::default()
+        });
+        assert_eq!(
+            样本行(&out, "fulcrum_acme_issue_total"),
+            vec![
+                "fulcrum_acme_issue_total{result=\"deferred\"} 0".to_string(),
+                "fulcrum_acme_issue_total{result=\"fail\"} 0".to_string(),
+                "fulcrum_acme_issue_total{result=\"ok\"} 0".to_string(),
+            ],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn 非有限浮点按_exposition_写_而有限值原样() {
+        // ⚠ ⚠ Rust 的 `Display` 把 `f64::INFINITY` 印成 `inf`，而 exposition 要 `+Inf`。
+        //   ★ 批 M 任务 1 那一版走不到这条路（真表里一个 gauge 族都没有）；
+        //     任务 5 引入 gauge 之后它就走得到了。
+        const G: [Family; 1] = [Family {
+            name: "t_inf",
+            kind: Kind::Gauge,
+            source: Source::Event,
+            help: "无穷。",
+            labels: &["v"],
+        }];
+        let mut r = Registry::default();
+        r.set(&G[0], &["pos"], f64::INFINITY);
+        r.set(&G[0], &["neg"], f64::NEG_INFINITY);
+        r.set(&G[0], &["nan"], f64::NAN);
+        // ★ 反向那半：有限值**不许**被改写 —— 少了它，一个「所有 gauge 都印成 +Inf」
+        //   的实现照样能通过上面三条。
+        r.set(&G[0], &["finite"], 1.5);
+        r.set(&G[0], &["zero"], 0.0);
+        r.set(&G[0], &["neg_finite"], -2.25);
+
+        let mut out = String::new();
+        render_events(&r, &G, &mut out);
+        let 期望 = [
+            "# HELP t_inf 无穷。",
+            "# TYPE t_inf gauge",
+            "t_inf{v=\"finite\"} 1.5",
+            "t_inf{v=\"nan\"} NaN",
+            "t_inf{v=\"neg\"} -Inf",
+            "t_inf{v=\"neg_finite\"} -2.25",
+            "t_inf{v=\"pos\"} +Inf",
+            "t_inf{v=\"zero\"} 0",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(out, 期望);
     }
 }

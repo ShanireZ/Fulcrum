@@ -110,7 +110,21 @@ impl AcmeManager {
     }
 
     /// 巡检一轮：该签的签、该续的续、已经好的装上。
+    ///
+    /// # ⚠ ⚠ 计数记在这一层，正体在 [`Self::poll_once`]
+    ///
+    /// 那一层有**三处早退**（没有目标 / 这一批一个都接不了 / 账户拿不到）。
+    /// 逐处记一遍迟早漏掉一处，而漏掉的那一处**不会有任何症状**：
+    /// `fulcrum_acme_issue_total` 照样在涨，只是少了一类。
+    /// ★ 与 `access_log::Record::finish` 同一条形状 —— 把「一定要做的收尾」
+    /// 放到一个**没有早退分支**的外层，让漏掉在结构上做不到。
     pub async fn run_once(&self) -> Report {
+        let report = self.poll_once().await;
+        self.issue_counts.record(&report);
+        report
+    }
+
+    async fn poll_once(&self) -> Report {
         let mut report = Report::default();
         if self.targets.is_empty() {
             return report;
@@ -802,6 +816,8 @@ mod tests {
         let report = rt.block_on(m.run_once());
         assert!(report.is_empty());
         assert_eq!(report.next_check, None);
+        // ★ **批 M** 的反向那半：一轮「什么都没有」不许在签发计数上留下任何一笔。
+        assert_eq!(m.issue_counts().snapshot(), (0, 0, 0));
     }
 
     #[test]
@@ -828,6 +844,10 @@ mod tests {
         assert_eq!(report.deferred, vec!["*.example.com".to_string()]);
         assert!(report.failed.is_empty(), "通配符被记成失败了：{report:?}");
         assert!(report.issued.is_empty());
+        // ★ ★ **批 M**：这一轮走的是「一个都接不了」那处**早退**。
+        //   计数记在 `run_once` 外层，所以早退照样记得到 —— 记在 `poll_once` 里面的话，
+        //   这一格会是 `(0,0,0)`，而 `fulcrum_acme_issue_total` 不会有任何异样。
+        assert_eq!(m.issue_counts().snapshot(), (0, 0, 1));
     }
 
     #[test]
@@ -905,6 +925,8 @@ mod tests {
             Some(true),
             "★ 标记被一轮「什么都没试」的巡检吃掉了 —— 调用方会以为已经续过了"
         );
+        // ★ ★ **批 M**：这一轮走的是「账户拿不到」那处**早退**，一个域名记一次失败。
+        assert_eq!(m.issue_counts().snapshot(), (0, 1, 0));
     }
 
     #[test]

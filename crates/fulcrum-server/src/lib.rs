@@ -1899,6 +1899,22 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     dns::resolve_now(&rt, "启动");
     let dns_interval = dns::tick_interval(cfg);
     let shared = fulcrum_runtime::SharedRuntime::new(rt);
+
+    // ── ★ ★ 指标里「抓取时去问活体」那几个族的取数对象（**M2 批 M**）───────────
+    //
+    // ★ ★ **登记的是句柄，不是一份读数**：上游在途数、健康位、证书到期时刻、
+    //   ACME 签发计数全都在渲染那一刻现问 —— 能从被测对象本身问到的东西，
+    //   就不要在旁边再记一份，否则两份迟早不一致，而不一致的那天没有任何东西会说。
+    // ★ 登记 `shared` 而不是某一份 `Runtime` 快照：全量 load 换掉的正是它里面那一份。
+    // ⚠ `acme` 这一格可以是 `None`（这份配置里没有自动签发）—— 那时
+    //   `fulcrum_acme_issue_total` 只出 HELP/TYPE、不出样本，而**不是整族消失**：
+    //   整族消失会让「没接上」与「没数据」在抓取端看起来一模一样。
+    metrics::register_live(metrics::LiveSources {
+        runtime: Some(shared.clone()),
+        resolver: Some(plan.resolver.clone()),
+        acme: acme.clone(),
+    });
+
     // ── ★ ★ 本代的身份（**G109 ①**）——**一个进程一把，不是一个端口一把** ─────
     //
     // ⚠ 每个监听端口各铸一把也能跑，而且**判据全绿** —— 直到换代那天：

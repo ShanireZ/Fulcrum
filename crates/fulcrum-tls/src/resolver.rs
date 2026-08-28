@@ -39,6 +39,7 @@ use pingora_boringssl::ssl::{
 use pingora_boringssl::x509::X509;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 /// 一张证书连同它的私钥。**leaf 在 `chain[0]`**（PEM 文件里的顺序）。
 ///
@@ -48,6 +49,14 @@ use std::sync::{Arc, RwLock};
 pub struct CertKey {
     pub chain: Vec<X509>,
     pub key: PKey<Private>,
+    /// leaf 的 `notAfter`。
+    ///
+    /// ★ ★ **它由 [`crate::cert_key`] 从 `chain[0]` 自己读出来，不由调用方传进来。**
+    /// 收一个参数的话，「这张证书说自己什么时候到期」与「我们以为它什么时候到期」
+    /// 就成了两份，而不一致的那天没有任何东西会说 —— 表现是一条静静报错值的
+    /// `fulcrum_cert_expiry_seconds`，它在告警规则里长得完全正常。
+    /// ⇒ 让分家在结构上做不到（D18/G66 同一条理由）。
+    pub not_after: SystemTime,
 }
 
 impl CertKey {
@@ -223,12 +232,32 @@ impl SniResolver {
     }
 
     /// 已装载的精确域名与通配后缀，给装载日志用。
+    ///
+    /// ★ 它从 [`Self::expiries`] 派生 —— 两处各拼一遍键的写法迟早分家，
+    /// 而分家之后「装载日志里的那批域名」与「指标里的那批域名」看起来都言之凿凿。
     pub fn known(&self) -> Vec<String> {
+        self.expiries().into_iter().map(|(d, _)| d).collect()
+    }
+
+    /// 每个已装载域名的证书 `notAfter`。**键的写法与 [`Self::known`] 是同一份。**
+    ///
+    /// ⛔ ⚠ **挑战表不在里面**：TLS-ALPN-01 那张一次性自签证书只活几秒、也不是站点证书，
+    /// 混进来会让「快过期了」那类告警一直在叫，而叫的是一个根本不该被续期的东西。
+    /// ★ 两张表本来就互不相通（见 `challenge` 字段），这里只是不去把它们合起来。
+    pub fn expiries(&self) -> Vec<(String, SystemTime)> {
         let Ok(t) = self.table.read() else {
             return Vec::new();
         };
-        let mut out: Vec<String> = t.exact.keys().cloned().collect();
-        out.extend(t.wildcard.iter().map(|(s, _)| format!("*{s}")));
+        let mut out: Vec<(String, SystemTime)> = t
+            .exact
+            .iter()
+            .map(|(d, ck)| (d.clone(), ck.not_after))
+            .collect();
+        out.extend(
+            t.wildcard
+                .iter()
+                .map(|(s, ck)| (format!("*{s}"), ck.not_after)),
+        );
         out
     }
 

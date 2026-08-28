@@ -56,20 +56,38 @@ pub struct LoadedCert {
 /// rustls 0.23+ 把「用哪个 crypto provider」做成一个进程级的全局选择，
 /// 不装就会在**第一次签名时**才炸，而那时已经在握手路径上了。
 /// **BoringSSL 没有这个概念**：算法实现就在库里，没有第二个候选，也就没有装错的可能。
-/// ⇒ 这个函数因此变成纯粹的搬运，而**那条「不调就会在握手时才炸」的坑整条消失了**。
+/// ⇒ 这里因此不再需要那一步，而**那条「不调就会在握手时才炸」的坑整条消失了**。
+///
+/// ★ ★ **`not_after` 在这里从 leaf 自己读出来**（`M2 批 M`）：这个函数是
+/// [`CertKey`] 唯一的构造点，于是「一张证书说自己什么时候到期」在结构上只有一个答案。
+/// ⚠ 改成收一个参数就等于在证书旁边再记一份 —— 而 `fulcrum_cert_expiry_seconds`
+/// 报出一个与证书本身不符的时刻时，告警规则看不出任何异样。
 pub fn cert_key(chain: Vec<X509>, key: PKey<Private>) -> Result<Arc<CertKey>, String> {
-    if chain.is_empty() {
-        return Err("证书链是空的".to_string());
-    }
-    Ok(Arc::new(CertKey { chain, key }))
+    let not_after = match chain.first() {
+        None => return Err("证书链是空的".to_string()),
+        // ⚠ 真证书那两条路（[`load_pem_pair`] / [`to_loaded`]）在到这里之前已经
+        //   解析成功过一次，所以这一支实际只对现造的挑战证书生效；留着它是因为
+        //   「BoringSSL 收得下、x509-parser 读不懂」在类型上是可表达的。
+        Some(leaf) => {
+            store::validity_of(leaf)
+                .map_err(|e| format!("读不出证书的有效期：{e}"))?
+                .1
+        }
+    };
+    Ok(Arc::new(CertKey {
+        chain,
+        key,
+        not_after,
+    }))
 }
 
 /// 把一张**裸 DER** 证书与一份 PKCS#8 DER 私钥变成 [`CertKey`]。
 ///
 /// ★ 只给 TLS-ALPN-01 的挑战证书用（RFC 8737）：那张证书是现造的、只活几秒、
 /// 从不落盘，走 PEM 编解码一圈纯属多余。
-/// ⚠ 它**不做任何校验**——调用方造出来的东西自己负责。真证书那条路走
-/// [`load_pem_pair`] / [`to_loaded`]，前面还有 SAN 抽取与有效期检查。
+/// ⚠ 它**不校验证书的内容**——调用方造出来的东西自己负责（有效期由
+/// [`cert_key`] 读一次，那是 [`CertKey`] 的构造契约，不是对这张证书的检查）。
+/// 真证书那条路走 [`load_pem_pair`] / [`to_loaded`]，前面还有 SAN 抽取与有效期检查。
 pub fn cert_key_from_der(
     cert_der: Vec<u8>,
     pkcs8_key_der: Vec<u8>,
