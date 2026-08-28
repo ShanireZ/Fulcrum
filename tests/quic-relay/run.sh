@@ -75,7 +75,44 @@ cleanup() {
     done
     kill -9 "$pid" 2>/dev/null || true
   done
+
+  # ── ★ ★ ★ 收尾自证：本场景用过的端口，走的时候必须全部还回去 ──────────────
+  #
+  # ⚠ 它守的是**上面那个 `PIDS` 到底收全了没有** —— 而那正是本场景栽过的地方：
+  #   `GEN2=$(start_gen …)` 的 `$(…)` 是子 shell，`PIDS+=` 改的是副本，
+  #   于是 kill 循环一个进程都没收到，**而本场景照样 PASSED**。
+  #
+  # ★ ★ **判据挂在「端口还回去了没有」，不挂在「进程还在不在」**：
+  #   前者才是下一个场景真正会被绊到的东西，而后者要先知道该找哪个 pid ——
+  #   一个没被登记的 pid，恰恰是这里最找不到的。
+  #
+  # ★ ★ ★ **`:80` 必须在这张单子里。** 它是自动 HTTPS 合成出来的重定向站点
+  #   （见 AGENTS.md 端口表），本场景从来没有显式写过它，也正因如此，
+  #   泄漏的时候**没有任何一处会提到它** —— 上一次的现场是「ACME 莫名其妙起不来」。
+  # ⚠ `:80` 只有在**开跑时是空的**才算本场景漏的 —— 否则这道门会替别人受过，
+  #   而一条指错人的判据比没有判据更费时间。
+  local p leaked="" ports="$PORT"
+  if [ "${PORT80_AT_START:-free}" = "free" ]; then ports="$ports 80"; fi
+  for p in $ports; do
+    waited=0
+    while port_listening "$p" && [ "$waited" -lt 30 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    if port_listening "$p"; then leaked="$leaked $p"; fi
+  done
   rm -rf "$WORK"
+
+  if [ -n "$leaked" ]; then
+    echo >&2
+    echo "QUIC-RELAY TESTS FAILED: 收尾没干净 —— 退出时这些端口还有人在听：$leaked" >&2
+    echo "  ⇒ 多半是某一代的 pid 没进 \$PIDS（经典写法：\`X=\$(start_gen …)\`，" >&2
+    echo "     \$(…) 是子 shell，数组改了个副本）。" >&2
+    echo "  ⚠ 这件事的后果**不在本场景**：泄漏的进程攥着 :80 活到下一个场景，" >&2
+    echo "     而那边的基线不看 :80 ⇒ 现场会是「ACME 莫名其妙起不来」。" >&2
+    ps -eo pid,stat,args 2>/dev/null | grep "[f]ulcrum serve" >&2 || true
+    exit 1
+  fi
 }
 trap cleanup EXIT
 
@@ -109,6 +146,15 @@ for p in "$PORT" "$DEAD_PORT"; do
 done
 ok "两个端口都空着"
 
+# ★ `:80` 在这里**只记不判**：占着它不是本场景的错，也不该拦住本场景开跑
+#   （它由自动 HTTPS 合成出来，七个场景共用，见 AGENTS.md 端口表）。
+#   记下来是为了收尾时能分清「本场景漏了」与「进来时就有人占着」。
+PORT80_AT_START=free
+if port_listening 80; then
+  PORT80_AT_START=busy
+  echo "  ⚠ 开跑时 :80 就有人在听 —— 收尾自证会跳过它（那不是本场景漏的）"
+fi
+
 # ⚠ ⚠ `--http3-only` 不许省成 `--http3`：后者在 QUIC 不通时**回落到 TCP**，
 #   于是整格会在「h3 根本没起来」时照样绿。
 # ★ 先拿一个没人听的端口自证这把尺子会失败 —— 否则一个没编进 QUIC 后端的 curl
@@ -139,8 +185,19 @@ a.example:$PORT {
 CONF
 }
 
+# ⚠ ⚠ ⚠ **它把 pid 放进 `GEN_PID`，不 `echo` 出来 —— 而这不是风格问题。**
+#
+#   原来的写法是「函数里 `PIDS+=($!)` 且 `echo $!`，调用方 `GEN1=$(start_gen gen1)`」。
+#   `$(…)` 跑在**子 shell** 里 ⇒ `PIDS+=` 改的是子 shell 那份副本，**父 shell 的 `PIDS`
+#   永远是空的**，于是 `cleanup` 一个进程都收不到：`echo` 出来的 pid 是对的，
+#   数组却没跟出来，两件事只有一件成功，而失败的那件没有任何症状。
+#
+# ★ ★ 后果不在本场景里 —— 本场景照常 **PASSED**，泄漏的第二代进程活到下一个场景：
+#   它攥着 `9910` 和**合成出来的 `:80`**（见 AGENTS.md 端口表），
+#   而 ACME 场景的基线不看 `:80` ⇒ 现场是「ACME 莫名其妙起不来」。
+#   ⇒ **一个场景的收尾漏了，红的是别人。**
 start_gen() {
-  # $1 = 日志名，$2..= 额外参数
+  # $1 = 日志名，$2..= 额外参数；结果放在 GEN_PID 里
   local name=$1
   shift
   RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/fulcrum.conf" \
@@ -148,14 +205,15 @@ start_gen() {
     --pid-file "$WORK/fulcrum.pid" \
     --upgrade-sock "$WORK/upgrade.sock" \
     "$@" > "$WORK/$name.log" 2>&1 &
-  PIDS+=($!)
-  echo $!
+  GEN_PID=$!
+  PIDS+=("$GEN_PID")
 }
 
 # ── [1/6] 第一代 ────────────────────────────────────────────────────────────
 echo "=== [1/6] 起第一代（它的响应体是 gen1）==="
 write_conf gen1
-GEN1=$(start_gen gen1)
+start_gen gen1
+GEN1=$GEN_PID
 wait_port "$PORT" || {
   echo "QUIC-RELAY TESTS FAILED: 第一代起不来。日志：" >&2
   cat "$WORK"/gen1.log >&2
@@ -248,7 +306,8 @@ sleep 2
 echo "=== [4/6] 换代：改配置 → SIGQUIT 第一代 → 以 -u 起第二代 ==="
 write_conf gen2
 kill -QUIT "$GEN1"
-GEN2=$(start_gen gen2 --upgrade)
+start_gen gen2 --upgrade
+GEN2=$GEN_PID
 sleep 2
 if kill -0 "$GEN1" 2>/dev/null; then
   ok "换代窗口成立：第一代还活着（排空中），第二代已经起来（pid=$GEN2）"

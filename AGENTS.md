@@ -104,15 +104,27 @@ hardcoded `:80`, so seven scenarios bind it implicitly: `tests/acme/run.sh` ·
 `tests/acme/renew.sh` · `tests/serve/` · `tests/log/` · `tests/h3/` · `tests/proxyproto/` ·
 `tests/quic-relay/`. Making it configurable is open as **D29**.
 
-⛔ **Do not add `:80` to any "these ports must be free" baseline check.** Occupying it is
-harmless — measured: hold `127.0.0.1:80` for a whole run and `tests/acme/run.sh` still passes
-41 ✓ / 0 ✗. Each pingora service binds on its own runtime (`Server::run_service` spawns per
-service), so one listener stuck retrying `:80` does not delay the others. A gate that can only
-ever stop correct output is as bad as one that never goes red.
+⚠ ⚠ ⚠ **An occupied `:80` can take down listeners that have nothing to do with it**, and the
+mechanism is not obvious. `ListenerEndpoint::listen` takes the process-wide `ListenFds` mutex and
+then calls `bind()` **while still holding it** (`listeners/l4.rs`; upstream's own comment on that
+line says "consider make this mutex std::sync::Mutex or OnceCell"). `bind_tcp` retries 30 times at
+1 s. So one occupied port parks the shared lock for up to 30 s, and **every listener that has not
+yet taken the lock never binds** — regardless of which service or runtime it belongs to. Whether
+your port is before or after the stuck one is a race, so the symptom is intermittent and lands on
+an innocent port. Measured: a leaked `:80` holder made `tests/acme/run.sh` fail on **`:8083`**,
+with the only error in the log being about `:80`.
 
-⚠ What *is* true: any LISTEN on `:80` makes that bind fail — all four shapes (`0.0.0.0` or
-`127.0.0.1`, with or without `SO_REUSEADDR`) return `EADDRINUSE`, and `bind_tcp` then retries 30
-times at 1 s. So no scenario may assume the redirect listener came up, and none asserts it.
+⚠ Any LISTEN on `:80` makes that bind fail — all four shapes (`0.0.0.0` or `127.0.0.1`, with or
+without `SO_REUSEADDR`) return `EADDRINUSE`. No scenario may assume the redirect listener came up,
+and none asserts it.
+
+★ **The fix belongs at the source: a scenario must hand `:80` back when it exits.** Because `:80`
+is synthesized, no scenario mentions it, so a leak names nothing and the next scenario takes the
+blame. `tests/quic-relay/run.sh` now asserts in its own `cleanup` that the ports it used — `:80`
+included — are free again, and skips `:80` if it was already busy on entry so it cannot blame
+someone else. Copy that check into any scenario that starts a generation the same way.
+⚠ The bug it caught was `GEN2=$(start_gen …)`: `$(…)` is a subshell, so `PIDS+=` updated a copy
+and `cleanup` killed nothing — while the scenario still reported PASSED.
 
 ## Gate discipline
 
