@@ -22,8 +22,8 @@ sources:
 # 当前位置
 
 **M2 进行中。** 自研批次全部做完（L4 面 · 静态文件 · 缓存 · 压缩 · HTTP/3 · 换代时的
-QUIC 跨进程转交 · 结构化访问日志），剩下的两件是**观测三件套的另外 2/3**
-（Prometheus 指标、Runtime 实时 stats）与**退出条件本身**（两台服务器全部由枢衡承载）。
+QUIC 跨进程转交 · 结构化访问日志 · Prometheus 指标），剩下的两件是**观测三件套的最后 1/3**
+（Runtime 实时 stats，批 N）与**退出条件本身**（两台服务器全部由枢衡承载）。
 
 仓库里有**六个产品 crate**（`fulcrum-config` / `fulcrum-runtime` / `fulcrum-tls` /
 `fulcrum-acme` / `fulcrum-server` / `fulcrum`）与**两个 spike**（`spikes/m0-seam`、
