@@ -27,13 +27,21 @@
 #
 # ★ 传进来的路径请一律是 `cd "$(dirname …)/../.." && pwd` 的结果（三处调用点都是这么来的）。
 #   本函数内部再按平台归一一次，免得同一棵树在两个调用点算出两个标签。
+#
+# ★ 归一单独拆出来，因为**它有第二个用户**：卷上那个记「属于哪棵树」的 label
+#   （见下面 `fulcrum_target_vol_create`）。两处各归一各的话，label 里的路径与
+#   卷名里的哈希会指向同一棵树的两种写法，而症状是回收提示把一棵活着的树报成「已经不在」。
+fulcrum_tree_norm() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 fulcrum_tree_tag() {
   local path=$1 norm
-  if command -v cygpath >/dev/null 2>&1; then
-    norm="$(cygpath -m "$path")"
-  else
-    norm="$path"
-  fi
+  norm="$(fulcrum_tree_norm "$path")"
   if command -v sha256sum >/dev/null 2>&1; then
     printf '%s' "$norm" | sha256sum | cut -c1-12
   elif command -v git >/dev/null 2>&1; then
@@ -51,6 +59,45 @@ fulcrum_tree_tag() {
 #   `-<树标签>` 把「本树的旧卷」与「别的树的卷」分开 —— 前者可以劝人删，后者绝不可以。
 fulcrum_target_vol() {
   printf 'fulcrum-target-%s-%s' "${1:0:12}" "$(fulcrum_tree_tag "$2")"
+}
+
+# ── 卷属于哪棵树：写在 label 上 ──────────────────────────────────────────────
+#
+# ★ ★ **「别的树的卷绝不劝人删」解决了一半，另一半是磁盘。** 工作树是会消失的
+#   （`.claude/worktrees/` 下那些用完就删），而它们的卷不会跟着消失 —— 一个约 6GB，
+#   躺在那里，**没有任何东西说得出它还有没有主人**：卷名后缀是哈希，反推不回路径。
+#   ⇒ 新建时把归一后的树路径记在 label 上，回收提示据此把「主人已经不在了」的那些
+#     单列出来。这一条**不放宽** `docker-run.sh` 那条规矩：还在的树，照旧不给删除命令。
+#
+# ⚠ label **只有新建那一次写得进去**：对一个已存在的卷，`docker volume create`
+#   是**静默的 no-op** —— 不报错，也不更新 label（实测）。这不构成问题，因为树变了
+#   卷名就变了 ⇒ 名字与 label 永远是同一次新建写下的，不可能各说各话。
+#   ★ 反过来说，**没有 label 的卷一定不是这条规则建的**（加它之前留下的，或手工建的），
+#     那一类只能报「不明」，绝不能算成「已经不在」。
+FULCRUM_TREE_LABEL="cool.cnb.fulcrum.tree"
+
+# `$1` = 卷名；`$2` = 工作树路径（原样传，内部归一）。
+#
+# ⚠ 记的是 `fulcrum_tree_norm` 归一之后那一份，而不是 `/d/…` 那种 MSYS 路径：
+#   后者会被 Git Bash 在传给 docker.exe 时改写成 `D:/…`（实测），于是同一棵树
+#   在不同调用点记出两种写法。归一之后本来就是 `D:/…`，没有可改写的东西。
+fulcrum_target_vol_create() {
+  docker volume create --label "${FULCRUM_TREE_LABEL}=$(fulcrum_tree_norm "$2")" "$1" >/dev/null
+}
+
+# 一个 label 值对应的树现在是什么状态：live / gone / unknown。
+#
+# ★ `unknown` 与 `gone` **必须分开**：前者是「没能检查」，后者是「检查过了，没有」。
+#   混成一个的话，加这条规则之前留下的卷会被当成无主的报出去。
+fulcrum_tree_state() {
+  local tree=${1:-}
+  if [ -z "$tree" ]; then
+    printf 'unknown'
+  elif [ -d "$tree" ]; then
+    printf 'live'
+  else
+    printf 'gone'
+  fi
 }
 
 # ── 门禁互斥 ────────────────────────────────────────────────────────────────

@@ -134,6 +134,32 @@ selftest_target_vol() {
 }
 selftest_target_vol
 
+# ── ★ ★ 「这个卷还有没有主人」的自测 ────────────────────────────────────────
+#
+# 卷按树分开之后多出来一笔磁盘账：工作树是会消失的（`.claude/worktrees/` 下那些用完就删），
+# 它们的卷不会。⇒ 新建时把树路径写进 label，回收提示据此把**主人已经不在**的那些单列出来。
+#
+# 三条，一条一个方向，缺一条都会让回收提示变成一句危险的话：
+#   ① 树还在 ⇒ `live`。错成 `gone` 的话，提示会劝人删掉**隔壁正在用的**那个卷 ——
+#      而受害者那边只看到一次莫名的全量重编，没有一行字指向这里。
+#   ② 树没了 ⇒ `gone`。错成 `live` 的话，这条回收路等于不存在，磁盘继续无声地涨。
+#   ③ 没有 label ⇒ `unknown`，**不是** `gone`。「没能检查」不算「检查通过」：
+#      加这条规则之前留下的卷、以及手工建的卷（supply-chain.md 里那条 supply-audit
+#      命令就手工挂着一个），都不能因为「读不到主人」就被当成无主的。
+selftest_tree_state() {
+  local rc=0 probe
+  probe=$(mktemp -d)
+  [ "$(fulcrum_tree_state "$probe")"        = live ]    || { echo "★ 存在的工作树被判成了「不在」——回收提示会去劝人删隔壁正在用的卷" >&2; rc=1; }
+  [ "$(fulcrum_tree_state "$probe/gone")"   = gone ]    || { echo "★ 已经不存在的工作树没被判出来——那条回收路等于不存在" >&2; rc=1; }
+  [ "$(fulcrum_tree_state "")"              = unknown ] || { echo "★ 空 label（读不到主人）被判成了别的——不明与无主必须分开" >&2; rc=1; }
+  rmdir "$probe"
+  [ "$rc" -eq 0 ] || {
+    echo "  卷归属判定自测未通过——**「哪些卷可以删」这个结论一律不可信**。" >&2
+    exit 1
+  }
+}
+selftest_tree_state
+
 # ── ★ ★ 门禁互斥的自测 ──────────────────────────────────────────────────────
 #
 # 卷分开之后还剩一种：**同一棵树上并发跑两次门禁**，两次仍然共用那一个卷。
@@ -398,7 +424,12 @@ TARGET_VOL="$(fulcrum_target_vol "$DOCKERFILE_SHA" "$REPO_UNIX")"
 fulcrum_lock_acquire "$TARGET_VOL" "$REPO_UNIX" || exit 1
 
 docker volume create fulcrum-cargo  >/dev/null
-docker volume create "$TARGET_VOL"  >/dev/null
+# ★ 新建时把「属于哪棵树」写进 label（见 tests/lib/vol-lock.sh）——
+#   下面那条回收提示只有靠它才分得清「主人已经不在」与「主人还在」。
+# ⚠ 已存在的卷是**静默 no-op**，label 写不进去；那一类下面按「不明」处理，不当无主的。
+VOL_EXISTED=0
+docker volume inspect "$TARGET_VOL" >/dev/null 2>&1 && VOL_EXISTED=1
+fulcrum_target_vol_create "$TARGET_VOL" "$REPO_UNIX"
 
 # 旧卷不自动删（可能还想回退），但要说出来——不然它们会无声地占满磁盘。
 #
@@ -413,9 +444,66 @@ if [ -n "$MINE_STALE" ]; then
   echo "[docker-run] 这棵树另有 $(printf '%s\n' "$MINE_STALE" | wc -l) 个旧的 target 卷（对应更早的构建镜像），确认不再回退就删："
   printf '%s\n' "$MINE_STALE" | sed 's/^/      docker volume rm /'
 fi
+
+# ★ ★ 新建的那一次**当场自证** label 真的写进去了、而且读回来就是这棵树。
+#   ⚠ 少了这一条，label 悄悄没写成的后果是：下面那条回收路对每个卷都答「不明」，
+#     于是它什么也不做，而现象只是「磁盘怎么还在涨」—— 没有一行字会说出原因。
+#   ★ 不判红，但要喊（与 cache.sh「灌回之后卷还是空的」同一条纪律）：
+#     这是一条回收提示，不是量具本身，为它掐掉整轮门禁不成比例。
+if [ "$VOL_EXISTED" = 0 ]; then
+  VOL_TREE=$(docker volume inspect --format "{{index .Labels \"$FULCRUM_TREE_LABEL\"}}" "$TARGET_VOL" 2>/dev/null || true)
+  [ "$(fulcrum_tree_state "$VOL_TREE")" = live ] || {
+    echo "⚠ 刚建出来的卷认不出自己属于哪棵树（label 读回来是 '${VOL_TREE:-<空>}'）——" >&2
+    echo "  下面那条「主人已经不在」的回收提示这一轮等于没有（不判红，但别以为它在工作）。" >&2
+  }
+fi
+
+# ★ ★ **「别的树的卷不给删除命令」解决了误删，没解决磁盘。** 工作树用完就删，
+#   它们的卷不会跟着走 —— 一个约 6GB，而卷名后缀是哈希、反推不回路径，
+#   于是**没有任何东西说得出哪些已经没有主人了**。
+#   ⇒ 按 label 记着的那棵树现在还在不在，把「不属于本树」再分成两半：
+#     主人已经不在 ⇒ 给删除命令（删了碰不到任何人）；
+#     主人还在、或读不到 label ⇒ 照旧只报数、不给命令。
+#   ⚠ 「读不到 label」有意归后一半：加这条规则之前留下的卷读不出主人，
+#     而「没能检查」不算「检查通过」。
 if [ -n "$OTHER_VOLS" ]; then
-  echo "[docker-run] 另有 $(printf '%s\n' "$OTHER_VOLS" | wc -l) 个 target 卷**不属于这棵工作树**（别的工作树在用，或是加树标签之前留下的）。"
-  echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
+  mapfile -t OTHER_LIST <<< "$OTHER_VOLS"
+  # 一趟 inspect 问完。★ 卷名在前、路径在最后一段：`IFS='|' read` 把剩下的整段都给
+  #   最后一个变量 ⇒ 路径里真有 `|` 也只是这一行显示得难看，不会把卷名读错、
+  #   进而给出一条删错卷的命令。
+  OTHER_META=$(docker volume inspect --format "{{.Name}}|{{index .Labels \"$FULCRUM_TREE_LABEL\"}}" \
+                 "${OTHER_LIST[@]}" 2>/dev/null || true)
+  ORPHAN_HINT=""
+  ORPHAN_N=0
+  KEEP_N=0
+  while IFS='|' read -r vol tree; do
+    [ -n "$vol" ] || continue
+    if [ "$(fulcrum_tree_state "$tree")" = gone ]; then
+      ORPHAN_HINT="${ORPHAN_HINT}      docker volume rm ${vol}   # ${tree}"$'\n'
+      ORPHAN_N=$((ORPHAN_N + 1))
+    else
+      KEEP_N=$((KEEP_N + 1))
+    fi
+  done <<< "$OTHER_META"
+  # ⚠ ⚠ **「读不到」不许变成「没这回事」。** `inspect` 整批失败时上面两个计数都是 0，
+  #   于是这一段一个字都不打 —— 而它取代的是 a4cc2b5 那句**无条件**的报数，
+  #   ⇒ 「另有 N 个卷不属于这棵树」这句话会安静地消失。
+  #   把对不上的那些一律并进「不给命令」的那一半（保守方向），并说出发生过。
+  OTHER_TOTAL=$(printf '%s\n' "$OTHER_VOLS" | wc -l)
+  UNREAD_N=$((OTHER_TOTAL - ORPHAN_N - KEEP_N))
+  if [ "$UNREAD_N" -gt 0 ]; then
+    echo "⚠ 有 $UNREAD_N 个 target 卷的 label 没读到（docker volume inspect 没给出这几行）——" >&2
+    echo "  它们一律按「还有人要」算，不进下面那份删除清单。" >&2
+    KEEP_N=$((KEEP_N + UNREAD_N))
+  fi
+  if [ "$ORPHAN_N" -gt 0 ]; then
+    echo "[docker-run] 另有 $ORPHAN_N 个 target 卷，它们的工作树**已经不在了**（一个约 6GB），删了碰不到任何人："
+    printf '%s' "$ORPHAN_HINT"
+  fi
+  if [ "$KEEP_N" -gt 0 ]; then
+    echo "[docker-run] 另有 $KEEP_N 个 target 卷**不属于这棵工作树**（别的工作树在用，或是加树标签之前留下的）。"
+    echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
+  fi
 fi
 
 # ★ ★ ★ 这里的花括号**不是风格，是判据本身**（实测的一次假绿）。
