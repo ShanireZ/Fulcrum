@@ -18,6 +18,7 @@
 //! | [`encode`] | 响应压缩与预压缩旁文件 |
 //! | [`quic`] | HTTP/3 入口与换代时的跨进程连接转交 |
 //! | [`access_log`] | 结构化访问日志 |
+//! | [`metrics`] | Prometheus 指标：注册表 + text exposition 渲染 |
 //! | [`acme`] · [`health`] · [`dns`] | 自动 HTTPS · 主动健康检查 · 上游域名重解析 |
 //! | [`admin`] · [`process`] | 管理面 · 进程托管（`sd_notify` / pid 文件 / `SIGUSR2` 换代） |
 //!
@@ -48,6 +49,8 @@ pub mod files;
 pub mod health;
 /// L4 面（M2 批 A：TCP，批 B：UDP）：自建监听器 + socket 移交。
 pub mod l4;
+/// Prometheus 指标（M2 批 M）：进程级注册表 + text exposition 的自研渲染器（G117）。
+pub mod metrics;
 pub mod process;
 mod proxyproto;
 /// HTTP/3 入口（M2 批 J）：QUIC 传输层 + `quiche::h3`。
