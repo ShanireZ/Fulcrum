@@ -203,6 +203,21 @@ case "$MODE" in
       echo "    现在是：$WANT"
       exit 0
     fi
+    # ★ ★ **第二个坐标也要对上。** `save` 早就把 `target-volume=` 写进 meta 了，
+    #   而它把「哪个构建镜像 × 哪一棵工作树」两个坐标都编在里面 —— 灌回却只认前一半，
+    #   于是**另一棵树产出的归档照样灌得进这棵树的卷**。
+    #   ⚠ 别觉得「反正容器里都是 /w，内容通用」就可以硬灌：路径通用，**mtime 不通用**。
+    #   另一棵树编出来的产物比这棵树的源码新时，cargo 会直接当成最新的复用 ——
+    #   而这正是 tests/lib/vol-lock.sh 顶部记着的那两次实测（一次假红、一次假绿）。
+    #   ★ 它落在**最看不见**的地方：CI 上没人盯着卷名，只会看到一轮很快的绿。
+    WANT_VOL="target-volume=$TARGET_VOL"
+    if ! grep -qxF "$WANT_VOL" "$META"; then
+      echo "★ 归档不是这棵工作树产出的，**不灌**（这一轮按冷启动跑）："
+      echo "    归档里：$(grep '^target-volume=' "$META" || echo '（没有这一行）')"
+      echo "    现在是：$WANT_VOL"
+      echo "    工作树：$REPO"
+      exit 0
+    fi
     FOUND=$(sniff_codec "$ARCHIVE")
     case "$FOUND" in
       zstd)
@@ -232,7 +247,10 @@ case "$MODE" in
     fi
     echo "[cache] 归档完整。灌回 $CARGO_VOL + $TARGET_VOL（$FOUND 压的）"
     docker volume create "$CARGO_VOL" >/dev/null
-    docker volume create "$TARGET_VOL" >/dev/null
+    # ★ 走 fulcrum_target_vol_create：新建时要把「属于哪棵树」写进 label。
+    #   ⚠ 这里是 CI 上**第一个**建出这个卷的人（`docker-run.sh` 随后拿到的是已存在的卷，
+    #     而对已存在的卷 `docker volume create` 是静默 no-op）⇒ label 写不写得上，取决于这一行。
+    fulcrum_target_vol_create "$TARGET_VOL" "$REPO"
     "${DECOMPRESS[@]}" "$ARCHIVE" \
       | MSYS_NO_PATHCONV=1 docker run --rm -i --log-driver=none \
           -v "$CARGO_VOL:/c" -v "$TARGET_VOL:/t" "$HELPER" \
