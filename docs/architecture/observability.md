@@ -23,9 +23,9 @@ sources:
 
 | 面 | 形态 |
 |---|---|
-| **指标** | Prometheus 端点；覆盖连接、请求、上游、TLS、缓存、证书签发 |
+| **指标** | Prometheus 端点；覆盖连接、请求、上游、TLS、缓存、证书签发。⏳ **方案已定（批 M，G116–G118/G121）**，见下面「指标」一节 —— ⚠ 方案定了不等于做完了 |
 | **日志** | 结构化访问日志与错误日志；**字段清单与格式已由 G113 + G114 定稿**（D7 结案）—— 见下面「访问日志的字段契约」|
-| **实时** | Runtime 通道上的**只读 stats**：每上游的实时连接数、队列、错误、健康态，以及**临时覆盖层清单** |
+| **实时** | Runtime 通道上的**只读 stats**：每上游的实时连接数、队列、错误、健康态，以及**临时覆盖层清单**。⏳ **方案已定（批 N，G119/G120）**，见下面「Runtime 实时 stats」一节 |
 
 # 访问日志的字段契约（**G113 + G114**，由 D7 结案）
 
@@ -175,11 +175,156 @@ log {
 它要拍的是配置面往哪儿长（全局 `log` 块 / 站点级的默认 / 就这样），
 而那是一个比字段清单更大的问题。
 
+# 指标（三件套的第一件，**批 M**）
+
+## 端点 = 站点块里的终结指令 `metrics`（G116）
+
+`metrics` 进执行顺序表当 **Terminal**（序号 75，夹在 `respond` 与 `reverse_proxy` 之间），
+写在**普通站点块**里：
+
+```text
+metrics.example:9443 {
+    tls /etc/fulcrum/m.crt /etc/fulcrum/m.key
+    @internal remote_ip 10.0.0.0/8
+    handle @internal { metrics }
+    respond 403
+}
+```
+
+★ ★ **取这条而不是「独立的 metrics 监听器」，是为了不长出第二个网络管理面。**
+访问控制（`remote_ip` 匹配器）、TLS、访问日志、压缩**全部复用现有机制** ⇒
+[G14「管理面只绑 Unix socket」的口径一个字不动](/platform/security-baseline.md) ——
+指标面根本不属于管理面。
+
+⛔ **不挂在 admin socket 上当唯一出口**：Prometheus 抓不了 Unix domain socket，
+那样用户必须再装一个 exporter，直接撞设计原则 1（「任何让用户再装一个东西的设计都要被质疑」）。
+
+⚠ **代价说在明处**：指标与业务共用监听器，**用户把 matcher 写错就会把指标暴露出去**。
+这一条只能靠文档与诊断兜，**架构兜不住** —— 写下来是因为它不该在事后才被发现。
+
+`outcome` 的闭集因此**多第 8 个值 `metrics`**。★ 闭集是穷尽 `match`，加一种就编不过。
+
+## 取数点：与访问日志**同一段代码**
+
+⚠ ⚠ ★ **计数器只能加在 [`access_log::Record`](../../crates/fulcrum-server/src/access_log.rs)
+收尾的那一处。**
+
+两处各算一遍 `outcome` / `status` 的话迟早分家，而**分家的表现是两个数字都言之凿凿、却对不上** ——
+这正是 D18 / G66 那条「让分家在结构上做不到」要防的形状。
+
+⇒ 判据是一条**一致性门**：打一串已知形状的请求，`fulcrum_requests_total` 的增量必须与访问日志
+里的行数逐条对得上。★ 它同时守住两边，而任何一边**单独**的断言都守不住这件事。
+
+## 指标清单与基数
+
+⚠ ⚠ **Prometheus 的经典坑是标签基数。这张表里每一格都要能说出上界，
+而且那个上界必须由配置定、不由访问者定。**
+
+| 指标 | 类型 | 标签 | 上界 |
+|---|---|---|---|
+| `fulcrum_requests_total` | counter | `site` `outcome` `status_class` `proto` | address 数 × 8 × 5 × 3 |
+| `fulcrum_request_duration_seconds` | histogram | `site` `outcome` | 桶写死 |
+| `fulcrum_upstream_inflight` | gauge | `upstream` | 配置定 |
+| `fulcrum_upstream_healthy` | gauge | `upstream` | 配置定 |
+| `fulcrum_cache_events_total` | counter | `event` | `hit`/`miss`/`stale`/`purge` |
+| `fulcrum_cert_expiry_seconds` | gauge | `domain` | 配置定 |
+| `fulcrum_acme_issue_total` | counter | `result` | `ok`/`fail`/`deferred` |
+| `fulcrum_no_site_match_total` | counter | `host` | 见下（G118）|
+| `fulcrum_build_info` | gauge(=1) | 版本等 | 1 |
+
+⛔ **任何形态都不加 `uri` 标签。**
+
+### `site` 那一格 = 请求**实际匹配到的那条地址字面量**（G121）
+
+`site="a.example"` / `site="*.wild.example"` —— 通配符**折叠成它自己的字面量**。
+
+⚠ **不能直接用 `host`**：通配符站点下 host 由请求方决定 ⇒ 一个 `*.example` 站点就能让 series
+无限增长。★ **「已命中站点的请求，host 总是有界的」是错的，而它错得很像对的。**
+
+⚠ 也不取「站点块的第一个地址」：那会把同一个块里的 `a.example` 与 `b.example` 混成一格，
+而且**改地址的书写顺序就会让时序断裂** —— 一个在配置里完全看不出来的副作用。
+
+★ 代价：通配符站点下各子域名合并成一格，「哪个租户在打我」这一格答不了。
+**那个问题留给访问日志** —— 它有真的 `host`。
+
+## D26 由 `no_site_match` 计数器结案（G118）
+
+`host` 那一格**来自请求方、攻击者可控** ⇒ **只有出现在配置里的 host 才带真值**，
+其余一律归 `host="<other>"`。⇒ 上界 = 站点 address 数 + 1，仍由配置定。
+
+★ 这回答了 D26 真正想问的那句「谁在拿奇怪的 Host 打我」，
+而**不必回答**「全局 `log` 与站点 `log` 是覆盖还是合并」那个更贵的配置面问题。
+
+⚠ 代价写在明处：**只知道有多少、来自哪个已知 host，不知道具体是哪个未知 host。**
+这是有意的 —— 不让外人往我们的内存与时序库里写任意字符串。
+
+## 格式自研，零新依赖（G117）
+
+Prometheus 的 text exposition 是行式纯文本，自己写约百行。
+★ 它**不是安全敏感协议栈**，不撞[安全基线](/platform/security-baseline.md)第 5 条
+（那条管的是 TLS / HPACK / QUIC 这类）。零新依赖 ⇒ 供应链门不用动，musl 静态产物也不受影响。
+⚠ 代价：直方图分桶、标签值转义、`_total` 后缀这些细节要自己钉住，由单测守。
+
+## 批 M 的门
+
+新场景 `tests/metrics/run.sh`（端口段 9920–9921）。除格式与访问控制外，**三条反向缺一不可**：
+
+1. 没写 `metrics` 的站点上，同一路径**必须不是**指标 —— 否则「抓到了指标」证明不了是这条指令干的；
+2. 用未知 `Host` 打 50 次之后 series 数**不增长** —— 守 G118 那条封顶；
+3. **一致性门**：`fulcrum_requests_total` 的增量与访问日志行数逐条对得上 —— 守「两处不分家」。
+
+# Runtime 实时 stats（三件套的第三件，**批 N**）
+
+**批 N 的顺序 = G8 增量通道 → G18 临时覆盖层 → 只读 stats（G119）。**
+⚠ owner 拍的是这个顺序（AI 推荐的是「先只读 stats、写通道留后」）⇒
+stats **从第一天就带 `overrides` 一节**，不存在「先发一个没有覆盖层的 stats、以后再补」的中间形态。
+
+## 增量通道（G8 的另一半）
+
+admin socket 上 `POST /runtime`，收的是**动词**而不是一份配置：`set_weight` · `disable` · `enable`。
+⚠ ⚠ **不写盘。** 期望状态是唯一权威，[管理面](/architecture/control-plane.md)**不许出现第二条持久写路径**。
+
+## `POST /load` 与覆盖层：`overrides` 是**必填**参数（G120）
+
+载荷必须带 `"overrides": "keep" | "clear"`，**缺了就拒绝**。
+
+★ ★ **不给默认值就是这条的全部内容**，因为两种运维现实都正确且互相冲突：
+
+| 谁在调用 | 想要什么 |
+|---|---|
+| 发布流水线 | `clear` —— 发布就是回到期望状态 |
+| 事故处理中的人 | `keep` —— 一次无关的配置发布不该把刚摘掉的坏节点放回去 |
+
+⇒ **任何一个默认值都会在另一种场景里悄悄做错事。**
+★ 与「`POST /load` 遇到监听端口变化时**显式拒绝**」同一条纪律：
+**判据在拒绝上，不在尽力而为上。**
+
+⚠ `clear` 那一档必须在回话里**逐项列出**被清掉的覆盖 ——
+[§3](../../PLAN.md) 点名要避开 HAProxy 那个「runtime 改动 reload 后无声消失」的短处。
+
+## 只读 stats
+
+`GET /stats`（admin socket），JSON：世代标识与配置装载时间 · 每上游的 `inflight` 与 `healthy` ·
+证书到期 · 缓存占用 · **`overrides` 清单**。
+
+★ `inflight` 与 `healthy` 这两个量在
+[`Upstream`](../../crates/fulcrum-runtime/src/lib.rs) 上**已经有了**（`AtomicUsize` 与 `AtomicBool`）——
+这正是 G16 那句「边际成本最低」的实处，不是修辞。
+
+⚠ ⚠ **与 `/metrics` 同源**：两个出口从**同一组原子量**读，不各算一遍 ——
+否则就是本页上面刚点过名的那个形状。
+
+⚠ G18 的原话是「stats 与 API 的**每一次响应**都携带」覆盖层清单
+⇒ 它**不是一个单独的端点**，见下面「最容易在哪做错」第 1 条。
+
 # 三件套的进度要分开数
 
 ⚠ ⚠ **批 L 做完之后观测三件套是 1/3，不是 ✅。** 指标（Prometheus）与
 Runtime stats 都不在批 L 里，全仓 `prometheus` 至今零命中。
 ⚠ **一格里装三件事，最容易被读成一件。**
+
+★ 另外两件现在**各有一批**：指标＝**批 M**，Runtime stats＝**批 N**（见上面两节）。
+⚠ **「方案定了」与「做完了」仍然是两件事** —— 本页上面写的是方案，`prometheus` 依然零命中。
 
 # ★ 为什么 Runtime stats 是边际成本最低的高价值功能
 
@@ -187,11 +332,15 @@ Runtime stats 是 HAProxy `show stat` 的对应物。它**复用 G8 已经要做
 
 ★ 而它承载的是 G18 的强制要求：**临时覆盖层必须永远可见**。这不是一个可选的观测特性，是状态模型的一部分。见 [管理面](/architecture/control-plane.md)。
 
-# 回落层要计数
+# ~~回落层要计数~~ ⛔ **这一节已经没有对象了**
 
-[回落层](/architecture/fallback.md) 的第 2 条约束要求：**哪些请求走了回落，必须在 stats 中计数**。
+原文要求「哪些请求走了回落，必须在 stats 中计数」，并把**回落计数归零**当作
+M2 退出条件「回落层已无常态使用」的判据。
 
-★ 这条有实际用途：**回落计数归零是拆除该块回落的信号**，也是 M2 退出条件「回落层已无常态使用」的判据。
+⚠ **G98 把[回落层](/architecture/fallback.md)整块删掉之后，这条判据连被测对象都不存在了** ——
+而「回落层已无常态使用」也因此**恒真**（层不在，就不可能有常态使用），见 `PLAN.md` §7 里
+把退出条件拆成两半的那张表。
+★ 留着这一节而不是删掉，是因为**一条读起来仍然成立、而对象已经消失的要求，比一条明显过时的要求更难发现**。
 
 # 首版不做
 
