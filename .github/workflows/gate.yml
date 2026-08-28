@@ -36,7 +36,21 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v4
+      # ── ★ 这几个 action 的大版本 = 它们跑在哪个 Node 上 ─────────────────────
+      #
+      # ⚠ ⚠ **本工作流里选不了 Node 版本，也没有一行 Node**：判据是
+      #   `bash tests/m0/docker-run.sh`，全在容器里跑 Rust。Node 只是 GitHub 这几个
+      #   JS action 自己的运行时，版本写在**它们的** `action.yml` 的 `runs.using` 里。
+      #   ⇒ 看见「Node.js 20 is deprecated」时要动的是**这里的大版本**，
+      #   而不是去找一个「把 CI 换成 node24 / node26」的开关 —— 那个开关不存在。
+      #   （`actions/setup-node` 是给项目代码用的，本仓没有 Node 代码，不需要它。）
+      #
+      # ★ 升到 v7 / v6 / v7 之前逐条读过发布说明，对**本工作流的用法**都不是破坏性改动：
+      #   checkout v7 只多拦 `pull_request_target` / `workflow_run` 的 fork 检出（两者都没用），
+      #   upload-artifact v7 新增的 `archive` 默认 true 就是旧行为，cache v6 只是 ESM 化。
+      # ⚠ 硬前提是 **runner ≥ 2.327.1**；GitHub 托管的 `ubuntu-24.04` 恒满足，
+      #   哪天换成自托管 runner 要先确认这一条。
+      - uses: actions/checkout@v7
 
       # ★ runner 上 `/` 只有二十几 GB 空余，而这里要放：构建镜像、systemd 测试镜像、
       #   cargo registry、release 模式的整个 target。⚠ 磁盘满的报错形态五花八门
@@ -69,7 +83,7 @@ jobs:
       # ★ **怀疑缓存的时候**：把下面键里的 `v1` 改成 `v2`，整片缓存立即作废。
       - name: 取构建缓存
         id: buildcache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/fulcrum-cache
           # ★ 精确键 = 工具链 + 两把锁；`restore-keys` 让它仍然能从**同一套工具链**的
@@ -102,7 +116,7 @@ jobs:
       # ★ 与日志分开的那条路：artifact 一定取得回来（`gh run download`）。
       - name: 传诊断
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cache-diag
           path: ~/cache-diag.txt
@@ -111,7 +125,7 @@ jobs:
 
       - name: 存构建缓存
         if: always() && steps.dumpcache.outputs.archived == 'true' && steps.buildcache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/fulcrum-cache
           key: fulcrum-buildcache-v1-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build') }}-${{ hashFiles('Cargo.lock', 'vendor/pingora/Cargo.lock') }}
