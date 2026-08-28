@@ -110,7 +110,10 @@ cleanup() {
     echo "     \$(…) 是子 shell，数组改了个副本）。" >&2
     echo "  ⚠ 这件事的后果**不在本场景**：泄漏的进程攥着 :80 活到下一个场景，" >&2
     echo "     而那边的基线不看 :80 ⇒ 现场会是「ACME 莫名其妙起不来」。" >&2
-    ps -eo pid,stat,args 2>/dev/null | grep "[f]ulcrum serve" >&2 || true
+    # ★ 用 `pgrep -af` 而不是 `ps | grep`（同 tests/metrics/run.sh）：后者靠「把自己从
+    #   结果里滤掉」成立，那一步一旦被改动（比如换个匹配词）就会安静地把自己算进去；
+    #   而这里问的是「还活着的是哪几个」—— 一个 defunct 进程攥不住监听 socket。
+    pgrep -af "fulcrum serve" >&2 || true
     exit 1
   fi
 }
@@ -222,9 +225,14 @@ wait_port "$PORT" || {
 ok "第一代起来了（pid=$GEN1）"
 
 OUT=$(h3_get /)
-[ "${OUT##* }" = "200" ] && [ "${OUT%% *}" = "gen1" ] \
-  && ok "h3 通了，而且是第一代在服务（$OUT）" \
-  || fail "第一代的 h3 请求不对：$OUT"
+# ⚠ 判据与报法**分开写**，不要 `A && ok … || fail …`（SC2015，本仓库 tests/acme/lib.sh
+#   记过同一条）：那串里 `ok` 一旦失败（stdout 被关掉就够了），`fail` 会**跟着**执行
+#   ⇒ 一条其实成立的判据把 FAILS 加了一。
+if [ "${OUT##* }" = "200" ] && [ "${OUT%% *}" = "gen1" ]; then
+  ok "h3 通了，而且是第一代在服务（$OUT）"
+else
+  fail "第一代的 h3 请求不对：$OUT"
+fi
 
 # ── [2/6] 转交 socket 真的建出来了 ──────────────────────────────────────────
 echo "=== [2/6] 转交 socket 建出来了，而且路径由 gen_id 推导 ==="
@@ -242,7 +250,9 @@ RELAY1="$WORK/quic-relay-$GEN1_HEX.sock"
 if [ -S "$RELAY1" ]; then
   ok "★★ 转交 socket 在（$RELAY1），而路径完全由 gen_id 推导 —— 两代之间不需要任何协商"
 else
-  fail "★★ 转交 socket 不在：$RELAY1（现有：$(ls "$WORK" | tr '\n' ' '))"
+  # ⚠ 现场清单用 `find … -printf` 而不是 `ls`（同 tests/ci/dump-cache.sh，SC2012）：
+  #   `ls` 会按终端与 locale 改主意，而这一行是排查这条判据时唯一的证据。
+  fail "★★ 转交 socket 不在：$RELAY1（现有：$(find "$WORK" -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null))"
 fi
 
 # ── [3/6] 起一条**长跑**的 h3 请求序列 ──────────────────────────────────────
@@ -364,9 +374,11 @@ else
 fi
 
 OUT=$(h3_get /)
-[ "${OUT%% *}" = "gen2" ] \
-  && ok "老一代走了之后，服务照常（$OUT）" \
-  || fail "老一代走了之后服务坏了：$OUT"
+if [ "${OUT%% *}" = "gen2" ]; then
+  ok "老一代走了之后，服务照常（$OUT）"
+else
+  fail "老一代走了之后服务坏了：$OUT"
+fi
 
 echo
 if [ "$FAILS" -ne 0 ]; then
