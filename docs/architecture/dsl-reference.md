@@ -76,7 +76,7 @@ api.example.com {
 | `acme_email` | `acme_email <邮箱>` | ACME 账户邮箱（G53）|
 | `acme_ca` | `acme_ca <目录 URL>` | 换 CA（默认 Let's Encrypt）|
 | `admin` | `admin unix/<路径>` | 管理面监听地址（G8/G14）|
-| `default_sni` | `default_sni <域名>` | 客户端不带 SNI 时用哪一张证书 |
+| `default_sni` | `default_sni <域名>` | 客户端**不带** SNI 时当作它报了这个名字。⚠ 它**不**给「报了、而我们没有那张证书」的 SNI 兜底 —— 那种连接照旧被拒绝握手（Caddy 把后者另立为 `fallback_sni`，枢衡没有）|
 | `auto_http_redirect` | `auto_http_redirect <true\|false>` | 自动把 HTTP 跳到 HTTPS（G12）。★ **不写就是 `true`**，见 §二 |
 | `grace_period` | `grace_period <时长>` | 优雅停机的排空窗口。★ 不写＝ **30s**，见[部署](/platform/deploy.md) |
 | `proxy_protocol_from` | `proxy_protocol_from <网段…>` | ★ ★ **信任这些来源发来的 PROXY 头**，管 **HTTP 面全部监听端口**（M2 批 D）。不写＝**谁都不信**。见下 |

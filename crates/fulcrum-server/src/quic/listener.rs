@@ -758,7 +758,11 @@ mod tests {
         let ck = cert_key_from_der(cert.der().to_vec(), key.serialize_der()).expect("造 CertKey");
 
         let resolver = Arc::new(SniResolver::new());
-        resolver.set_default(ck);
+        // ★ 按名字装，而不是塞进 default 槽：下面的客户端**报了 SNI**（`quiche::connect`
+        //   的第一个参数），所以这里走的是与真流量同一条挑证书的路。
+        //   ⚠ 之前这里用的是 `set_default` —— 而那是全仓**唯一**的调用方，
+        //   于是「default 槽有人填」这件事只在测试里成立过。
+        resolver.install(&[SNI.to_string()], ck);
         build_quic_config(&resolver).expect("服务端配置")
     }
 

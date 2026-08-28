@@ -26,3 +26,11 @@ serde_json = { workspace = true }
 log = { workspace = true }
 # `flock(2)`：跨进程串行化同一域名的签发（G55 第 2 条）。
 libc = { workspace = true }
+
+[dev-dependencies]
+# 只给判据用：`default_sni` 那几条要真的往表里装证书，而**造一张真证书**是唯一的装法
+# （`CertKey` 收的是 `X509` + `PKey`）。
+# ⚠ 判据里的证书**一律现签**，不提交进仓库：提交的那张迟早过期，而过期那天红的是
+#   「TLS 坏了」，要绕一圈才发现是证书到期（`tests/serve/run.sh` 那段同理）。
+# ★ 新增 0 个包：rcgen 早就在依赖图里（instant-acme 拉的，见根清单）。
+rcgen = { workspace = true }

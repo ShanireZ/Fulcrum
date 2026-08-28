@@ -1844,7 +1844,7 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
             .as_deref()
             .unwrap_or(fulcrum_acme::LETSENCRYPT_PRODUCTION),
     );
-    let plan = match tls::plan_tls(&rt, &cert_root, &issuer) {
+    let plan = match tls::plan_tls(&rt, &cert_root, &issuer, cfg.global.default_sni.as_deref()) {
         Ok(p) => p,
         Err(errs) => {
             // ⚠ 走到这里说明配置里显式给的 PEM 读不出来。**不许降级成告警**：

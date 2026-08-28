@@ -145,6 +145,10 @@ sed -i "s/:LATE_PORT/:$LATE_PORT/" "$WORK/late.Fulcrumfile"
 cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
 {
     admin unix/ADMIN_SOCK
+    # ★ 全局 `default_sni`：客户端不带 SNI 时当作它报了这个名字（判据 9d）。
+    # ⚠ 它同时让 9c 那条**变得有意义** —— 配着 default_sni 还要拒掉未知 SNI，
+    #   才说明这条指令没有顺手变成「谁来都发一张证书」的兜底。
+    default_sni secure.example
 }
 
 :PROXY_PORT {
@@ -465,6 +469,24 @@ if [ "$CURL_RC" -ne 0 ] && [ "$NOCERT" = "000" ]; then
 else
   fail "未知 SNI 期望握手失败，实际 curl 退出码 $CURL_RC、HTTP $NOCERT"
 fi
+
+# 9d) ★ ★ 不带 SNI 的客户端（老客户端、或直接按 IP 访问）→ 全局 `default_sni`。
+#
+#     ⚠ ⚠ 这条指令曾经是**「DSL 认得、编译得过、运行时零调用方」**的活样本：
+#     `SniResolver::set_default` 全仓唯一的调用方在一条 `#[cfg(test)]` 里，
+#     而它又**不在 `UNWIRED` 里** ⇒ 装载日志一个字都不说，配了它的人只会看到
+#     不带 SNI 的客户端照样被拒绝握手。
+#     ★ 判据挂在**拿到的是哪一张证书**上，不挂在「握手成功了吗」上：后者在服务端
+#     随便发一张证书时同样成立，而那正是 9c 要防的那种「成功」。
+#     ★ 与它成对的反向那半就是上面的 9c —— 本场景现在**配着** default_sni，
+#     所以 9c 从此还多守一件事：这条指令没有顺手变成未知 SNI 的兜底
+#     （Caddy 把那件事分成另一个选项 `fallback_sni`，我们没有它）。
+NOSNI_SUBJ=$(echo | openssl s_client -connect "$HOST:$TLS_PORT" -noservername 2>/dev/null \
+             | openssl x509 -noout -subject 2>/dev/null || true)
+case "$NOSNI_SUBJ" in
+  *secure.example*) ok "不带 SNI 的握手拿到 default_sni 那张证书（$NOSNI_SUBJ）" ;;
+  *) fail "不带 SNI 期望拿到 secure.example 那张证书，实际：${NOSNI_SUBJ:-（一张都没拿到，多半是握手被拒）}" ;;
+esac
 
 # ── ★ ★ ★ 域名上游（批 10）──────────────────────────────────────────────────
 #
@@ -860,6 +882,16 @@ if grep -q '已装载 1 个 SNI' "$WORK/proxy.log"; then
 else
   fail "装载日志里没有证书装载那一行"
   grep -i 'SNI\|证书' "$WORK/proxy.log" >&2 || true
+fi
+# ★ ★ 装载日志是 `default_sni` 在运行中**唯一**看得见的地方。
+#   ⚠ 它此前正是卡在「配了」与「生效了」分不开这一点上：编译得过、运行时零调用方，
+#   而日志一个字都不说 ⇒ 配了它的人没有任何办法在现场发现它没接。
+#   ★ 这一条与 9d 分工：9d 问行为，这一条问**运维看不看得见**。
+if grep -qF 'default_sni secure.example' "$WORK/proxy.log"; then
+  ok "装载日志说出了不带 SNI 的握手会用哪张证书"
+else
+  fail "装载日志没说 default_sni 生效到了哪个名字"
+  grep -i 'SNI' "$WORK/proxy.log" >&2 || true
 fi
 
 echo
