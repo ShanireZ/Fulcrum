@@ -223,16 +223,17 @@ pub(crate) struct Record {
 
 /// 一条连接的 TLS 信息（**M2 批 L 第 ③ 步**）。
 ///
-/// # ⚠ ⚠ ⚠ 它今天只在 h1/h2 上有值，而这不是遗漏、是一处**登记在案的缺口**
+/// # h1/h2 四格、h3 三格 —— 少的那一格是有意的
 ///
 /// `version` / `cipher` 来自 `ServerSession::digest()` 里的 `SslDigest`，
 /// `sni` / `alpn` 来自 [`crate::tls::HandshakeInfo`] 塞进 `SslDigest.extension` 的那一份。
-/// ★ 而 **h3 那条路上 `digest()` 恒为 `None`**（`H3Session` 的 NOT_HONORED 那一组）——
-/// ⇒ 一条走 HTTP/3 的请求，日志里**四格全都不出现**，而它确确实实是 TLS。
+/// ★ h3 走同一段代码：[`crate::quic::h3_session::quic_digest`] 在连接那一层现造一个同类型的
+/// `Digest`，于是 `digest()` 在 h3 上也有值 —— 两条路在这一层**没有分叉**。
 ///
-/// ⚠ 补上它要动 fork：`SslDigestExtension::set` 是 `pub(crate)`，
-/// 在 `pingora-core` 外面**装不进**那个扩展位（quiche 那侧的 `cipher()` 也没有公开出来）。
-/// ⇒ 已登记为 `PLAN.md` §11 的 **D27**，别当成「顺手补一下」。
+/// ⚠ **`tls_cipher` 在 h3 上恒为空**，那一格因此不出现：quiche 的 `Handshake::cipher()`
+/// 锁在私有 `mod tls` 里，取不到。⇒ 宁可缺一格，也不写一个编出来的值。
+/// ★ 守它的是 [`tests/log/run.sh`] 第八步：h1/h2 四格都在、h3 三格都在，
+/// **且 h3 的日志行里 `tls_cipher` 必须不出现** —— 那条反向断言防的是有人给它编一个值。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct TlsFields {
     /// `TLSv1.3` 这种。⚠ 空串 = 问不出来 ⇒ 那一格不出现。

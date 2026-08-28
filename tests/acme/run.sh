@@ -250,6 +250,7 @@ for p in "$HTTP_PORT" "$TLS_PORT"; do
   wait_port "$p" || {
     echo "ACME TESTS FAILED: 端口 $p 起不来。日志：" >&2
     cat "$WORK/run1.log" >&2
+    acme_dump_ports "第一代：$p 起不来"
     exit 1
   }
 done
@@ -545,11 +546,44 @@ for p in "$HTTP_PORT" "$TLS_PORT"; do
     fail "第一代退了，端口 $p 还被占着 —— 第二轮测的会是别人的服务"
   fi
 done
+# ★ ★ ★ **`:80` 在这里只记，不判。**
+#
+#   CI 上间歇性红在下面那句「第二代起不来」，而 `run2.log` 末尾是一串
+#   `127.0.0.1:80 is in use, will try again`（pingora 的 `bind_tcp` 重试 30 次、每次 1 秒，
+#   而 `wait_port` 20 秒就放弃了 ⇒ 日志停在半路）。本机从来不红。
+#
+#   ⚠ 现有证据分不开三种解释：第一代其实没走干净 / 那个监听 fd 被某个子进程继承走了 /
+#   容器里另有第三方占着。**分开它们要的正是「第二代起来之前 `:80` 长什么样」**——
+#   所以在这里取一次快照，只在下面真红的时候打出来：绿的跑一个字都不多。
+#
+#   ⛔ 不许把它变成断言：占着 `:80` 已被反证为无害（见 lib.sh 里那段），
+#   加一道只拦得住正确产出的判据，和不报红一样坏。
+PORT80_BEFORE_GEN2=$(acme_port_snapshot 80)
 
 start_fulcrum run2
 wait_port "$TLS_PORT" || {
   echo "ACME TESTS FAILED: 第二代起不来。日志：" >&2
   cat "$WORK/run2.log" >&2
+  # ★ ★ ★ **「还活着但没在听」与「已经死了」是两个完全不同的答案，而 `cat 日志` 一个都给不出。**
+  #   ⚠ 这几行必须写在**主 shell 里**，不能包成函数再 `$(…)` 调用：命令替换跑在子 shell 里，
+  #     而 `wait` 等不了父 shell 的后台作业 —— 它会立刻返回 127，
+  #     于是每一次都报「退出码 127」，一个恒定的假答案。
+  if kill -0 "$FULCRUM_PID" 2>/dev/null; then
+    echo "  ⇒ 第二代 pid $FULCRUM_PID **还活着** —— 它是没在 $TLS_PORT 上听，不是死了。" >&2
+  else
+    GEN2_RC=0
+    wait "$FULCRUM_PID" 2>/dev/null || GEN2_RC=$?
+    echo "  ⇒ 第二代 pid $FULCRUM_PID **已经退了**（退出码 $GEN2_RC）—— 它是死了，不是慢。" >&2
+  fi
+  echo "── 取证：第二代起来之前 :80 上的 socket ──" >&2
+  if [ -n "$PORT80_BEFORE_GEN2" ]; then
+    printf '%s\n' "$PORT80_BEFORE_GEN2" >&2
+    echo "  ⇒ 第二代还没起就已经有人占着 :80 —— 不是第二代自己跟自己抢。" >&2
+  else
+    echo "  （空：第一代退干净之后 :80 上一个 socket 都没有" >&2
+    echo "   ⇒ 占用是在第二代启动之后才出现的，看下面的表是谁。）" >&2
+  fi
+  acme_dump_ports "第二代起不来"
   exit 1
 }
 

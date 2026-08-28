@@ -96,6 +96,23 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/proxyproto/` | 9800–9803 |
 | `tests/log/` | 9900–9906 |
 | `tests/quic-relay/` | 9910–9911 |
+| *(shared, hardcoded)* | 80 — see below |
+
+**Port 80 is the one exception, and it is shared on purpose.** `synthesize_http_redirect`
+(`crates/fulcrum-config/src/compile.rs`) gives every auto-HTTPS site a 308 redirect site on a
+hardcoded `:80`, so seven scenarios bind it implicitly: `tests/acme/run.sh` ·
+`tests/acme/renew.sh` · `tests/serve/` · `tests/log/` · `tests/h3/` · `tests/proxyproto/` ·
+`tests/quic-relay/`. Making it configurable is open as **D29**.
+
+⛔ **Do not add `:80` to any "these ports must be free" baseline check.** Occupying it is
+harmless — measured: hold `127.0.0.1:80` for a whole run and `tests/acme/run.sh` still passes
+41 ✓ / 0 ✗. Each pingora service binds on its own runtime (`Server::run_service` spawns per
+service), so one listener stuck retrying `:80` does not delay the others. A gate that can only
+ever stop correct output is as bad as one that never goes red.
+
+⚠ What *is* true: any LISTEN on `:80` makes that bind fail — all four shapes (`0.0.0.0` or
+`127.0.0.1`, with or without `SO_REUSEADDR`) return `EADDRINUSE`, and `bind_tcp` then retries 30
+times at 1 s. So no scenario may assume the redirect listener came up, and none asserts it.
 
 ## Gate discipline
 

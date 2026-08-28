@@ -330,6 +330,12 @@ LINT_CMD="$LINT_CMD && LC_ALL=C.UTF-8 shellcheck tests/acme/*.sh tests/cache/*.s
 # ⚠ 它是那条修法在本仓库唯一的判据 —— `dump-cache.sh` 本体只在
 #   `cache-hit != 'true'` 时才在 CI 上跑，而缓存键不认源码 ⇒ 往后基本不会再跑。
 LINT_CMD="$LINT_CMD && bash tests/ci/dump-cache.sh --self-check"
+# ★ ★ ACME 那套**失败现场取证**的判据（`tests/acme/lib.sh` 的 `acme_dump_ports` 一族）。
+#   **挂在 lint 这一格而不是 ACME 那一格**，理由与上面那条同源：取证代码只在
+#   「已经要红」的路径上执行 ⇒ 一趟绿的 ACME 场景**从来不碰它**，
+#   于是它坏了要等到真出事那天才发现，而那一次现场也就跟着白丢了。
+#   ⚠ 它不碰 docker、不要产品二进制、只花几百毫秒（自己开一个监听 socket 当靶子）。
+LINT_CMD="$LINT_CMD && bash tests/acme/self-check.sh"
 
 if [ "${VENDOR_ONLY:-0}" = "1" ]; then
   # 只跑 fork 回归网。它不依赖 spike 二进制，所以连构建都跳过。

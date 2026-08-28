@@ -219,6 +219,7 @@ start_fulcrum gen1
 wait_port "$TLS_PORT" || {
   echo "ACME RENEW TESTS FAILED: 第一代起不来。日志：" >&2
   cat "$WORK/gen1.log" >&2
+  acme_dump_ports "第一代起不来"
   exit 1
 }
 
@@ -273,11 +274,32 @@ for p in "$HTTP_PORT" "$TLS_PORT"; do
     fail "第一代退了，端口 $p 还被占着 —— 第二轮测的会是别人的服务"
   fi
 done
+# ★ 与 [`run.sh`](run.sh) 同一处取证，理由写在那边：`:80` 只记不判。
+#   ⚠ 本场景的 `:80` 与 run.sh 的是**同一个**（重定向端口写死，两边都隐式用它），
+#   所以两个场景的现场都要留下来 —— 只在 run.sh 那边留，换成本场景红的时候就又什么都没有。
+PORT80_BEFORE_GEN2=$(acme_port_snapshot 80)
 
 start_fulcrum gen2
 wait_port "$TLS_PORT" || {
   echo "ACME RENEW TESTS FAILED: 第二代起不来。日志：" >&2
   cat "$WORK/gen2.log" >&2
+  # ★ 与 run.sh 同一处，连同那条「不许包成函数」的理由（`wait` 在子 shell 里恒 127）。
+  if kill -0 "$FULCRUM_PID" 2>/dev/null; then
+    echo "  ⇒ 第二代 pid $FULCRUM_PID **还活着** —— 它是没在 $TLS_PORT 上听，不是死了。" >&2
+  else
+    GEN2_RC=0
+    wait "$FULCRUM_PID" 2>/dev/null || GEN2_RC=$?
+    echo "  ⇒ 第二代 pid $FULCRUM_PID **已经退了**（退出码 $GEN2_RC）—— 它是死了，不是慢。" >&2
+  fi
+  echo "── 取证：第二代起来之前 :80 上的 socket ──" >&2
+  if [ -n "$PORT80_BEFORE_GEN2" ]; then
+    printf '%s\n' "$PORT80_BEFORE_GEN2" >&2
+    echo "  ⇒ 第二代还没起就已经有人占着 :80 —— 不是第二代自己跟自己抢。" >&2
+  else
+    echo "  （空：第一代退干净之后 :80 上一个 socket 都没有" >&2
+    echo "   ⇒ 占用是在第二代启动之后才出现的，看下面的表是谁。）" >&2
+  fi
+  acme_dump_ports "第二代起不来"
   exit 1
 }
 if ! wait_log "$WORK/gen2.log" 'ACME 本轮：签发 0，已是最新 1，' 60; then

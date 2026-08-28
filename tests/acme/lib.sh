@@ -155,6 +155,194 @@ acme_require_ports_free() {
   done
 }
 
+# ── 失败现场取证：那一刻谁占着哪些端口 ──────────────────────────────────
+#
+# ⛔ **只在已经要红的路径上调用**：它一行都不参与判定，
+#   因此不可能把一趟本来能过的跑判红。
+#
+# ★ 反过来，把 `:80` 加进上面那条「端口必须空着」是**不行的**：占着它已被反证为无害
+#   （实测：在构建容器里先占住 `127.0.0.1:80` 再跑本场景 → 41 ✓ / 0 ✗），
+#   加了只会拦住正确的产出，而一道只拦得住正确产出的判据，和不报红一样坏。
+#   `:80` 从哪来、由谁共用，见 AGENTS.md 的端口表。
+#
+# ⚠ 镜像里**没有 `ss` / `lsof` / `fuser`**（iproute2 只装在 systemd 测试镜像里）
+#   ⇒ 只能读 `/proc/net/tcp{,6}` 与 `/proc/<pid>/fd`。
+#
+# ★ ★ 打的是**全部状态**，不只是 LISTEN：`bind()` 报 `EADDRINUSE` 那一刻，
+#   「另一个进程正在 LISTEN」与「同一个 addr:port 上挂着一条残留连接」是两个不同的答案，
+#   而只打 LISTEN 的话后者会表现成「什么都没有」—— 一句最会把人带偏的结论。
+#
+# ★ ★ ★ 同一个 inode 的**全部**持有者都要打：一个被子进程继承走的监听 fd，
+#   现场就是「两个 pid 指着同一个 socket」，而进程表里那个 fulcrum 已经不在了。
+#   这个形状本仓库栽过一次，常设判据是 [`tests/m0/unclaimed.sh`](../m0/unclaimed.sh)。
+
+# `/proc/net/tcp{,6}` → 每行一个 `地址:端口 状态 inode=N`（v6 写成 `[地址]:端口`）。
+# 参数是要读的文件 —— 自测时指向样本，于是**同一份解码**两处共用。
+# ⚠ `strtonum()` 是 gawk 扩展，而镜像里的 awk 是 mawk ⇒ 十六进制只能自己拆。
+acme_decode_proc_net() {
+  awk '
+    function h2d(s,   i, d, n) {
+      n = 0
+      s = toupper(s)
+      for (i = 1; i <= length(s); i++) {
+        d = index("0123456789ABCDEF", substr(s, i, 1)) - 1
+        if (d < 0) return -1
+        n = n * 16 + d
+      }
+      return n
+    }
+    # v4 是 8 位十六进制、**按字节反序**；v6 是 32 位，按 4 个 32 位字各自反字节序。
+    # ⚠ 双栈监听 `[::]:port` 只出现在 tcp6 里，tcp 一行都没有 —— 所以两个文件都要读。
+    function addr(h,   i, w, b, out, grp) {
+      if (length(h) == 8) {
+        out = ""
+        for (i = 4; i >= 1; i--) out = out (i == 4 ? "" : ".") h2d(substr(h, i * 2 - 1, 2))
+        return out
+      }
+      out = ""
+      for (w = 0; w < 4; w++)
+        for (b = 4; b >= 1; b--) out = out substr(h, w * 8 + b * 2 - 1, 2)
+      # 16 字节 → 8 组四位十六进制。**不做 `::` 压缩**：诊断要的是没有歧义，不是好看。
+      grp = ""
+      for (i = 1; i <= 8; i++) grp = grp (i == 1 ? "" : ":") substr(out, i * 4 - 3, 4)
+      return "[" grp "]"
+    }
+    BEGIN {
+      S["01"] = "ESTABLISHED"; S["02"] = "SYN_SENT";  S["03"] = "SYN_RECV"
+      S["04"] = "FIN_WAIT1";   S["05"] = "FIN_WAIT2"; S["06"] = "TIME_WAIT"
+      S["07"] = "CLOSE";       S["08"] = "CLOSE_WAIT"; S["09"] = "LAST_ACK"
+      S["0A"] = "LISTEN";      S["0B"] = "CLOSING"
+    }
+    # 表头没有 `<数字>:` 这一列 —— 靠它把表头挡掉，而不是靠 NR>1（两个文件各有一行表头）。
+    $1 !~ /^[0-9]+:$/ { next }
+    {
+      split($2, L, ":")
+      st = toupper($4)
+      printf "%s:%d %s inode=%s\n", addr(L[1]), h2d(L[2]), (st in S ? S[st] : "状态" st), $10
+    }
+  ' "$@"
+}
+
+# 解码自测。★ 它**不是形式**：一个恒空的取证函数，在最该说话的那一刻是沉默的，
+# 而沉默会被读成「端口上什么都没有」—— 那正好是本次要查的那个问题的错误答案。
+# ⚠ 只在取证路径上跑（一次几毫秒），绿的跑一个字都不多。
+#
+# ★ 样本是**真实内核输出**：v4 两行与 v6 那行都是 `tests/m0/unclaimed.sh` 在构建镜像里
+#   实抓下来的那一份（它同时是那处 v6 盲区的实物证据），这里原样引用。
+acme_selftest_decode() {
+  local dir out bad="" want
+  dir=$(mktemp -d)
+  {
+    echo '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+    echo '   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 100 0 0 10 0'
+    echo '   1: 0100007F:1F91 0100007F:8000 01 00000000:00000000 00:00000000 00000000     0        0 12346 1 0000000000000000 20 0 0 10 -1'
+  } > "$dir/tcp"
+  {
+    echo '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+    echo '   0: 00000000000000000000000000000000:1FA3 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 52691 1 00000000c0a6790d 100 0 0 10 0'
+  } > "$dir/tcp6"
+  out=$(acme_decode_proc_net "$dir/tcp" "$dir/tcp6" 2>/dev/null || true)
+  rm -rf "$dir"
+
+  for want in \
+    '127.0.0.1:8080 LISTEN inode=12345' \
+    '127.0.0.1:8081 ESTABLISHED inode=12346' \
+    '[0000:0000:0000:0000:0000:0000:0000:0000]:8099 LISTEN inode=52691'
+  do
+    case $out in
+      *"$want"*) ;;
+      *) bad="$bad
+       缺: $want" ;;
+    esac
+  done
+  # ★ 反方向：两行表头一行都不许变成结果。只对正方向自证的话，
+  #   一个「把每一行都原样吐出来」的坏实现照样能全中。
+  if [ "$(printf '%s\n' "$out" | grep -c .)" != "3" ]; then
+    bad="$bad
+       行数不是 3（表头没被挡掉？）"
+  fi
+
+  [ -z "$bad" ] || {
+    echo "  ⚠ ⚠ /proc/net 解码自测没过 —— 下面那张表不可信：$bad" >&2
+    return 1
+  }
+  return 0
+}
+
+# inode → 全部持有它的 pid。★ 一个 socket 挂着两个 pid 正是「fd 被继承走了」的现场。
+acme_socket_owners() {
+  local fd link pid ino
+  for fd in /proc/[0-9]*/fd/*; do
+    # 这一条只挡「glob 一个都没匹配上，`$fd` 还是那串字面量」与「进程刚好在这一瞬没了」。
+    # ⚠ 别照着「`socket:[N]` 指不到任何路径，所以要用 `-L`」去理解它 —— **那句是错的**：
+    #   procfs 的这类符号链接是内核造的，`stat()` 直接落到 socket 上，
+    #   实测（构建镜像里，对一个真的监听 fd）`-e` 与 `-L` **都为真**。
+    #   ⇒ 这里选 `-L` 是因为要问的本来就是「它是不是一条符号链接」，不是因为 `-e` 会漏。
+    [ -L "$fd" ] || continue
+    link=$(readlink "$fd" 2>/dev/null) || continue
+    case $link in
+      'socket:['*']') ;;
+      *) continue ;;
+    esac
+    # ★ 只留数字，不写 `${link#socket:[}` —— `[` 在参数展开的模式里是括号表达式的开头，
+    #   一个没闭合的 `[` 究竟被当成字面量还是模式，靠的是实现的宽容而不是规范。
+    ino=${link//[^0-9]/}
+    pid=${fd#/proc/}
+    pid=${pid%%/*}
+    printf '%s %s\n' "$ino" "$pid"
+  done
+}
+
+# 取证正文。第一个参数进标题（说明是在哪一步红的）。
+acme_dump_ports() {
+  local why=$1 a st ino pid owners hold comm state cmd p
+  echo "── 取证（$why）：TCP socket 表 ──" >&2
+  acme_selftest_decode || true
+  # ★ 「读不到」与「上面什么都没有」必须分开说：一张空表被读成后者，
+  #   就正好给出本次要查的那个问题的错误答案。
+  if [ ! -r /proc/net/tcp ] && [ ! -r /proc/net/tcp6 ]; then
+    echo "  ⚠ /proc/net/tcp 与 /proc/net/tcp6 都读不到 —— 下面这张表是空的，" >&2
+    echo "    但那说明的是「问不到」，不是「端口上没有东西」。" >&2
+  fi
+  owners=$(acme_socket_owners 2>/dev/null || true)
+  while read -r a st ino; do
+    [ -n "$a" ] || continue
+    ino=${ino#inode=}
+    hold=""
+    for pid in $(printf '%s\n' "$owners" | awk -v i="$ino" '$1 == i { print $2 }'); do
+      comm=$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')
+      hold="$hold $pid($comm)"
+    done
+    [ -n "$hold" ] || hold=" 无（已经没有 fd 指着它）"
+    printf '  %-48s %-12s inode=%-9s 持有者:%s\n' "$a" "$st" "$ino" "$hold" >&2
+  done <<EOF
+$(acme_decode_proc_net /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)
+EOF
+
+  echo "── 取证（$why）：进程表 ──" >&2
+  for p in /proc/[0-9]*; do
+    [ -r "$p/stat" ] || continue
+    # ⚠ `awk '{print $3}'` 在这里是错的：comm 带括号且可以含空格，
+    #   状态字母要从**最后一个** `)` 之后取。
+    state=$(sed 's/.*) //' "$p/stat" 2>/dev/null | cut -d' ' -f1)
+    # ⚠ 换行也要一起压掉：一条带换行的参数会把这张表拆成好几行，读起来像是多了几个进程。
+    cmd=$(tr '\0\n' '  ' < "$p/cmdline" 2>/dev/null | cut -c1-140)
+    [ -n "$cmd" ] || cmd="[$(cat "$p/comm" 2>/dev/null || echo '?')]"
+    printf '  pid=%-7s state=%-3s %s\n' "${p#/proc/}" "$state" "$cmd" >&2
+  done
+}
+
+# 某一个端口当下的全部 socket（任意状态）。只取证，不判定；没有就回空串。
+# ★ 与 `acme_decode_proc_net` 一样收「要读哪些文件」—— 于是**过滤本身也能拿样本验**，
+#   而不是留一条只有在真出事那天才第一次执行的分支。
+# ⚠ 锚 `$` 不可省：`:80$` 与 `:8080` / `:8083` 必须分得开。
+acme_port_snapshot() {
+  local port=$1
+  shift
+  [ "$#" -gt 0 ] || set -- /proc/net/tcp /proc/net/tcp6
+  acme_decode_proc_net "$@" 2>/dev/null | awk -v p="$port" '$1 ~ (":" p "$")' || true
+}
+
 # pebble 自己 HTTPS API 的证书，并把根装进**系统**信任库。
 #
 # ★ 现签，不进仓库：仓库里的测试证书迟早过期，
