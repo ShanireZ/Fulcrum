@@ -51,6 +51,9 @@ systemd, unix sockets, `flock`, `0600` and an iptables black hole.
 bash tests/m0/docker-run.sh    # build + lint + unit + fork regression + every end-to-end scenario
 ```
 
+⚠ **A green run right after a `git rebase` or a branch switch is not to be trusted on its own** —
+cargo can reuse a stale test binary and the new tests never run. See **Gate discipline**.
+
 Narrow it with one `*_ONLY=1`:
 
 | flag | scenario |
@@ -136,7 +139,7 @@ back. If a gate cannot be made to fail, it is not a gate. Prefer gates that carr
 reverse test: `tests/m0/unclaimed.sh` asserts `port_listening` is false at step 0 and true at
 step 2, so one passing run exercises both directions.
 
-Four ways a green gate stops meaning anything:
+Five ways a green gate stops meaning anything:
 
 - **The blind spot is in the fixture.** When a code path branches on the *shape* of an input
   (IP literal vs hostname, absolute vs relative, ASCII vs not), check the fixtures contain both
@@ -148,6 +151,21 @@ Four ways a green gate stops meaning anything:
 - **The binary the gate runs is part of the fixture.** A spike proves the road exists; it does
   not prove the product is on it. When a scenario proves a *product* property, check what
   `ExecStart=` actually points at.
+- **The binary the gate runs may be one the tree no longer describes.** On this host `cargo`
+  sometimes calls a crate fresh after a bulk rewrite (`git rebase`, branch switch) and reuses the
+  previous test binary: the run is green and the new tests are simply **not in it**. Measured:
+  after one rebase, two identical `UNIT_ONLY` runs on the same tree reported **289** and **288**
+  tests for `fulcrum-server` while the source had **291** — ⚠ two readings that disagree with
+  *each other*, and the three newly added tests never ran. The file was identical inside the
+  container (`md5sum` matched) and `cargo test -p fulcrum-server --lib -- --list` found all 291,
+  so only the path through the named `target` volume was stale ⇒ mtime skew across the Docker
+  Desktop bind mount is the likely cause, but that half is a hypothesis, not a measurement.
+  ★ **Anchor on `Compiling <crate>` in the log** — a green summary does not say what was built.
+  After a rebase or a branch switch, refresh mtimes from inside the container first:
+
+  ```bash
+  docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w fulcrum-build:local bash -c 'find crates spikes -name "*.rs" -o -name Cargo.toml | xargs touch'
+  ```
 - **A ruler that reads the same in both cases cannot tell them apart.** Before trusting a gauge,
   ask what it reads in the good case and in the bad case, and make sure those readings differ.
 
