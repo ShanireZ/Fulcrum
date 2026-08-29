@@ -107,6 +107,39 @@ fn l4的上游权重恒为一而且轮转序列不变() {
     assert_eq!(got, (0..6).map(|c| c % 2).collect::<Vec<_>>());
 }
 
+/// ★ ★ **L4 那条路一个字节没变**（M2 批 N 任务 2.8，计划 §2 的 S6）。
+///
+/// `l4` 块里没有 `reverse_proxy`，也就没有 `id` ⇒ L4 的 [`ProxyTarget::id`] 恒为空串，
+/// 而覆盖层的歧义检查（`proxy_key_conflicts`）只收 `SiteRt` —— L4 的上游没有站点，
+/// 按 R6 的键根本寻址不到它们，也就永远不参与比对。
+///
+/// ⚠ 这条判据必须存在的理由与上面那条权重的一样：`ProxyTarget` 是 **HTTP 与 L4 共用**
+/// 的一个结构体，「HTTP 那边加了一格、L4 这边没事」不是自动成立的。
+/// ★ 顺带钉住 `raw_addr`：L4 的 `normalize_l4_upstream` 要求端口写全 ⇒ 原文与归一化后
+/// **本来就逐字相同**，这一格在这条路上是恒等的。
+#[test]
+fn l4的_id_恒为空串而且原文与归一化后相同() {
+    let rt = build("l4 {\n  tcp :3306 {\n    proxy 10.0.0.5:3306 10.0.0.6:3306\n  }\n}\n").unwrap();
+    let t = rt.l4_listeners[0]
+        .target
+        .as_ref()
+        .expect("这份配置写了兜底 proxy");
+    assert_eq!(t.id, "", "L4 的 reverse_proxy id 该是空串");
+    for u in &t.upstreams {
+        assert_eq!(
+            u.raw_addr, u.addr,
+            "L4 上游 {} 的原文与归一化后应当逐字相同",
+            u.addr
+        );
+    }
+    // ★ 分流规则里那一组也一样（批 C 之后它是第二处 `build_l4_target` 的产物）。
+    let rt = build(
+        "l4 {\n  tcp :3307 {\n    sni a.example {\n      proxy 10.0.0.7:3306\n    }\n  }\n}\n",
+    )
+    .unwrap();
+    assert_eq!(rt.l4_listeners[0].rules[0].target.id, "");
+}
+
 /// ★ ★ **L4 的上游必须出现在 `all_upstreams()` 里**，否则域名形式的 L4 上游
 /// 永远不会被解析、也不会被后台重解析 —— 而现场表现是「那个端口连上就断」，
 /// 配置、日志、健康检查全都正常。

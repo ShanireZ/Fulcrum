@@ -1514,3 +1514,179 @@ fn metrics终结在自己的表位上() {
     };
     assert_eq!(status, 403);
 }
+
+// ── M2 批 N 任务 2.8：覆盖层键的歧义（裁决 R6 ⇒ G125）───────────────────────
+//
+// ★ ★ ★ 判定住在 **`fulcrum-runtime`**，因为键的第三格取的是
+// `normalize_upstream` **之后**的串。⇒ 下面第一条（`backend` vs `backend:80`）
+// 是这一组的核心：把判定写在配置层拿原文 token 比一遍的话，**它会静静地漏过去**，
+// 而所有别的判据照样绿 —— 那就是一道假门。
+
+/// 一个站点，两条 `reverse_proxy`（各在一个 `handle` 里），上游与 `id` 都由调用方给。
+fn 两条(u1: &str, id1: Option<&str>, u2: &str, id2: Option<&str>) -> String {
+    fn blk(u: &str, id: Option<&str>) -> String {
+        match id {
+            Some(v) => format!("reverse_proxy {u} {{\n      id {v}\n    }}"),
+            None => format!("reverse_proxy {u}"),
+        }
+    }
+    format!(
+        "a.com {{\n  handle /api/* {{\n    {}\n  }}\n  handle /web/* {{\n    {}\n  }}\n}}\n",
+        blk(u1, id1),
+        blk(u2, id2)
+    )
+}
+
+#[test]
+fn 核心判据_归一化之后撞了就装不上_哪怕两行原文长得不一样() {
+    // ★ ★ ★ 本任务的核心判据。`backend` 与 `backend:80` 在配置里是**两个不同的写法**
+    //   （`weight` 的地址比对就有意把它们当成两个），而运行时里它们是**同一个上游**
+    //   —— 覆盖层的键因此照撞不误。
+    // ⇒ 判定必须落在 `Upstream::addr`（归一化之后那个串，也就是键本身）上，
+    //   落在原文 token 上的话这一条会漏，而门是绿的。
+    // ⚠ ⚠ ⚠ **上游名字有意不叫 `backend`。** 那条错误消息的模板里有一句固定的
+    //   举例「配置里写 `backend` 时运行时管它叫 `backend:80`」——
+    //   夹具跟着叫 `backend` 的话，下面 ①②两条断言会被**模板里那句常量**满足，
+    //   于是「报文真的印出了这一份配置里的地址」这件事根本没有被验到。
+    //   ★ 实测过：把 `raw_addr` 从报文里整个拿掉，那一版断言**照样全绿**。
+    //   ⇒ 夹具的名字必须与报文模板里出现的任何字面量都不同。
+    let e = build_errors(&两条("myhost", None, "myhost:80", None));
+    assert!(
+        !e.is_empty(),
+        "`myhost` 与 `myhost:80` 归一化后是同一个上游，两条都没写 id ⇒ 必须拒绝装载"
+    );
+    let 全文 = e.join("\n");
+    // ① 归一化之后那个串（= 键）要印出来。
+    assert!(
+        全文.contains("myhost:80"),
+        "报文里没有归一化后的地址：{全文}"
+    );
+    // ② ★ **原文也要印出来**：用户手上是配置文件，只说 `myhost:80` 的话
+    //    他拿去搜写着 `myhost` 的那一行是搜不到的（R6 ⑤ 的「边界」）。
+    //    ⚠ 反引号一起比 —— 只比 `myhost` 的话，`myhost:80` 里就有它，这条断言会空转。
+    assert!(全文.contains("`myhost`"), "报文里没有配置原文：{全文}");
+    // ③ ★ 直说怎么修。⚠ 不比「id」两个字：那在这条报文里几乎不可能不出现，
+    //    比它等于什么都没比。比的是**那句修法**本身。
+    assert!(
+        全文.contains("给其中一条"),
+        "报文没说「给其中一条写 id」：{全文}"
+    );
+    // ④ 说清是哪个站点（这一格来自 `BuildError::at`，模板里没有它）。
+    assert!(全文.contains("a.com"), "报文没点名站点：{全文}");
+}
+
+#[test]
+fn 同一站点两条指着同一个上游而都没写_id_装不上() {
+    // 主场景：两条原文就一模一样。
+    let e = build_errors(&两条("10.0.0.1:8080", None, "10.0.0.1:8080", None));
+    assert!(!e.is_empty(), "主场景必须被拒绝");
+    assert!(
+        e.join("\n").contains("都没写"),
+        "两条都没写 id 时要说出来，别印一个空的 id：{e:?}"
+    );
+}
+
+#[test]
+fn 给其中一条写了_id_就装得上() {
+    // ★ ★ **反向判据**：少了它，一个「同一个上游出现两次就拒绝」的实现照样能让
+    //   上面两条绿 —— 而那样的实现把 R6 的全部价值（给一条写 id 就能分开）废掉了。
+    let e = build_errors(&两条(
+        "10.0.0.1:8080",
+        None,
+        "10.0.0.1:8080",
+        Some("pool_web"),
+    ));
+    assert!(e.is_empty(), "写了 id 就分得开，不该拒绝：{e:?}");
+    // 两条都写、且写的不一样，也分得开。
+    let e = build_errors(&两条(
+        "10.0.0.1:8080",
+        Some("a"),
+        "10.0.0.1:8080",
+        Some("b"),
+    ));
+    assert!(e.is_empty(), "两个不同的 id 分得开：{e:?}");
+}
+
+#[test]
+fn 两条写了同一个_id_照样撞() {
+    // ★ 反向的反向：id 不是「写了就放行」的标记，它是键里的一格。
+    //   ⚠ 少了这一条，一个「`id` 非空就跳过检查」的实现能让上面每一条都绿。
+    let e = build_errors(&两条(
+        "10.0.0.1:8080",
+        Some("same"),
+        "10.0.0.1:8080",
+        Some("same"),
+    ));
+    assert!(!e.is_empty(), "同一个 id 指着同一台机器仍然是歧义");
+    assert!(
+        e.join("\n").contains("`same`"),
+        "报文要把撞了的那个 id 印出来：{e:?}"
+    );
+}
+
+#[test]
+fn 两条指着不同的上游而都没写_id_装得上() {
+    // ★ ★ **反向判据**：少了它，一条「把 id 变成必填」的实现照样能让主场景绿 ——
+    //   而 owner 拍的是**选填**，现有配置一个字节都不用改。
+    let e = build_errors(&两条("10.0.0.1:8080", None, "10.0.0.2:8080", None));
+    assert!(e.is_empty(), "上游不同就不撞，不该拒绝：{e:?}");
+}
+
+#[test]
+fn 不同站点里撞了不算撞() {
+    // 键的第一格是站点名（`SiteRt::name`，裁决 R6 ④）⇒ 跨站点不比。
+    let e = build_errors(
+        "a.com {\n  reverse_proxy 10.0.0.1:8080\n}\nb.com {\n  reverse_proxy 10.0.0.1:8080\n}\n",
+    );
+    assert!(e.is_empty(), "两个站点各自指着同一台机器不是歧义：{e:?}");
+}
+
+#[test]
+fn 同一条_reverse_proxy_里把同一个地址写两遍不算歧义() {
+    // ★ 边界（`proxy_key_conflicts` 的类型文档写着）：那两个 `Upstream` 是**同一条**
+    //   `reverse_proxy` 上的同一台机器，一次 `disable` 把它们一起摘掉正是要的语义；
+    //   而「给其中一条写 `id`」在那种情形下根本无从下手 —— 报一条修不了的错更坏。
+    let e = build_errors("a.com {\n  reverse_proxy 10.0.0.1:8080 10.0.0.1:8080\n}\n");
+    assert!(e.is_empty(), "同一条里写两遍不是 R6 要挡的那件事：{e:?}");
+}
+
+#[test]
+fn 藏在容器里的_reverse_proxy_也有键也会被比到() {
+    // ⚠ ⚠ 走法漏掉容器的表现是**两件事一起静默**：那条 `reverse_proxy` 没有键
+    //   （覆盖指不到它），而歧义检查也看不见它。
+    //   ⇒ 这里把两条分别塞进 `route` 与 `handle_errors`。
+    let e = build_errors(
+        "a.com {\n  route {\n    reverse_proxy 10.0.0.1:8080\n  }\n  \
+         handle_errors {\n    reverse_proxy 10.0.0.1:8080\n  }\n}\n",
+    );
+    assert!(!e.is_empty(), "容器里的两条撞了也必须拒绝");
+}
+
+#[test]
+fn 键的三格都在_keyed_proxies_上取得到() {
+    // ★ 任务 3 的覆盖层与任务 6 的 `/stats` 都从这里取键 —— ⛔ 别再拼第二份。
+    let r = rt(
+        "a.com {\n  handle /api/* {\n    reverse_proxy backend {\n      id pool_web\n    }\n  }\n  \
+         handle /web/* {\n    reverse_proxy 10.0.0.2:8080\n  }\n}\n",
+    );
+    let ps = r.keyed_proxies();
+    assert_eq!(ps.len(), 2, "两条 reverse_proxy 都要在：{ps:?}");
+    // 第一格：站点名 = `SiteRt::name`（第一条地址的原文），与访问日志同一口径。
+    assert_eq!(ps[0].site, r.sites()[0].name.as_str());
+    assert_eq!(ps[0].site, "a.com");
+    // 第二格：写了的取原样，没写的是**空串**（不是 `None`，见 `ProxyTarget::id`）。
+    assert_eq!(ps[0].id, "pool_web");
+    assert_eq!(ps[1].id, "");
+    // 第三格：**归一化之后**的上游地址；原文另存一格，只给报文用。
+    assert_eq!(ps[0].target.upstreams[0].addr, "backend:80");
+    assert_eq!(ps[0].target.upstreams[0].raw_addr, "backend");
+    // ★ 走法与 `all_proxy_targets` 是**同一份实现**（任务 2.8 把那边的第三份遍历删了）。
+    assert_eq!(r.all_proxy_targets().len(), ps.len());
+}
+
+#[test]
+fn 没写_id_的那条在运行时是空串而不是别的什么() {
+    // ⚠ 空串是键里正正经经的一格。改成「`None` 就不查」会让主场景静静漏过去。
+    let r = rt("a.com {\n  reverse_proxy 10.0.0.1:8080\n}\n");
+    assert_eq!(r.all_proxy_targets()[0].id, "");
+}

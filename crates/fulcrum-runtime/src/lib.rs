@@ -103,10 +103,19 @@ impl LbPolicy {
 /// 解析不出来的上游 [`ProxyTarget::pick`] 跳过，全都跳过就回干净的 502。
 #[derive(Debug)]
 pub struct Upstream {
-    /// 配置里写的 `host:port`，**原样保留**。
+    /// **归一化之后**的 `host:port`（[`normalize_upstream`]：`backend` → `backend:80`）。
     ///
     /// ⚠ 它仍然是 **SNI 的来源**：上游走 https 时要拿域名去握手，不能拿 IP。
+    /// ★ ★ 它同时是**覆盖层键的第三格**（G125 / 裁决 R6 ⑤）——「运行时里那个上游叫什么」
+    /// 只有这一个答案，管理面对着的是运行时。
     pub addr: String,
+    /// 配置那一行上写的**原文 token**（**M2 批 N 任务 2.8**）。
+    ///
+    /// ⚠ ⚠ 它**不是键的一部分**，只给报文用。理由是一条边界：DSL 里写的是 `backend`
+    /// 而运行时里那个上游叫 `backend:80` ⇒ 一条只说 `backend:80` 的错误消息，
+    /// 用户拿着去配置里搜是搜不到的（R6 ⑤ 那条「边界」）。
+    /// ★ 与 `addr` 相同是常态（写全了端口的那些），两者不同恰恰是最需要说清楚的那一种。
+    pub raw_addr: String,
     /// **配置权重**（`weight` 子指令，裁决 R1/R3），值域
     /// `[fulcrum_config::model::MIN_UPSTREAM_WEIGHT, MAX_UPSTREAM_WEIGHT]`，没写就是 1。
     ///
@@ -213,6 +222,19 @@ impl Upstream {
 /// 一条 `reverse_proxy` 的运行时形态。
 #[derive(Debug)]
 pub struct ProxyTarget {
+    /// 这一条 `reverse_proxy` 的**稳定 id**（`id` 子指令，**M2 批 N 任务 2.8**，
+    /// 裁决 R6 ⇒ G125）。**没写就是空串**。
+    ///
+    /// ★ ★ 空串**不是**「跳过」，它是键空间里正正经经的一格：覆盖层的键是
+    /// `(站点名, id, 归一化后的上游地址)`，两条都没写 id 的 `reverse_proxy`
+    /// 指着同一台机器时，它们的键**真的相同** —— 那正是
+    /// [`proxy_key_conflicts`] 要在装载期拒绝的主场景。
+    /// ⇒ ⛔ 不许改成 `Option<String>` 再在别处「`None` 就不查」：
+    /// 那会让主场景静静地漏过去。
+    ///
+    /// ⚠ L4 那条路也用 [`ProxyTarget`]，那边恒为空串：`l4` 块里没有 `reverse_proxy`，
+    /// 也就没有 id；L4 的上游没有站点，按 R6 的键根本寻址不到它们。
+    pub id: String,
     pub upstreams: Vec<Upstream>,
     pub policy: LbPolicy,
     pub header_up: Vec<HeaderOpRt>,
@@ -1267,27 +1289,182 @@ impl Runtime {
     /// 两个走法分家的话，一个藏在 `handle` 里的目标会**永远不被探测**，
     /// 而它看起来只是「一直健康」。
     pub fn all_proxy_targets(&self) -> Vec<&ProxyTarget> {
-        fn walk<'a>(steps: &'a [StepRt], out: &mut Vec<&'a ProxyTarget>) {
-            for s in steps {
-                match &s.body {
-                    BodyRt::Proxy(t) => out.push(t),
-                    BodyRt::Handle(arms) => {
-                        for a in arms {
-                            walk(&a.steps, out);
-                        }
+        // ⚠ ⚠ **有意不自己再走一遍**（M2 批 N 任务 2.8）：这里原先是第三份一模一样的
+        //   递归遍历。走法分家的表现是「藏在 `handle` 里的那条 `reverse_proxy`
+        //   在某一张清单里不存在」，而它看起来只是「一直健康」/「没有键」。
+        keyed_proxies_of(&self.sites)
+            .into_iter()
+            .map(|p| p.target)
+            .collect()
+    }
+
+    /// 这份图里所有的 `reverse_proxy`，**连同覆盖层键的前两格**
+    /// （**M2 批 N 任务 2.8**，裁决 R6 ⇒ G125）。
+    ///
+    /// ★ 键的第三格在 [`KeyedProxy::target`] 的每个 [`Upstream::addr`] 上 ——
+    /// 一条 `reverse_proxy` 有几个上游就有几个键。
+    /// ⚠ **L4 的上游不在里面**：它们没有站点，按 R6 的键寻址不到（见 [`ProxyTarget::id`]）。
+    pub fn keyed_proxies(&self) -> Vec<KeyedProxy<'_>> {
+        keyed_proxies_of(&self.sites)
+    }
+}
+
+/// 一条 `reverse_proxy`，连同它在**覆盖层键**里占的那两格（G125 / 裁决 R6）。
+///
+/// 键是 `(站点名, id, 归一化后的上游地址)`：前两格在这里，第三格在
+/// `target.upstreams[*].addr` 上。
+///
+/// ⚠ ⚠ **⛔ 别在别处再拼一次这个键。** 任务 3 的覆盖层与任务 6 的 `/stats`
+/// 都从这里取 —— 两份「差不多的」拼法迟早在某一格上分家，而分家的现场是
+/// 「`disable` 说成功了，那台机器还在收流量」，没有任何东西会报错。
+#[derive(Debug, Clone, Copy)]
+pub struct KeyedProxy<'a> {
+    /// 键的**第一格**：站点名 = [`SiteRt::name`]（第一条地址的原文，
+    /// 与访问日志的 `site` 字段逐字同一口径，裁决 R6 ④）。
+    ///
+    /// ⚠ ⛔ **不取 G121 那个「命中的地址字面量」**（[`SiteRt::addresses`]）：
+    /// 那个是给指标标签用的，一个站点块写两条地址就会有两个键 ——
+    /// 而运维要摘的是「**这个站点块**里的那台机器」。
+    pub site: &'a str,
+    /// 键的**第二格**：这条 `reverse_proxy` 的 id，**没写就是空串**。
+    pub id: &'a str,
+    pub target: &'a ProxyTarget,
+}
+
+/// 走遍一批站点，把全部 `reverse_proxy` 连同站点名收出来。
+///
+/// ⚠ 是**自由函数**而不是 [`Runtime`] 的方法（与 [`cache_settings_of`] 同一条理由）：
+/// [`proxy_key_conflicts`] 必须在 `Runtime` 还没建出来时跑。
+/// 抄一份 walk 过去，就等于让「检查过的那张图」与「跑起来的那张图」有机会不是同一件事。
+fn keyed_proxies_of(sites: &[SiteRt]) -> Vec<KeyedProxy<'_>> {
+    fn walk<'a>(steps: &'a [StepRt], site: &'a str, out: &mut Vec<KeyedProxy<'a>>) {
+        for s in steps {
+            match &s.body {
+                BodyRt::Proxy(t) => out.push(KeyedProxy {
+                    site,
+                    id: &t.id,
+                    target: t,
+                }),
+                // ⚠ 容器里的也要进来：一条藏在 `handle` 里的 `reverse_proxy`
+                //   漏出这张清单的话，它就**没有键**——覆盖指不到它，
+                //   而歧义检查也看不见它，两件事一起静默。
+                BodyRt::Handle(arms) => {
+                    for a in arms {
+                        walk(&a.steps, site, out);
                     }
-                    BodyRt::Route(inner) => walk(inner, out),
-                    _ => {}
+                }
+                BodyRt::Route(inner) => walk(inner, site, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for site in sites {
+        walk(&site.chain, &site.name, &mut out);
+        walk(&site.error_handler, &site.name, &mut out);
+    }
+    out
+}
+
+/// ★ ★ ★ **同一站点内 `(id, 归一化后的上游地址)` 撞了就拒绝装载**
+/// （**M2 批 N 任务 2.8**，裁决 R6 ③ ⇒ **G125**）。
+///
+/// # 它挡的是什么
+///
+/// 管理面的临时覆盖层（G18）用 `(站点名, id, 归一化后的上游地址)` 寻址。
+/// 同一个站点里两条 `reverse_proxy` 指着同一台机器而都没写 `id` 时，
+/// 它们的键**真的相同** ⇒ 一次 `disable` 会把两条一起摘掉，而回话看起来完全正常。
+/// ⇒ owner 拍板：**歧义就拒绝**。于是那件事在**结构上不可能发生** ——
+/// 有歧义的配置根本装不上，而无歧义的现有配置**一个字节都不用改**。
+///
+/// # ⚠ ⚠ ⚠ 为什么这条判定在**运行时层**而不在 `fulcrum-config`
+///
+/// 键的第三格取的是 [`normalize_upstream`] **之后**的串。它把 `backend` 补成
+/// `backend:80` ⇒ 两条 `reverse_proxy` **一条写 `backend`、另一条写 `backend:80`**，
+/// 原文不同而**键相同**。在配置层拿原文 token 比一遍，这一对会**静静地漏过去**，
+/// 而门是绿的 —— 那是一道假门，R6 要挡的那件事原样回来。
+/// ★ 这里读的 `u.addr` **就是**键本身，不是一个长得像它的串。
+///
+/// # 边界
+///
+/// - **跨站点不撞**：键的第一格是站点名。
+/// - **同一条 `reverse_proxy` 里把同一个地址写了两遍不算歧义**：那两个 `Upstream`
+///   是同一台机器上的同一条 `reverse_proxy`，一次 `disable` 把它们一起摘掉
+///   正是要的语义 —— 而且「给其中一条写 `id`」在那种情形下根本无从下手。
+/// - **L4 不参与**：本函数只收 [`SiteRt`]，而 L4 的上游不挂在站点上。
+fn proxy_key_conflicts(sites: &[SiteRt]) -> Vec<BuildError> {
+    let proxies = keyed_proxies_of(sites);
+    let mut out = Vec::new();
+    // `(站点名, id, 归一化后的上游地址)` → 第一次见到这个键的那条 `reverse_proxy`。
+    let mut seen: BTreeMap<(&str, &str, &str), usize> = BTreeMap::new();
+    for (i, p) in proxies.iter().enumerate() {
+        // 同一条里的重复地址先去掉，见类型文档的「边界」。
+        let mut here: std::collections::BTreeSet<&str> = Default::default();
+        for u in &p.target.upstreams {
+            if !here.insert(u.addr.as_str()) {
+                continue;
+            }
+            match seen.entry((p.site, p.id, u.addr.as_str())) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(i);
+                }
+                std::collections::btree_map::Entry::Occupied(e) => {
+                    out.push(BuildError::new(
+                        p.site,
+                        conflict_message(&proxies[*e.get()], p, &u.addr),
+                    ));
                 }
             }
         }
-        let mut out = Vec::new();
-        for site in &self.sites {
-            walk(&site.chain, &mut out);
-            walk(&site.error_handler, &mut out);
-        }
-        out
     }
+    out
+}
+
+/// [`proxy_key_conflicts`] 那条错误的正文。
+///
+/// ⚠ ⚠ **必须同时说出归一化后的串与原文**：用户手上是配置文件，
+/// 而一条只说 `backend:80` 的消息在写着 `backend` 的那份配置里是搜不到的（R6 ⑤ 的「边界」）。
+/// ★ 而且要**直说怎么修**——「给其中一条写 `id`」。
+fn conflict_message(first: &KeyedProxy<'_>, second: &KeyedProxy<'_>, addr: &str) -> String {
+    fn raw_of(p: &KeyedProxy<'_>, addr: &str) -> String {
+        p.target
+            .upstreams
+            .iter()
+            .find(|u| u.addr == addr)
+            .map(|u| u.raw_addr.clone())
+            .unwrap_or_else(|| addr.to_string())
+    }
+    fn list_of(p: &KeyedProxy<'_>) -> String {
+        p.target
+            .upstreams
+            .iter()
+            .map(|u| u.raw_addr.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    let who = if second.id.is_empty() {
+        "两条都没写 `id`".to_string()
+    } else {
+        format!("两条的 `id` 都是 `{}`", second.id)
+    };
+    let (r1, r2) = (raw_of(first, addr), raw_of(second, addr));
+    let written = if r1 == addr && r2 == addr {
+        String::new()
+    } else {
+        format!("（配置里那两行上写的是 `{r1}` 与 `{r2}`）")
+    };
+    format!(
+        "这个站点里有两条 `reverse_proxy` 指着同一台机器，而管理面的临时覆盖层分不开它们：\
+         {who}，上游都是 `{addr}`{written}。\
+         第一条的上游清单：{}；这一条的：{}。\
+         ★ 修法：**给其中一条加一行 `id <名字>`**，例如 \
+         `reverse_proxy … {{ id pool_web }}`。\
+         ⚠ 报文里的 `{addr}` 是**归一化之后**的地址 —— 配置里写 `backend` 时\
+         运行时管它叫 `backend:80`，而覆盖层的键 `(站点, id, 上游)` 用的是后者。\
+         ⛔ 不拒绝的话，一次 `disable` 会把这两条一起摘掉，而回话看起来完全正常。",
+        list_of(first),
+        list_of(second),
+    )
 }
 
 /// 一次上游解析的结果，只进日志。
@@ -1736,6 +1913,15 @@ impl Runtime {
                 }
             }
         }
+
+        // ── M2 批 N 任务 2.8：覆盖层的键不许有歧义（G125 / 裁决 R6 ③）──────
+        //
+        // ★ ★ **必须在这里、不能在 `fulcrum-config`**：键的第三格取的是
+        //   `normalize_upstream` **之后**的串，而归一化住在本 crate。
+        //   在配置层拿原文 token 比一遍，`backend` 与 `backend:80` 那一对会静静漏过去。
+        //   完整的理由（连同边界）在 `proxy_key_conflicts` 的类型文档上。
+        // ⚠ 走**建起来的那张图**，不照配置再数一遍 —— 与上面那条缓存检查同一条纪律。
+        errors.extend(proxy_key_conflicts(&sites));
 
         if errors.is_empty() {
             Ok(Runtime {
@@ -2264,6 +2450,7 @@ fn build_step(
         },
         StepBody::Metrics => BodyRt::Metrics,
         StepBody::ReverseProxy {
+            id,
             upstreams,
             lb_policy,
             health,
@@ -2322,6 +2509,10 @@ fn build_step(
                             addr.parse::<std::net::SocketAddr>().into_iter().collect();
                         ups.push(Upstream {
                             addr,
+                            // ★ 原文留一份**只为了报文**（M2 批 N 任务 2.8）：
+                            //   歧义那条错误必须同时说出 `backend` 与 `backend:80`，
+                            //   否则用户拿着报文回配置里搜是搜不到的（R6 ⑤）。
+                            raw_addr: u.clone(),
                             // ★ ★ 配置权重在这里进运行时（M2 批 N 任务 2，裁决 R4/R5）。
                             weight: spec.weight,
                             resolved: std::sync::RwLock::new(literal),
@@ -2360,6 +2551,9 @@ fn build_step(
                 }
             });
             BodyRt::Proxy(ProxyTarget {
+                // ★ ★ id 在这里进运行时（M2 批 N 任务 2.8，裁决 R6）。
+                //   没写就是空串 —— 见 `ProxyTarget::id` 那段：空串是键里的一格，不是「跳过」。
+                id: id.clone().unwrap_or_default(),
                 upstreams: ups,
                 policy,
                 header_up: header_up.iter().map(HeaderOpRt::build).collect(),
@@ -2491,6 +2685,11 @@ fn build_l4_target(
                     addr.parse::<std::net::SocketAddr>().into_iter().collect();
                 ups.push(Upstream {
                     addr,
+                    // ★ L4 那边 `normalize_l4_upstream` 要求端口写全 ⇒ 原文与归一化后
+                    //   **本来就逐字相同**。留这一格不是为了这条路，是因为
+                    //   `Upstream` 只有一份定义：给它一个「其实一样」的值，
+                    //   好过给它一个空串再让读报文的人猜它为什么是空的。
+                    raw_addr: u.clone(),
                     // ★ ★ **L4 的上游权重恒为 1**（计划 §2 的 S2）：`l4` 块里没有
                     //   `lb_policy` 的位置，也就没有权重的位置 —— 给一个用户写不出来的
                     //   旋钮留一格默认值，与给它留接口是两回事。
@@ -2508,6 +2707,11 @@ fn build_l4_target(
         return None;
     }
     Some(ProxyTarget {
+        // ★ ★ **L4 的 id 恒为空串**（M2 批 N 任务 2.8）：`l4` 块里没有 `reverse_proxy`，
+        //   也就没有 `id` 的位置；L4 的上游没有站点，按 R6 的键根本寻址不到它们。
+        //   ⇒ 覆盖层那条歧义检查只走**站点**那条路（`proxy_key_conflicts` 只收 `SiteRt`），
+        //   L4 这一格因此永远不参与比对 —— 由 `tests/l4.rs` 一条判据钉着。
+        id: String::new(),
         upstreams: ups,
         // ★ M2 只给轮询：DSL 的 `l4` 块里**没有 `lb_policy` 的位置**（dsl-reference §4.5），
         //   而给一个用户写不出来的旋钮留接口，等于假装它可配。

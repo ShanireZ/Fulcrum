@@ -348,6 +348,32 @@ pub enum StepBody {
     /// **没有第二个键**。★ 与 `Tracing` 同款，不是新写法。
     Metrics,
     ReverseProxy {
+        /// 这一条 `reverse_proxy` 的**稳定 id**（`id` 子指令，**M2 批 N 任务 2.8**，
+        /// 裁决 R6 ⇒ G125）。`None` = 没写。
+        ///
+        /// # 它是干什么用的
+        ///
+        /// 管理面的临时覆盖层（G18）要寻址「**这个站点块里的那台机器**」，键是
+        /// `(站点名, id, 归一化后的上游地址)`。没有 id 时同一站点里两条 `reverse_proxy`
+        /// 写了同一个上游就分不开 —— 一次 `disable` 会把它们全摘掉。
+        /// ⇒ 有 id 就分得开；**撞了就在装载期拒绝**（判定在 `fulcrum-runtime`，见下）。
+        ///
+        /// # ⚠ ⚠ 歧义检测**不在这一层**
+        ///
+        /// 键里的上游地址取**归一化之后**的那个串（`fulcrum_runtime::normalize_upstream`
+        /// 把 `backend` 补成 `backend:80`）⇒ 两条 `reverse_proxy` 一条写 `backend`、
+        /// 另一条写 `backend:80`，**原文不同而键相同**。在这一层拿原文 token 比对
+        /// 会让那一对静静漏过去，而门是绿的。⇒ 判定住在 `fulcrum_runtime` 建图那条路上。
+        ///
+        /// # ⚠ ⚠ 序列化：`None` 时**整个键都不出现**
+        ///
+        /// 与本模块 `Global` 那条「`None` 写成 `null` 好让键集合稳定」**有意相反**，
+        /// 理由与 [`UpstreamSpec`] 的「权重为 1 写回裸字符串」逐字相同：
+        /// **没写 `id` 的配置 `compile` 出来的 JSON 一个字节都不许变** ——
+        /// 现有夹具、磁盘上那份结构化配置、`POST /load` 的旧载荷全靠它。
+        /// ⇒ 这一批「有没有顺手改掉别的东西」因此看得出来。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         /// 上游清单。★ 每一项自带**配置权重**（[`UpstreamSpec`]，**M2 批 N**）。
         ///
         /// ⚠ ⚠ 取「每项自带权重」而不是「再加一个平行的 `weights: Vec<u32>`」：
@@ -731,6 +757,82 @@ mod tests {
         // 拼错的键不许被静默吞掉 —— 吞掉的表现是权重回落成 1，而配置看起来完全正常。
         let e = serde_json::from_str::<UpstreamSpec>(r#"{"addr":"x:1","weigth":3}"#).unwrap_err();
         assert!(e.to_string().contains("weigth"), "{e}");
+    }
+
+    // ── `reverse_proxy` 的稳定 id（M2 批 N 任务 2.8，裁决 R6 ⇒ G125）──────────
+
+    /// 一条最朴素的 `reverse_proxy`，`id` 由调用方给。
+    fn rp(id: Option<&str>) -> StepBody {
+        StepBody::ReverseProxy {
+            id: id.map(str::to_string),
+            upstreams: vec![UpstreamSpec::new("10.0.0.1:8080")],
+            lb_policy: "round_robin".into(),
+            health: HealthCheck::default(),
+            dns_refresh_ms: 30_000,
+            passive: Passive {
+                fail_threshold: None,
+                window_ms: None,
+            },
+            header_up: Vec::new(),
+            header_down: Vec::new(),
+            transport: "http".into(),
+            tls_insecure_skip_verify: false,
+            proxy_protocol: None,
+        }
+    }
+
+    /// 没有 `id` 的那份产物**逐字**长这样。
+    const RP_NO_ID: &str = concat!(
+        r#"{"directive":"reverse_proxy","upstreams":["10.0.0.1:8080"],"#,
+        r#""lb_policy":"round_robin","#,
+        r#""health":{"uri":null,"interval_ms":10000,"timeout_ms":3000,"status":"2xx"},"#,
+        r#""dns_refresh_ms":30000,"#,
+        r#""passive":{"fail_threshold":null,"window_ms":null},"#,
+        r#""header_up":[],"header_down":[],"transport":"http","#,
+        r#""tls_insecure_skip_verify":false,"proxy_protocol":null}"#,
+    );
+
+    #[test]
+    fn 没写_id_的产物逐字不变() {
+        // ★ ★ **硬判据**（任务 2.8 §2 ②）：`id` 这一格必须**完全消失**，
+        //   不是写成 `"id":null`。现有夹具、磁盘上那份结构化配置、`POST /load`
+        //   的旧载荷全都靠它逐字不变 —— 于是这一批「有没有顺手改掉别的东西」看得出来。
+        // ⚠ 这与本模块 `none_serializes_as_null_so_the_key_set_is_stable`
+        //   （`Global` 那条「键集合要稳定」）**有意相反**，与 `UpstreamSpec`
+        //   的「权重为 1 写回裸字符串」是同一条取舍。
+        let j = serde_json::to_string(&rp(None)).unwrap();
+        assert_eq!(j, RP_NO_ID, "没写 id 的 reverse_proxy 产物变了");
+        assert!(
+            !j.contains("\"id\""),
+            "没写 id 时不许出现 id 这个键（哪怕值是 null）：{j}"
+        );
+    }
+
+    #[test]
+    fn 写了_id_的产物带得上并且读得回() {
+        let j = serde_json::to_string(&rp(Some("pool_web"))).unwrap();
+        // ★ 反向判据：少了它，一个「永远不序列化 id」的实现照样能让上面那条绿，
+        //   而那样的 id 一 round-trip 就没了。
+        assert_eq!(
+            j,
+            RP_NO_ID.replacen(
+                r#""directive":"reverse_proxy","#,
+                r#""directive":"reverse_proxy","id":"pool_web","#,
+                1
+            ),
+            "写了 id 的产物不对"
+        );
+        let back: StepBody = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, rp(Some("pool_web")));
+    }
+
+    #[test]
+    fn 旧载荷没有_id_这个字段也收得下() {
+        // ★ `POST /load` 是活着的接口：在 `id` 出现之前发出去的那些 JSON 必须继续能进来。
+        let back: StepBody = serde_json::from_str(RP_NO_ID).unwrap();
+        assert_eq!(back, rp(None));
+        // 往返回去仍然一个字节不差。
+        assert_eq!(serde_json::to_string(&back).unwrap(), RP_NO_ID);
     }
 
     #[test]

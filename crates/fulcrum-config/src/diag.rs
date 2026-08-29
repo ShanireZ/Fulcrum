@@ -297,6 +297,20 @@ impl DiagCode {
     /// 就是管理面临时覆盖层的 `disable`（G18）。让 `weight 0` 也表示摘掉，
     /// 就是两条路做同一件事 —— 而两条路迟早分家，且分家那天没有任何东西会说。
     pub const BAD_WEIGHT: DiagCode = DiagCode(40);
+    /// 同一个 `reverse_proxy` 块里写了两行 `id`（**M2 批 N 任务 2.8**，裁决 R6 ⇒ G125）。
+    ///
+    /// ★ ★ 必须是 error，⛔ **不许「后写的赢」** —— 与 [`DiagCode::DUPLICATE_WEIGHT`]
+    /// 逐字同一条理由：那种规则下删掉或挪动其中一行会**静默**改掉这条 `reverse_proxy`
+    /// 的 id，而 id 正是管理面覆盖层的寻址依据 ⇒ 现场是「`disable` 指着的那台机器还在跑」。
+    pub const DUPLICATE_PROXY_ID: DiagCode = DiagCode(41);
+    /// `id` 写了个空串（**M2 批 N 任务 2.8**）。
+    ///
+    /// ★ ★ 它不是洁癖：**没写 `id` 的那条在键里 id 那一格就是空串**（裁决 R6 ②）
+    /// ⇒ `id ""` 与「根本没写」是**同一个键**。
+    /// ⚠ 最坏的现场恰恰是最像修好了的那一种：两条 `reverse_proxy` 撞了键，
+    /// 有人给其中一条补了 `id ""` 想把它们分开 —— 而那一行什么都没改变。
+    /// ⇒ 在配置层就说清楚，别让它绕一圈变成一条「你不是已经写了 id 吗」的装载期错误。
+    pub const EMPTY_PROXY_ID: DiagCode = DiagCode(42);
 
     pub fn as_str(&self) -> String {
         format!("FUL-DSL-{:04}", self.0)

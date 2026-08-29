@@ -285,6 +285,14 @@ pub const REVERSE_PROXY_SUBS: &[SubSpec] = &[
     //   套类型，而第一个参数是地址。权重那一格的值域检查在 `compile.rs` 里做 ——
     //   它要说的话（值域、`0` 为什么不合法、摘节点该写什么）远超一句类型错误。
     sub("weight", 2, 2, ArgType::Word),
+    // ★ ★ **M2 批 N**（裁决 R6 ⇒ G125）：给这一条 `reverse_proxy` 一个**稳定 id**，
+    //   管理面的临时覆盖层用 `(站点名, id, 归一化后的上游地址)` 寻址。**选填**。
+    //   ⚠ `arg_type` 是 `Word`：值域检查（不许是空串）在 `compile.rs` 里做 ——
+    //   它要说的话（空串与「没写」在键空间里同形）远超一句类型错误，
+    //   与上面 `weight` 把值域留给 `compile.rs` 是同一条理由。
+    //   ⛔ **不自动派生**：内容哈希会让「加一台机器」把刚摘掉的坏节点的覆盖顶悬空，
+    //   站点内序号会让「换一下书写顺序」静默改掉寻址 —— 两条 owner 都排除过。
+    sub("id", 1, 1, ArgType::Word),
     sub("header_up", 1, 2, ArgType::Word),
     sub("header_down", 1, 2, ArgType::Word),
     sub("transport", 1, 1, ArgType::Enum(&["http", "https"])),

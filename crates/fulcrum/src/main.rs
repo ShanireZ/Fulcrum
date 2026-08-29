@@ -663,4 +663,19 @@ mod plan_tests {
         let s = detail_of("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n");
         assert_eq!(s, "  10.0.0.1:1 10.0.0.2:2 [round_robin, dns_refresh 30s]");
     }
+
+    /// ★ ★ **`id` 有意不进 `plan` / `validate` 的输出**（M2 批 N 任务 2.8，计划 §2 的 S7）。
+    ///
+    /// `plan` 说的是「实际会怎么跑」，而 `id` 一个字都不改变怎么跑 —— 它只改变
+    /// **管理面怎么寻址**。⇒ 那件事的出口是 `/stats`（裁决 R6 ⑤ 明写：三格键原样列出来，
+    /// 运维照抄即可），不是 `plan`。
+    /// ⚠ 这条判据同时是 S7 的落点：`fulcrum validate` 一个字节都不变。
+    #[test]
+    fn 写了_id_的配置_plan_那一行也逐字不变() {
+        let 没写 = detail_of("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n");
+        let 写了 = detail_of(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2 {\n    id pool_web\n  }\n}\n",
+        );
+        assert_eq!(写了, 没写, "id 不该出现在 plan 的输出里");
+    }
 }

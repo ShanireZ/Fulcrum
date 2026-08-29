@@ -150,15 +150,23 @@ cat > "$WORK/fulcrum.Fulcrumfile" <<CONF
             precompressed br
         }
     }
+    # ⚠ 这两条指着**同一台**上游 ⇒ 覆盖层的键「站点名 + id + 上游地址」会撞，
+    #   不写 id 的话装载期直接被拒（M2 批 N 任务 2.8 / G125，裁决 R6 ③）。
+    # ⚠ ⚠ 这个 heredoc **不带引号**（因为要展开端口变量）⇒ 本行里的反引号
+    #   会被当成命令替换。在这种 heredoc 里写注释一律用「」，别用反引号。
     handle /cached {
         cache {
             ttl 60s
             capacity 1MB
         }
-        reverse_proxy 127.0.0.1:$UP_PORT
+        reverse_proxy 127.0.0.1:$UP_PORT {
+            id cached
+        }
     }
     handle {
-        reverse_proxy 127.0.0.1:$UP_PORT
+        reverse_proxy 127.0.0.1:$UP_PORT {
+            id root
+        }
     }
 }
 CONF

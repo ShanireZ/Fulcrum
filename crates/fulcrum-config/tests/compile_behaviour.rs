@@ -609,6 +609,12 @@ fn reverse_proxy子指令全部有人接() {
                 "weight 127.0.0.1:1 3",
                 |b| matches!(b, StepBody::ReverseProxy { upstreams, .. } if upstreams.len() == 1 && upstreams[0].weight == 3),
             ),
+            // ★ 批 N 任务 2.8（G125）。默认是 `None`，所以写任何一个非空名字都分得出
+            //   「落到了」与「被丢掉了」—— 不像 `weight` 那样要特意躲开默认值。
+            "id" => (
+                "id pool_web",
+                |b| matches!(b, StepBody::ReverseProxy { id, .. } if id.as_deref() == Some("pool_web")),
+            ),
             other => panic!(
                 "`reverse_proxy {other}` 是新加的子指令，而这条测试没有它的判据。\
                  先在这里写明「它该落到 StepBody::ReverseProxy 的哪个字段」，\
@@ -1504,6 +1510,81 @@ fn 没写_weight_的配置产物一个字节都不变() {
         !j.contains("weight"),
         "没配权重时 JSON 里不许出现 weight：\n{j}"
     );
+}
+
+// ── `reverse_proxy { id … }`（M2 批 N 任务 2.8，裁决 R6 ⇒ G125）────────────
+
+#[test]
+fn 同一个块里写两行_id_是错误而不是后写的赢() {
+    let src = "http://a.com {\n  reverse_proxy x:1 {\n    id a\n    id b\n  }\n}\n";
+    let cs = codes(src);
+    assert!(
+        cs.contains(&DiagCode::DUPLICATE_PROXY_ID),
+        "重复的 id 没被拦下：{cs:?}"
+    );
+    let o = compile_str("t.Fulcrumfile", src);
+    assert!(o.diagnostics.has_errors(), "重复必须是 error");
+    // ⛔ 「后写的赢」是静默的：挪动或删掉其中一行会改掉这条 `reverse_proxy` 的寻址，
+    //   而配置里看不出异常。⇒ 判据要钉住「没有静静取了第二个」。
+    assert!(
+        o.config.is_none() || {
+            let cfg = o.config.unwrap();
+            let StepBody::ReverseProxy { id, .. } = &cfg.sites[0].chain[0].body else {
+                panic!("应当是 reverse_proxy")
+            };
+            id.as_deref() != Some("b")
+        },
+        "第二行 `id` 不许赢"
+    );
+    // ★ 反向那一半：写一行是正常写法，不许被拦。
+    let cfg = ok("http://a.com {\n  reverse_proxy x:1 {\n    id a\n  }\n}\n");
+    let StepBody::ReverseProxy { id, .. } = &cfg.sites[0].chain[0].body else {
+        panic!("应当是 reverse_proxy")
+    };
+    assert_eq!(id.as_deref(), Some("a"));
+}
+
+#[test]
+fn 空的_id_是错误因为它与没写是同一个键() {
+    // ★ ★ 没写 `id` 的那条在覆盖层键里 id 那一格**就是空串** ⇒ `id ""` 什么都没分开。
+    //   ⚠ 最坏的现场恰恰是最像修好了的那一种：两条撞了键，有人补一行 `id ""`。
+    let o = compile_str(
+        "t.Fulcrumfile",
+        "http://a.com {\n  reverse_proxy x:1 {\n    id \"\"\n  }\n}\n",
+    );
+    let d = o
+        .diagnostics
+        .items()
+        .iter()
+        .find(|d| d.code == DiagCode::EMPTY_PROXY_ID)
+        .unwrap_or_else(|| panic!("该报 FUL-DSL-0042，实际：\n{}", o.render_diagnostics()));
+    let 全文 = format!("{} {} {:?} {:?}", d.message, d.label, d.help, d.note);
+    assert!(
+        全文.contains("空串"),
+        "要说清「空串就是没写的那一格」：{全文}"
+    );
+    // ★ 反向那一半：非空的名字不许被拦（否则功能整个是死的）。
+    ok("http://a.com {\n  reverse_proxy x:1 {\n    id pool-web\n  }\n}\n");
+}
+
+#[test]
+fn 没写_id_的配置产物一个字节都不变() {
+    // ★ ★ 与 `没写_weight_的配置产物一个字节都不变` 是同一条回归护栏（任务 2.8 §2 ②）：
+    //   `id` 那一格在 `None` 时**整个键都不出现**，不是 `"id":null`。
+    let cfg = ok("http://a.com {\n  reverse_proxy 10.0.0.1:8080\n}\n");
+    let j = serde_json::to_string(&cfg).expect("该能序列化");
+    assert!(
+        !j.contains(r#""id""#),
+        "没写 id 时 JSON 里不许出现 id 这个键：\n{j}"
+    );
+    // ★ 写了就要带得上、读得回（反向判据：少了它，一个「永远不序列化 id」的实现
+    //   照样能让上面那一半绿）。
+    let cfg = ok("http://a.com {\n  reverse_proxy 10.0.0.1:8080 {\n    id pool_web\n  }\n}\n");
+    let j = serde_json::to_string(&cfg).expect("该能序列化");
+    assert!(j.contains(r#""id":"pool_web""#), "写了的 id 没带上：\n{j}");
+    let back: fulcrum_config::model::StructuredConfig =
+        serde_json::from_str(&j).expect("结构化配置是公开入口，必须读得回来");
+    assert_eq!(back, cfg, "往返必须无损");
 }
 
 #[test]

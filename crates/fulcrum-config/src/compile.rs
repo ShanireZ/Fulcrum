@@ -1014,6 +1014,8 @@ impl Cx<'_> {
         // 已经被 `weight` 指过一次的上游地址（**逐字**）。★ 不能拿「权重 != 1」当判据：
         // `weight x 1` 是合法的写法，而它与「没写过」在产物上完全同形。
         let mut weighted: std::collections::BTreeSet<String> = Default::default();
+        // ★ M2 批 N 任务 2.8（裁决 R6）：这一条 `reverse_proxy` 的稳定 id。
+        let mut id: Option<String> = None;
 
         if let Some(block) = &node.block {
             for stmt in block {
@@ -1082,12 +1084,15 @@ impl Cx<'_> {
                     }
                     // ★ M2 批 N：`weight <上游地址> <正整数>`。三条诊断都在这里面。
                     "weight" => self.upstream_weight(sub, &mut upstreams, &mut weighted),
+                    // ★ M2 批 N 任务 2.8：`id <名字>`（裁决 R6 ⇒ G125）。
+                    "id" => self.proxy_id(sub, &mut id),
                     _ => {}
                 }
             }
         }
 
         StepBody::ReverseProxy {
+            id,
             upstreams,
             lb_policy,
             health,
@@ -1189,6 +1194,58 @@ impl Cx<'_> {
                 ),
             ),
         }
+    }
+
+    /// `reverse_proxy { id <名字> }`（**M2 批 N 任务 2.8**，裁决 R6 ⇒ G125）。
+    ///
+    /// 这一层只管两件事，两件都是**装载期错误**、⛔ 一条都不回落成默认值：
+    ///
+    /// 1. 写了两行 ⇒ [`DiagCode::DUPLICATE_PROXY_ID`]（⛔ 不是「后写的赢」）；
+    /// 2. 写了个空串 ⇒ [`DiagCode::EMPTY_PROXY_ID`]（空串 = 「没写」在键空间里的那一格）。
+    ///
+    /// # ⚠ ⚠ 这一层**判不了歧义**，也不该在这里判
+    ///
+    /// 「同一站点内两条 `reverse_proxy` 的 `(id, 上游地址)` 撞了」那条判定
+    /// 住在 `fulcrum_runtime`：键里的上游地址是**归一化之后**的串
+    /// （`backend` → `backend:80`），而归一化在那一层。⇒ 在这里拿原文 token 比一遍，
+    /// 一条写 `backend`、另一条写 `backend:80` 的那一对会**静静漏过去**，而门是绿的。
+    /// ★ 与 `weight` 的地址比对「有意只做逐字相同」是同一条边界的两侧：
+    /// 那一条要的正是原文，这一条要的正是归一化后的串。
+    fn proxy_id(&mut self, sub: &Node, id: &mut Option<String>) {
+        // `check_sub_args` 已经保证正好一个参数。
+        let arg = &sub.args[0];
+        if id.is_some() {
+            self.diags.push(
+                Diagnostic::error(
+                    DiagCode::DUPLICATE_PROXY_ID,
+                    sub.name_span,
+                    "这个 `reverse_proxy` 块里写了两行 `id`",
+                )
+                .label("一条 `reverse_proxy` 只能有一个 id")
+                .note(
+                    "⛔ 不取「后写的赢」：那种规则下删掉或挪动其中一行会**静默**改掉这条 \
+                     `reverse_proxy` 的 id，而 id 正是管理面覆盖层的寻址依据 —— \
+                     现场是「`disable` 说成功了，而那台机器还在收流量」",
+                ),
+            );
+            return;
+        }
+        if arg.value.is_empty() {
+            self.diags.push(
+                Diagnostic::error(DiagCode::EMPTY_PROXY_ID, arg.span, "`id` 不能是空串")
+                    .label("写一个名字，如 `id pool_web`")
+                    .help(
+                        "★ 没写 `id` 的 `reverse_proxy` 在覆盖层的键里 id 那一格**就是空串** \
+                     ⇒ `id \"\"` 与根本不写是同一个键，什么都没分开",
+                    )
+                    .note(
+                        "这条最常出现在「两条 reverse_proxy 撞了键、有人补一行 id 想把它们分开」\
+                     的时候 —— 而那一行不写名字的话，装载照样会被拒",
+                    ),
+            );
+            return;
+        }
+        *id = Some(arg.value.clone());
     }
 
     // ── 站点级指令 ──────────────────────────────────────────────────────────
