@@ -21,6 +21,7 @@
 
 pub mod glob;
 pub mod matcher;
+pub mod overrides;
 pub mod proxyproto;
 pub mod request;
 pub mod template;
@@ -33,9 +34,10 @@ use fulcrum_config::model::{
 };
 use glob::Cidr;
 use matcher::{BuildError, CompiledMatcher};
+use overrides::{OverrideEntry, OverrideKey, OverrideLayer, UpstreamOverride};
 use request::{RequestCtx, ResponseCtx};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{BuildHasher, Hash, Hasher, RandomState};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -142,6 +144,25 @@ pub struct Upstream {
     /// ⚠ 代价：**刚启动的那一个探测周期内 `health_uri` 等于没有**。
     /// ★ 没配 `health_uri` 的目标永不被探测，这一格恒为 `true`。
     healthy: std::sync::atomic::AtomicBool,
+    /// **临时覆盖层里属于这个上游的那一格**（**M2 批 N 任务 3**，G18 / 裁决 R7）。
+    ///
+    /// ★ ★ ★ 它**就是**登记处 [`OverrideLayer`] 里按
+    /// `(站点名, reverse_proxy 的 id, 本上游的 addr)` 取到的那个 [`std::sync::Arc`] ——
+    /// 「覆盖层」与「上游身上那两个量」在结构上是**同一份**，不存在
+    /// 「改了列表忘了应用」，也不存在「应用了没记进列表」。
+    ///
+    /// ⚠ ⚠ **构造点上先放一格私有的默认格子，真正的那一格由
+    /// [`Runtime::attach_overrides`] 在图建完之后挂上去** —— 因为 `build_step`
+    /// 拿不到站点名（它只在 `Runtime::build` 的循环里）。
+    /// ⇒ **某条路径漏了「挂」这一步的话，这个上游会悄悄拿着一个谁也够不着的私有格子**：
+    /// 管理面改登记处那一格对它毫无作用，而没有任何东西会报错
+    /// —— 「配置照过、命令回 200、而那台机器还在收流量」。
+    /// ★ 挡它的是 `tests/overrides.rs` 那条 `Arc::ptr_eq` 判据（比**对象身份**，
+    /// ⛔ 不比「两格的值相等」：值相等在两者都是默认值时恒真）。
+    ///
+    /// ⚠ L4 那条路上**这一格就是最终值**：L4 的上游没有站点，按 R6 的键根本寻址不到
+    /// （见 [`ProxyTarget::id`]）⇒ 它永远拿着自己那格默认的、谁也改不了的空格子。
+    ov: std::sync::Arc<UpstreamOverride>,
 }
 
 impl Upstream {
@@ -149,13 +170,35 @@ impl Upstream {
         self.inflight.load(Ordering::Relaxed)
     }
 
-    /// 调度用的权重。
+    /// 调度用的**有效**权重：**覆盖层里有就用它，没有才用配置权重**
+    /// （**M2 批 N 任务 3**，G18 / 裁决 R7）。
     ///
-    /// ★ ★ **调度只从这里取权重**（[`ProxyTarget::pick_index_by`] 的四条分支都走它）。
-    /// M2 批 N 任务 3 的临时覆盖层就接在这一处：那时它返回「覆盖过的权重，没覆盖就是配置权重」，
-    /// 调用点一行都不用改。
+    /// ★ ★ **调度只从这里取权重**（[`ProxyTarget::pick_index_by`] 的四条分支都走它），
+    /// 而 `weight` 字段是**私有**的 —— 于是「某个调用点忘了先看覆盖层」在**结构上做不到**。
+    /// ⇒ 接覆盖层只改了这一个函数，调用点一行都没动。
+    ///
+    /// ⚠ 覆盖层里的 `0` 是**哨兵**（「没覆盖」），不是权重：裁决 R3 里 `0` 不是合法权重，
+    /// 「不参与调度」只有 `disable` 一种表达方式。
     pub fn weight(&self) -> u32 {
-        self.weight
+        self.ov.weight().unwrap_or(self.weight)
+    }
+
+    /// 运维在临时覆盖层里把这个上游摘掉了吗（**M2 批 N 任务 3**，G18）。
+    ///
+    /// ⚠ ⚠ 它与 [`Self::is_healthy`] 是**两件事**：健康检查说的是「它自己活着吗」，
+    /// 这里说的是「运维要不要它收流量」。⇒ 两条筛子都在
+    /// [`ProxyTarget::pick_index_by`] 的那一个 `filter` 上，**摘掉的上游连它的权重一起出局**
+    /// （否则「按 6:2:2 分而那个 6 没在跑」会让 60% 的请求落空）。
+    pub fn is_disabled(&self) -> bool {
+        self.ov.is_disabled()
+    }
+
+    /// 这个上游在临时覆盖层里占的**那一格**（**M2 批 N 任务 3**）。
+    ///
+    /// ★ 它与登记处按这个上游的键取到的那一格必须是**同一个对象**
+    /// —— 由 `tests/overrides.rs` 那条 `Arc::ptr_eq` 判据钉住。
+    pub fn override_slot(&self) -> &std::sync::Arc<UpstreamOverride> {
+        &self.ov
     }
 
     /// 这个上游当前的**全部**候选地址。空 = 现在用不了。
@@ -440,13 +483,18 @@ impl ProxyTarget {
         //   ⚠ 顺序反过来（先挑再看能不能用）会让一个用不了的上游把请求吞掉——
         //   而它在轮询里占着一格，症状是「N 个上游里每 N 个请求坏一个」。
         //
-        //   两条：① 域名解析得出来（批 10）；② 健康检查没判死（批 11）。
-        //   ★ 没配 `health_uri` 时 `is_healthy()` 恒 true，所以第二条对它是空操作。
+        //   三条：① 域名解析得出来（批 10）；② 健康检查没判死（批 11）；
+        //        ③ ★ 运维没在临时覆盖层里把它摘掉（**批 N 任务 3**，G18 / 裁决 R7）。
+        //   ★ 没配 `health_uri` 时 `is_healthy()` 恒 true，所以第二条对它是空操作；
+        //     没设过覆盖时 `is_disabled()` 恒 false，第三条同理。
+        //   ⚠ ⚠ 第三条**必须在这里**、与前两条同一个筛子上：`disable` 要让那个上游
+        //     **连它的权重一起出局**（下面那段注释说的就是这件事）。挂在别处的话，
+        //     「按 6:2:2 分而那个 6 被摘了」会让 60% 的请求落空。
         let eligible: Vec<usize> = self
             .upstreams
             .iter()
             .enumerate()
-            .filter(|(_, u)| !u.dial_candidates().is_empty() && u.is_healthy())
+            .filter(|(_, u)| !u.dial_candidates().is_empty() && u.is_healthy() && !u.is_disabled())
             .map(|(i, _)| i)
             .collect();
         // ⚠ 一个都不剩就返回 None —— 调用方会回 `defaults.all_upstreams_down`（502）。
@@ -1514,13 +1562,66 @@ pub fn resolve_upstreams(rt: &Runtime) -> ResolveReport {
 
 pub struct SharedRuntime {
     inner: std::sync::RwLock<std::sync::Arc<Runtime>>,
+    /// **临时覆盖层的格子登记处**（**M2 批 N 任务 3**，G18 / 裁决 R7）。
+    ///
+    /// ★ ★ 它挂在**这里**而不是 [`Runtime`] 上，因为它必须**跨换代活着**：
+    /// 全量 load 换掉的正是里面那一份 `Runtime`，而覆盖层要能 `keep`。
+    /// ⛔ 别在管理面那边另存一份（同裁决 R15 对「配置装载时刻」的处置）——
+    /// 两份状态迟早对不上，而对不上那天没有任何东西会说。
+    overrides: std::sync::Arc<OverrideLayer>,
 }
 
 impl SharedRuntime {
+    /// 建一个共享槽，并**从这份运行时身上认领它的覆盖格子**（批 N 任务 3）。
+    ///
+    /// ★ ★ ★ 认领这一步不能省。`serve` 启动时走的是 [`Runtime::build`]（那条路上
+    /// 还没有登记处），于是它的上游拿着的是一次性登记表里的格子。**不认领的话**，
+    /// 启动之后第一条 `POST /runtime` 会在这张空登记表里**新建**一格 ——
+    /// 键对得上、命令回 200、而那台机器还在收流量。
+    /// ⇒ 认领之后，「这份运行时的上游」与「登记处按键取到的格子」是同一批对象。
+    ///
+    /// ⚠ 认领之所以是对的，是因为**任何一份运行时的格子都已经按键共享过**
+    /// （[`Runtime::build`] 自己也走 [`OverrideLayer::slot`]）⇒ 同一个键上认领几次，
+    /// 认领到的都是同一个 [`std::sync::Arc`]。
     pub fn new(rt: std::sync::Arc<Runtime>) -> std::sync::Arc<SharedRuntime> {
+        let overrides = std::sync::Arc::new(OverrideLayer::new());
+        for p in rt.keyed_proxies() {
+            for u in &p.target.upstreams {
+                overrides.adopt(
+                    OverrideKey::new(p.site, p.id, &u.addr),
+                    u.override_slot().clone(),
+                );
+            }
+        }
         std::sync::Arc::new(SharedRuntime {
             inner: std::sync::RwLock::new(rt),
+            overrides,
         })
+    }
+
+    /// 这个进程的**格子登记处**。管理面（任务 4 / 5 / 6）从这里拿，⛔ 别自己建第二个。
+    pub fn overrides(&self) -> &std::sync::Arc<OverrideLayer> {
+        &self.overrides
+    }
+
+    /// 当前的覆盖清单，**悬空的已经标好**（裁决 R8）。
+    ///
+    /// ★ ★ 这是任务 5（`/load` 的回话要逐条点名悬空的）与任务 6（`/stats` 的
+    /// `overrides` 一节）**唯一**的取数口：`live` 一定取自**正在服务的**那一份运行时，
+    /// ⛔ 别自己去拼 `live` 再调 [`OverrideLayer::entries`]。
+    pub fn override_entries(&self) -> Vec<OverrideEntry> {
+        self.overrides.entries(&self.current().override_keys())
+    }
+
+    /// `(生效中的覆盖项数, 其中悬空的项数)` —— 裁决 R11 那句
+    /// 「当前有 N 项临时覆盖生效中（其中 M 项悬空）」的取数。
+    ///
+    /// ⚠ 悬空的**照样算生效中**（裁决 R13 明写）：它确实还在登记处占着一格。
+    /// ⇒ `N` 是全部条目数，`M` 是其中悬空的那些，**M ≤ N**。
+    pub fn override_counts(&self) -> (usize, usize) {
+        let all = self.override_entries();
+        let dangling = all.iter().filter(|e| e.dangling).count();
+        (all.len(), dangling)
     }
 
     /// 取当前那一份。**每个请求只调一次**，理由见类型文档。
@@ -1537,11 +1638,30 @@ impl SharedRuntime {
 
     /// 整体换掉。★ 调用方必须**先把新的建好**再调这里 ——
     /// 建到一半失败时不许留下任何痕迹（G8：配置变更是事务，不是文件写入）。
-    pub fn swap(&self, rt: std::sync::Arc<Runtime>) {
+    ///
+    /// # ★ ★ ★ 它收 `Runtime` 而不是 `Arc<Runtime>`，那是结构保护
+    ///
+    /// 装进来之前要把**覆盖层的格子**挂上去（批 N 任务 3），而那要 `&mut`。
+    /// ⇒ 收所有权之后，「一份没挂过格子的运行时被装进来服务流量」在**结构上做不到** ——
+    /// 而那种运行时的现场是「`POST /runtime` 回 200，那台机器还在收流量」，
+    /// 没有任何东西会报错。⚠ 调用方本来就是「刚建好、还没给任何人」，
+    /// 这个签名对它们不多要一分钱。
+    ///
+    /// ★ 换完顺手收拾登记处：清掉「新运行时不引用、**且**没设过覆盖」的空格子
+    /// （[`OverrideLayer::retain_after_swap`]）。⚠ **设过覆盖而没人引用的留着** ——
+    /// 那是悬空（裁决 R8），不是垃圾。
+    pub fn swap(&self, rt: Runtime) {
+        let mut rt = rt;
+        rt.attach_overrides(&self.overrides);
+        let live = rt.override_keys();
+        let rt = std::sync::Arc::new(rt);
         match self.inner.write() {
             Ok(mut g) => *g = rt,
             Err(poisoned) => *poisoned.into_inner() = rt,
         }
+        // ⚠ 顺序：**换完之后**才收拾（裁决 R7 的原话是「一次成功的 swap 之后」）。
+        //   反过来的话，一次在写锁上失败的 swap 会先把登记处清了。
+        self.overrides.retain_after_swap(&live);
     }
 }
 
@@ -1553,7 +1673,38 @@ impl std::fmt::Debug for SharedRuntime {
 
 impl Runtime {
     /// 从结构化配置构建。**校验也在这里**——结构化层是公开入口（G11）。
+    ///
+    /// ⚠ ⚠ **签名一个字都不许动**（批 N 计划 §2 的 S7）：`fulcrum validate` 走的是这条路，
+    /// 而它的全部价值在于**离线**就能说话。⇒ 想让运行时接上临时覆盖层的，
+    /// 走 [`Self::build_with_overrides`]。
+    ///
+    /// ★ 它自己也走同一条路，只是那张登记表是**一次性的**：格子照样按键共享
+    /// （于是「同键的两条 `reverse_proxy` 拿到同一格」这件事在这条路上也成立），
+    /// 只是建完之后没人拿得到那张表 ⇒ 谁也改不了这份运行时的覆盖。
     pub fn build(cfg: &StructuredConfig) -> Result<Runtime, Vec<BuildError>> {
+        Runtime::build_with_overrides(cfg, &OverrideLayer::new())
+    }
+
+    /// 从结构化配置构建，并把**临时覆盖层的格子挂上去**（**M2 批 N 任务 3**，G18 / 裁决 R7）。
+    ///
+    /// ★ ★ 建完的运行时里，每个 HTTP 上游身上那一格与 `layer` 按它的键取到的那一格
+    /// **是同一个对象** ⇒ 管理面改登记处，那个上游立刻算数；**没有第二步**。
+    ///
+    /// ⚠ 建**失败**时一格都不登记（`?` 在挂之前就出去了）⇒ 一次失败的 load
+    /// 不会在登记处留下任何痕迹（G8）。⚠ 建**成功**但调用方随后又不要它了（比如
+    /// 端口集变了被 409 拒掉）时，登记处会多出几格**空格子** —— 它们不计数、不进清单，
+    /// 并在下一次成功的 swap 时被清掉（见 [`OverrideLayer`]）。
+    pub fn build_with_overrides(
+        cfg: &StructuredConfig,
+        layer: &OverrideLayer,
+    ) -> Result<Runtime, Vec<BuildError>> {
+        let mut rt = Runtime::build_graph(cfg)?;
+        rt.attach_overrides(layer);
+        Ok(rt)
+    }
+
+    /// [`Self::build`] 的本体：只建图，不碰覆盖层。
+    fn build_graph(cfg: &StructuredConfig) -> Result<Runtime, Vec<BuildError>> {
         let mut errors: Vec<BuildError> = Vec::new();
         let mut sites = Vec::new();
         let mut exact = BTreeMap::new();
@@ -1928,6 +2079,68 @@ impl Runtime {
         } else {
             Err(errors)
         }
+    }
+
+    /// 把**临时覆盖层的格子**按键挂到每一个 HTTP 上游身上（**M2 批 N 任务 3**，裁决 R7）。
+    ///
+    /// # ★ ★ ★ 为什么是「建完再挂」而不是「建的时候就挂」
+    ///
+    /// 键的第一格是**站点名**，而建 `Upstream` 的地方是 `build_step` —— 那里既拿不到
+    /// 站点名（它只在 [`Self::build_graph`] 的循环里），也不该为此加一个参数
+    /// （`build_step` 有 5 处调用方，多一个参数就多 5 处「可能传错」）。
+    /// ⇒ 图建完之后再走一遍，此时 `Runtime` 还是本地的，拿得到 `&mut`。
+    ///
+    /// # ⚠ ⚠ 这里走的是**第二份**遍历，而它由一条判据钉住
+    ///
+    /// [`keyed_proxies_of`] 是只读的（`&SiteRt`），挂格子要 `&mut` ⇒ 这一段是同一张图的
+    /// 可变走法。**两份遍历分家的表现是完全静默的**：漏掉一个分支（比如不下钻进 `handle`），
+    /// 那里的上游就悄悄留着构造点上那格私有的占位格子，管理面改登记处对它毫无作用。
+    /// ⇒ `tests/overrides.rs` 那条判据**从 [`Self::keyed_proxies`] 枚举每一个上游**，
+    /// 逐个比 `Arc::ptr_eq` —— 于是两份走法只要有一格对不上就红。
+    /// ⛔ 别把那条判据改成「比两格的值相等」：值相等在两者都是默认值时恒真。
+    pub(crate) fn attach_overrides(&mut self, layer: &OverrideLayer) {
+        fn walk(steps: &mut [StepRt], site: &str, layer: &OverrideLayer) {
+            for s in steps {
+                match &mut s.body {
+                    BodyRt::Proxy(t) => {
+                        let id = t.id.clone();
+                        for u in &mut t.upstreams {
+                            u.ov = layer.slot(&OverrideKey::new(site, &id, &u.addr));
+                        }
+                    }
+                    // ⚠ 容器里的也要挂 —— 走法必须与 [`keyed_proxies_of`] 逐字一致。
+                    BodyRt::Handle(arms) => {
+                        for a in arms {
+                            walk(&mut a.steps, site, layer);
+                        }
+                    }
+                    BodyRt::Route(inner) => walk(inner, site, layer),
+                    _ => {}
+                }
+            }
+        }
+        // ⚠ **L4 有意不在这里**（S6）：L4 的上游没有站点，按裁决 R6 的键寻址不到它们
+        //   ⇒ 它们永远拿着构造点上那格默认的空格子，落点与批 N 之前逐字相同。
+        for site in &mut self.sites {
+            let name = site.name.clone();
+            walk(&mut site.chain, &name, layer);
+            walk(&mut site.error_handler, &name, layer);
+        }
+    }
+
+    /// 这份运行时里**全部**的覆盖层键（**M2 批 N 任务 3**）。
+    ///
+    /// ★ 它是「悬空」（裁决 R8）与「空格子回收」（裁决 R7）唯一的判据来源：
+    /// 登记处里键**不在这份集合里**的那些格子，就是现在管不到任何上游的。
+    /// ⛔ 别在别处再拼一份 —— 这里走的是 [`Self::keyed_proxies`]，与挂格子同一张图。
+    pub fn override_keys(&self) -> BTreeSet<OverrideKey> {
+        let mut out = BTreeSet::new();
+        for p in self.keyed_proxies() {
+            for u in &p.target.upstreams {
+                out.insert(OverrideKey::new(p.site, p.id, &u.addr));
+            }
+        }
+        out
     }
 
     pub fn sites(&self) -> &[SiteRt] {
@@ -2508,6 +2721,13 @@ fn build_step(
                             inflight: AtomicUsize::new(0),
                             // ★ 初值健康。理由见 `Upstream::healthy` 上那张表。
                             healthy: std::sync::atomic::AtomicBool::new(true),
+                            // ⚠ ⚠ **这里放的是一格私有的占位格子**，真正那一格由
+                            //   `Runtime::attach_overrides` 在图建完之后按键挂上来 ——
+                            //   本函数拿不到站点名（它只在 `Runtime::build` 的循环里）。
+                            //   ★ 「漏挂」是一种**完全静默**的失败：管理面改登记处那一格
+                            //   对这个上游毫无作用，而没有任何东西会报错。挡它的是
+                            //   `tests/overrides.rs` 那条 `Arc::ptr_eq` 判据。
+                            ov: std::sync::Arc::new(UpstreamOverride::default()),
                         })
                     }
                     Err(m) => errors.push(BuildError::new(at, format!("上游 `{u}`：{m}"))),
@@ -2682,6 +2902,11 @@ fn build_l4_target(
                     resolved: std::sync::RwLock::new(literal),
                     inflight: AtomicUsize::new(0),
                     healthy: std::sync::atomic::AtomicBool::new(true),
+                    // ★ ★ **L4 这一格是最终值，永远不会被挂上别的**（批 N 任务 3，S6）：
+                    //   `attach_overrides` 只走 `sites` 那条路，而 L4 的上游没有站点 ——
+                    //   按裁决 R6 的键根本寻址不到它们。⇒ 这条路上 `is_disabled()` 恒 false、
+                    //   有效权重恒等于配置权重（也就是 1），落点与批 N 之前逐字相同。
+                    ov: std::sync::Arc::new(UpstreamOverride::default()),
                 });
             }
             Err(m) => errors.push(BuildError::new(at, format!("{what}上游 `{u}`：{m}"))),

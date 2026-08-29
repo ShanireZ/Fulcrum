@@ -145,9 +145,7 @@ mod tests {
             "{\n  proxy_protocol_from 10.0.0.0/8\n}\nhttp://a.com {\n  respond 200 \"ok\"\n}\n";
         let o = compile_str("t.Fulcrumfile", src);
         let cfg = o.config.expect("编得过");
-        shared.swap(Arc::new(
-            fulcrum_runtime::Runtime::build(&cfg).expect("建得出"),
-        ));
+        shared.swap(fulcrum_runtime::Runtime::build(&cfg).expect("建得出"));
 
         assert!(p.trusts(Some(&a)), "★ 换过配置之后必须立刻生效");
     }

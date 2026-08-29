@@ -268,7 +268,9 @@ impl AdminApp {
         //   ★ 这里是阻塞 DNS，但它跑在**管理面**的请求上，不是数据面 ——
         //   一次有意的配置操作等几十毫秒是应该的。
         dns::resolve_now(&next, "全量 load");
-        self.rt.swap(Arc::new(next));
+        // ⚠ `swap` 收 `Runtime` 而不是 `Arc<Runtime>`（批 N 任务 3）：装进来之前
+        //   要把临时覆盖层的格子挂上去，而那要 `&mut` —— 那是结构保护，别绕过去。
+        self.rt.swap(next);
         info!("全量 load 生效：{sites} 个站点（G8：原子换整份）");
         (200, format!("已生效：{sites} 个站点\n"))
     }
