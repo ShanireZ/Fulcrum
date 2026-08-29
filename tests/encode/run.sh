@@ -150,8 +150,12 @@ cat > "$WORK/fulcrum.Fulcrumfile" <<CONF
             precompressed br
         }
     }
-    # ⚠ 这两条指着**同一台**上游 ⇒ 覆盖层的键「站点名 + id + 上游地址」会撞，
-    #   不写 id 的话装载期直接被拒（M2 批 N 任务 2.8 / G125，裁决 R6 ③）。
+    # ⚠ 下面两条指着**同一台**上游，而且**有意都不写 id**（M2 批 N 任务 2.9 / G125，
+    #   裁决 R6 ③ 第二轮）⇒ 它们的键「站点名 + id + 上游地址」完全相同，
+    #   共享同一个覆盖格子，一次 disable 两条一起摘掉。
+    #   ★ 这是「一个后端挂在几组 handle 路由后面」那个最常见的形状，它一个字节
+    #     都不用改就装得上。写了 id 才分得开的那一路由 tests/serve 那份夹具覆盖。
+    #   ⚠ 任务 2.8 曾照第一轮口径把这个形状在装载期拒掉，本场景当场装不上。
     # ⚠ ⚠ 这个 heredoc **不带引号**（因为要展开端口变量）⇒ 本行里的反引号
     #   会被当成命令替换。在这种 heredoc 里写注释一律用「」，别用反引号。
     handle /cached {
@@ -159,14 +163,10 @@ cat > "$WORK/fulcrum.Fulcrumfile" <<CONF
             ttl 60s
             capacity 1MB
         }
-        reverse_proxy 127.0.0.1:$UP_PORT {
-            id cached
-        }
+        reverse_proxy 127.0.0.1:$UP_PORT
     }
     handle {
-        reverse_proxy 127.0.0.1:$UP_PORT {
-            id root
-        }
+        reverse_proxy 127.0.0.1:$UP_PORT
     }
 }
 CONF

@@ -151,28 +151,30 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
     default_sni secure.example
 }
 
-# ⚠ ⚠ ⚠ **这个站点里的 `id` 不是装饰**（M2 批 N 任务 2.8 / G125）。
-#   本站点有四条 `reverse_proxy` 指着同一台 `127.0.0.1:UP_PORT`（`/api` · `/rw` ·
-#   `/cached` · `/hc`），另有两条指着同一台 `127.0.0.1:SICK_PORT`（`/sick` · `/sickok`）。
-#   覆盖层的键是 `(站点名, id, 归一化后的上游地址)` ⇒ 不写 `id` 的话这几条的键**完全相同**，
-#   一次 `disable` 会把它们全摘掉。⇒ 装载期直接拒绝（裁决 R6 ③）。
-# ★ 这份夹具因此也是那条迁移路径的活样本：**一个后端挂在几组路由后面**是最常见的
-#   反代写法，而它正是需要补 `id` 的那一种。
+# ⚠ ⚠ ⚠ **这个站点里「写了 `id`」与「没写 `id`」两种形状都是有意的**
+#   （M2 批 N 任务 2.9 / G125，裁决 R6 ③ **第二轮**）。
+#   覆盖层的键是 `(站点名, id, 归一化后的上游地址)`，而代码按「键相同 / 键不同」分支
+#   ⇒ 夹具必须**两种形状都有**，否则其中一条路在端到端这一层一次都没走过
+#   （AGENTS.md 门禁纪律第一条：盲区在夹具里）。
+#   ① **没写 `id`**：`/api` · `/rw` · `/cached` · `/hc` 四条都指着 `127.0.0.1:UP_PORT`
+#      ⇒ 四条的键**完全相同**，共享同一个覆盖格子，一次 `disable` 四条一起摘掉。
+#      ★ 这正是反代最常见的写法（一个后端挂在几组 `handle` 路由后面），而它
+#      **一个字节都不用改就装得上** —— 这份夹具就是那句话的实测。
+#      ⚠ 任务 2.8 曾照第一轮口径把这个形状在装载期拒掉，四个端到端场景当场全红。
+#   ② **写了 `id`**：`/sick` 与 `/sickok` 都指着 `127.0.0.1:SICK_PORT`，而两条的
+#      `health_status` 口径不同 ⇒ 写 `id` 才能把它们分成两格、各摘各的。
 :PROXY_PORT {
     header X-Fulcrum test
     @api path /api/*
     handle @api {
         reverse_proxy 127.0.0.1:UP_PORT {
-            id api
             header_up X-Up 1
             passive_fail 3
         }
     }
     handle /rw/* {
         rewrite * /rewritten
-        reverse_proxy 127.0.0.1:UP_PORT {
-            id rw
-        }
+        reverse_proxy 127.0.0.1:UP_PORT
     }
     handle /redir {
         redir * https://example.com/moved 301
@@ -198,9 +200,7 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
         cache {
             ttl 30s
         }
-        reverse_proxy 127.0.0.1:UP_PORT {
-            id cached
-        }
+        reverse_proxy 127.0.0.1:UP_PORT
     }
     handle /err {
         respond 418 teapot
@@ -218,7 +218,6 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
     }
     handle /hc/* {
         reverse_proxy 127.0.0.1:UP_PORT 127.0.0.1:LATE_PORT {
-            id hc
             health_uri /health
             health_interval 1s
             health_timeout 1s
