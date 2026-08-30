@@ -535,7 +535,23 @@ fn render_step(out: &mut String, step: &Step, depth: usize) {
                 }
             }
         }
-        _ => {}
+        // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+        //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+        //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+        //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+        // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+        //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+        //   —— 要名单就现场 grep 这两个枚举名。
+        StepBody::Tracing
+        | StepBody::Header { .. }
+        | StepBody::Rewrite { .. }
+        | StepBody::Encode { .. }
+        | StepBody::Cache { .. }
+        | StepBody::Redir { .. }
+        | StepBody::Respond { .. }
+        | StepBody::Metrics
+        | StepBody::ReverseProxy { .. }
+        | StepBody::FileServer { .. } => {}
     }
 }
 

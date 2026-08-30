@@ -1250,7 +1250,22 @@ impl Runtime {
                         }
                     }
                     BodyRt::Route(inner) => walk(inner, site, out),
-                    _ => {}
+                    // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                    //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                    //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                    //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                    // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                    //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                    //   —— 要名单就现场 grep 这两个枚举名。
+                    BodyRt::Tracing
+                    | BodyRt::Header(_)
+                    | BodyRt::Rewrite(_)
+                    | BodyRt::Encode(_)
+                    | BodyRt::Redir { .. }
+                    | BodyRt::Respond { .. }
+                    | BodyRt::Metrics
+                    | BodyRt::Proxy(_)
+                    | BodyRt::Cache(_) => {}
                 }
             }
         }
@@ -1279,7 +1294,22 @@ impl Runtime {
                         }
                     }
                     BodyRt::Route(inner) => walk(inner, site, out),
-                    _ => {}
+                    // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                    //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                    //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                    //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                    // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                    //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                    //   —— 要名单就现场 grep 这两个枚举名。
+                    BodyRt::Tracing
+                    | BodyRt::Header(_)
+                    | BodyRt::Rewrite(_)
+                    | BodyRt::Redir { .. }
+                    | BodyRt::Respond { .. }
+                    | BodyRt::Metrics
+                    | BodyRt::Proxy(_)
+                    | BodyRt::FileServer(_)
+                    | BodyRt::Cache(_) => {}
                 }
             }
         }
@@ -1310,9 +1340,13 @@ impl Runtime {
                         }
                     }
                     BodyRt::Route(inner) => walk(inner, out),
-                    // ⚠ 不写 `_`：这样新增 `BodyRt` 变体时，这三处「按 `BodyRt` 下钻找
-                    //   `StepRt`」的 match（本函数 / `keyed_proxies_of` / `attach_overrides`）
-                    //   会一起在编译期红，不必指望人记得同步改全部三处。
+                    // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                    //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                    //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                    //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                    // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                    //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                    //   —— 要名单就现场 grep 这两个枚举名。
                     BodyRt::Tracing
                     | BodyRt::Header(_)
                     | BodyRt::Rewrite(_)
@@ -1429,9 +1463,13 @@ fn keyed_proxies_of(sites: &[SiteRt]) -> Vec<KeyedProxy<'_>> {
                     }
                 }
                 BodyRt::Route(inner) => walk(inner, site, out),
-                // ⚠ 不写 `_`：这样新增 `BodyRt` 变体时，这三处「按 `BodyRt` 下钻找
-                //   `StepRt`」的 match（本函数 / `all_upstreams` / `attach_overrides`）
-                //   会一起在编译期红，不必指望人记得同步改全部三处。
+                // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                //   —— 要名单就现场 grep 这两个枚举名。
                 BodyRt::Tracing
                 | BodyRt::Header(_)
                 | BodyRt::Rewrite(_)
@@ -2137,9 +2175,13 @@ impl Runtime {
                         }
                     }
                     BodyRt::Route(inner) => walk(inner, site, layer),
-                    // ⚠ 不写 `_`：这样新增 `BodyRt` 变体时，这三处「按 `BodyRt` 下钻找
-                    //   `StepRt`」的 match（本函数 / `all_upstreams` / `keyed_proxies_of`）
-                    //   会一起在编译期红，不必指望人记得同步改全部三处。
+                    // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                    //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                    //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                    //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                    // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                    //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                    //   —— 要名单就现场 grep 这两个枚举名。
                     BodyRt::Tracing
                     | BodyRt::Header(_)
                     | BodyRt::Rewrite(_)
@@ -2297,7 +2339,22 @@ impl Runtime {
                             stack.extend(a.steps.iter());
                         }
                     }
-                    _ => {}
+                    // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                    //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                    //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                    //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                    // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                    //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                    //   —— 要名单就现场 grep 这两个枚举名。
+                    // ★ 这一格的空 body 说的是两件事：**既不是要上报的能力，也不装步骤**。
+                    //   前半今天成立，后半会随新变体变假 ⇒ 让编译器逼下一个人逐格表态一次。
+                    StepBody::Header { .. }
+                    | StepBody::Rewrite { .. }
+                    | StepBody::Cache { .. }
+                    | StepBody::Redir { .. }
+                    | StepBody::Respond { .. }
+                    | StepBody::Metrics
+                    | StepBody::FileServer { .. } => {}
                 }
             }
         }
@@ -2841,7 +2898,22 @@ fn cache_settings_of(sites: &[SiteRt]) -> Vec<(&str, &CacheRt)> {
                     }
                 }
                 BodyRt::Route(inner) => walk(inner, site, out),
-                _ => {}
+                // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                //   —— 要名单就现场 grep 这两个枚举名。
+                BodyRt::Tracing
+                | BodyRt::Header(_)
+                | BodyRt::Rewrite(_)
+                | BodyRt::Encode(_)
+                | BodyRt::Redir { .. }
+                | BodyRt::Respond { .. }
+                | BodyRt::Metrics
+                | BodyRt::Proxy(_)
+                | BodyRt::FileServer(_) => {}
             }
         }
     }
@@ -2873,7 +2945,24 @@ fn self_loop_warnings(sites: &[SiteRt], listen_ports: &[(u16, bool)]) -> Vec<Str
                     }
                 }
                 BodyRt::Route(inner) => walk(inner, site, lp, out),
-                _ => {}
+                // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
+                //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
+                //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
+                //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
+                // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
+                //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
+                //   —— 要名单就现场 grep 这两个枚举名。
+                // ★ 这一处漏下钻的后果就是本函数开头描述的那个现场：容器里的
+                //   `reverse_proxy` 指回自己，而一句警告都没有。
+                BodyRt::Tracing
+                | BodyRt::Header(_)
+                | BodyRt::Rewrite(_)
+                | BodyRt::Encode(_)
+                | BodyRt::Redir { .. }
+                | BodyRt::Respond { .. }
+                | BodyRt::Metrics
+                | BodyRt::FileServer(_)
+                | BodyRt::Cache(_) => {}
             }
         }
     }
