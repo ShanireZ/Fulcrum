@@ -61,6 +61,7 @@
 //! | `fulcrum_cert_expiry_seconds` | `SniResolver::expiries()`（R5：值是 `notAfter` 的**绝对 Unix 秒**）|
 //! | `fulcrum_acme_issue_total` | `AcmeManager::issue_counts()` |
 //! | `fulcrum_build_info` | 这个二进制自己（`CARGO_PKG_VERSION`），不需要任何活体源 |
+//! | `fulcrum_overrides_active` | `SharedRuntime::override_counts()` 的第一个数（悬空的照样计入，裁决 R13）|
 //!
 //! ★ ★ ★ **第二类为什么不在事件点记账**：能从被测对象本身问到的东西，
 //! 就不要在旁边再记一份 —— 否则两份迟早不一致，而**不一致的那天没有任何东西会说**。
@@ -145,7 +146,7 @@ const BUCKETS: &[f64] = &[
 /// ⚠ 下面那几个 `pub const` 句柄按**下标**指进来 —— 重排这张表就会让某个句柄换个族，
 /// 而那种错**在输出里看起来完全正常**（数字照涨，只是涨在另一条 series 上）。
 /// ⇒ 单测 `族句柄指的就是它名字上那个族` 把每个句柄的名字逐个钉住。
-const FAMILIES: [Family; 9] = [
+const FAMILIES: [Family; 10] = [
     Family {
         name: "fulcrum_requests_total",
         kind: Kind::Counter,
@@ -209,6 +210,13 @@ const FAMILIES: [Family; 9] = [
         help: "恒为 1 的版本标记；标签只有 version，别往里加会随换代变化的东西。",
         labels: &["version"],
     },
+    Family {
+        name: "fulcrum_overrides_active",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "当前生效中的临时覆盖总数；悬空的（键指向的上游已经不在当前配置里）照样计入（裁决 R13）。",
+        labels: &[],
+    },
 ];
 
 /// 请求总数。
@@ -252,6 +260,18 @@ const ACME_ISSUE_TOTAL: &Family = &FAMILIES[7];
 /// ⛔ **不带 `gen_id`、不带 pid**：那会让每一次换代长出一条新 series，
 /// 而旧的那条从此再也不更新 —— 抓取端看到的是一堆看起来还活着的僵尸时序。
 const BUILD_INFO: &Family = &FAMILIES[8];
+
+/// 当前生效中的临时覆盖总数（**M2 批 N 任务 6.5**，G126 / 裁决 R13）。
+///
+/// ⚠ ⚠ **悬空的照样计入**：R13 把「悬空的算不算生效中」定死为「算」——它确实
+/// 还在登记处占着一格，且 `/load` 已经逐条点过名。⇒ 这一格的值**必须**是
+/// [`SharedRuntime::override_counts`] 返回的 `(N, M)` 里的 **N**（全部条目数），
+/// ⛔ 不是 `N - M`（非悬空数），也不是 `M`（悬空数）。
+///
+/// ⛔ **不按 `(站点, 上游)` 打标签**：那等于把 `/stats` 的 `overrides` 一节整个
+/// 搬进指标 —— 两份实现同一件事，而「是哪几项」本来就该去 `/stats` 看。
+/// ⇒ 这个族**无标签、基数恒为 1**。
+const OVERRIDES_ACTIVE: &Family = &FAMILIES[9];
 
 /// 一条直方图 series。
 struct Hist {
@@ -383,6 +403,18 @@ fn snapshot(src: &LiveSources) -> Registry {
             r.set(UPSTREAM_INFLIGHT, &[addr], inflight as f64);
             r.set(UPSTREAM_HEALTHY, &[addr], if healthy { 1.0 } else { 0.0 });
         }
+
+        // ── fulcrum_overrides_active：唯一取数口是 SharedRuntime::override_counts ──
+        //   ⛔ 不在这里重新遍历 OverrideLayer、也不再调一次 override_entries().len()——
+        //   道理与上面 upstream 两个族的注释同一条：能从被测对象本身问到的东西，
+        //   就不要在旁边再记一份。★ 任务 6 的 `/stats` 也是从这一个函数取「有几项
+        //   生效中」的数（回话尾巴那一行），两处同源。
+        //   ⚠ ⚠ 只取第一个数（全部条目数，悬空的已经算在里面——裁决 R13），
+        //   不取第二个（悬空数）。★ 无条件调用、无条件写入：0 覆盖时也要出一条
+        //   样本（值是 0），不能因为「没有覆盖」就让整族的这一格消失——
+        //   那会让「没接上」与「没数据」在抓取端看起来一模一样。
+        let (overrides_active, _dangling) = rt.override_counts();
+        r.set(OVERRIDES_ACTIVE, &[], overrides_active as f64);
     }
 
     if let Some(resolver) = &src.resolver {
@@ -832,6 +864,13 @@ mod tests {
         //   长出一条新 series，而旧的那条从此再也不更新。
         assert_eq!(BUILD_INFO.name, "fulcrum_build_info");
         assert_eq!(BUILD_INFO.labels, &["version"]);
+        // ⛔ 不按 (站点, 上游) 打标签——那等于把 `/stats` 的 `overrides` 一节整个
+        //   搬进指标（两份实现同一件事）。这个族**无标签**。
+        assert_eq!(OVERRIDES_ACTIVE.name, "fulcrum_overrides_active");
+        assert!(
+            OVERRIDES_ACTIVE.labels.is_empty(),
+            "fulcrum_overrides_active 不该带任何标签"
+        );
 
         // ★ ★ 每个族的**来处**也逐个钉住：`source` 写错不会让任何一条内容断言变红 ——
         //   活体族被标成 `Event` 的表现是它**永远没有样本**，而那与「没接上活体源」
@@ -849,6 +888,7 @@ mod tests {
                 "fulcrum_cert_expiry_seconds",
                 "fulcrum_acme_issue_total",
                 "fulcrum_build_info",
+                "fulcrum_overrides_active",
             ]
         );
 
@@ -1114,6 +1154,7 @@ mod tests {
             "fulcrum_upstream_healthy",
             "fulcrum_cert_expiry_seconds",
             "fulcrum_acme_issue_total",
+            "fulcrum_overrides_active",
         ] {
             assert!(out.contains(&format!("# HELP {name} ")), "缺 HELP：{name}");
             assert!(out.contains(&format!("# TYPE {name} ")), "缺 TYPE：{name}");
@@ -1350,6 +1391,67 @@ mod tests {
             ],
             "{out}"
         );
+    }
+
+    #[test]
+    fn fulcrum_overrides_active的值是覆盖总数_悬空的照样计入_基数恒为1() {
+        // ★ ★ 复用 `admin.rs`「总数与悬空数不相等」那条夹具的手法
+        //   （`OverrideLayer::slot` 直接现建一格，不必走 `apply_all` / 重新
+        //   load 一遍那整条路）——这个族只要 [`SharedRuntime::override_counts`]
+        //   的第一个数，不必验覆盖对数据面的效果（那是任务 5 的判据）。
+        let cfg = fulcrum_config::compile_str(
+            "t.Fulcrumfile",
+            "http://ov.example {\n  reverse_proxy 10.99.0.1:1\n}\n",
+        )
+        .config
+        .expect("配置编译不过");
+        let built = fulcrum_runtime::Runtime::build(&cfg).expect("运行时图建不起来");
+        let rt = std::sync::Arc::new(built);
+        let shared = SharedRuntime::new(rt);
+
+        // ── 判据 4：0 覆盖 ⇒ 族仍然出现，值是 0（不是整族消失）───────────────
+        let out0 = 按活体源渲真表(&LiveSources {
+            runtime: Some(shared.clone()),
+            ..Default::default()
+        });
+        assert_eq!(
+            样本行(&out0, "fulcrum_overrides_active"),
+            vec!["fulcrum_overrides_active 0".to_string()],
+            "{out0}"
+        );
+
+        // ── 判据 3：两项覆盖、其中一项悬空 ⇒ 总数是 2，不是 1 ───────────────
+        //   ⚠ ⚠ 判据写法纪律：总数与悬空数必须不相等，否则把两个数读串了
+        //   （比如误取 `override_counts().1`，或误取「非悬空数」）也测不出来
+        //   —— 批 N 任务 5 的 Critical 就是这个形状：N 与 M 都恰好是 1。
+        let k_alive =
+            fulcrum_runtime::overrides::OverrideKey::new("http://ov.example", "", "10.99.0.1:1");
+        let k_dangling = fulcrum_runtime::overrides::OverrideKey::new(
+            "http://ov.example",
+            "ghost",
+            "10.99.0.2:2",
+        );
+        shared.overrides().slot(&k_alive).set_disabled(true);
+        shared.overrides().slot(&k_dangling).set_disabled(true);
+        assert_eq!(
+            shared.override_counts(),
+            (2, 1),
+            "前提没成立：夹具没能摆出「总数 ≠ 悬空数」"
+        );
+
+        let out2 = 按活体源渲真表(&LiveSources {
+            runtime: Some(shared.clone()),
+            ..Default::default()
+        });
+        assert_eq!(
+            样本行(&out2, "fulcrum_overrides_active"),
+            vec!["fulcrum_overrides_active 2".to_string()],
+            "★ 悬空的照样计入（裁决 R13）：应该是总数 2，不是悬空数 1，\
+             也不是非悬空数 1。{out2}"
+        );
+
+        // ── 判据 5：基数恒为 1 —— 即便登记处里有 2 项覆盖，也只出一行 ─────────
+        assert_eq!(样本行(&out2, "fulcrum_overrides_active").len(), 1, "{out2}");
     }
 
     #[test]

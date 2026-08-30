@@ -56,6 +56,9 @@ LOGFILE="$WORK/access.json"
 EXPO="$WORK/expo.py"
 # 抓取路径。★ 它同时是「站点 B 上打的同一路径」。
 MPATH=/metrics
+# ── fulcrum_overrides_active（M2 批 N 任务 6.5，G126）用：管理面 Unix socket ──
+#   ★ 不需要新端口（G14：admin 只走 unix socket）——不占用 AGENTS.md 那张端口表。
+ADMIN_SOCK="$WORK/admin.sock"
 
 FAILS=0
 PIDS=()
@@ -433,7 +436,17 @@ else
 fi
 
 # ── 配置 ────────────────────────────────────────────────────────────────────
+#
+# ⚠ ⚠ **`admin unix/$ADMIN_SOCK` 从第一代就开着**（G126 那节要用它 POST /runtime
+#   与 GET /stats）：admin 是启动时才绑的监听（与数据面监听器同一条纪律），
+#   POST /load 换不了它 —— 必须在这里，不能等后面 [reload] 再加。
+#   ★ 它是一个独立的 Unix socket 监听，不影响这份配置上任何一条既有判据
+#   （不产生新的 `site`、不产生新的 `reverse_proxy`）。
 cat > "$WORK/a.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+
 http://a.example:$A_PORT, http://a2.example:$A_PORT {
     log {
         output file $LOGFILE
@@ -540,10 +553,12 @@ eq "抓取端点回 200" 200 "$CODE"
 CT=$(content_type "$S1.hdr")
 eq "★★ Content-Type 逐字" "text/plain; version=0.0.4; charset=utf-8" "$CT"
 
-# 九个族的 `# HELP` / `# TYPE` 一个都不许少。
+# 十个族的 `# HELP` / `# TYPE` 一个都不许少（★ 批 N 任务 6.5 之后是十个，
+#   不再是九个——`fulcrum_overrides_active`，G126）。
 for f in fulcrum_requests_total fulcrum_request_duration_seconds fulcrum_cache_events_total \
   fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy \
-  fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info; do
+  fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info \
+  fulcrum_overrides_active; do
   if expo meta "$S1" "$f"; then
     ok "族 $f 的 HELP/TYPE 都在"
   else
@@ -575,6 +590,21 @@ for f in fulcrum_upstream_inflight fulcrum_upstream_healthy; do
   eq "★★★ $f 有 HELP/TYPE 但零条样本（没有上游 ⇒ 没数据，不是没接上）" \
     0 "$(expo series "$S1" "$f")"
 done
+
+# ★ ★ ★ fulcrum_overrides_active（G126，批 N 任务 6.5）：与上面两族**相反**——
+#   它是**无标签**的单值 gauge，即便这一刻登记处一项覆盖都没有，也必须
+#   **出一条样本**（值是 0），而不是跟着「没数据」一起整族消失。⚠ 这是判据
+#   写法纪律的第 4 条：0 与「不存在」在这个族身上必须能分得开——族仍然出现，
+#   只是恰好一项覆盖都没有。
+#   ⚠ ⚠ 先证「样本真的存在」再问「值是多少」：`expo sum` 在「一条样本都没有」
+#   与「样本存在、值恰好是 0」两种情况下算出的都是 0（没有匹配项时 `sum` 的
+#   初值就是 0）——单独看 sum 挡不住「count==0 就整族不出样本」这种实现。
+eq "★★★ fulcrum_overrides_active 基数恒为 1（判据 5，0 覆盖时的基线；顺带证明判据 4 的样本真的存在）" \
+  1 "$(expo series "$S1" fulcrum_overrides_active)"
+eq "★★★ fulcrum_overrides_active 此刻 0 覆盖，值是 0（判据 4：族仍出现，不是整族消失）" \
+  0 "$(expo sum "$S1" fulcrum_overrides_active)"
+eq "★★★ fulcrum_overrides_active 不带任何标签（判据 1）" \
+  "" "$(expo labelkeys "$S1" fulcrum_overrides_active)"
 
 # ── [3/8] 判据 2：访问控制的两个方向 ────────────────────────────────────────
 echo "=== [3/8] 判据 2：够得着的抓得到，够不着的拿到 403 ==="
@@ -794,15 +824,249 @@ eq "抓取回 200" 200 "$CODE"
 eq "★★ outcome=metrics 那一格随抓取增长（上一次抓取被这一次看见了）" \
   1 "$(($(expo sum "$S8" fulcrum_requests_total site=a.example outcome=metrics) - Y1))"
 
+# ── fulcrum_overrides_active：与 GET /stats 同源、悬空的照样计入 ───────────
+#   （M2 批 N 任务 6.5，G126，裁决 R13）
+#
+# ⚠ ⚠ ⚠ 判据 1/2/3/5 必须从真的 /metrics 出口上抓，不许只在 Rust 单测里
+#   直接调渲染函数（任务 4 的教训：16 条判据全直接调 handler，删掉路由那一行
+#   21 条判据照样全绿）。/stats 那一侧同理必须走真 admin socket，不直接调
+#   `AdminApp::stats()`——否则「路由真的接在生产会走的那条线上」这件事
+#   本身就没有判据在守。
+echo "=== fulcrum_overrides_active（M2 批 N 任务 6.5，G126，R13）==="
+
+admin_post() {
+  # $1 = 路径，$2 = body。回状态码，正文落 $WORK/admin.out（与 tests/serve/run.sh 同一个约定）。
+  curl -s -o "$WORK/admin.out" -w '%{http_code}' \
+    --unix-socket "$ADMIN_SOCK" -X POST --data-binary "$2" \
+    "http://localhost$1" 2>/dev/null || echo "000"
+}
+
+admin_get() {
+  # $1 = 路径。回状态码，正文落 $WORK/admin.out。
+  curl -s -o "$WORK/admin.out" -w '%{http_code}' \
+    --unix-socket "$ADMIN_SOCK" -X GET \
+    "http://localhost$1" 2>/dev/null || echo "000"
+}
+
+# /stats 那一侧只服务本节：overrides 数组的总条目数、其中 dangling=true 的条数。
+# ★ 与 tests/serve/run.sh 的 stats_check.py 是同一种分工（判据本身落在 bash 这层
+# 的 eq 上，python3 只负责把 JSON 读成一个数）。
+stats_overrides_total() {
+  python3 -c '
+import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8"))
+print(len(v["overrides"]))
+' "$1"
+}
+stats_overrides_dangling() {
+  python3 -c '
+import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8"))
+print(sum(1 for e in v["overrides"] if e["dangling"]))
+' "$1"
+}
+
+OV_SITE="http://ov.example:$BC_PORT"
+# ★ 沿用任务 6 报告点名过的那个「幽灵端口」惯例：19999 从不监听，只用来登记
+#   覆盖键，不需要真的发起连接——不在 AGENTS.md 的端口表里，因为它从不是
+#   真正被占用的端口。
+OV_UP="127.0.0.1:19999"
+
+# ★ ★ 两代配置都在**原有四个站点原封不动**的基础上，只新增 `ov.example` 这
+#   一个站点——不碰 A_PORT/BC_PORT 已经在监听的那两个监听器（`listen_ports`
+#   只按「端口 + 是否 TLS」比较，加一个新主机名不会让它们对不上而撞 409）。
+#   ⚠ ⚠ 不能把这个站点摆进**第一代**：那样一来 [2/8] 那条「没有 reverse_proxy
+#   ⇒ upstream_inflight/healthy 零样本」的判据就会被这里的真实上游破坏——
+#   两族族在样本无与本节的覆盖夹具，天然只能分两代。
+cat > "$WORK/ov.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+
+http://a.example:$A_PORT, http://a2.example:$A_PORT {
+    log {
+        output file $LOGFILE
+        level info
+    }
+    @internal {
+        remote_ip 127.0.0.0/8
+        path $MPATH
+    }
+    handle @internal {
+        metrics
+    }
+    respond 403
+}
+
+http://b.example:$BC_PORT {
+    respond 200 "b-ok"
+}
+
+http://c.example:$BC_PORT {
+    @outsider remote_ip 10.0.0.0/8
+    handle @outsider {
+        metrics
+    }
+    respond 403
+}
+
+http://*.wild.example:$BC_PORT {
+    respond 200 "wild-ok"
+}
+
+http://ov.example:$BC_PORT {
+    handle /a/* {
+        reverse_proxy $OV_UP {
+            id ova
+        }
+    }
+    handle {
+        reverse_proxy $OV_UP
+    }
+}
+CONF
+"$BIN" compile "$WORK/ov.Fulcrumfile" > "$WORK/ov.json" 2>/dev/null || {
+  echo "METRICS TESTS FAILED: compile ov.Fulcrumfile 失败" >&2
+  exit 1
+}
+
+# 同样的骨架，但 `ov.example` 只留默认 handle 那一条路——写了 `id ova` 的那把
+# 键因此悬空，没写 id 的那把仍然活着（与 tests/serve/run.sh 的 ov-dangling
+# 手法同一个形状）。
+cat > "$WORK/ov-dangling.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+
+http://a.example:$A_PORT, http://a2.example:$A_PORT {
+    log {
+        output file $LOGFILE
+        level info
+    }
+    @internal {
+        remote_ip 127.0.0.0/8
+        path $MPATH
+    }
+    handle @internal {
+        metrics
+    }
+    respond 403
+}
+
+http://b.example:$BC_PORT {
+    respond 200 "b-ok"
+}
+
+http://c.example:$BC_PORT {
+    @outsider remote_ip 10.0.0.0/8
+    handle @outsider {
+        metrics
+    }
+    respond 403
+}
+
+http://*.wild.example:$BC_PORT {
+    respond 200 "wild-ok"
+}
+
+http://ov.example:$BC_PORT {
+    handle {
+        reverse_proxy $OV_UP
+    }
+}
+CONF
+"$BIN" compile "$WORK/ov-dangling.Fulcrumfile" > "$WORK/ov-dangling.json" 2>/dev/null || {
+  echo "METRICS TESTS FAILED: compile ov-dangling.Fulcrumfile 失败" >&2
+  exit 1
+}
+
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
+eq "装载 ov.Fulcrumfile（新增 ov.example，两把可覆盖的键）" 200 "$CODE"
+
+# ── 判据 4（更强的一版）：这一刻真的有 reverse_proxy 了，但一项覆盖都还没设 ──
+#   ⇒ fulcrum_overrides_active 仍然是 0——证明它数的是「覆盖」，不是「随便什么
+#   跟 reverse_proxy 沾边的东西」。
+S9A="$WORK/s9a.txt"
+CODE=$(scrape "$S9A")
+eq "重新抓取回 200" 200 "$CODE"
+# ⚠ ⚠ `expo sum` 在「一条样本都没有」与「样本存在、值是 0」两种情况下算出
+#   的都是 0（没有匹配项时 `sum` 的初值就是 0）——光看 sum 挡不住「count==0
+#   就整族不出样本」这种实现。⇒ 先用 `series` 证「样本真的存在」，sum 那条
+#   才谈得上是在量「值」而不是在量一个巧合。
+eq "★★★ fulcrum_overrides_active 此刻仍出一条样本（不是被 0 值悄悄吞掉）" \
+  1 "$(expo series "$S9A" fulcrum_overrides_active)"
+eq "★★★ 有上游了，但还没设覆盖 ⇒ fulcrum_overrides_active 仍是 0" \
+  0 "$(expo sum "$S9A" fulcrum_overrides_active)"
+
+# ── 摆两把覆盖键：没写 id 的那把（之后仍然活着）+ id=ova 的那把（之后会悬空）──
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$OV_SITE\",\"upstream\":\"$OV_UP\"}]}")
+eq "POST /runtime：摘掉默认 handle 那条路（没写 id）" 200 "$CODE"
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$OV_SITE\",\"id\":\"ova\",\"upstream\":\"$OV_UP\"}]}")
+eq "POST /runtime：摘掉 id=ova 那条路" 200 "$CODE"
+
+# ── 判据 2（第一次，0 悬空）：GET /stats 与 GET /metrics 同一时刻各抓一次 ──
+CODE=$(admin_get /stats)
+eq "GET /stats（真 socket）" 200 "$CODE"
+cp "$WORK/admin.out" "$WORK/ov_stats1.json"
+S9B="$WORK/s9b.txt"
+CODE=$(scrape "$S9B")
+eq "GET /metrics（数据面，真 HTTP）" 200 "$CODE"
+
+ST1_TOTAL=$(stats_overrides_total "$WORK/ov_stats1.json")
+ST1_DANGLING=$(stats_overrides_dangling "$WORK/ov_stats1.json")
+M1_VALUE=$(expo sum "$S9B" fulcrum_overrides_active)
+eq "★ 夹具前提：/stats 里两项覆盖都还没悬空" 0 "$ST1_DANGLING"
+eq "★ 夹具前提：/stats 里总数是 2" 2 "$ST1_TOTAL"
+eq "★★★ 判据 2：fulcrum_overrides_active 与 /stats 的 overrides 总条目数同源（0 悬空这一刻）" \
+  "$ST1_TOTAL" "$M1_VALUE"
+
+# ── 换成只留默认路那条的配置 ⇒ id=ova 那把键悬空，没写 id 的那把仍然活着 ──
+CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
+eq "overrides=keep：换成不带 id=ova 那条路的配置" 200 "$CODE"
+
+# ── 判据 2（第二次，1 悬空）+ 判据 3：悬空的照样计入 ─────────────────────
+CODE=$(admin_get /stats)
+eq "GET /stats（换代之后，真 socket）" 200 "$CODE"
+cp "$WORK/admin.out" "$WORK/ov_stats2.json"
+S9C="$WORK/s9c.txt"
+CODE=$(scrape "$S9C")
+eq "GET /metrics（换代之后，真 HTTP）" 200 "$CODE"
+
+ST2_TOTAL=$(stats_overrides_total "$WORK/ov_stats2.json")
+ST2_DANGLING=$(stats_overrides_dangling "$WORK/ov_stats2.json")
+M2_VALUE=$(expo sum "$S9C" fulcrum_overrides_active)
+eq "★ 夹具前提：/stats 里总数还是 2（R8：设过覆盖的悬空了也不删）" 2 "$ST2_TOTAL"
+eq "★ 夹具前提：/stats 里悬空数是 1（id=ova 那把）" 1 "$ST2_DANGLING"
+# ⚠ ⚠ 判据写法纪律：总数（2）与悬空数（1）必须不相等，否则一个把两者读串了
+#   的实现（比如把 fulcrum_overrides_active 接成悬空数、或接成「非悬空数」）
+#   在这份夹具上也可能蒙对——上面这条断言先把「$ST2_TOTAL != $ST2_DANGLING」
+#   钉死，下面两条才真的分得清读对了还是读串了。
+if [ "$ST2_TOTAL" = "$ST2_DANGLING" ]; then
+  fail "夹具写法纪律没守住：总数与悬空数相等（$ST2_TOTAL），两者会被读串也测不出来"
+else
+  ok "★ 夹具写法纪律：总数（$ST2_TOTAL）与悬空数（$ST2_DANGLING）不相等"
+fi
+eq "★★★ 判据 3：悬空的照样计入——fulcrum_overrides_active 是总数 2，不是悬空数 1" \
+  2 "$M2_VALUE"
+eq "★★★ 判据 2：换代之后仍与 /stats 的 overrides 总条目数同源（1 悬空这一刻）" \
+  "$ST2_TOTAL" "$M2_VALUE"
+
+# ── 判据 5（非退化版）：登记处里明明有 2 项覆盖，正文里仍然只有一行 ──────────
+eq "★★★ 判据 5：即便有 2 项覆盖，fulcrum_overrides_active 也只出一条 series（基数恒为 1）" \
+  1 "$(expo series "$S9C" fulcrum_overrides_active)"
+eq "★ 那一行不带任何标签" "" "$(expo labelkeys "$S9C" fulcrum_overrides_active)"
+
 echo
 if [ "$FAILS" -ne 0 ]; then
   echo "METRICS TESTS FAILED：$FAILS 条断言没过。" >&2
   echo "--- 被测实例日志 ---" >&2
   tail -30 "$WORK/a.log" >&2 || true
   echo "--- 最后一次抓到的正文 ---" >&2
-  tail -40 "$WORK/s8.txt" >&2 || true
+  tail -40 "$WORK/s9c.txt" >&2 || true
+  echo "--- 最后一次 /stats 正文 ---" >&2
+  cat "$WORK/ov_stats2.json" >&2 2>/dev/null || true
   echo "--- 访问日志 ---" >&2
   tail -10 "$LOGFILE" >&2 || true
   exit 1
 fi
-echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格）。"
+echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入）。"
