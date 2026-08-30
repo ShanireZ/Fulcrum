@@ -365,6 +365,22 @@ curl_capture() {
   set -e
 }
 
+# ★ ★ ★ 通用版：任意命令可能非零退出、又想要它的输出时，用它代替裸的
+#   `VAR=$(cmd)`（修复轮 2，评审 N1）——道理与上面 `curl_capture()` 逐字
+#   相同（命令替换开的是子 shell，`$?` 不会传回父 shell），只是那个只服务
+#   curl；这个给别的命令（python3、cat、……）用。⇒ 全文件「捕获一个可能
+#   失败的命令」只有这一种写法，⛔ 别在别处再各自包一次 `set +e`/`set -e`。
+#   用法：`capture some_cmd args...`，读 `$CAPTURE_OUT`（合并了 stderr）与
+#   `$CAPTURE_RC`——调用方必须**立刻**读出来存进自己的变量，下一次
+#   `capture` 会覆盖这两个全局，就像 `$CURL_RC` 一样。
+CAPTURE_RC=0
+capture() {
+  set +e
+  CAPTURE_OUT=$("$@" 2>&1)
+  CAPTURE_RC=$?
+  set -e
+}
+
 # 取状态码 + 响应体 + 某个响应头，一次请求全拿到。
 probe() {
   local url=$1 host_hdr=${2:-}
@@ -1318,12 +1334,25 @@ fi
 #   `--pid-file "$WORK/proxy.pid"` 是 `proxy` 那个 `fulcrum serve` 进程
 #   自己落盘的、装的正是它自己的 OS pid（见 `process.rs::write_pid_file`），
 #   与 JSON 里的 `pid` 字段是两条完全不同的路径各自量出来的同一件事。
-JSON_PID=$(python3 "$WORK/stats_check.py" field "$WORK/stats1.json" pid)
-PROXY_PID=$(cat "$WORK/proxy.pid")
-if [ -n "$JSON_PID" ] && [ "$JSON_PID" = "$PROXY_PID" ]; then
+#   ★ 分辨力由这个构造保证（不同源码位置 + 跨真实进程边界），可注入的
+#   错法是存在的——比如把 `stats()` 的 `pid` 接成 `std::process::id() + 1`
+#   或任何写死值，这条判据会抓住。
+#
+# ★ ★ ★ 修复轮 2，评审 N1：这两行原来是裸的 `VAR=$(...)`——`field` 子命令
+#   在字段不存在时 `sys.exit(1)`，`cat` 在文件不存在时也非零退出，两者在
+#   set -e 下都会让脚本半路硬中止而不是优雅报红（与判据 3 那条
+#   `SAME_SOURCE_OUT` 是同一类坑，这两行当时漏包了）。⇒ 改用上面新写的
+#   `capture()`——本文件现在「捕获一个可能失败的命令」只有这一种写法。
+capture python3 "$WORK/stats_check.py" field "$WORK/stats1.json" pid
+JSON_PID=$CAPTURE_OUT
+JSON_PID_RC=$CAPTURE_RC
+capture cat "$WORK/proxy.pid"
+PROXY_PID=$CAPTURE_OUT
+PROXY_PID_RC=$CAPTURE_RC
+if [ "$JSON_PID_RC" -eq 0 ] && [ "$PROXY_PID_RC" -eq 0 ] && [ -n "$JSON_PID" ] && [ "$JSON_PID" = "$PROXY_PID" ]; then
   ok "★ ★ /stats 的 pid（$JSON_PID）与 proxy 进程自己的 pid 文件（$PROXY_PID）一致"
 else
-  fail "/stats 的 pid「$JSON_PID」与 pid 文件里的「$PROXY_PID」不一致"
+  fail "pid 判据没通过：JSON_PID=「$JSON_PID」(rc=$JSON_PID_RC)，PROXY_PID=「$PROXY_PID」(rc=$PROXY_PID_RC)"
 fi
 
 # ── 判据 2：fanout_shared 里那把撞键的 proxies == 2，走真 HTTP ──────────────
@@ -1369,15 +1398,14 @@ fi
 #   不再是「没配 health_uri、恒 true」那种两边巧合读到同一个平凡值的场景。
 #   把 /stats 那一侧改成「自己再数一遍」而不读同一组原子量，这条判据必须红
 #   （反证见任务报告——本轮修复要求做实这一条，不许只在报告里写一句了事）。
-# ⚠ ⚠ `set +e`/`set -e` 包一下（照抄本文件 `curl_capture()` 的形状）：
-#   下面这行是命令替换赋值，`same_source` 判定「不同源」时会非零退出，
-#   裸的 `$(...)` 赋值在 set -e 下会让脚本半路硬中止——那正是修复轮 1
-#   顺手加固过的那类坑（见 §4.5 反证），这里新写的这一行不能重蹈覆辙。
-set +e
-SAME_SOURCE_OUT=$(python3 "$WORK/stats_check.py" same_source \
-     "$WORK/stats1.json" "$WORK/metrics1.txt" "127.0.0.1:$UP_PORT" 2>&1)
-SAME_SOURCE_RC=$?
-set -e
+# ⚠ ⚠ 用 `capture()`（`same_source` 判定「不同源」时会非零退出，裸的
+#   `$(...)` 赋值在 set -e 下会让脚本半路硬中止——那正是修复轮 1 顺手
+#   加固过的那类坑，见 §4.5 反证；修复轮 2 又在 M1 那两行新栽了一次，
+#   见 §11——现在全文件这一族统一走 `capture()`，不再各自手包一次）。
+capture python3 "$WORK/stats_check.py" same_source \
+     "$WORK/stats1.json" "$WORK/metrics1.txt" "127.0.0.1:$UP_PORT"
+SAME_SOURCE_OUT=$CAPTURE_OUT
+SAME_SOURCE_RC=$CAPTURE_RC
 if [ "$SAME_SOURCE_RC" -eq 0 ]; then
   ok "★ ★ ★ R12：/stats 按地址归并（求和 inflight / 取合取 healthy）之后与 /metrics 逐项相等（$SAME_SOURCE_OUT）"
 else
