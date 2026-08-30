@@ -1310,7 +1310,18 @@ impl Runtime {
                         }
                     }
                     BodyRt::Route(inner) => walk(inner, out),
-                    _ => {}
+                    // ⚠ 不写 `_`：这样新增 `BodyRt` 变体时，这三处「按 `BodyRt` 下钻找
+                    //   `StepRt`」的 match（本函数 / `keyed_proxies_of` / `attach_overrides`）
+                    //   会一起在编译期红，不必指望人记得同步改全部三处。
+                    BodyRt::Tracing
+                    | BodyRt::Header(_)
+                    | BodyRt::Rewrite(_)
+                    | BodyRt::Encode(_)
+                    | BodyRt::Redir { .. }
+                    | BodyRt::Respond { .. }
+                    | BodyRt::Metrics
+                    | BodyRt::FileServer(_)
+                    | BodyRt::Cache(_) => {}
                 }
             }
         }
@@ -1418,7 +1429,18 @@ fn keyed_proxies_of(sites: &[SiteRt]) -> Vec<KeyedProxy<'_>> {
                     }
                 }
                 BodyRt::Route(inner) => walk(inner, site, out),
-                _ => {}
+                // ⚠ 不写 `_`：这样新增 `BodyRt` 变体时，这三处「按 `BodyRt` 下钻找
+                //   `StepRt`」的 match（本函数 / `all_upstreams` / `attach_overrides`）
+                //   会一起在编译期红，不必指望人记得同步改全部三处。
+                BodyRt::Tracing
+                | BodyRt::Header(_)
+                | BodyRt::Rewrite(_)
+                | BodyRt::Encode(_)
+                | BodyRt::Redir { .. }
+                | BodyRt::Respond { .. }
+                | BodyRt::Metrics
+                | BodyRt::FileServer(_)
+                | BodyRt::Cache(_) => {}
             }
         }
     }
@@ -2115,7 +2137,18 @@ impl Runtime {
                         }
                     }
                     BodyRt::Route(inner) => walk(inner, site, layer),
-                    _ => {}
+                    // ⚠ 不写 `_`：这样新增 `BodyRt` 变体时，这三处「按 `BodyRt` 下钻找
+                    //   `StepRt`」的 match（本函数 / `all_upstreams` / `keyed_proxies_of`）
+                    //   会一起在编译期红，不必指望人记得同步改全部三处。
+                    BodyRt::Tracing
+                    | BodyRt::Header(_)
+                    | BodyRt::Rewrite(_)
+                    | BodyRt::Encode(_)
+                    | BodyRt::Redir { .. }
+                    | BodyRt::Respond { .. }
+                    | BodyRt::Metrics
+                    | BodyRt::FileServer(_)
+                    | BodyRt::Cache(_) => {}
                 }
             }
         }
