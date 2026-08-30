@@ -1079,6 +1079,303 @@ CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
 expect_status "overrides 小节收尾：clear 恢复" 200 "$CODE"
 expect_status "收尾之后数据面恢复" 200 "$(probe "$BASE/")"
 
+# ── [3.6/4] GET /stats（M2 批 N 任务 6，R12「与 /metrics 同源」）─────────────
+#
+# ⚠ ⚠ ⚠ 这一节是 brief §7 点名「R12 的同源判据本来就必须走真路径」的落地：
+#   下面每一条判据都从**真 socket**上打——`/stats` 走 admin unix socket，
+#   `/metrics` 走数据面 HTTP 端口，两者在**同一时刻**各抓一次。admin.rs 里
+#   逐字段的深度判据已经在 Rust 单测里做过（同源、fanout、overrides、
+#   证书/缓存缺省、装载时间），这里**不重复**那些细节，只证明「路由真的接
+#   在生产会走的那条线上」——任务 4 那次「16 条判据全部直接调 handler，
+#   把 `("GET","/stats") => …` 那一行删掉全部照样绿」的教训点名过这件事。
+echo "=== [3.6/4] GET /stats 与 GET /metrics 同源 ==="
+
+admin_get() {
+  # $1 = 路径。回状态码，正文写进 $WORK/admin.out（与 admin_post 同一个约定）。
+  curl -s -o "$WORK/admin.out" -w '%{http_code}' \
+    --unix-socket "$ADMIN_SOCK" -X GET \
+    "http://localhost$1" 2>/dev/null || echo "000"
+}
+
+# ★ ★ 一把共享键（两条 reverse_proxy 都没写 id，指同一台 $UP_PORT）+ 一把独立
+#   键（id=solo，同样指 $UP_PORT——与共享键**同地址不同 id**，R12 的地址级
+#   归并因此要把三条 reverse_proxy 的 upstream 行并成 /metrics 上的一行）+
+#   一把指不存在地址的独立键（id=third，纯 IP 字面量，不需要能连上——只用来
+#   把 fanout 总键数拉到 3，与共享键的 proxies=2 错开，避免「总数与 proxies
+#   恰好相等」的判据写法陷阱）。`/__metrics` 挂在数据面，与 admin socket 上的
+#   `/stats` 是两个不同的出口。
+cat > "$WORK/stats.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+:$PROXY_PORT {
+    handle /__metrics {
+        metrics
+    }
+    handle /shared-a/* {
+        reverse_proxy 127.0.0.1:$UP_PORT
+    }
+    handle /shared-b/* {
+        reverse_proxy 127.0.0.1:$UP_PORT
+    }
+    handle /solo/* {
+        reverse_proxy 127.0.0.1:$UP_PORT {
+            id solo
+        }
+    }
+    handle /third/* {
+        reverse_proxy 127.0.0.1:19999 {
+            id third
+        }
+    }
+    handle {
+        respond 200 "stats-default"
+    }
+}
+http://only.example:$NAMED_PORT {
+    respond 200 named-only
+}
+secure.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    respond 200 secure-ok
+}
+CONF
+"$BIN" compile "$WORK/stats.Fulcrumfile" > "$WORK/stats.json" 2>/dev/null || {
+  echo "SERVE TESTS FAILED: compile stats.Fulcrumfile 失败" >&2
+  exit 1
+}
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/stats.json")")
+expect_status "装载 /stats 夹具（含撞键 + /__metrics）" 200 "$CODE"
+expect_status "夹具装好之后 /shared-a 走真上游" 200 "$(probe "$BASE/shared-a/x")"
+
+# 只做一件事的小工具：解析 /stats 的 JSON 与 /metrics 的 exposition 文本，
+# 按地址做归并再互相比对。★ 判据本身（同源相等）落在 bash 这一层的
+# `expect_status`/`ok`/`fail` 上，python3 只负责把两份格式都不同的正文
+# 读成同一种形状——这与 tests/metrics/run.sh 的 EXPO 是同一个分工。
+cat > "$WORK/stats_check.py" <<'PY'
+#!/usr/bin/env python3
+"""只服务于 tests/serve/run.sh 的 [3.6/4] 一节：读 /stats 的 JSON 与
+/metrics 的 Prometheus exposition，按子命令回答一个具体问题。
+⚠ 读不懂就当场非零退出——不猜、不吞。"""
+import json
+import re
+import sys
+
+
+def load_stats(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def metrics_gauge(path, family, addr):
+    """/metrics 那一侧：Prometheus text exposition 里某个 gauge 的读数（float）。
+    找不到就抛——调用方不该拿到一个假装存在的默认值。"""
+    pat = re.compile(
+        r"^" + re.escape(family) + r"\{upstream=\"" + re.escape(addr) + r"\"\}\s+(\S+)$"
+    )
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = pat.match(line.rstrip("\n"))
+            if m:
+                return float(m.group(1))
+    raise SystemExit(f"没找到 {family}{{upstream=\"{addr}\"}} 这一行（{path}）")
+
+
+def merge_stats_upstreams(v, addr):
+    """/stats 那一侧按地址现算：inflight 求和、healthy 取合取。
+    返回 (行数, inflight 和, healthy 是否全真)。"""
+    rows = [r for r in v["upstreams"] if r["addr"] == addr]
+    if not rows:
+        raise SystemExit(f"upstreams 里没有 addr={addr}")
+    return len(rows), sum(r["inflight"] for r in rows), all(r["healthy"] for r in rows)
+
+
+cmd = sys.argv[1]
+
+if cmd == "shape":
+    (stats_path,) = sys.argv[2:]
+    v = load_stats(stats_path)
+    need = [
+        "pid",
+        "config_loaded_at_unix",
+        "upstreams",
+        "overrides",
+        "fanout",
+        "fanout_shared",
+        "cache",
+        "certs",
+    ]
+    missing = [k for k in need if k not in v]
+    if missing:
+        print(f"缺顶层字段：{missing}", file=sys.stderr)
+        sys.exit(1)
+    for k in ("upstreams", "overrides", "fanout", "fanout_shared"):
+        if not isinstance(v[k], list):
+            print(f"`{k}` 应该是数组，实际是 {type(v[k])}", file=sys.stderr)
+            sys.exit(1)
+    print("OK")
+
+elif cmd == "fanout_proxies":
+    # 打印 fanout_shared 里某个 addr 的 proxies；找不到、或混进了
+    # proxies<=1 的项，就非零退出。
+    stats_path, addr = sys.argv[2:]
+    v = load_stats(stats_path)
+    rows = [r for r in v["fanout_shared"] if r["addr"] == addr]
+    if not rows:
+        print(f"fanout_shared 里没有 addr={addr}", file=sys.stderr)
+        sys.exit(1)
+    if any(r["proxies"] <= 1 for r in rows):
+        print(f"fanout_shared 混进了 proxies<=1 的项：{rows}", file=sys.stderr)
+        sys.exit(1)
+    print(rows[0]["proxies"])
+
+elif cmd == "fanout_total":
+    (stats_path,) = sys.argv[2:]
+    print(len(load_stats(stats_path)["fanout"]))
+
+elif cmd == "rows_for_addr":
+    stats_path, addr = sys.argv[2:]
+    n, _, _ = merge_stats_upstreams(load_stats(stats_path), addr)
+    print(n)
+
+elif cmd == "addrs":
+    (stats_path,) = sys.argv[2:]
+    for r in load_stats(stats_path)["upstreams"]:
+        print(r["addr"])
+
+elif cmd == "same_source":
+    # ★ ★ ★ R12 的核心判据：把 /stats 那一份按地址求和/取合取之后，与
+    # /metrics 那一份逐项相等。⛔ ⛔ 不是「两边都不是 0」——这里对**每一个
+    # 家族**都用真的数值相等比较，哪怕两边这一刻都读到 0 / true，比较本身
+    # 仍然是在问「这两个数是不是同一个源」，不是在问「这两个数是不是非零」。
+    stats_path, metrics_path, addr = sys.argv[2:]
+    v = load_stats(stats_path)
+    _, stats_inflight, stats_healthy = merge_stats_upstreams(v, addr)
+    metrics_inflight = metrics_gauge(metrics_path, "fulcrum_upstream_inflight", addr)
+    metrics_healthy = metrics_gauge(metrics_path, "fulcrum_upstream_healthy", addr)
+    bad = []
+    if float(stats_inflight) != metrics_inflight:
+        bad.append(f"inflight：/stats 归并={stats_inflight}，/metrics={metrics_inflight}")
+    want_healthy = 1.0 if stats_healthy else 0.0
+    if want_healthy != metrics_healthy:
+        bad.append(f"healthy：/stats 归并={stats_healthy}，/metrics={metrics_healthy}")
+    if bad:
+        print("；".join(bad), file=sys.stderr)
+        sys.exit(1)
+    print(f"OK inflight={stats_inflight} healthy={stats_healthy}")
+
+else:
+    print(f"不认识的子命令：{cmd}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+# ── 判据 1：GET /stats 从真 socket 上打，回 200 + 合法 JSON ──────────────────
+CODE=$(admin_get /stats)
+expect_status "GET /stats（真 socket）" 200 "$CODE"
+cp "$WORK/admin.out" "$WORK/stats1.json"
+if python3 "$WORK/stats_check.py" shape "$WORK/stats1.json"; then
+  ok "/stats 的正文是合法 JSON，且带齐 8 个顶层字段"
+else
+  fail "/stats 的正文形状不对（见上面 python3 的报错）"
+fi
+
+# ── 判据 2：fanout_shared 里那把撞键的 proxies == 2，走真 HTTP ──────────────
+PROXIES=$(python3 "$WORK/stats_check.py" fanout_proxies "$WORK/stats1.json" "127.0.0.1:$UP_PORT" || echo "ERR")
+if [ "$PROXIES" = "2" ]; then
+  ok "★ ★ fanout_shared 里 127.0.0.1:$UP_PORT 显示 proxies=2"
+else
+  fail "fanout_shared 的 proxies 应该是 2，实际「$PROXIES」"
+fi
+TOTAL=$(python3 "$WORK/stats_check.py" fanout_total "$WORK/stats1.json" || echo "ERR")
+if [ "$TOTAL" != "2" ] && [ "$PROXIES" = "2" ]; then
+  ok "判据写法纪律：fanout 总键数（$TOTAL）与 proxies（2）不相等"
+else
+  fail "fanout 总键数（$TOTAL）不该等于 proxies（2）——否则写反也测不出来"
+fi
+
+# ── 判据 3：R12 同源——GET /metrics 与 GET /stats 同一时刻各抓一次，
+#   /stats 按地址归并之后与 /metrics 逐项相等 ────────────────────────────────
+CODE=$(probe "$BASE/__metrics")
+expect_status "GET /metrics（数据面，真 HTTP）" 200 "$CODE"
+cp "$WORK/body" "$WORK/metrics1.txt"
+
+ROWS=$(python3 "$WORK/stats_check.py" rows_for_addr "$WORK/stats1.json" "127.0.0.1:$UP_PORT" || echo "ERR")
+if [ "$ROWS" = "3" ]; then
+  ok "127.0.0.1:$UP_PORT 在 /stats 里出了 3 行（shared-a/shared-b/solo 各一行，不归并）"
+else
+  fail "应该有 3 行未归并的 upstream 记录，实际 $ROWS 行"
+fi
+
+# ⚠ ⚠ 判据写法纪律：不许「两边都不是 0」——`same_source` 比的是**逐项相等**
+#   （数值比较，不是字符串比较），哪怕两边这一刻都读到 0/true（真实流量下
+#   常见），比较本身仍然是在问「这两个数是不是同一个源」。把 /stats 那一侧
+#   改成「自己再数一遍」而不读同一组原子量，这条判据必须红（反证见任务报告）。
+if python3 "$WORK/stats_check.py" same_source \
+     "$WORK/stats1.json" "$WORK/metrics1.txt" "127.0.0.1:$UP_PORT"; then
+  ok "★ ★ ★ R12：/stats 按地址归并（求和 inflight / 取合取 healthy）之后与 /metrics 逐项相等"
+else
+  fail "★ ★ ★ R12：/stats 与 /metrics 不同源（见上面 python3 的报错）"
+fi
+
+# ── 判据 4：不缓存 Runtime 快照——POST /load 换掉上游之后，/stats 立刻反映
+#   新的那份（不是继续举着换配置之前那份） ───────────────────────────────────
+cat > "$WORK/stats-swapped.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+:$PROXY_PORT {
+    reverse_proxy 127.0.0.1:$UP_PORT {
+        id swapped
+    }
+}
+http://only.example:$NAMED_PORT {
+    respond 200 named-only
+}
+secure.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    respond 200 secure-ok
+}
+CONF
+"$BIN" compile "$WORK/stats-swapped.Fulcrumfile" > "$WORK/stats-swapped.json" 2>/dev/null || {
+  echo "SERVE TESTS FAILED: compile stats-swapped.Fulcrumfile 失败" >&2
+  exit 1
+}
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/stats-swapped.json")")
+expect_status "换掉 /stats 夹具的上游（拆掉撞键，只留 id=swapped 一条）" 200 "$CODE"
+
+CODE=$(admin_get /stats)
+expect_status "换配置之后再打一次 GET /stats" 200 "$CODE"
+if python3 "$WORK/stats_check.py" shape "$WORK/admin.out"; then
+  ok "换配置之后 /stats 仍然是合法 JSON"
+else
+  fail "换配置之后 /stats 的形状坏了"
+fi
+if python3 "$WORK/stats_check.py" addrs "$WORK/admin.out" | grep -qx "127.0.0.1:19999"; then
+  fail "★ ★ ★ R12：/stats 还看得到换配置之前的老上游 127.0.0.1:19999 —— 像是缓存了一份旧 Runtime"
+else
+  ok "★ ★ ★ 换配置之后老上游 127.0.0.1:19999（third 那条）不在 /stats 里了"
+fi
+FANOUT_TOTAL_AFTER=$(python3 "$WORK/stats_check.py" fanout_total "$WORK/admin.out" || echo "ERR")
+if [ "$FANOUT_TOTAL_AFTER" = "1" ]; then
+  ok "★ ★ ★ 换配置之后 fanout 只剩新配置里那一把键（不再是撞键的 2）——/stats 没举着旧的 Runtime 快照"
+else
+  fail "换配置之后 fanout 应该只有 1 把键（新配置只有一条 reverse_proxy），实际 $FANOUT_TOTAL_AFTER"
+fi
+
+# ── 判据 5：404 的「可用」清单里有 GET /stats（真 socket）───────────────────
+CODE=$(admin_post /nope '{}')
+expect_status "GET /stats 判据同一节里顺带核一次：/nope 仍然 404" 404 "$CODE"
+if grep -q 'GET /stats' "$WORK/admin.out"; then
+  ok "404 的可用清单里有 GET /stats"
+else
+  fail "404 的可用清单没有提到 GET /stats：$(cat "$WORK/admin.out")"
+fi
+
+# 收尾：clear 掉、换回 [4/4] 需要的干净基线，避免影响后面的装载日志判据。
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
+expect_status "[3.6/4] 收尾：clear 恢复" 200 "$CODE"
+expect_status "收尾之后数据面恢复" 200 "$(probe "$BASE/")"
+
 # ── [4/4] 装载日志该说的话 ──────────────────────────────────────────────────
 echo "=== [4/4] 装载日志 ==="
 # ★ ★ G52（隐式的、用户没写出来的东西必须可见）没有作废，它换了对象：

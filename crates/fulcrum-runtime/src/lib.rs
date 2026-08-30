@@ -1629,6 +1629,15 @@ pub struct SharedRuntime {
     /// ⛔ 别在管理面那边另存一份（同裁决 R15 对「配置装载时刻」的处置）——
     /// 两份状态迟早对不上，而对不上那天没有任何东西会说。
     overrides: std::sync::Arc<OverrideLayer>,
+    /// **配置装载时刻**（**M2 批 N 任务 6**，裁决 R15）：`new` 与 [`Self::swap`]
+    /// 各设一次，⛔ **不在管理面那边另记一份**——理由与 `overrides` 那一格逐字相同：
+    /// 两份状态迟早对不上，而对不上那天没有任何东西会说。`/stats` 从
+    /// [`Self::loaded_at`] 读，不自己算。
+    ///
+    /// ⚠ 存 [`std::time::SystemTime`] 而不是秒级整数：`/stats` 的 R12 判据要能
+    /// 在同一个 CI 容器里的两次 `POST /load` 之间看出「变了」，秒级粒度在一次
+    /// 跑得很快的测试里可能落在同一秒——那会让一条本该稳定通过的判据偶发抖动。
+    loaded_at: std::sync::RwLock<std::time::SystemTime>,
 }
 
 impl SharedRuntime {
@@ -1656,12 +1665,25 @@ impl SharedRuntime {
         std::sync::Arc::new(SharedRuntime {
             inner: std::sync::RwLock::new(rt),
             overrides,
+            // ★ R15：`new` 也算一次「装载」——进程刚起来时服务的那份配置
+            // 同样有一个装载时刻，不是只有 `swap` 才算数。
+            loaded_at: std::sync::RwLock::new(std::time::SystemTime::now()),
         })
     }
 
     /// 这个进程的**格子登记处**。管理面（任务 4 / 5 / 6）从这里拿，⛔ 别自己建第二个。
     pub fn overrides(&self) -> &std::sync::Arc<OverrideLayer> {
         &self.overrides
+    }
+
+    /// **配置装载时刻**（裁决 R15）：`/stats` 的「配置装载时间」从这里读，
+    /// ⛔ 别在管理面那边另算一份——两份状态迟早对不上，理由与 `overrides`
+    /// 字段上那段逐字相同。
+    pub fn loaded_at(&self) -> std::time::SystemTime {
+        match self.loaded_at.read() {
+            Ok(g) => *g,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
     }
 
     /// 当前的覆盖清单，**悬空的已经标好**（裁决 R8）。
@@ -1715,9 +1737,17 @@ impl SharedRuntime {
         rt.attach_overrides(&self.overrides);
         let live = rt.override_keys();
         let rt = std::sync::Arc::new(rt);
+        // ★ ★ R15：**只读一次时钟**（批 M 的教训：收尾路径上读两次时钟，
+        //   同一件事的两个数会对不上）。这里只有一个消费者（`loaded_at`），
+        //   但仍然显式只调一次 `now()`，不在下面两处各自现调。
+        let now = std::time::SystemTime::now();
         match self.inner.write() {
             Ok(mut g) => *g = rt,
             Err(poisoned) => *poisoned.into_inner() = rt,
+        }
+        match self.loaded_at.write() {
+            Ok(mut g) => *g = now,
+            Err(poisoned) => *poisoned.into_inner() = now,
         }
         // ⚠ 顺序：**换完之后**才收拾（裁决 R7 的原话是「一次成功的 swap 之后」）。
         //   反过来的话，一次在写锁上失败的 swap 会先把登记处清了。

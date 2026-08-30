@@ -2148,6 +2148,10 @@ acme-tls/1";
                     listen_ports_for_admin,
                     acme.clone(),
                     Some(cache.clone()),
+                    // ★ ★ 与 `metrics::LiveSources.resolver`（上面 `register_live`
+                    //   那一行）拿的是**同一个** `Arc<SniResolver>`——`/stats` 与
+                    //   `/metrics` 的证书到期因此只有一个源（M2 批 N 任务 6）。
+                    Some(plan.resolver.clone()),
                 );
                 let mut svc = ListeningService::new("fulcrum-admin".to_string(), app);
                 // ★ 0600：**这就是管理面的全部访问控制**（G14：交给文件系统 ACL）。

@@ -411,7 +411,11 @@ fn snapshot(src: &LiveSources) -> Registry {
 ///
 /// ⚠ 1970 之前的 `notAfter` 不可能来自一张真证书，但它在类型上是可表达的 ——
 /// ★ 静静回 0 会把它说成「1970 年到期」，而一个负数一眼就看得出不对。
-fn unix_secs(t: SystemTime) -> f64 {
+///
+/// ★ `pub(crate)`（**M2 批 N 任务 6**）：`/stats`（`admin.rs`）渲染证书到期与
+/// 配置装载时间时复用**这一个**转换 —— 两处各写一份「差不多的」`SystemTime → f64`
+/// 迟早会在闰秒/精度上分家，而这几行本来就没有第二种写法可选。
+pub(crate) fn unix_secs(t: SystemTime) -> f64 {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_secs_f64(),
         Err(e) => -e.duration().as_secs_f64(),
@@ -646,6 +650,43 @@ pub fn render() -> String {
     let mut out = String::with_capacity(4096);
     with_registry(|r| r.render_into(&FAMILIES, &live, &mut out));
     out
+}
+
+/// 只给测试用：按给定的活体源把**真表**（`FAMILIES`）渲成文本，**绕开**
+/// [`live()`] 那个进程级 `OnceLock`（**M2 批 N 任务 6**）。
+///
+/// ★ ★ ★ **为什么不能让判据走 [`register_live`] + [`render`]**：`register_live`
+/// 全进程只认第一次，而 `cargo test` 里同一个二进制装着几十个测试——谁先跑到
+/// 谁就把这个 `OnceLock` 焊死，后面的测试要么读到别人的活体源，要么在它已经
+/// 焊死之后徒劳地 `register_live` 一次、只落一行 warn。⇒ 本函数直接走
+/// `snapshot()` + `render_into()`，与 [`render`] 唯一的差别是数据源从参数来，
+/// 不摸 `live()`——本模块自己的判据（见下面 `按活体源渲真表`）早就是这么测的，
+/// 这里只是把同一个手法开一个 `pub(crate)` 口子给 `admin.rs` 用。
+///
+/// # 用途：`admin.rs` 的 R12「同源」判据
+///
+/// `/stats` 按站点 × 上游列（不归并），`/metrics` 按地址归并——判据要证明
+/// 两者读的是**同一组原子量**。⇒ 判据里真正调用**这一个**函数、而不是在
+/// `admin.rs` 里手写一份「求和 / 取合取」——那样写出来的判据只是在跟自己的
+/// 抄件比对，量不到 `/metrics` 那一侧的真实实现有没有走岔。
+#[cfg(test)]
+pub(crate) fn render_snapshot_for_test(src: &LiveSources) -> String {
+    let mut out = String::new();
+    Registry::default().render_into(&FAMILIES, &snapshot(src), &mut out);
+    out
+}
+
+/// 一张现造的自签证书。★ rcgen 已经是本 crate 的 dev-dependency（QUIC 那条判据在用）。
+///
+/// ★ `pub(crate)`（**M2 批 N 任务 6**）：同一个理由——`admin.rs` 的 `/stats`
+/// 证书到期判据要往 `SniResolver` 里塞一张真证书，别在那边再写一份一模一样的
+/// rcgen 调用。
+#[cfg(test)]
+pub(crate) fn 自签(domain: &str) -> std::sync::Arc<fulcrum_tls::CertKey> {
+    let key = rcgen::KeyPair::generate().expect("测试密钥");
+    let params = rcgen::CertificateParams::new(vec![domain.to_string()]).expect("测试参数");
+    let cert = params.self_signed(&key).expect("自签");
+    fulcrum_tls::cert_key_from_der(cert.der().to_vec(), key.serialize_der()).expect("造 CertKey")
 }
 
 #[cfg(test)]
@@ -1046,10 +1087,12 @@ mod tests {
     /// 把真表按给定的活体源渲一遍。★ 事件那一半用一张**空的**注册表，
     /// 于是每一条断言看到的都只是活体那一半 —— 否则同一个测试二进制里别的判据
     /// 写进进程级表的数会漏进来。
+    ///
+    /// ★ 就是 [`render_snapshot_for_test`]——**M2 批 N 任务 6**把这个手法开了
+    /// 一个 `pub(crate)` 口子给 `admin.rs` 的 R12 判据用，这里改成调它，
+    /// 别让同一段「渲染一张真表」的代码在本文件里存在两份。
     fn 按活体源渲真表(src: &LiveSources) -> String {
-        let mut out = String::new();
-        Registry::default().render_into(&FAMILIES, &snapshot(src), &mut out);
-        out
+        render_snapshot_for_test(src)
     }
 
     /// 这个族出了几条样本行（`# HELP` / `# TYPE` 不算）。
@@ -1058,15 +1101,6 @@ mod tests {
             .filter(|l| l.starts_with(family) && !l.starts_with('#'))
             .map(|l| l.to_string())
             .collect()
-    }
-
-    /// 一张现造的自签证书。★ rcgen 已经是本 crate 的 dev-dependency（QUIC 那条判据在用）。
-    fn 自签(domain: &str) -> std::sync::Arc<fulcrum_tls::CertKey> {
-        let key = rcgen::KeyPair::generate().expect("测试密钥");
-        let params = rcgen::CertificateParams::new(vec![domain.to_string()]).expect("测试参数");
-        let cert = params.self_signed(&key).expect("自签");
-        fulcrum_tls::cert_key_from_der(cert.der().to_vec(), key.serialize_der())
-            .expect("造 CertKey")
     }
 
     #[test]

@@ -36,6 +36,7 @@ use crate::dns;
 use fulcrum_acme::AcmeManager;
 use fulcrum_runtime::overrides::{OverrideKey, RuntimeAction, RuntimeOp, UpstreamOverride};
 use fulcrum_runtime::{Runtime, SharedRuntime};
+use fulcrum_tls::SniResolver;
 use log::{error, info, warn};
 use pingora_core::apps::{HttpServerApp, ReusedHttpStream};
 use pingora_core::protocols::http::ServerSession;
@@ -87,6 +88,104 @@ pub struct AdminApp {
     /// 与 `/load`、`/renew` 同一套 0600 权限（G14）。⚠ 一个「只是清缓存」的
     /// 新入口听起来无害，而它能被用来把上游打垮 —— 权限面必须只有一个。
     cache: Option<Arc<crate::cache::CacheHandle>>,
+    /// 证书到期数据的源（**M2 批 N 任务 6**，`/stats` 的证书到期一节）。
+    /// `None` = 这个进程没有 TLS 解析器（测试夹具里会是这样）。
+    ///
+    /// ★ ★ ★ **选的是「给 `AdminApp::new` 加参数」这条路**（brief §4 两条里的
+    /// 第①条），照抄 `acme` 这一格现成的形状：production 那一侧 `resolver` 与
+    /// `metrics::LiveSources.resolver` 拿的是**同一个** `Arc<SniResolver>`
+    /// （`lib.rs` 里都是 `plan.resolver.clone()`）——「同一个对象、两处持有」
+    /// 不是第二份状态，`acme` 字段已经是这个形状的先例（它同样既在这里、
+    /// 也在 `LiveSources.acme` 里）。⛔ 没有走第②条（给 `metrics` 加一个公开
+    /// 读取口）：那条路会让 `/stats` 在 `register_live()` 接线之前被调时读到
+    /// `None`——而 `AdminApp::new` 在 `lib.rs` 里恰好排在 `register_live()`
+    /// **之后**，看起来今天不会撞上，但那是两处初始化顺序的偶然重合，不是
+    /// 结构上的保证；下一次谁调换了那两行的顺序，`/stats` 的证书到期就会在
+    /// 没有任何报错的情况下悄悄变回「一直没数据」。「加参数」这条路没有这个
+    /// 时序依赖——`AdminApp` 自己持有的 `Arc` 从构造那一刻起就是完整的。
+    resolver: Option<Arc<SniResolver>>,
+}
+
+// ── `GET /stats` 的响应形状（**M2 批 N 任务 6**）───────────────────────────
+//
+// ⚠ 这几个结构体的字段名**是 JSON 契约本身**——运维脚本会直接解析，
+// 改名字是破坏性变更。⇒ 与 `/runtime` 的 `Action`/`Req` 不同，这里不加
+// `#[serde(deny_unknown_fields)]`（那是收载荷用的）：这是**吐**载荷，读的人
+// 只应该忽略不认识的字段，不该因为服务端以后新增一格就解析失败。
+
+/// 每个（站点, id, 上游地址）各一行。★ ★ **不按地址归并**——R12 的同源判据
+/// 要能把这一节按地址求和 `inflight` / 取合取 `healthy`，再与 `/metrics`
+/// 逐项相等；归并了就没有东西可比。同一个地址被两条 `reverse_proxy` 引用时，
+/// 这里理应出现两行（各自独立的 `inflight`/`healthy`，见 [`FanoutStat`]）。
+#[derive(serde::Serialize)]
+struct UpstreamStat {
+    site: String,
+    id: String,
+    addr: String,
+    inflight: usize,
+    healthy: bool,
+}
+
+/// 覆盖层清单的一项（G18「永远可见」）。★ 三格键**原样**列出，不加工——
+/// 运维照抄即可（brief §6）。
+#[derive(serde::Serialize)]
+struct OverrideStat {
+    site: String,
+    id: String,
+    addr: String,
+    disabled: bool,
+    /// `None` = 只是 `disable`，没有改权重。
+    weight: Option<u32>,
+    dangling: bool,
+}
+
+/// 一格覆盖层键管着几条 `reverse_proxy`（[`fulcrum_runtime::ProxyKeyFanout`]
+/// 的 JSON 形态）。`proxies` 恒 ≥ 1。
+#[derive(serde::Serialize, Clone)]
+struct FanoutStat {
+    site: String,
+    id: String,
+    addr: String,
+    proxies: usize,
+}
+
+#[derive(serde::Serialize)]
+struct CacheStat {
+    bytes: u64,
+    entries: usize,
+}
+
+#[derive(serde::Serialize)]
+struct CertStat {
+    domain: String,
+    /// **绝对 Unix 秒**——与 `fulcrum_cert_expiry_seconds` 同一口径（裁决 R5）。
+    not_after_unix: f64,
+}
+
+/// `GET /stats` 整份响应体。
+#[derive(serde::Serialize)]
+struct StatsResponse {
+    /// 世代标识（主 agent 裁决）：本进程的 pid。⛔ 不是一个新造的「配置世代
+    /// 计数器」——`process.rs` 已经在写 pid 文件，它是现成且唯一的世代标识。
+    pid: u32,
+    /// 配置装载时间，**绝对 Unix 秒**。来自 `SharedRuntime::loaded_at()`
+    /// （裁决 R15），本文件不另算一份。
+    config_loaded_at_unix: f64,
+    upstreams: Vec<UpstreamStat>,
+    overrides: Vec<OverrideStat>,
+    /// 全部键，恒 ≥ 1 条 `proxies`。
+    fanout: Vec<FanoutStat>,
+    /// ★ ★ `fanout` 里 `proxies > 1` 的子集，单独摆一份——R6 第二轮那个真实
+    /// 风险（用户写两条指同一台的 `reverse_proxy`，可能以为 `disable` 只
+    /// 影响一条）的唯一解药是让它**显眼**，⛔ 不能只是混在 `fanout` 里的
+    /// 一个数字（brief §6）。
+    fanout_shared: Vec<FanoutStat>,
+    /// `None` = 这个进程没有缓存后端；`Some` 时哪怕 `bytes`/`entries` 都是
+    /// 0，也是一次真读数，不是缺省值冒充。
+    cache: Option<CacheStat>,
+    /// `None` = 这个进程没有 TLS 解析器；`Some(vec![])` = 有解析器但零证书
+    /// （比如整份配置没有一个 TLS 站点）——两者是不同的状态。
+    certs: Option<Vec<CertStat>>,
 }
 
 impl AdminApp {
@@ -95,6 +194,7 @@ impl AdminApp {
         listen_ports: Vec<(u16, bool)>,
         acme: Option<Arc<AcmeManager>>,
         cache: Option<Arc<crate::cache::CacheHandle>>,
+        resolver: Option<Arc<SniResolver>>,
     ) -> AdminApp {
         let mut listen_ports = listen_ports;
         listen_ports.sort_unstable();
@@ -107,6 +207,7 @@ impl AdminApp {
             l4_listeners,
             acme,
             cache,
+            resolver,
         }
     }
 
@@ -719,6 +820,132 @@ impl AdminApp {
             }
         }
     }
+
+    /// `GET /stats`：只读快照（**M2 批 N 任务 6**，G16 / G18「永远可见」那半，
+    /// R12「与 `/metrics` 同源」）。
+    ///
+    /// ⚠ ⚠ ⚠ **每次都从 `self.rt.current()` 现读，绝不缓存一份 `Runtime`**——
+    /// `metrics.rs` 的 [`crate::metrics::LiveSources`] 类型文档已经点过名：
+    /// 握着快照等于「指标停在换配置之前」。`self.rt` 与
+    /// `metrics::LiveSources.runtime` 是**同一个** `Arc<SharedRuntime>`
+    /// （production 那一侧 `lib.rs` 两处都是 `shared.clone()`），只要这里现读，
+    /// 就与 `/metrics` 读的是同一组原子量——R12 的「同源」由此成立，不需要
+    /// 这里与 `metrics.rs` 共用一份归并代码（那是两回事：R12 要求「同一个
+    /// 原子量源」，不要求「同一段归并算法」；本节按站点 × 上游列、不归并，
+    /// 归并只发生在 `/metrics` 那一侧，与判据脚本里）。
+    fn stats(&self) -> String {
+        // ★ 一次调用只取一份快照——理由见上面的方法文档；下面对 `rt` 的全部
+        //   读取都基于这同一个 `Arc<Runtime>`，不会跨两份配置。
+        let rt = self.rt.current();
+
+        // ── 每个（站点, id, 上游地址）各一行（R12：不按地址归并）────────────
+        let mut upstreams = Vec::new();
+        for kp in rt.keyed_proxies() {
+            for up in &kp.target.upstreams {
+                upstreams.push(UpstreamStat {
+                    site: kp.site.to_string(),
+                    id: kp.id.to_string(),
+                    addr: up.addr.clone(),
+                    inflight: up.inflight(),
+                    healthy: up.is_healthy(),
+                });
+            }
+        }
+
+        // ── overrides 清单：唯一取数口是 SharedRuntime::override_entries ────
+        //   ⛔ 别在这里自己拼 live 再调 OverrideLayer::entries——道理与
+        //   `SharedRuntime::override_entries` 文档上那句逐字相同。
+        let overrides: Vec<OverrideStat> = self
+            .rt
+            .override_entries()
+            .into_iter()
+            .map(|e| OverrideStat {
+                site: e.key.site,
+                id: e.key.id,
+                addr: e.key.addr,
+                disabled: e.disabled,
+                weight: e.weight,
+                dangling: e.dangling,
+            })
+            .collect();
+
+        // ── fanout：唯一取数口是 Runtime::proxy_key_fanout ──────────────────
+        //   ⛔ 别再写一份「数一数同键有几条」的遍历——那与任务 3 的判据
+        //   6/7 守的是同一张图，两份拼法迟早分家。
+        let fanout: Vec<FanoutStat> = rt
+            .proxy_key_fanout()
+            .into_iter()
+            .map(|f| FanoutStat {
+                site: f.site.to_string(),
+                id: f.id.to_string(),
+                addr: f.addr.to_string(),
+                proxies: f.proxies,
+            })
+            .collect();
+        let fanout_shared: Vec<FanoutStat> =
+            fanout.iter().filter(|f| f.proxies > 1).cloned().collect();
+
+        // ── 缓存占用：`None` = 没有缓存后端，不是 0 冒充 ────────────────────
+        let cache = self.cache.as_ref().map(|c| {
+            let (bytes, entries) = c.store.stats();
+            CacheStat { bytes, entries }
+        });
+
+        // ── 证书到期：`None` = 没有 TLS 解析器；`Some(vec![])` = 有解析器
+        //    但零证书——两者是不同的状态，别用同一个空值表示 ────────────────
+        let certs = self.resolver.as_ref().map(|r| {
+            r.expiries()
+                .into_iter()
+                .map(|(domain, not_after)| CertStat {
+                    domain,
+                    not_after_unix: crate::metrics::unix_secs(not_after),
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let resp = StatsResponse {
+            pid: std::process::id(),
+            // R15：装载时刻只有一份，存在 SharedRuntime 上，这里只读不算。
+            config_loaded_at_unix: crate::metrics::unix_secs(self.rt.loaded_at()),
+            upstreams,
+            overrides,
+            fanout,
+            fanout_shared,
+            cache,
+            certs,
+        };
+        // ★ 这里不会因为数据形状 panic：全部字段都是 String/bool/数字/Option/
+        //   Vec，`unix_secs` 回的是有穷 f64（1970 之前也只是负数，不是 NaN/Inf）。
+        //   `unwrap_or_else` 纯粹是防御性收尾，不是预期会走到的分支。
+        serde_json::to_string(&resp).unwrap_or_else(|e| {
+            error!("/stats 序列化失败（不该发生）：{e}");
+            "{}".to_string()
+        })
+    }
+}
+
+/// 写 JSON 响应——★ ★ **只给 `GET /stats` 用**，与 [`reply`] 分开的原因是
+/// 两者的响应契约本来就不同：`reply` 的正文是 text/plain，并且**必须**在
+/// 尾部追加 R11 那句覆盖层计数（G18）；`/stats` 的正文是 JSON，追加一行纯
+/// 文本会把它撕成一份不合法的 JSON。⚠ ⚠ 这不是遗漏 R11——`/stats` 自己的
+/// `overrides` 一节已经把覆盖层的**全量**清单摆出来了（比 R11 那一行「N 项
+/// 生效中，M 项悬空」详细得多），G18「永远可见」在这里由 JSON 正文本身
+/// 承担，不需要再借 `reply()` 那一行文字。
+async fn reply_json(session: &mut ServerSession, status: u16, json: &str) {
+    let mut h = match pingora_http::ResponseHeader::build(status, None) {
+        Ok(h) => h,
+        Err(e) => {
+            error!("管理面建不出响应头：{e}");
+            return;
+        }
+    };
+    let body = bytes::Bytes::from(json.to_string());
+    let _ = h.insert_header("Content-Type", "application/json; charset=utf-8");
+    let _ = h.insert_header("Content-Length", body.len().to_string());
+    if session.write_response_header(Box::new(h)).await.is_err() {
+        return;
+    }
+    let _ = session.write_response_body(body, true).await;
 }
 
 #[async_trait::async_trait]
@@ -765,6 +992,23 @@ impl HttpServerApp for AdminApp {
             }
         }
 
+        // ── GET /stats：只读快照，走**独立**的 JSON 写出口 ────────────────
+        //
+        // ★ ★ 排在下面那个 `match` 之外、单独判断，而不是塞进同一个
+        //   `match` 再把 `reply()` 换成 `reply_json()`：`/stats` 的响应契约
+        //   本来就与另外四条不同（JSON、不追加 R11 计数行），硬塞进同一条
+        //   分发路径只会让 `(u16, String)` 这个返回类型背上第二种含义。
+        //   ⚠ ⚠ 但它仍然经过上面同一段真实的 HTTP 解析（method/path/body
+        //   读取）——不是绕开路由分发另起一条近路，任务 4 那次「16 条判据
+        //   全部直接调 handler，路由被删都测不出来」的教训在这里不成立：
+        //   下面的分支与 `unknown_route` 共用同一份 `path.as_str()` 匹配，
+        //   删掉这一段的话请求会落进 `_ => unknown_route(...)`，回 404，
+        //   而 404 的判据（见下方 `unknown_route`）会红。
+        if method.as_str() == "GET" && path.as_str() == "/stats" {
+            reply_json(&mut session, 200, &self.stats()).await;
+            return None;
+        }
+
         let (status, text) = match (method.as_str(), path.as_str()) {
             ("POST", "/load") => self.load(&body, query.as_deref()),
             ("POST", "/renew") => self.renew(&body),
@@ -789,7 +1033,7 @@ fn unknown_route(method: &str, path: &str) -> (u16, String) {
     (
         404,
         format!(
-            "不认识：{method} {path}\n可用：POST /load（全量原子 load）、POST /renew（强制续期）、POST /purge（清缓存）、POST /runtime（增量改覆盖层）\n"
+            "不认识：{method} {path}\n可用：POST /load（全量原子 load）、POST /renew（强制续期）、POST /purge（清缓存）、POST /runtime（增量改覆盖层）、GET /stats（只读快照）\n"
         ),
     )
 }
@@ -908,7 +1152,7 @@ mod tests {
                 .config
                 .unwrap();
         let rt = Arc::new(Runtime::build(&cfg).unwrap());
-        AdminApp::new(SharedRuntime::new(rt), ports, None, None)
+        AdminApp::new(SharedRuntime::new(rt), ports, None, None, None)
     }
 
     fn json_of(dsl: &str) -> Vec<u8> {
@@ -1128,6 +1372,7 @@ http://solo.example:8090 {
         AdminApp::new(
             SharedRuntime::new(rt),
             vec![(8080, false), (8090, false)],
+            None,
             None,
             None,
         )
@@ -1660,5 +1905,517 @@ http://solo.example:8090 {
                 "keep 的回话应该把**每一项**悬空覆盖都点名，漏了 {k}：{text}"
             );
         }
+    }
+
+    // ── `GET /stats`（M2 批 N 任务 6，G16 / G18 / R12 / R15）────────────────
+    //
+    // ★ ★ 这里补的是「直接调 handler、逐字段核对最终 JSON 文本」那一半；
+    //   brief §7 点名「必须走真路径」的那一半在 `tests/serve/run.sh` 的
+    //   `[3.6/4]` 一节（真 socket，`GET /stats` 与 `GET /metrics` 两个出口
+    //   都打）。⛔ 两边都要有，这里**不能取代** E2E——任务 4 那次「16 条判据
+    //   全部直接调 handler，把路由那一行删掉全部照样绿」的教训点名过这件事。
+
+    /// 一把共享键（两条 `reverse_proxy` 都没写 `id`，指同一台 `10.70.0.1:1`）+
+    /// 一把独立键（写了 `id solo`，指另一台 `10.70.0.2:2`）。★ 与 R6 第二轮
+    /// 那个真实风险（用户以为 `disable` 只影响一条 `reverse_proxy`）逐字同形。
+    const STATS_DSL: &str = "\
+http://pool.example:8080 {
+  handle /a/* {
+    reverse_proxy 10.70.0.1:1
+  }
+  handle /b/* {
+    reverse_proxy 10.70.0.1:1
+  }
+  handle /c/* {
+    reverse_proxy 10.70.0.2:2 {
+      id solo
+    }
+  }
+}
+";
+
+    fn app_stats() -> AdminApp {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", STATS_DSL)
+            .config
+            .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false)],
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// 解析 `/stats` 的 JSON 正文。★ ★ ★ 判据写法纪律（brief §8 第 2 条）：
+    /// 断言要打在**这份解析结果**（最终 JSON 文本）上，不是打在
+    /// `override_entries()`/`proxy_key_fanout()` 这类取数函数的返回值上——
+    /// 任务 5 那次「验 `clear_all()` 返回 `Vec` 的判据碰不到 `admin.rs` 里把它
+    /// 拼成文本的循环」的教训点名过这个形状。
+    fn stats_json(a: &AdminApp) -> serde_json::Value {
+        let text = a.stats();
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("/stats 不是合法 JSON：{e}\n{text}"))
+    }
+
+    #[test]
+    fn stats_是合法json且带着全部顶层字段() {
+        let a = app_stats();
+        let v = stats_json(&a);
+        for key in [
+            "pid",
+            "config_loaded_at_unix",
+            "upstreams",
+            "overrides",
+            "fanout",
+            "fanout_shared",
+            "cache",
+            "certs",
+        ] {
+            assert!(v.get(key).is_some(), "缺顶层字段 `{key}`：{v}");
+        }
+    }
+
+    #[test]
+    fn stats的pid等于本进程pid_不是新造的世代计数器() {
+        let a = app_stats();
+        let v = stats_json(&a);
+        assert_eq!(v["pid"].as_u64(), Some(std::process::id() as u64), "{v}");
+    }
+
+    // ── 缓存占用 / 证书到期：明确的缺省，不是 0 冒充（brief §8 判据 7）───────
+
+    #[test]
+    fn stats没配缓存和证书时是明确缺省_不是0冒充() {
+        let a = app_stats(); // cache=None，resolver=None（app_stats 的构造就是这样）。
+        let v = stats_json(&a);
+        assert!(
+            v["cache"].is_null(),
+            "没建缓存后端时 cache 应该是 null：{v}"
+        );
+        assert!(
+            v["certs"].is_null(),
+            "没有 TLS 解析器时 certs 应该是 null：{v}"
+        );
+    }
+
+    #[test]
+    fn stats配了缓存时哪怕是0也是真读数不是null() {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", STATS_DSL)
+            .config
+            .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let cache = crate::cache::CacheHandle::new(crate::cache::Backend::open(None, 4096));
+        let a = AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false)],
+            None,
+            Some(cache),
+            None,
+        );
+        let v = stats_json(&a);
+        assert!(
+            !v["cache"].is_null(),
+            "配了缓存后端，cache 不该是 null：{v}"
+        );
+        assert_eq!(v["cache"]["bytes"].as_u64(), Some(0), "{v}");
+        assert_eq!(v["cache"]["entries"].as_u64(), Some(0), "{v}");
+    }
+
+    #[test]
+    fn stats配了解析器但零证书时certs是空数组不是null() {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", STATS_DSL)
+            .config
+            .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let resolver = Arc::new(SniResolver::new());
+        let a = AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false)],
+            None,
+            None,
+            Some(resolver),
+        );
+        let v = stats_json(&a);
+        assert!(!v["certs"].is_null(), "配了解析器，certs 不该是 null：{v}");
+        assert_eq!(v["certs"].as_array().map(|a| a.len()), Some(0), "{v}");
+    }
+
+    #[test]
+    fn stats证书到期读的是真解析器里的真证书_口径与fulcrum_cert_expiry_seconds相同() {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", STATS_DSL)
+            .config
+            .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let resolver = Arc::new(SniResolver::new());
+        let ck = crate::metrics::自签("stats-cert.example");
+        let 到期 = ck.not_after;
+        resolver.install(&["stats-cert.example".to_string()], ck);
+        let a = AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false)],
+            None,
+            None,
+            Some(resolver),
+        );
+        let v = stats_json(&a);
+        let certs = v["certs"].as_array().expect("certs 应该是数组");
+        assert_eq!(certs.len(), 1, "{v}");
+        assert_eq!(certs[0]["domain"], "stats-cert.example", "{v}");
+        // ★ 与 fulcrum_cert_expiry_seconds 同一口径：绝对 Unix 秒（裁决 R5）。
+        let want = 到期
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("自签证书的 notAfter 在 1970 之后")
+            .as_secs_f64();
+        assert_eq!(certs[0]["not_after_unix"].as_f64(), Some(want), "{v}");
+    }
+
+    // ── overrides 一节：三格键原样 + disabled/weight/dangling（brief §6 / §8 判据 5）──
+
+    #[test]
+    fn stats的overrides一节三格键原样_且disabled_weight_dangling各自正确() {
+        let a = app_stats();
+        // 两把键分别检验 §6 点名的两种独立形态：只 disable（weight=None）／
+        // 只 set_weight（disabled=false）。
+        let k_shared = OverrideKey::new("http://pool.example:8080", "", "10.70.0.1:1");
+        let k_solo = OverrideKey::new("http://pool.example:8080", "solo", "10.70.0.2:2");
+        a.rt.overrides().slot(&k_shared).set_disabled(true);
+        a.rt.overrides().slot(&k_solo).set_weight(9).unwrap();
+
+        let v = stats_json(&a);
+        let overrides = v["overrides"].as_array().expect("overrides 应该是数组");
+        assert_eq!(overrides.len(), 2, "{v}");
+
+        let find = |site: &str, id: &str, addr: &str| {
+            overrides
+                .iter()
+                .find(|o| o["site"] == site && o["id"] == id && o["addr"] == addr)
+                .unwrap_or_else(|| panic!("没找到键 (site={site}, id={id}, addr={addr})：{v}"))
+        };
+        // ⚠ 三格键必须**原样**——运维照抄即可，不加工。
+        let shared_row = find("http://pool.example:8080", "", "10.70.0.1:1");
+        assert_eq!(shared_row["disabled"], true, "{v}");
+        assert!(
+            shared_row["weight"].is_null(),
+            "只 disable 过，weight 该是 null：{v}"
+        );
+        assert_eq!(shared_row["dangling"], false, "{v}");
+
+        let solo_row = find("http://pool.example:8080", "solo", "10.70.0.2:2");
+        assert_eq!(solo_row["disabled"], false, "{v}");
+        assert_eq!(solo_row["weight"].as_u64(), Some(9), "{v}");
+        assert_eq!(solo_row["dangling"], false, "{v}");
+    }
+
+    // ★ ★ ★ 判据写法纪律（brief §8 三条硬要求第 3 条）：总数与悬空数必须不
+    //   相等，否则把 `dangling` 算反、或两格印同一个值，判据照样绿。
+    #[test]
+    fn stats的overrides总数与悬空数不相等时两个数不会读串() {
+        let a = app_stats();
+        let k_shared = OverrideKey::new("http://pool.example:8080", "", "10.70.0.1:1");
+        let k_solo = OverrideKey::new("http://pool.example:8080", "solo", "10.70.0.2:2");
+        a.rt.overrides().slot(&k_shared).set_disabled(true);
+        a.rt.overrides().slot(&k_solo).set_disabled(true);
+
+        // 换一份只留 solo 那条路的配置——共享键那把因此悬空，solo 那把仍然活着。
+        let (status, text) = a.load(
+            &json_of(
+                "http://pool.example:8080 {\n  \
+                 handle /c/* {\n    reverse_proxy 10.70.0.2:2 {\n      id solo\n    }\n  }\n  \
+                 handle {\n    respond 200\n  }\n}\n",
+            ),
+            Some("overrides=keep"),
+        );
+        assert_eq!(status, 200, "{text}");
+
+        let v = stats_json(&a);
+        let overrides = v["overrides"].as_array().expect("overrides 应该是数组");
+        assert_eq!(overrides.len(), 2, "总数应该是 2：{v}");
+        let dangling_count = overrides.iter().filter(|o| o["dangling"] == true).count();
+        assert_eq!(dangling_count, 1, "悬空数应该是 1（只有共享键那把）：{v}");
+        assert_ne!(
+            overrides.len(),
+            dangling_count,
+            "总数与悬空数必须不同，否则写反也测不出来"
+        );
+
+        let shared_row = overrides
+            .iter()
+            .find(|o| {
+                o["site"] == "http://pool.example:8080"
+                    && o["id"] == ""
+                    && o["addr"] == "10.70.0.1:1"
+            })
+            .expect("共享键那一项应该还在（悬空但没删——R8）");
+        assert_eq!(shared_row["dangling"], true, "{v}");
+        let solo_row = overrides
+            .iter()
+            .find(|o| o["id"] == "solo")
+            .expect("solo 那一项应该还在");
+        assert_eq!(solo_row["dangling"], false, "{v}");
+    }
+
+    // ── fanout：撞键 ⇒ proxies==2，且显眼地摆在 fanout_shared（brief §6 / §8 判据 6）──
+    //
+    // ★ ★ ★ 判据写法纪律：总键数与 shared 那一项的 `proxies` 必须不相等——
+    //   这里特地加一把 `third` 键，把 fanout 总数拉到 3，与 proxies=2 错开
+    //   （只有共享 + solo 两把键的话，总数与 proxies 会恰好都是 2）。
+    #[test]
+    fn stats的fanout两条reverse_proxy撞同一个键时proxies等于2_且显眼摆在fanout_shared() {
+        let cfg = fulcrum_config::compile_str(
+            "t.Fulcrumfile",
+            "http://pool.example:8080 {\n  \
+             handle /a/* {\n    reverse_proxy 10.70.0.1:1\n  }\n  \
+             handle /b/* {\n    reverse_proxy 10.70.0.1:1\n  }\n  \
+             handle /c/* {\n    reverse_proxy 10.70.0.2:2 {\n      id solo\n    }\n  }\n  \
+             handle /d/* {\n    reverse_proxy 10.70.0.3:3 {\n      id third\n    }\n  }\n\
+             }\n",
+        )
+        .config
+        .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let a = AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false)],
+            None,
+            None,
+            None,
+        );
+
+        let v = stats_json(&a);
+        let fanout = v["fanout"].as_array().expect("fanout 应该是数组");
+        assert_eq!(
+            fanout.len(),
+            3,
+            "三把互不相同的键（共享地址一把 + 两把独立）：{v}"
+        );
+
+        let shared_row = fanout
+            .iter()
+            .find(|f| {
+                f["site"] == "http://pool.example:8080"
+                    && f["id"] == ""
+                    && f["addr"] == "10.70.0.1:1"
+            })
+            .expect("共享地址那把键应该在 fanout 里");
+        assert_eq!(shared_row["proxies"].as_u64(), Some(2), "{v}");
+        for id in ["solo", "third"] {
+            let row = fanout.iter().find(|f| f["id"] == id).unwrap();
+            assert_eq!(row["proxies"].as_u64(), Some(1), "{id} 应该 proxies=1：{v}");
+        }
+
+        // ★ ★ 显眼那一半：fanout_shared 只含 proxies>1 的那一项，不是混在
+        //   fanout 里的一个数字（brief §6）。
+        let shared = v["fanout_shared"]
+            .as_array()
+            .expect("fanout_shared 应该是数组");
+        assert_eq!(shared.len(), 1, "{v}");
+        assert_eq!(shared[0]["proxies"].as_u64(), Some(2), "{v}");
+        assert_eq!(shared[0]["addr"], "10.70.0.1:1", "{v}");
+
+        assert_ne!(
+            fanout.len() as u64,
+            shared_row["proxies"].as_u64().unwrap(),
+            "总键数（3）与 proxies（2）必须不相等——判据写法纪律"
+        );
+    }
+
+    // ── 配置装载时间（裁决 R15，brief §8 判据 3）─────────────────────────────
+
+    #[test]
+    fn stats的配置装载时间在load之后会变() {
+        let a = app_stats();
+        let before = stats_json(&a)["config_loaded_at_unix"]
+            .as_f64()
+            .expect("config_loaded_at_unix 应该是数字");
+        // ★ 睡一下：确保两次 `SystemTime::now()` 不会因为时钟粒度巧合相等——
+        //   这是测试自己的可靠性保证，与被测逻辑无关。
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let (status, text) = a.load(
+            &json_of("http://pool.example:8080 {\n  respond 204\n}\n"),
+            Some("overrides=clear"),
+        );
+        assert_eq!(status, 200, "{text}");
+        let after = stats_json(&a)["config_loaded_at_unix"]
+            .as_f64()
+            .expect("config_loaded_at_unix 应该是数字");
+        assert!(
+            after > before,
+            "load 之后配置装载时间应该变新：before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn stats的配置装载时间只从sharedruntime读_adminrs不自己另算一份() {
+        // ★ ★ 结构判据（同「admin_rs这条路径不经过overridelayer_get」那条的
+        //   纪律）：正面——`stats()` 委托 `self.rt.loaded_at()`；反面——本文件
+        //   的产品代码不出现 `SystemTime::now()`（那会是第二份状态，与 R15 /
+        //   `overrides` 字段上那句纪律同源）。
+        let whole = include_str!("admin.rs");
+        let prod = whole
+            .split("#[cfg(test)]")
+            .next()
+            .expect("这个文件里应该有 #[cfg(test)]");
+        assert!(
+            prod.contains("self.rt.loaded_at()"),
+            "stats() 应该委托 SharedRuntime::loaded_at()，不是自己再算一份"
+        );
+        assert!(
+            !prod.contains("SystemTime::now()"),
+            "admin.rs 的产品代码不许自己读时钟——配置装载时间只有 SharedRuntime 上那一份"
+        );
+    }
+
+    // ── 404 的「可用」清单里有 GET /stats（brief §8 判据 8）──────────────────
+
+    #[test]
+    fn 不认识的路径的可用清单里有_stats() {
+        let (status, text) = unknown_route("POST", "/nope");
+        assert_eq!(status, 404);
+        assert!(text.contains("GET /stats"), "{text}");
+    }
+
+    // ── R12：与 /metrics 同源（brief §5 / §8 判据 2，最重的一条）─────────────
+    //
+    // ★ ★ ★ 判据写法纪律：inflight 求和与 healthy 取合取都要走**非退化**值——
+    //   两个 Upstream 对象各自 `acquire()` 不同的次数（3 与 2，和=5，互不相等，
+    //   也都不是容易与布尔值混淆的 0/1）、一个健康一个不健康（取合取=false，
+    //   与「取析取」「只取第一个」都不同）。⛔ ⛔ 不许只断言「两边都不是 0」。
+
+    #[test]
+    fn stats按地址归并后与metrics逐项相等_且走非退化值() {
+        let cfg = fulcrum_config::compile_str(
+            "t.Fulcrumfile",
+            "http://pool.example:8080 {\n  \
+             handle /a/* {\n    reverse_proxy 10.80.0.1:1\n  }\n  \
+             handle /b/* {\n    reverse_proxy 10.80.0.1:1\n  }\n\
+             }\n",
+        )
+        .config
+        .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let a = AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false)],
+            None,
+            None,
+            None,
+        );
+
+        let live_rt = a.rt.current();
+        let mut matches: Vec<&fulcrum_runtime::ProxyTarget> = live_rt
+            .keyed_proxies()
+            .into_iter()
+            .filter(|p| p.site == "http://pool.example:8080" && p.id.is_empty())
+            .map(|p| p.target)
+            .collect();
+        assert_eq!(matches.len(), 2, "夹具应该有两条撞键的 reverse_proxy");
+        let target_b = matches.remove(1);
+        let target_a = matches.remove(0);
+
+        // 非退化：3 与 2（和=5，互不相等，也不是 0/1）。
+        for _ in 0..3 {
+            target_a.upstreams[0].acquire();
+        }
+        for _ in 0..2 {
+            target_b.upstreams[0].acquire();
+        }
+        // 一个健康一个不健康——取合取 = false，取析取会把这里算成 true。
+        target_a.upstreams[0].set_healthy(false);
+        assert!(
+            target_b.upstreams[0].is_healthy(),
+            "夹具前提：另一个默认健康"
+        );
+
+        // ── /stats：按站点 × 上游列，不归并 ──────────────────────────────
+        let v = stats_json(&a);
+        let rows: Vec<&serde_json::Value> = v["upstreams"]
+            .as_array()
+            .expect("upstreams 应该是数组")
+            .iter()
+            .filter(|u| u["addr"] == "10.80.0.1:1")
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "同一个地址被两条 reverse_proxy 引用，应该出两行：{v}"
+        );
+        let stats_inflight_sum: u64 = rows.iter().map(|r| r["inflight"].as_u64().unwrap()).sum();
+        let stats_healthy_and: bool = rows.iter().all(|r| r["healthy"].as_bool().unwrap());
+        assert_eq!(stats_inflight_sum, 5, "3+2=5，非退化值：{v}");
+        assert!(!stats_healthy_and, "一个不健康 ⇒ 取合取应该是 false：{v}");
+
+        // ── /metrics：真的调 metrics::snapshot()，不是重新实现一遍归并 ──────
+        let metrics_text = crate::metrics::render_snapshot_for_test(&crate::metrics::LiveSources {
+            runtime: Some(a.rt.clone()),
+            resolver: None,
+            acme: None,
+        });
+        let metrics_inflight =
+            metrics_gauge_value(&metrics_text, "fulcrum_upstream_inflight", "10.80.0.1:1");
+        let metrics_healthy =
+            metrics_gauge_value(&metrics_text, "fulcrum_upstream_healthy", "10.80.0.1:1");
+
+        // ── 同源判据本身：/stats 归并后的读数与 /metrics 的读数逐项相等 ─────
+        assert_eq!(
+            stats_inflight_sum as f64, metrics_inflight,
+            "R12：/stats 按地址求和之后应该与 /metrics 逐项相等（inflight）"
+        );
+        assert_eq!(
+            if stats_healthy_and { 1.0 } else { 0.0 },
+            metrics_healthy,
+            "R12：/stats 按地址取合取之后应该与 /metrics 逐项相等（healthy）"
+        );
+        // 顺带确认两边落的都是我们摆的非退化值，不是巧合的退化值。
+        assert_eq!(metrics_inflight, 5.0, "{metrics_text}");
+        assert_eq!(metrics_healthy, 0.0, "{metrics_text}");
+    }
+
+    /// 从 Prometheus text exposition 里取一个 gauge 的值。
+    fn metrics_gauge_value(text: &str, name: &str, label_value: &str) -> f64 {
+        let needle = format!("{name}{{upstream=\"{label_value}\"}} ");
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&needle))
+            .unwrap_or_else(|| panic!("没找到 `{needle}` 这一行：{text}"));
+        line[needle.len()..].trim().parse().unwrap()
+    }
+
+    // ── R12 的另一半：不缓存 Runtime 快照（brief §8 判据 9）──────────────────
+
+    #[test]
+    fn stats不缓存runtime快照_load换掉上游之后立刻反映新的那份() {
+        let a = app_stats(); // STATS_DSL：pool.example:8080 上有 10.70.0.1:1 与 10.70.0.2:2
+        let before = stats_json(&a);
+        let before_addrs: std::collections::BTreeSet<String> = before["upstreams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["addr"].as_str().unwrap().to_string())
+            .collect();
+        assert!(before_addrs.contains("10.70.0.1:1"), "{before}");
+
+        // 换一份完全不同的上游（同一个站点、同一个端口集，不撞 409）。
+        let (status, text) = a.load(
+            &json_of("http://pool.example:8080 {\n  reverse_proxy 10.90.0.9:9\n}\n"),
+            Some("overrides=clear"),
+        );
+        assert_eq!(status, 200, "{text}");
+
+        let after = stats_json(&a);
+        let after_addrs: std::collections::BTreeSet<String> = after["upstreams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["addr"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            !after_addrs.contains("10.70.0.1:1"),
+            "★ ★ ★ R12：/stats 不该还看得到换掉之前的老上游——{after}"
+        );
+        assert!(
+            after_addrs.contains("10.90.0.9:9"),
+            "★ ★ ★ R12：/stats 应该立刻反映刚换上的新上游——{after}"
+        );
     }
 }
