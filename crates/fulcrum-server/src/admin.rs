@@ -34,6 +34,7 @@
 
 use crate::dns;
 use fulcrum_acme::AcmeManager;
+use fulcrum_runtime::overrides::{OverrideKey, RuntimeAction, RuntimeOp, UpstreamOverride};
 use fulcrum_runtime::{Runtime, SharedRuntime};
 use log::{error, info, warn};
 use pingora_core::apps::{HttpServerApp, ReusedHttpStream};
@@ -432,6 +433,138 @@ impl AdminApp {
             )
         }
     }
+
+    /// `POST /runtime`：增量通道，G8 的**动词**那半（**M2 批 N 任务 4**，裁决 R10）。
+    ///
+    /// 管理面收动词，直接改任务 3 建好的覆盖层格子——★ ★ 不重建 `Runtime`、不 swap：
+    /// 覆盖格子是 `Arc<UpstreamOverride>`，与活着的 `Upstream` 身上那一份**是同一个
+    /// 对象**（任务 3 判据 1，`Arc::ptr_eq` 钉住）。改登记处那一格，当场就作用到
+    /// 正在跑的上游身上——这是 R7 的全部意义。
+    ///
+    /// # ★ ★ ★ 全有或全无
+    ///
+    /// 分两个阶段：
+    /// 1. **纯解析**——校验 `verb` 认不认识、`weight` 的值域。值域**不在这里另写
+    ///    一份**：借 [`UpstreamOverride::set_weight`] 自己的判断，对着一格临时的
+    ///    `UpstreamOverride::default()` 跑一遍，只借判断、不碰任何真实状态。
+    /// 2. **寻址 + 施加**——在 [`fulcrum_runtime::overrides::OverrideLayer::apply_all`]
+    ///    的**同一次持锁**内完成。⛔ 不许拆成「先 `get()` 拿 `Arc`、再在锁外面改」：
+    ///    中间可能被一次 `/load` 抢先把格子收走，改的就是一个孤儿——命令回 200，
+    ///    覆盖静默丢失。`apply_all` 把「查存在」与「改」焊在同一把锁里，这也顺带
+    ///    让「全有或全无」成为**结构上的**：一次持锁，要么全改，要么一条不改。
+    ///
+    /// 两个阶段的任何一步不过，**一条都不生效**。
+    fn runtime(&self, body: &[u8]) -> (u16, String) {
+        /// ⛔ **只认这一种形状**：`{"actions":[…]}`。不接受「单条不带数组」的
+        /// 第二种写法——两种形状是两个解析器，两个解析器迟早分家。
+        #[derive(serde::Deserialize)]
+        struct Req {
+            actions: Vec<Action>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Action {
+            verb: String,
+            site: String,
+            /// **选填**，不写 = 空串（★ 主 agent 裁决：`id` 不做任何校验，只逐字
+            /// 精确匹配登记处的键）。
+            #[serde(default)]
+            id: String,
+            /// ⛔ ⛔ ⛔ **逐字精确匹配，不做归一化**（主 agent 裁决，按 R6 ⑤）：
+            /// 管理面对着的是运行时，运行时里那个上游就叫它归一化之后的名字；
+            /// 写配置原文（比如 `backend`）指不到时，400 报文会把该站点下全部
+            /// 合法的键列出来，照抄即可——做归一化会让那份清单变成死代码。
+            upstream: String,
+            /// 只对 `verb: "set_weight"` 有意义。
+            #[serde(default)]
+            weight: Option<u32>,
+        }
+
+        let req: Req = match serde_json::from_slice(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    400,
+                    format!("载荷要是 {{\"actions\":[…]}}（不接受单条不带数组的写法）：{e}\n"),
+                );
+            }
+        };
+        if req.actions.is_empty() {
+            return (400, "`actions` 不能是空数组\n".to_string());
+        }
+
+        // ── 阶段一：纯解析 + 值域校验，不碰登记处 ────────────────────────
+        let mut resolved: Vec<RuntimeAction> = Vec::with_capacity(req.actions.len());
+        for a in &req.actions {
+            // ⚠ 「别的动词带了 weight 怎么办」是本任务自己的决定（brief 要求钉一条
+            //   判据）：选**拒绝**而不是**忽略**——静默丢掉调用方明确给的字段，
+            //   与本仓反复堵的那类「配置照过、命令回 200、其实没全生效」是同一族。
+            if a.verb != "set_weight" && a.weight.is_some() {
+                return (
+                    400,
+                    format!(
+                        "verb `{}` 不接受 `weight` 字段（站点 {}·上游 {}）——\
+                         `weight` 只对 `set_weight` 有意义\n",
+                        a.verb, a.site, a.upstream
+                    ),
+                );
+            }
+            let op = match a.verb.as_str() {
+                "disable" => RuntimeOp::SetDisabled(true),
+                "enable" => RuntimeOp::SetDisabled(false),
+                "set_weight" => {
+                    let Some(w) = a.weight else {
+                        return (
+                            400,
+                            format!(
+                                "verb `set_weight` 要带 `weight`（站点 {}·上游 {}）\n",
+                                a.site, a.upstream
+                            ),
+                        );
+                    };
+                    // ★ ⛔ 值域不在这里另写一份：借 `UpstreamOverride::set_weight`
+                    //   自己的判断，对着一格临时格子跑一遍——真正的那次施加在
+                    //   阶段二，落在登记处自己的锁里。
+                    if let Err(e) = UpstreamOverride::default().set_weight(w) {
+                        return (400, format!("{e}\n"));
+                    }
+                    RuntimeOp::SetWeight(w)
+                }
+                other => return (400, format!("不认识的 verb：`{other}`\n")),
+            };
+            resolved.push(RuntimeAction {
+                key: OverrideKey::new(&a.site, &a.id, &a.upstream),
+                op,
+            });
+        }
+
+        // ── 阶段二：寻址 + 施加，`OverrideLayer::apply_all` 一次持锁做完 ─────
+        let live = self.rt.current().override_keys();
+        match self.rt.overrides().apply_all(&live, &resolved) {
+            Ok(()) => (200, format!("已生效：{} 条动作\n", resolved.len())),
+            Err(missing) => {
+                let mut out = String::from("指不到这些上游，一条都没生效：\n");
+                for k in &missing {
+                    out.push_str(&format!("  · {k}\n"));
+                }
+                // ★ R6 ⑤ 明确要求：逐条列出**该站点下**全部合法的键，运维照抄即可。
+                let mut sites: Vec<&str> = missing.iter().map(|k| k.site.as_str()).collect();
+                sites.sort_unstable();
+                sites.dedup();
+                for site in sites {
+                    out.push_str(&format!("站点 {site} 下现在有这些键：\n"));
+                    let mut found = false;
+                    for k in live.iter().filter(|k| k.site == site) {
+                        out.push_str(&format!("  · {k}\n"));
+                        found = true;
+                    }
+                    if !found {
+                        out.push_str("  （这个站点现在没有任何上游键——站点名是不是也写错了？）\n");
+                    }
+                }
+                (400, out)
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -474,18 +607,29 @@ impl HttpServerApp for AdminApp {
             ("POST", "/load") => self.load(&body),
             ("POST", "/renew") => self.renew(&body),
             ("POST", "/purge") => self.purge(&body),
+            ("POST", "/runtime") => self.runtime(&body),
             // ⚠ 不认识的路径回 404 而不是 200：一个「什么都收下」的管理面
             //   会让打错的命令看起来成功了。
-            _ => (
-                404,
-                format!(
-                    "不认识：{method} {path}\n可用：POST /load（全量原子 load）、POST /renew（强制续期）、POST /purge（清缓存）\n"
-                ),
-            ),
+            _ => unknown_route(method.as_str(), path.as_str()),
         };
         reply(&mut session, status, &text).await;
         None
     }
+}
+
+/// `_ =>` 分支的说明文字：不认识的路径回 404 而不是 200——一个「什么都收下」的
+/// 管理面会让打错的命令看起来成功了。
+///
+/// ★ ★ 抽成自由函数是为了让「`/runtime` 必须出现在这份『可用』清单里」
+/// （**M2 批 N 任务 4** 判据 11）不必驱动一整条真实的 HTTP 连接就能测——
+/// 少了它，打错命令的人看不到这个新入口存在。
+fn unknown_route(method: &str, path: &str) -> (u16, String) {
+    (
+        404,
+        format!(
+            "不认识：{method} {path}\n可用：POST /load（全量原子 load）、POST /renew（强制续期）、POST /purge（清缓存）、POST /runtime（增量改覆盖层）\n"
+        ),
+    )
 }
 
 async fn reply(session: &mut ServerSession, status: u16, text: &str) {
@@ -710,5 +854,370 @@ mod tests {
         let a = app(vec![(8080, false)]);
         assert_eq!(a.renew(b"{}").0, 400);
         assert_eq!(a.renew(b"nope").0, 400);
+    }
+
+    // ── `POST /runtime`（M2 批 N 任务 4，裁决 R10）──────────────────────────
+    //
+    // 夹具两个站点：`pool.example` 一条 handle 写了 `id`、另一条没写但指向
+    // **同一台机器**（判据 6 要用——两者必须是不同的格子）；`solo.example`
+    // 单站点单上游单目标（其余判据用，`pick_index_by(None)` 的 `Some`/`None`
+    // 就是「在不在可用集里」最直接的读数）。地址全用 IP 字面量，免得测试还要
+    // 走 DNS 解析。
+    const RUNTIME_DSL: &str = "\
+http://pool.example:8080 {
+  handle /a/* {
+    reverse_proxy 10.40.0.1:1 {
+      id pool_a
+    }
+  }
+  handle /b/* {
+    reverse_proxy 10.40.0.1:1
+  }
+}
+http://solo.example:8090 {
+  reverse_proxy 10.40.0.9:9
+}
+";
+
+    fn app_runtime() -> AdminApp {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", RUNTIME_DSL)
+            .config
+            .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        AdminApp::new(
+            SharedRuntime::new(rt),
+            vec![(8080, false), (8090, false)],
+            None,
+            None,
+        )
+    }
+
+    /// 按站点名 + id 从当前运行时里找回那一条 `reverse_proxy` 的目标。
+    /// 找不到就直接 panic——那说明夹具写错了，不是被测代码的问题。
+    fn find_target<'a>(rt: &'a Runtime, site: &str, id: &str) -> &'a fulcrum_runtime::ProxyTarget {
+        rt.keyed_proxies()
+            .into_iter()
+            .find(|p| p.site == site && p.id == id)
+            .unwrap_or_else(|| panic!("夹具里应该有「{site}·{id}」这个目标"))
+            .target
+    }
+
+    // ── 判据 1 / 2：disable / enable 走管理面这条路 ─────────────────────────
+
+    #[test]
+    fn runtime_disable走管理面让上游掉出可用集() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        assert_eq!(t.pick_index_by(None), Some(0), "夹具本身应该是可用的");
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(status, 200, "{text}");
+        // ★ 复用同一个 `t`（同一个 `Arc<UpstreamOverride>`）再问一次——这正是
+        //   R7 的意义：改登记处那一格，当场作用到正在跑的上游身上，不必重新
+        //   拿一份 `Runtime`。
+        assert_eq!(
+            t.pick_index_by(None),
+            None,
+            "走管理面 disable 之后，这个上游应该掉出可用集"
+        );
+    }
+
+    #[test]
+    fn runtime_enable把disable撤回来() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        let (s1, t1) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(s1, 200, "{t1}");
+        assert_eq!(t.pick_index_by(None), None, "先确认摘掉了");
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"enable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(
+            t.pick_index_by(None),
+            Some(0),
+            "enable 应该把 disable 撤回来"
+        );
+    }
+
+    // ── 判据 3：set_weight ────────────────────────────────────────────────
+
+    #[test]
+    fn runtime_set_weight改到upstream_weight返回新值() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        assert_eq!(
+            t.upstreams[0].weight(),
+            1,
+            "夹具没写 weight，配置权重缺省是 1"
+        );
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"set_weight","site":"http://solo.example:8090","upstream":"10.40.0.9:9","weight":7}]}"#,
+        );
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(
+            t.upstreams[0].weight(),
+            7,
+            "set_weight 之后 Upstream::weight() 要返回新值"
+        );
+    }
+
+    // ── 判据 4：全有或全无 ────────────────────────────────────────────────
+
+    #[test]
+    fn runtime_全有或全无_第二条指不到时第一条也不生效() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let solo = find_target(&rt, "http://solo.example:8090", "");
+        let pool_a = find_target(&rt, "http://pool.example:8080", "pool_a");
+        assert_eq!(solo.pick_index_by(None), Some(0));
+        assert_eq!(pool_a.pick_index_by(None), Some(0));
+
+        // ⚠ 第二条的地址用 TEST-NET-3（203.0.113.0/24）——不会出现在任何配置
+        //   或错误消息模板的字面量里（判据写法纪律，brief §3 末段）。
+        let body = br#"{"actions":[
+            {"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"},
+            {"verb":"disable","site":"http://solo.example:8090","upstream":"203.0.113.250:65000"},
+            {"verb":"disable","site":"http://pool.example:8080","id":"pool_a","upstream":"10.40.0.1:1"}
+        ]}"#;
+        let (status, text) = a.runtime(body);
+        assert_eq!(status, 400, "{text}");
+        assert_eq!(
+            solo.pick_index_by(None),
+            Some(0),
+            "第一条也不该生效——全有或全无"
+        );
+        assert_eq!(pool_a.pick_index_by(None), Some(0), "第三条同样不该生效");
+    }
+
+    // ── 判据 5：400 报文逐条列出该站点下的键 ─────────────────────────────
+
+    #[test]
+    fn runtime_指不到时400报文逐条列出该站点的键() {
+        let a = app_runtime();
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"203.0.113.250:65000"}]}"#,
+        );
+        assert_eq!(status, 400, "{text}");
+        // ⚠ ⚠ 判据写法纪律：`10.40.0.9:9` 这个真实键只能来自「该站点下的合法键」
+        //   这份动态清单，不会出现在任何错误消息模板的固定字面量里——真断言
+        //   在这一句。
+        assert!(
+            text.contains("10.40.0.9:9"),
+            "400 报文应该把 solo.example 下真实存在的上游键列出来，运维照抄即可：{text}"
+        );
+    }
+
+    // ── 判据 6：选填 id 命中不同的格子 ───────────────────────────────────
+
+    #[test]
+    fn runtime_选填id命中不同格子() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let 带id = find_target(&rt, "http://pool.example:8080", "pool_a");
+        let 不带id = find_target(&rt, "http://pool.example:8080", "");
+        assert_eq!(带id.pick_index_by(None), Some(0));
+        assert_eq!(不带id.pick_index_by(None), Some(0));
+
+        // 不写 id ⇒ 命中空串那一格，`带id` 那一格不该被碰到。
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://pool.example:8080","upstream":"10.40.0.1:1"}]}"#,
+        );
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(
+            不带id.pick_index_by(None),
+            None,
+            "没写 id 应该命中空串那一格"
+        );
+        assert_eq!(
+            带id.pick_index_by(None),
+            Some(0),
+            "写了 id 的那一格不该被这条没写 id 的动作碰到——两者不是同一格"
+        );
+
+        // 写了对应的 id ⇒ 命中另一格。
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://pool.example:8080","id":"pool_a","upstream":"10.40.0.1:1"}]}"#,
+        );
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(带id.pick_index_by(None), None, "写了 id 现在也该摘掉了");
+    }
+
+    // ── 判据 7：set_weight 的值域 ─────────────────────────────────────────
+
+    #[test]
+    fn runtime_set_weight越界0和65536都400且不生效() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        for bad in [0u32, 65536] {
+            let body = format!(
+                r#"{{"actions":[{{"verb":"set_weight","site":"http://solo.example:8090","upstream":"10.40.0.9:9","weight":{bad}}}]}}"#
+            );
+            let (status, text) = a.runtime(body.as_bytes());
+            assert_eq!(status, 400, "weight={bad}：{text}");
+            assert_eq!(
+                t.upstreams[0].weight(),
+                1,
+                "越界的 weight 不该生效：weight={bad}"
+            );
+        }
+    }
+
+    // ── 判据 8：不认识的 verb ─────────────────────────────────────────────
+
+    #[test]
+    fn runtime_不认识的verb400且不生效() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"reboot","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(status, 400, "{text}");
+        assert_eq!(t.pick_index_by(None), Some(0), "不认识的 verb 不该生效");
+    }
+
+    // ── 判据 9：报文形状不对 ─────────────────────────────────────────────
+
+    #[test]
+    fn runtime_报文形状不对400且不生效() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        // 单条不带数组——⛔ 不接受的第二种写法。
+        let (status, _) = a.runtime(
+            br#"{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}"#,
+        );
+        assert_eq!(status, 400);
+        assert_eq!(t.pick_index_by(None), Some(0));
+        // JSON 坏掉。
+        let (status, _) = a.runtime(b"{ not json");
+        assert_eq!(status, 400);
+        assert_eq!(t.pick_index_by(None), Some(0));
+    }
+
+    // ── 判据 10：指不到不留垃圾格子 ───────────────────────────────────────
+
+    #[test]
+    fn runtime_指不到不留垃圾格子() {
+        let a = app_runtime();
+        let before = a.rt.overrides().slot_count();
+        let (status, _) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"203.0.113.250:65000"}]}"#,
+        );
+        assert_eq!(status, 400);
+        assert_eq!(
+            a.rt.overrides().slot_count(),
+            before,
+            "一次失败的 /runtime 之后登记处的格子数不该变"
+        );
+    }
+
+    // ── 判据 11：404 的「可用」清单里有 /runtime ─────────────────────────
+
+    #[test]
+    fn 不认识的路径的可用清单里有_runtime() {
+        let (status, text) = unknown_route("GET", "/nope");
+        assert_eq!(status, 404);
+        assert!(text.contains("/runtime"), "{text}");
+    }
+
+    // ── 判据 12：结构判据（TOCTOU）───────────────────────────────────────
+
+    #[test]
+    fn admin_rs这条路径不经过overridelayer_get() {
+        // ★ ★ ★ 时序竞态难直接测，退而求其次：断言这个文件的源码里既真的走了
+        //   `apply_all`（正面：结构上确实换了新路），也压根不出现
+        //   `OverrideLayer::get()` 的调用形状（反面：没有偷偷绕回旧的两步式）。
+        //   ⛔ 别写成「碰巧现在没并发所以过了」的行为判据——那是一把在好坏两种
+        //   情况下读数相同的尺。
+        //
+        // ⚠ ⚠ 只查**产品代码**那一半（`#[cfg(test)]` 之前）——`include_str!` 会把
+        //   这条判据自己也读进来，而这条判据的断言文字里恰好逐字写着
+        //   `"overrides().get("` 这个串；不切掉测试模块的话，这条判据会读到
+        //   **它自己的源码**当成「出现了那个调用」，永远红，属于本批判据写法
+        //   纪律点名的那类自我碰撞（brief §3 末段的同一族陷阱）。
+        let whole = include_str!("admin.rs");
+        let prod = whole
+            .split("#[cfg(test)]")
+            .next()
+            .expect("这个文件里应该有 #[cfg(test)]");
+        assert!(
+            prod.contains("overrides().apply_all("),
+            "runtime() 应该经过 `OverrideLayer::apply_all`（查存在与改在同一次持锁内完成）"
+        );
+        assert!(
+            !prod.contains("overrides().get("),
+            "admin.rs 的产品代码里不许出现 `OverrideLayer::get()` 的调用——那会把「查存在」\
+             与「改」拆成两步，中间可能被一次 `/load` 的 retain_after_swap 抢先把格子收走，\
+             改的就是一个已经没人认的孤儿"
+        );
+    }
+
+    // ── 补充判据：weight 只对 set_weight 有意义（本任务自己的决定，钉住）──
+
+    #[test]
+    fn runtime_disable带weight字段直接400而不是被忽略() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9","weight":3}]}"#,
+        );
+        assert_eq!(status, 400, "{text}");
+        assert!(text.contains("set_weight"), "要说清为什么：{text}");
+        assert_eq!(t.pick_index_by(None), Some(0), "不该生效");
+    }
+
+    #[test]
+    fn runtime_set_weight缺weight字段400() {
+        let a = app_runtime();
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"set_weight","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(status, 400, "{text}");
+    }
+
+    #[test]
+    fn runtime_actions空数组400() {
+        let a = app_runtime();
+        let (status, text) = a.runtime(br#"{"actions":[]}"#);
+        assert_eq!(status, 400, "{text}");
+    }
+
+    // ── 补充判据：悬空的键端到端也不能被 /runtime 寻址 ──────────────────
+    //
+    // ★ overrides.rs 自己的判据已经在 `OverrideLayer::apply_all` 那一层验过
+    //   这件事；这里再从 `admin.rs` 的 `runtime()` 走一遍完整路径，确认
+    //   `live` 确实来自 `self.rt.current()`（正在服务的那一份），不是随便
+    //   哪一份快照。
+    #[test]
+    fn runtime_悬空的键不能被寻址() {
+        let a = app_runtime();
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(status, 200, "{text}");
+        // 换一份不再有 solo.example 的配置——那一格现在悬空：设过覆盖，
+        // 登记处按 R8 把它留着，但当前运行时已经不认它。
+        let cfg2 = fulcrum_config::compile_str(
+            "t.Fulcrumfile",
+            "http://pool.example:8080 {\n  reverse_proxy 10.40.0.1:1\n}\n",
+        )
+        .config
+        .unwrap();
+        let next = Runtime::build(&cfg2).unwrap();
+        a.rt.swap(next);
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"enable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
+        );
+        assert_eq!(status, 400, "悬空的键不该能被 /runtime 寻址到：{text}");
     }
 }

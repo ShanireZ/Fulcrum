@@ -173,6 +173,29 @@ pub struct OverrideEntry {
     pub dangling: bool,
 }
 
+/// 一条已经解析好、准备落到某一格的**操作**（**M2 批 N 任务 4**，`POST /runtime`）。
+///
+/// ★ ★ 到这里的时候，`weight` 的值域**已经**在调用方（`admin.rs::runtime` 的解析阶段）
+/// 用 [`UpstreamOverride::set_weight`] 自己的判断校验过——对着一格临时的
+/// `UpstreamOverride::default()` 跑一遍，只借它的判断，不碰任何真实状态。
+/// ⇒ [`OverrideLayer::apply_all`] 收到的 `SetWeight` **保证合法**，不会再失败。
+/// ⛔ 别在这里再写一份平行的值域检查——`UpstreamOverride::set_weight` 的文档注释
+/// 原话就是「两份差不多的值域检查迟早分家」。
+#[derive(Debug, Clone, Copy)]
+pub enum RuntimeOp {
+    /// 摘掉（`true`）或放回（`false`）。
+    SetDisabled(bool),
+    /// 设一个覆盖权重，**值域已经校验过**（见上）。
+    SetWeight(u32),
+}
+
+/// [`RuntimeOp`] 加上它要落在登记处的哪一格。
+#[derive(Debug, Clone)]
+pub struct RuntimeAction {
+    pub key: OverrideKey,
+    pub op: RuntimeOp,
+}
+
 /// **格子登记处**：本进程当前的全部临时覆盖（G18 / 裁决 R7）。
 ///
 /// 它**跨换代活着** —— 全量 load 换掉的是 [`crate::Runtime`]，不是这里。
@@ -283,5 +306,68 @@ impl OverrideLayer {
         let before = g.len();
         g.retain(|k, s| live.contains(k) || s.has_override());
         before - g.len()
+    }
+
+    /// `POST /runtime` **唯一**的写入口（**M2 批 N 任务 4**）：一次持锁内做完
+    /// 「每一条都指得到」与「全部施加」——**全有或全无**，且不会撞上
+    /// [`Self::retain_after_swap`] 的 TOCTOU（任务 3 评审开出来的口子）。
+    ///
+    /// # ⚠ ⚠ ⚠ 为什么不能写成「先 `get()` 一批 `Arc`，再逐个改」
+    ///
+    /// 拆成两步的话，中间可能被一次 `/load`（内部走 [`Self::retain_after_swap`]）
+    /// 插进来，把某一格从登记处移出去——调用方手上那个 `Arc` 还在，改的是一个
+    /// 已经没人认的孤儿：命令回 200，覆盖静默丢失，`/stats` 也看不到它
+    /// （登记处按键查不到）。⇒ 「查存在」与「改」必须在**同一次**持锁内完成，
+    /// 本方法就是那个复合动作。
+    ///
+    /// # 寻址口径：`live` **与** 登记处**都**要认，两者缺一不可
+    ///
+    /// `live` 是**当前正在服务**那份运行时的键集（调用方传
+    /// [`crate::Runtime::override_keys`]）。一条动作的键必须**同时**满足：
+    ///
+    /// - **在 `live` 里**——把「悬空」（键还留在登记处，但当前运行时已经不认）
+    ///   挡在外面：悬空覆盖是 `keep` 的展示对象（裁决 R8），不是 `/runtime` 的
+    ///   操作对象；
+    /// - **登记处里现在真的有这一格**（不靠 `live`，靠这一次持锁内的 `grids`
+    ///   本身）——防的正是上面那个 TOCTOU：万一调用方传来的 `live` 是旧快照，
+    ///   而这一格真的已经被并发的一次 `/load` 收走了，这里仍然能当场发现并
+    ///   拒绝，不会去改一个孤儿。
+    ///
+    /// 任一条指不到 ⇒ **一格都不改**，返回全部指不到的键（`Err`，供调用方拼
+    /// 400 报文时逐条列出）。全部指得到 ⇒ 在这同一次持锁内逐条施加，`Ok(())`。
+    pub fn apply_all(
+        &self,
+        live: &BTreeSet<OverrideKey>,
+        actions: &[RuntimeAction],
+    ) -> Result<(), Vec<OverrideKey>> {
+        let g = self.grids();
+        let addressable = |k: &OverrideKey| live.contains(k) && g.contains_key(k);
+        let missing: Vec<OverrideKey> = actions
+            .iter()
+            .filter(|a| !addressable(&a.key))
+            .map(|a| a.key.clone())
+            .collect();
+        if !missing.is_empty() {
+            return Err(missing);
+        }
+        // ★ 全部指得到，逐条施加。上面已经在**同一次**持锁内确认过每一格都在
+        //   `g` 里 ⇒ 下面的 `get` 结构上不会是 `None`（没有任何代码能在这次
+        //   持锁期间插进来改 `g`）。宁可静默跳过也不 panic——管理面不该因为
+        //   一格「不该发生」的数据就拖垮同一批里别的动作。
+        for a in actions {
+            let Some(slot) = g.get(&a.key) else {
+                continue;
+            };
+            match a.op {
+                RuntimeOp::SetDisabled(v) => slot.set_disabled(v),
+                RuntimeOp::SetWeight(w) => {
+                    // ⚠ 值域已经在调用方用同一个 `set_weight` 校验过（见
+                    //   `RuntimeOp` 的文档）；这里的 `Err` 分支结构上到不了，
+                    //   丢弃就是诚实地表达这件事。
+                    let _ = slot.set_weight(w);
+                }
+            }
+        }
+        Ok(())
     }
 }

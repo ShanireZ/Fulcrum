@@ -7,7 +7,7 @@
 //! 那是一把在好坏两种情况下读数相同的尺（AGENTS.md 门禁纪律第五条）。
 
 use fulcrum_config::compile_str;
-use fulcrum_runtime::overrides::{OverrideKey, OverrideLayer};
+use fulcrum_runtime::overrides::{OverrideKey, OverrideLayer, RuntimeAction, RuntimeOp};
 use fulcrum_runtime::{Runtime, SharedRuntime};
 use std::sync::Arc;
 
@@ -509,4 +509,162 @@ fn 判据13_runtime_build那条路与覆盖层完全无关() {
         );
     }
     assert_eq!(权重们(&不带), 摘之前的权重, "权重也一个字都不许变");
+}
+
+// ── 任务 4：`OverrideLayer::apply_all`（`POST /runtime` 的复合方法）─────────
+//
+// ★ 这一组只守 `apply_all` 自己的契约（全有或全无 · 寻址口径 · TOCTOU 安全），
+// 不碰 JSON / verb 解析——那部分的判据在 `fulcrum-server/src/admin.rs`。
+
+/// 全部指得到 ⇒ 在同一次持锁内逐条施加，两种操作都要生效。
+#[test]
+fn 任务4_apply_all_全部指得到就全部生效() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n",
+        ))
+        .unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let k2 = OverrideKey::new("a.com", "", "10.0.0.2:2");
+    let live = shared.current().override_keys();
+    let actions = vec![
+        RuntimeAction {
+            key: k1.clone(),
+            op: RuntimeOp::SetDisabled(true),
+        },
+        RuntimeAction {
+            key: k2.clone(),
+            op: RuntimeOp::SetWeight(9),
+        },
+    ];
+    shared
+        .overrides()
+        .apply_all(&live, &actions)
+        .expect("两条都指得到，应当整批生效");
+    assert!(shared.overrides().get(&k1).unwrap().is_disabled());
+    assert_eq!(shared.overrides().get(&k2).unwrap().weight(), Some(9));
+}
+
+/// ★ ★ 全有或全无：第二条指不到 ⇒ 第一条也不生效。
+#[test]
+fn 任务4_apply_all_全有或全无_一条指不到就一条都不生效() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n",
+        ))
+        .unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let 查无此键 = OverrideKey::new("a.com", "", "10.9.9.9:9");
+    let live = shared.current().override_keys();
+    let actions = vec![
+        RuntimeAction {
+            key: k1.clone(),
+            op: RuntimeOp::SetDisabled(true),
+        },
+        RuntimeAction {
+            key: 查无此键.clone(),
+            op: RuntimeOp::SetDisabled(true),
+        },
+    ];
+    let err = shared
+        .overrides()
+        .apply_all(&live, &actions)
+        .expect_err("第二条指不到，整批应当失败");
+    assert_eq!(err, vec![查无此键]);
+    assert!(
+        !shared.overrides().get(&k1).unwrap().is_disabled(),
+        "第一条不该生效——全有或全无"
+    );
+}
+
+/// ★ 悬空的键（登记处里还在、但当前运行时的 `override_keys()` 已经不认）
+/// 不算「指得到」——`/runtime` 不是 `keep` 的操作对象。
+#[test]
+fn 任务4_apply_all_悬空的键不算指得到() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    shared.overrides().slot(&k1).set_disabled(true);
+    // 换一份不再有这台机器的配置——k1 现在悬空：设过覆盖，`retain_after_swap`
+    // 把它留着，但当前运行时的 `override_keys()` 已经不认它。
+    let next = Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.9:9\n}\n")).unwrap();
+    shared.swap(next);
+    assert!(
+        shared.overrides().get(&k1).is_some(),
+        "悬空覆盖不删，登记处里还在"
+    );
+    let live = shared.current().override_keys();
+    assert!(!live.contains(&k1), "悬空的键不该在 live 集合里");
+    let actions = vec![RuntimeAction {
+        key: k1.clone(),
+        op: RuntimeOp::SetDisabled(false),
+    }];
+    let err = shared
+        .overrides()
+        .apply_all(&live, &actions)
+        .expect_err("悬空的键不该能被 /runtime 寻址到");
+    assert_eq!(err, vec![k1.clone()]);
+    // ⚠ 而且没有被动过——它应当仍然是 disabled。
+    assert!(shared.overrides().get(&k1).unwrap().is_disabled());
+}
+
+/// ★ ★ ★ 直接复现评审点名的 TOCTOU 现场（不靠真的并发）：拿一份**旧的** `live`
+/// 快照（那一刻这个键确实是活的），随后让它在登记处里被真实收走（一次成功的
+/// swap，且这一格从没设过覆盖 ⇒ `retain_after_swap` 会把它真的清掉——不是
+/// 悬空，悬空要求「设过覆盖」），再拿这份**过期**的 `live` 去调 `apply_all`。
+///
+/// 如果实现只信调用方传来的 `live`、不在持锁期间回头再看登记处一眼，这里就会
+/// 「查」到（因为 `live` 说它在）却在「改」的时候悄悄改不到东西——一个只检查
+/// `live` 而在改的时候对 `None` 静默 `continue` 的实现会让这条测试看到 `Ok(())`
+/// 而不是期望的 `Err`。
+#[test]
+fn 任务4_apply_all_live快照过期而登记处已经收走时仍然拒绝() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let 过期的_live = shared.current().override_keys();
+    assert!(过期的_live.contains(&k1), "快照那一刻它确实是活的");
+
+    let next = Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.9:9\n}\n")).unwrap();
+    shared.swap(next);
+    assert!(
+        shared.overrides().get(&k1).is_none(),
+        "夹具前提：这一格必须真的已经被收走，不然这条测试没测到 TOCTOU"
+    );
+
+    let actions = vec![RuntimeAction {
+        key: k1.clone(),
+        op: RuntimeOp::SetDisabled(true),
+    }];
+    let err = shared
+        .overrides()
+        .apply_all(&过期的_live, &actions)
+        .expect_err("live 快照过期、登记处已经收走 ⇒ 必须拒绝，不能悄悄改一个孤儿");
+    assert_eq!(err, vec![k1]);
+}
+
+/// 指不到时不留垃圾格子：`apply_all` 只读 `grids`，从不调用会现建格子的
+/// [`OverrideLayer::slot`]。
+#[test]
+fn 任务4_apply_all_指不到时不留垃圾格子() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let before = shared.overrides().slot_count();
+    let 查无此键 = OverrideKey::new("a.com", "", "10.9.9.9:9");
+    let live = shared.current().override_keys();
+    let actions = vec![RuntimeAction {
+        key: 查无此键,
+        op: RuntimeOp::SetDisabled(true),
+    }];
+    shared.overrides().apply_all(&live, &actions).unwrap_err();
+    assert_eq!(
+        shared.overrides().slot_count(),
+        before,
+        "失败的 apply_all 不该留下垃圾格子"
+    );
 }
