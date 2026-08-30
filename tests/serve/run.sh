@@ -876,12 +876,23 @@ echo "=== [3.5/4] POST /load?overrides= 与每次响应的覆盖计数 ==="
 # 带 reverse_proxy 的，好让 overrides 的 keep/clear 有个真上游可以 disable。
 # ⚠ 监听端口集必须与当前完全相同（:$PROXY_PORT 裸 HTTP、only.example:$NAMED_PORT、
 #   secure.example:$TLS_PORT 走 tls），否则会撞 409，而那不是本节要测的东西。
+#   ★ ★ ★ 修复轮 1，评审 F1：`:$PROXY_PORT` 下面挂**两个**互不相同的覆盖键
+#   （没写 `id` 的兜底 handle + 写了 `id up2` 的 `/second/*`，两者共享同一台
+#   真机 `$UP_PORT`，只是 `id` 不同）——R11 那一节要摆「两项生效中、其中一项
+#   悬空」（N≠M），否则 N 与 M 永远是同一个数，`{n}`/`{m}` 写反也测不出来。
 cat > "$WORK/ov.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
 }
 :$PROXY_PORT {
-    reverse_proxy 127.0.0.1:$UP_PORT
+    handle /second/* {
+        reverse_proxy 127.0.0.1:$UP_PORT {
+            id up2
+        }
+    }
+    handle {
+        reverse_proxy 127.0.0.1:$UP_PORT
+    }
 }
 http://only.example:$NAMED_PORT {
     respond 200 named-only
@@ -895,13 +906,22 @@ CONF
   echo "SERVE TESTS FAILED: compile ov.Fulcrumfile 失败" >&2
   exit 1
 }
-# 同样的骨架，但 :$PROXY_PORT 换成裸 respond——没有这个上游，拿来验悬空（判据 5）。
+# 同样的骨架，但兜底 handle 换成裸 respond——没写 id 的那把键没了上游，拿来验
+# 悬空（判据 5）；`/second/*`（id up2）原样留着，R11 那一节要靠它撑住「另一项
+# 仍然生效中、但不悬空」。
 cat > "$WORK/ov-dangling.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
 }
 :$PROXY_PORT {
-    respond 200 "ov-dangling"
+    handle /second/* {
+        reverse_proxy 127.0.0.1:$UP_PORT {
+            id up2
+        }
+    }
+    handle {
+        respond 200 "ov-dangling"
+    }
 }
 http://only.example:$NAMED_PORT {
     respond 200 named-only
@@ -939,6 +959,20 @@ expect_status "缺 overrides 被拒之后旧配置还在服务" 200 "$(probe "$B
 CODE=$(admin_post "/load?overrides=bogus" "$(cat "$WORK/ov.json")")
 expect_status "overrides 写了不认识的值 ⇒ 400" 400 "$CODE"
 expect_status "写错值被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
+
+# ── 修复轮 1，评审 F3（提级 Minor）：overrides= 重复且冲突 ⇒ 400，不是静默取
+#   第一个 ────────────────────────────────────────────────────────────────
+#   G120 的立身之本是「两种现实互相冲突 ⇒ 不猜」，同一个请求里写了两个 overrides=
+#   正是这个形状的教科书实例。⚠ ⚠ 判据写法纪律：body 依旧是完全合法的 ov.json，
+#   唯一的毛病是查询串里 `overrides` 出现了两次。
+CODE=$(admin_post "/load?overrides=keep&overrides=clear" "$(cat "$WORK/ov.json")")
+expect_status "overrides 重复且冲突 ⇒ 400" 400 "$CODE"
+if grep -q '重复' "$WORK/admin.out"; then
+  ok "400 的正文说清是「重复」而不是「值不认识」"
+else
+  fail "400 没说清是「重复」：$(cat "$WORK/admin.out")"
+fi
+expect_status "重复被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
 
 # ── 判据 3：overrides=keep ⇒ 覆盖还在，且仍作用在数据面上 ───────────────────
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
@@ -988,13 +1022,22 @@ expect_status "撤回之后数据面恢复" 200 "$(probe "$BASE/")"
 # ── 判据 6 / 7：R11 —— 每一次响应都带「当前有 N 项临时覆盖生效中（其中 M 项悬空）」──
 #   ⚠ ⚠ 「每一次」就是每一次：200/400/404/413 都要带；413 那条在 process_new_http
 #   的另一个 reply() 调用点上（读 body 超上界），主路径的判据测不到它。
-# 先摆好一个已知读数：一项 disable（不悬空）+ 换成不带这个上游的配置 ⇒ 变悬空。
+#   ★ ★ ★ 修复轮 1，评审 F1（Critical）：夹具必须是**两项覆盖、其中一项悬空**
+#   （N≠M）。原先只摆一项、且那一项就是要悬空的那个 ⇒ N 与 M 永远是同一个数
+#   （都是 1），`reply()` 里把 `{n}`/`{m}` 写反、或两格印同一个值，都测不出来——
+#   这正是判据写法纪律第 2 条点名的「好坏两种情况下读数相同的尺」。
+#   ⇒ 这里摆两把不同的键：没写 id 的兜底（$RUNTIME_UP）与写了 id 的 up2——
+#   下面这次 load 用 ov-dangling.json（只留 up2 那条路），没写 id 的那把因此
+#   悬空，up2 那把仍然活着。
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
-expect_status "为 R11 摆一项生效中的覆盖" 200 "$CODE"
+expect_status "为 R11 摆第一项生效中的覆盖（没写 id 的那把，之后会悬空）" 200 "$CODE"
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"id\":\"up2\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "为 R11 摆第二项生效中的覆盖（id=up2，之后仍然活着）" 200 "$CODE"
 CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
-expect_status "为 R11 摆一项悬空的覆盖（keep 一份不带这个上游的配置）" 200 "$CODE"
-# 现在：登记处应该有 1 项，且悬空。
-COUNT_LINE="当前有 1 项临时覆盖生效中（其中 1 项悬空）"
+expect_status "为 R11 换成只留 up2 那条路的配置（没写 id 的那把悬空）" 200 "$CODE"
+# 现在：登记处应该有 2 项生效中的覆盖，其中 1 项（没写 id 的那把）悬空 ⇒ N=2、M=1，
+# 两个数不同——一把真正能分得清「读对了」与「读串了」的尺。
+COUNT_LINE="当前有 2 项临时覆盖生效中（其中 1 项悬空）"
 if grep -qF "$COUNT_LINE" "$WORK/admin.out"; then
   ok "★ ★ 200 响应带着正确的计数行：$COUNT_LINE"
 else

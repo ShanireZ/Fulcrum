@@ -146,31 +146,72 @@ impl AdminApp {
             /// 覆盖层清空；回话逐项列出被清掉的。
             Clear,
         }
-        /// 从 `uri.query()` 解析。缺参数、或值不是 `keep`/`clear` 都是
-        /// `None`——两者在契约上是同一件事：拒绝，不猜。
-        fn parse_overrides(query: Option<&str>) -> Option<Directive> {
+        /// `parse_overrides` 解析不出一个干净档位时，三种情形各自要说不同的话
+        /// （修复轮 1，评审 F3）——⛔ 不许把「重复」也归进「值不认识」：运维看到
+        /// 「不认识 `keep,clear`」会去查文档，看到「写了两次」才会去查自己的
+        /// 请求，两句话导向的排查动作不一样。
+        enum OverridesError {
+            /// 一个 `overrides=` 都没有。
+            Missing,
+            /// 有且只有一个，但值不是 `keep`/`clear`。
+            Invalid,
+            /// ⚠ ⚠ ⚠ 出现了不止一个 `overrides=`（不论值是否相同）——
+            /// 修复轮 1，评审 F3：G120 的立身之本是「两种现实互相冲突就不猜」，
+            /// 而 `?overrides=keep&overrides=clear` 正是这个形状的教科书实例；
+            /// 原实现在第一个 `overrides=` 上就 `return`，把冲突**静默判成
+            /// 第一个**，与「不给默认值」这条纪律背道而驰。⇒ 一律拒绝，
+            /// 不去猜"最后一个才算数"还是"第一个才算数"。
+            Duplicate,
+        }
+        /// 从 `uri.query()` 解析。★ ★ 扫完**全部**键值对，⛔ 不在第一次命中
+        /// 就 `return`——那样才发现得了第二个 `overrides=`。
+        fn parse_overrides(query: Option<&str>) -> Result<Directive, OverridesError> {
+            let mut found: Option<&str> = None;
             for pair in query.unwrap_or("").split('&') {
                 if let Some(v) = pair.strip_prefix("overrides=") {
-                    return match v {
-                        "keep" => Some(Directive::Keep),
-                        "clear" => Some(Directive::Clear),
-                        _ => None,
-                    };
+                    if found.is_some() {
+                        return Err(OverridesError::Duplicate);
+                    }
+                    found = Some(v);
                 }
             }
-            None
+            match found {
+                None => Err(OverridesError::Missing),
+                Some("keep") => Ok(Directive::Keep),
+                Some("clear") => Ok(Directive::Clear),
+                Some(_) => Err(OverridesError::Invalid),
+            }
         }
 
-        let Some(directive) = parse_overrides(query) else {
-            return (
-                400,
-                "缺 `?overrides=keep` 或 `?overrides=clear`（G120：必填参数，没有\
-                 默认值——发布流水线要 `clear`，事故处理中的人要 `keep`，两种现实\
-                 都对且互相冲突，任何默认值都会在另一种场景里悄悄做错事），\
-                 **没有任何改动生效**。走查询串，不接受载荷里的字段：\
-                 `POST /load?overrides=keep` 或 `POST /load?overrides=clear`\n"
-                    .to_string(),
-            );
+        let directive = match parse_overrides(query) {
+            Ok(d) => d,
+            Err(OverridesError::Missing) => {
+                return (
+                    400,
+                    "缺 `?overrides=keep` 或 `?overrides=clear`（G120：必填参数，没有\
+                     默认值——发布流水线要 `clear`，事故处理中的人要 `keep`，两种现实\
+                     都对且互相冲突，任何默认值都会在另一种场景里悄悄做错事），\
+                     **没有任何改动生效**。走查询串，不接受载荷里的字段：\
+                     `POST /load?overrides=keep` 或 `POST /load?overrides=clear`\n"
+                        .to_string(),
+                );
+            }
+            Err(OverridesError::Invalid) => {
+                return (
+                    400,
+                    "`overrides` 只认 `keep` 或 `clear`，**没有任何改动生效**。\n".to_string(),
+                );
+            }
+            Err(OverridesError::Duplicate) => {
+                return (
+                    400,
+                    "`overrides` 出现了不止一次——这是**重复**，不是「值不认识」\
+                     （修复轮 1，评审 F3）：G120 的立身之本是两种现实互相冲突就\
+                     不猜，`?overrides=keep&overrides=clear` 正是这个形状的教科书\
+                     实例，**没有任何改动生效**。一次请求只认一个 `overrides`。\n"
+                        .to_string(),
+                );
+            }
         };
 
         let cfg: fulcrum_config::StructuredConfig = match serde_json::from_slice(body) {
@@ -1021,6 +1062,26 @@ mod tests {
         assert!(Arc::ptr_eq(&before, &a.rt.current()), "旧配置被动过了");
     }
 
+    // ★ ★ ★ 修复轮 1，评审 F3（提级 Minor）：`overrides=` 出现不止一次
+    //   （不论值是否冲突）要被拒绝，不许静默取第一个。
+    #[test]
+    fn load的overrides参数重复400且旧配置一个字节都没动() {
+        // ⚠ ⚠ 判据写法纪律：body 单独看完全合法（与「端口集不变时换得动」
+        //   同一份），唯一的毛病是查询串里 `overrides` 写了两次。
+        let a = app(vec![(8080, false)]);
+        let before = a.rt.current();
+        let (status, text) = a.load(
+            &json_of("http://b.com:8080 {\n  respond 204\n}\n"),
+            Some("overrides=keep&overrides=clear"),
+        );
+        assert_eq!(status, 400, "{text}");
+        assert!(
+            text.contains("重复"),
+            "要说清是「重复」而不是「值不认识」：{text}"
+        );
+        assert!(Arc::ptr_eq(&before, &a.rt.current()), "旧配置被动过了");
+    }
+
     #[test]
     fn 没开自动签发时强制续期给一条能看懂的错() {
         let a = app(vec![(8080, false)]);
@@ -1542,5 +1603,62 @@ http://solo.example:8090 {
             "keep 的回话应该把悬空的覆盖逐条点名：{text}"
         );
         assert!(text.contains("悬空"), "要说清这是悬空：{text}");
+    }
+
+    // ★ ★ ★ 修复轮 1，评审 F2（Important）：`clear`/`keep` 的「逐项列出」此前
+    //   只摆过**单项**——`任务5_clear_all返回值只含…`（`overrides.rs`）验的是
+    //   `clear_all` 自己的 `Vec`，碰不到 `admin.rs` 这两个格式化循环
+    //   （`for e in &cleared`／`for e in &dangling`）；一个「只
+    //   `push_str(cleared[0])`」的实现——表头 `清掉了 {} 项` 仍然用 `.len()`
+    //   算，读起来完全正常——七格门禁原本会全绿。这里用 `RUNTIME_DSL` 现成的
+    //   三把互不相同的键（`pool.example` 带 `id` / 不带 `id` + `solo.example`），
+    //   逐一断言三个 `Display` 串都出现在回话里。
+
+    #[test]
+    fn load的overrides等于clear时多项覆盖全部逐项列出_不只第一项() {
+        let a = app_runtime();
+        let k_pool_a = OverrideKey::new("http://pool.example:8080", "pool_a", "10.40.0.1:1");
+        let k_pool_bare = OverrideKey::new("http://pool.example:8080", "", "10.40.0.1:1");
+        let k_solo = OverrideKey::new("http://solo.example:8090", "", "10.40.0.9:9");
+        a.rt.overrides().slot(&k_pool_a).set_disabled(true);
+        a.rt.overrides().slot(&k_pool_bare).set_weight(7).unwrap();
+        a.rt.overrides().slot(&k_solo).set_disabled(true);
+
+        let (status, text) = a.load(&json_of(RUNTIME_DSL), Some("overrides=clear"));
+        assert_eq!(status, 200, "{text}");
+        for k in [&k_pool_a, &k_pool_bare, &k_solo] {
+            assert!(
+                text.contains(&k.to_string()),
+                "clear 的回话应该列出**每一项**被清掉的，漏了 {k}：{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn load的overrides等于keep时多项悬空全部逐条点名_不只第一项() {
+        let a = app_runtime();
+        let k_pool_a = OverrideKey::new("http://pool.example:8080", "pool_a", "10.40.0.1:1");
+        let k_pool_bare = OverrideKey::new("http://pool.example:8080", "", "10.40.0.1:1");
+        let k_solo = OverrideKey::new("http://solo.example:8090", "", "10.40.0.9:9");
+        a.rt.overrides().slot(&k_pool_a).set_disabled(true);
+        a.rt.overrides().slot(&k_pool_bare).set_weight(7).unwrap();
+        a.rt.overrides().slot(&k_solo).set_disabled(true);
+
+        // 换一份两个站点都还在（保住监听端口集 [(8080,false),(8090,false)]）、
+        // 但一个上游都没有的配置——三把键因此**全部**悬空。
+        let (status, text) = a.load(
+            &json_of(
+                "http://pool.example:8080 {\n  respond 200\n}\n\
+                 http://solo.example:8090 {\n  respond 200\n}\n",
+            ),
+            Some("overrides=keep"),
+        );
+        assert_eq!(status, 200, "{text}");
+        for k in [&k_pool_a, &k_pool_bare, &k_solo] {
+            assert!(
+                text.contains(&k.to_string()),
+                "keep 的回话应该把**每一项**悬空覆盖都点名，漏了 {k}：{text}"
+            );
+        }
     }
 }
