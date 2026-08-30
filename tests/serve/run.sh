@@ -1104,6 +1104,16 @@ admin_get() {
 #   把 fanout 总键数拉到 3，与共享键的 proxies=2 错开，避免「总数与 proxies
 #   恰好相等」的判据写法陷阱）。`/__metrics` 挂在数据面，与 admin socket 上的
 #   `/stats` 是两个不同的出口。
+#
+# ★ ★ ★ 修复轮 1，评审 I2：`solo` 那条 `reverse_proxy` 挂了 `health_uri`，
+#   而 `health_status` 故意写成 `500`——$UP_PORT 那台上游对**任何**路径都回
+#   200（它的配置就是裸 `respond 200 "up path=… xup=…"`，没有一条路径会回
+#   500），于是这条探测**恒被判失败**，不需要真的去改 $UP_PORT 自己的配置
+#   （那个配置被本文件几十处别的判据共用，不该为了这一节去动它）。
+#   ⇒ `solo` 那一行的 `healthy` 会稳定落在 `false`，`shared-a`/`shared-b`
+#   没配 `health_uri`、恒 `true`——三行合取 = `false`，R12 的 healthy 归并
+#   因此走的是**非退化值**，不再是「一刻都没配 health_uri、恒 true」那种
+#   两边都读到同一个平凡值的退化场景。
 cat > "$WORK/stats.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1121,6 +1131,9 @@ cat > "$WORK/stats.Fulcrumfile" <<CONF
     handle /solo/* {
         reverse_proxy 127.0.0.1:$UP_PORT {
             id solo
+            health_uri /solo-health-probe
+            health_status 500
+            health_interval 1s
         }
     }
     handle /third/* {
@@ -1145,8 +1158,20 @@ CONF
   exit 1
 }
 CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/stats.json")")
-expect_status "装载 /stats 夹具（含撞键 + /__metrics）" 200 "$CODE"
+expect_status "装载 /stats 夹具（含撞键 + /__metrics + 一条恒不健康的探测）" 200 "$CODE"
 expect_status "夹具装好之后 /shared-a 走真上游" 200 "$(probe "$BASE/shared-a/x")"
+
+# ★ ★ ★ 等主动健康检查真的把 solo 判成不健康——`poll_burst`/`POLL_TIMEOUT`
+#   是 [2c/4] 那一节留下的现成 helper（同一份脚本，函数在前面定义过就能在
+#   这里用）。判据挂在**数据面行为**上（502），不是「配了 health_uri 就当它
+#   已经生效」——刚装载完的那一小段窗口里 healthy 恒为初值 true（同 [2c/4]
+#   的教训）。
+HIT=$(poll_burst "$BASE/solo/x" 502 5)
+if [ "$HIT" = "5" ]; then
+  ok "★ solo 探测路径恒 500 ⇒ 它被判不健康（数据面上 /solo/* 变成 502）"
+else
+  fail "solo 期望被判不健康（连 5 次 502），$POLL_TIMEOUT 秒内最好的一轮只中了 $HIT/5"
+fi
 
 # 只做一件事的小工具：解析 /stats 的 JSON 与 /metrics 的 exposition 文本，
 # 按地址做归并再互相比对。★ 判据本身（同源相等）落在 bash 这一层的
@@ -1238,6 +1263,15 @@ elif cmd == "rows_for_addr":
     n, _, _ = merge_stats_upstreams(load_stats(stats_path), addr)
     print(n)
 
+elif cmd == "field":
+    # 打印一个顶层标量字段（比如 pid）——只给不需要专门子命令的简单读取用。
+    stats_path, key = sys.argv[2:]
+    v = load_stats(stats_path)
+    if key not in v:
+        print(f"顶层没有字段 `{key}`", file=sys.stderr)
+        sys.exit(1)
+    print(v[key])
+
 elif cmd == "addrs":
     (stats_path,) = sys.argv[2:]
     for r in load_stats(stats_path)["upstreams"]:
@@ -1279,6 +1313,19 @@ else
   fail "/stats 的正文形状不对（见上面 python3 的报错）"
 fi
 
+# ★ ★ 修复轮 1，评审 M1：单测里 handler 与断言同进程，`pid` 那条判据近乎
+#   恒真（好坏两种情况读数相同）。这里换一个**独立**的对照物——
+#   `--pid-file "$WORK/proxy.pid"` 是 `proxy` 那个 `fulcrum serve` 进程
+#   自己落盘的、装的正是它自己的 OS pid（见 `process.rs::write_pid_file`），
+#   与 JSON 里的 `pid` 字段是两条完全不同的路径各自量出来的同一件事。
+JSON_PID=$(python3 "$WORK/stats_check.py" field "$WORK/stats1.json" pid)
+PROXY_PID=$(cat "$WORK/proxy.pid")
+if [ -n "$JSON_PID" ] && [ "$JSON_PID" = "$PROXY_PID" ]; then
+  ok "★ ★ /stats 的 pid（$JSON_PID）与 proxy 进程自己的 pid 文件（$PROXY_PID）一致"
+else
+  fail "/stats 的 pid「$JSON_PID」与 pid 文件里的「$PROXY_PID」不一致"
+fi
+
 # ── 判据 2：fanout_shared 里那把撞键的 proxies == 2，走真 HTTP ──────────────
 PROXIES=$(python3 "$WORK/stats_check.py" fanout_proxies "$WORK/stats1.json" "127.0.0.1:$UP_PORT" || echo "ERR")
 if [ "$PROXIES" = "2" ]; then
@@ -1286,11 +1333,19 @@ if [ "$PROXIES" = "2" ]; then
 else
   fail "fanout_shared 的 proxies 应该是 2，实际「$PROXIES」"
 fi
+# ★ ★ ★ 修复轮 1，评审 I1：这里要的是**等值**断言，不是「不等于 2」——
+#   夹具的真实总键数是**已知的字面量 3**（共享地址一把 + solo 一把 + third
+#   一把）。写成 `!= 2` 的话，`python3` 硬失败时 `TOTAL="ERR"`，
+#   `"ERR" != "2"` 为真 ⇒ 会打出一个**绿的** ✓（`fail` 只累加计数不退出，
+#   上游 `shape` 先红也挡不住这一条静默通过）；即便 `python3` 没坏，`0`/`1`/
+#   `99` 这类错误值同样会被 `!= 2` 放行——那是一把「不等值」判据，只能挡住
+#   `TOTAL` 恰好等于 2 的那一种错法。改成 `= 3` 之后，`ERR` 与任何非 3 的值
+#   都会被正确判红。
 TOTAL=$(python3 "$WORK/stats_check.py" fanout_total "$WORK/stats1.json" || echo "ERR")
-if [ "$TOTAL" != "2" ] && [ "$PROXIES" = "2" ]; then
-  ok "判据写法纪律：fanout 总键数（$TOTAL）与 proxies（2）不相等"
+if [ "$TOTAL" = "3" ]; then
+  ok "★ fanout 总键数 = 3（共享地址 + solo + third），与 proxies（2）不相等——判据写法纪律"
 else
-  fail "fanout 总键数（$TOTAL）不该等于 proxies（2）——否则写反也测不出来"
+  fail "fanout 总键数应该是 3，实际「$TOTAL」"
 fi
 
 # ── 判据 3：R12 同源——GET /metrics 与 GET /stats 同一时刻各抓一次，
@@ -1307,15 +1362,34 @@ else
 fi
 
 # ⚠ ⚠ 判据写法纪律：不许「两边都不是 0」——`same_source` 比的是**逐项相等**
-#   （数值比较，不是字符串比较），哪怕两边这一刻都读到 0/true（真实流量下
-#   常见），比较本身仍然是在问「这两个数是不是同一个源」。把 /stats 那一侧
-#   改成「自己再数一遍」而不读同一组原子量，这条判据必须红（反证见任务报告）。
-if python3 "$WORK/stats_check.py" same_source \
-     "$WORK/stats1.json" "$WORK/metrics1.txt" "127.0.0.1:$UP_PORT"; then
-  ok "★ ★ ★ R12：/stats 按地址归并（求和 inflight / 取合取 healthy）之后与 /metrics 逐项相等"
+#   （数值比较，不是字符串比较）。inflight 这一格这一刻大概率仍然是退化的
+#   0（真实并发流量在这段脚本里没有制造出来，与 admin.rs 里 Rust 单测那条
+#   分开覆盖）；★ ★ ★ 但 healthy 这一格**不是**——上面刚等到 solo 被判
+#   不健康（502 已经证实），三行 healthy 取合取的结果是**非退化的 false**，
+#   不再是「没配 health_uri、恒 true」那种两边巧合读到同一个平凡值的场景。
+#   把 /stats 那一侧改成「自己再数一遍」而不读同一组原子量，这条判据必须红
+#   （反证见任务报告——本轮修复要求做实这一条，不许只在报告里写一句了事）。
+# ⚠ ⚠ `set +e`/`set -e` 包一下（照抄本文件 `curl_capture()` 的形状）：
+#   下面这行是命令替换赋值，`same_source` 判定「不同源」时会非零退出，
+#   裸的 `$(...)` 赋值在 set -e 下会让脚本半路硬中止——那正是修复轮 1
+#   顺手加固过的那类坑（见 §4.5 反证），这里新写的这一行不能重蹈覆辙。
+set +e
+SAME_SOURCE_OUT=$(python3 "$WORK/stats_check.py" same_source \
+     "$WORK/stats1.json" "$WORK/metrics1.txt" "127.0.0.1:$UP_PORT" 2>&1)
+SAME_SOURCE_RC=$?
+set -e
+if [ "$SAME_SOURCE_RC" -eq 0 ]; then
+  ok "★ ★ ★ R12：/stats 按地址归并（求和 inflight / 取合取 healthy）之后与 /metrics 逐项相等（$SAME_SOURCE_OUT）"
 else
-  fail "★ ★ ★ R12：/stats 与 /metrics 不同源（见上面 python3 的报错）"
+  fail "★ ★ ★ R12：/stats 与 /metrics 不同源：$SAME_SOURCE_OUT"
 fi
+# ★ ★ 非退化确认（呼应 admin.rs 那条 Rust 判据收尾的「顺带确认」）：光
+#   「逐项相等」挡不住两边**都**读到同一个平凡值——这里再核一次 healthy
+#   落的确实是 False，不是巧合的 True。
+case "$SAME_SOURCE_OUT" in
+  *"healthy=False"*) ok "★ 确认 healthy 归并结果是非退化的 False（不是两边巧合都读到 True）" ;;
+  *) fail "healthy 应该归并成 False（solo 那一行不健康），实际：$SAME_SOURCE_OUT" ;;
+esac
 
 # ── 判据 4：不缓存 Runtime 快照——POST /load 换掉上游之后，/stats 立刻反映
 #   新的那份（不是继续举着换配置之前那份） ───────────────────────────────────

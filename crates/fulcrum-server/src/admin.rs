@@ -834,8 +834,14 @@ impl AdminApp {
     /// 原子量源」，不要求「同一段归并算法」；本节按站点 × 上游列、不归并，
     /// 归并只发生在 `/metrics` 那一侧，与判据脚本里）。
     fn stats(&self) -> String {
-        // ★ 一次调用只取一份快照——理由见上面的方法文档；下面对 `rt` 的全部
-        //   读取都基于这同一个 `Arc<Runtime>`，不会跨两份配置。
+        // ★ ★ 一次调用只取一份快照——理由见上面的方法文档；下面对 `rt` 的
+        //   全部读取都基于这同一个 `Arc<Runtime>`，不会跨两份配置。
+        //   ⚠ ⚠ ⚠ 这句话必须是**真的**：`overrides` 那一节走
+        //   `SharedRuntime::override_entries_of(&rt)`（吃这里已经拿到的
+        //   `rt`），⛔ 不许调不吃参数的 `override_entries()`——那个内部会
+        //   再调一次 `self.rt.current()`，一次并发的 `POST /load` 落在两次
+        //   之间，就会吐出「`dangling` 按新配置算、别的字段按旧配置列」的
+        //   一份 JSON（修复轮 1，评审 I3）。
         let rt = self.rt.current();
 
         // ── 每个（站点, id, 上游地址）各一行（R12：不按地址归并）────────────
@@ -852,12 +858,15 @@ impl AdminApp {
             }
         }
 
-        // ── overrides 清单：唯一取数口是 SharedRuntime::override_entries ────
+        // ── overrides 清单：取数口是 SharedRuntime::override_entries_of ─────
         //   ⛔ 别在这里自己拼 live 再调 OverrideLayer::entries——道理与
         //   `SharedRuntime::override_entries` 文档上那句逐字相同。
+        //   ⚠ ⚠ 传 `&rt`（已经拿在手里的那一份），不调不吃参数的
+        //   `override_entries()`——那个会再调一次 `current()`，见上面
+        //   函数开头那段注释（修复轮 1，评审 I3）。
         let overrides: Vec<OverrideStat> = self
             .rt
-            .override_entries()
+            .override_entries_of(&rt)
             .into_iter()
             .map(|e| OverrideStat {
                 site: e.key.site,
@@ -2266,6 +2275,42 @@ http://pool.example:8080 {
         );
     }
 
+    // ★ ★ ★ 结构判据（修复轮 1，评审 I3）：`stats()` 曾经在已经持有 `rt`
+    //   之后，又通过不吃参数的 `override_entries()` 内部再调一次
+    //   `self.rt.current()`——一次并发的 `POST /load` 落在两次之间，
+    //   `overrides` 一节的 `dangling` 就会按**新**配置算，而 `upstreams`/
+    //   `fanout` 按**旧**配置列。正面：`stats()` 用
+    //   `override_entries_of(&rt)`；反面：`stats()` 自己的函数体里不再出现
+    //   不吃参数的那个版本（只看 `stats()` 到下一个函数 `reply_json` 之间的
+    //   源码——`admin.rs` 别处的 `load()` 仍然合法地用着不吃参数那个版本，
+    //   不能把整份 `prod` 一起判）。
+    #[test]
+    fn stats的overrides走override_entries_of不重复取快照() {
+        let whole = include_str!("admin.rs");
+        let prod = whole
+            .split("#[cfg(test)]")
+            .next()
+            .expect("这个文件里应该有 #[cfg(test)]");
+        let stats_start = prod
+            .find("fn stats(&self) -> String {")
+            .expect("stats() 函数应该存在");
+        let stats_and_after = &prod[stats_start..];
+        let stats_end = stats_and_after.find("async fn reply_json").expect(
+            "reply_json 应该紧跟在 stats() 后面——如果这里报错，说明两者\
+                     之间插了别的函数，把下面的边界跟着改一下",
+        );
+        let stats_body = &stats_and_after[..stats_end];
+        assert!(
+            stats_body.contains("override_entries_of(&rt)"),
+            "stats() 应该调 override_entries_of(&rt)，复用已经持有的那份快照"
+        );
+        assert!(
+            !stats_body.contains(".override_entries()"),
+            "stats() 不许调不吃参数的 override_entries()——那会在已经持有 `rt` \
+             之后又让 SharedRuntime 内部再取一次 current()"
+        );
+    }
+
     // ── 404 的「可用」清单里有 GET /stats（brief §8 判据 8）──────────────────
 
     #[test]
@@ -2342,8 +2387,6 @@ http://pool.example:8080 {
         );
         let stats_inflight_sum: u64 = rows.iter().map(|r| r["inflight"].as_u64().unwrap()).sum();
         let stats_healthy_and: bool = rows.iter().all(|r| r["healthy"].as_bool().unwrap());
-        assert_eq!(stats_inflight_sum, 5, "3+2=5，非退化值：{v}");
-        assert!(!stats_healthy_and, "一个不健康 ⇒ 取合取应该是 false：{v}");
 
         // ── /metrics：真的调 metrics::snapshot()，不是重新实现一遍归并 ──────
         let metrics_text = crate::metrics::render_snapshot_for_test(&crate::metrics::LiveSources {
@@ -2356,17 +2399,30 @@ http://pool.example:8080 {
         let metrics_healthy =
             metrics_gauge_value(&metrics_text, "fulcrum_upstream_healthy", "10.80.0.1:1");
 
-        // ── 同源判据本身：/stats 归并后的读数与 /metrics 的读数逐项相等 ─────
+        // ── ★ ★ ★ 同源判据本身，**排在最前面**（修复轮 1，评审 I2）──────────
+        //
+        //   ⚠ ⚠ ⚠ 顺序是有意的：这两条必须在任何「/stats 侧读数是不是等于
+        //   夹具摆的字面量 5/false」这类判据**之前**跑到。反证时注入的是
+        //   「/stats 不读真原子量」，它会**同时**让 `stats_inflight_sum` 偏离
+        //   字面量 5**和**让这两条同源断言不相等——如果字面量断言排在前面，
+        //   反证会在那一条先 abort，这两条「真正的」R12 判据本次根本没被
+        //   执行到（本仓 `PLAN.md` Global Constraint 8 点名过的同一个坑：
+        //   交叉断言被等值断言挡在后面，从没被验过）。⇒ 同源判据必须是
+        //   **第一个**会读到 `stats_inflight_sum`/`stats_healthy_and` 的断言。
         assert_eq!(
             stats_inflight_sum as f64, metrics_inflight,
-            "R12：/stats 按地址求和之后应该与 /metrics 逐项相等（inflight）"
+            "R12：/stats 按地址求和之后应该与 /metrics 逐项相等（inflight）：{v}\n{metrics_text}"
         );
         assert_eq!(
             if stats_healthy_and { 1.0 } else { 0.0 },
             metrics_healthy,
-            "R12：/stats 按地址取合取之后应该与 /metrics 逐项相等（healthy）"
+            "R12：/stats 按地址取合取之后应该与 /metrics 逐项相等（healthy）：{v}\n{metrics_text}"
         );
-        // 顺带确认两边落的都是我们摆的非退化值，不是巧合的退化值。
+
+        // ── 非退化值检查，**排在同源判据之后**：确认两边落的都是我们摆的
+        //    3+2=5／一健康一不健康，不是巧合的退化值（0/0、true/true）。
+        assert_eq!(stats_inflight_sum, 5, "3+2=5，非退化值：{v}");
+        assert!(!stats_healthy_and, "一个不健康 ⇒ 取合取应该是 false：{v}");
         assert_eq!(metrics_inflight, 5.0, "{metrics_text}");
         assert_eq!(metrics_healthy, 0.0, "{metrics_text}");
     }

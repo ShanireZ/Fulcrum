@@ -1691,8 +1691,24 @@ impl SharedRuntime {
     /// ★ ★ 这是任务 5（`/load` 的回话要逐条点名悬空的）与任务 6（`/stats` 的
     /// `overrides` 一节）**唯一**的取数口：`live` 一定取自**正在服务的**那一份运行时，
     /// ⛔ 别自己去拼 `live` 再调 [`OverrideLayer::entries`]。
+    ///
+    /// ⚠ ⚠ 内部调一次 [`Self::current`]。**调用方若已经持有一份 `Arc<Runtime>`
+    /// 快照**（比如 `/stats` 的 `stats()`，它开头先取了一份、后面全部读取都
+    /// 该基于那一份），再调这个方法会让同一次响应里出现**两次** `current()`：
+    /// 一次并发的 `POST /load` 落在两次之间，`overrides` 那一节的 `dangling`
+    /// 就会按**新**配置算，而别的字段（`upstreams`/`fanout`）按**旧**配置列——
+    /// 这与 [`Self::current`] 自己文档上「每个请求只调一次」、`metrics.rs`
+    /// 「分两次取会落在两份不同的配置上」是同一条纪律。⇒ 已经持有快照的
+    /// 调用方改用 [`Self::override_entries_of`]，把手里那一份传进来。
     pub fn override_entries(&self) -> Vec<OverrideEntry> {
-        self.overrides.entries(&self.current().override_keys())
+        self.override_entries_of(&self.current())
+    }
+
+    /// 同 [`Self::override_entries`]，但 `rt` 由调用方给——不在内部再调一次
+    /// [`Self::current`]。给**已经持有一份快照**的调用方用，理由见上面
+    /// [`Self::override_entries`] 的文档。
+    pub fn override_entries_of(&self, rt: &Runtime) -> Vec<OverrideEntry> {
+        self.overrides.entries(&rt.override_keys())
     }
 
     /// `(生效中的覆盖项数, 其中悬空的项数)` —— 裁决 R11 那句
