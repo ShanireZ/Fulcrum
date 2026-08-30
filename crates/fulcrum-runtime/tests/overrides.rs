@@ -668,3 +668,34 @@ fn 任务4_apply_all_指不到时不留垃圾格子() {
         "失败的 apply_all 不该留下垃圾格子"
     );
 }
+
+/// ★ ★ ★ 修复轮 1，评审 M4：`apply_all` 自己**不信任调用方**——
+/// 越界的 `SetWeight` 必须被拒绝，⛔ 不许静默吞掉之后仍然回 `Ok`。
+///
+/// `RuntimeOp` 与 `apply_all` 都是 `pub`，`admin.rs` 的解析阶段那道值域预检
+/// 不是唯一防线：这里直接绕过 `admin.rs`，构造一个 `SetWeight(0)`（越界，
+/// 裁决 R3：`0` 不是合法权重）直接调 `apply_all`，断言它必须 `Err`，
+/// 而且**一格都没改**（`weight()` 仍然是 `None`）。
+#[test]
+fn 任务4_apply_all_越界的set_weight被拒而不是静默吞掉() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let live = shared.current().override_keys();
+    for bad in [0u32, 65536] {
+        let actions = vec![RuntimeAction {
+            key: k1.clone(),
+            op: RuntimeOp::SetWeight(bad),
+        }];
+        shared
+            .overrides()
+            .apply_all(&live, &actions)
+            .expect_err(&format!("越界权重 {bad} 必须被 apply_all 自己拒绝"));
+        assert_eq!(
+            shared.overrides().get(&k1).unwrap().weight(),
+            None,
+            "越界权重 {bad} 一格都不该改——不能回 Err 却仍然把值写进去"
+        );
+    }
+}

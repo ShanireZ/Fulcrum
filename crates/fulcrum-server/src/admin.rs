@@ -457,11 +457,22 @@ impl AdminApp {
     fn runtime(&self, body: &[u8]) -> (u16, String) {
         /// ⛔ **只认这一种形状**：`{"actions":[…]}`。不接受「单条不带数组」的
         /// 第二种写法——两种形状是两个解析器，两个解析器迟早分家。
+        ///
+        /// ★ ★ ★ `deny_unknown_fields`（修复轮 1，评审 M6）：拼错的字段名要 400，
+        /// ⛔ 不许静默丢掉。`/load` 的载荷（`StructuredConfig`）不能这样收紧——
+        /// 那是编译器的产物、另有消费者，严格会变成陷阱；但 `/runtime` 的字段集
+        /// （`verb`/`site`/`id`/`upstream`/`weight`）是**这个端点自己的字面量**，
+        /// 严格是对的。★ 决定性理由：这一笔是这个端点刚诞生的那一刻——
+        /// 还没有任何外部调用方，现在收紧免费，晚一步就是破坏性变更。
+        /// 与"别的动词带 weight 就拒绝"（见下面 `if a.verb != "set_weight" …`）
+        /// 是同一条纪律：本任务选择在这个端点上不静默丢字段。
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Req {
             actions: Vec<Action>,
         }
         #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Action {
             verb: String,
             site: String,
@@ -1000,17 +1011,29 @@ http://solo.example:8090 {
 
     #[test]
     fn runtime_指不到时400报文逐条列出该站点的键() {
+        // ★ ★ ★ 修复轮 1，评审 I3：夹具必须选一个**有两个键**的站点——
+        //   `pool.example` 下 `pool_a` 与空串 `id` 各占一格，两把键的地址相同
+        //   （`10.40.0.1:1`），只有 `id` 不同。⚠ 换成这个夹具之前用的是
+        //   `solo.example`（站下只有一个键），"逐条列出**全部**键"这句话
+        //   从来没被测到——一个只打印第一条的实现照样绿。
         let a = app_runtime();
         let (status, text) = a.runtime(
-            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"203.0.113.250:65000"}]}"#,
+            br#"{"actions":[{"verb":"disable","site":"http://pool.example:8080","upstream":"203.0.113.250:65000"}]}"#,
         );
         assert_eq!(status, 400, "{text}");
-        // ⚠ ⚠ 判据写法纪律：`10.40.0.9:9` 这个真实键只能来自「该站点下的合法键」
-        //   这份动态清单，不会出现在任何错误消息模板的固定字面量里——真断言
-        //   在这一句。
+        // ⚠ ⚠ 判据写法纪律：真断言落在 `OverrideKey` 自己的 `Display` 输出上——
+        //   不手写格式字符串（那样会在 `Display` 改动时悄悄失去意义），
+        //   也不会出现在任何错误消息模板的固定字面量里。
+        let 带id = OverrideKey::new("http://pool.example:8080", "pool_a", "10.40.0.1:1");
+        let 不带id = OverrideKey::new("http://pool.example:8080", "", "10.40.0.1:1");
         assert!(
-            text.contains("10.40.0.9:9"),
-            "400 报文应该把 solo.example 下真实存在的上游键列出来，运维照抄即可：{text}"
+            text.contains(&带id.to_string()),
+            "400 报文应该列出 pool.example 下带 id 的那把键，运维照抄即可：{text}"
+        );
+        assert!(
+            text.contains(&不带id.to_string()),
+            "400 报文应该**同时**列出 pool.example 下不带 id 的那把键——\
+             两把键地址相同、只有 id 不同，漏列其中一把就是「逐条列出全部」没做到：{text}"
         );
     }
 
@@ -1219,5 +1242,55 @@ http://solo.example:8090 {
             br#"{"actions":[{"verb":"enable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}]}"#,
         );
         assert_eq!(status, 400, "悬空的键不该能被 /runtime 寻址到：{text}");
+    }
+
+    // ── 补充判据：拼错的字段名要 400，不许静默丢掉（修复轮 1，评审 M6）──────
+    //
+    // ⚠ ⚠ ⚠ 两条判据都必须挑一个**除了那个拼错的字段之外，其余部分单独看
+    //   也完全合法、会真的生效**的动作/报文——否则拼错的字段被静默丢掉之后，
+    //   请求会因为**别的、无关的原因**恰好也是 400（比如 `set_weight` 缺
+    //   `weight` 字段本来就 400），判据看起来红过，其实从没测到
+    //   `deny_unknown_fields` 本身。这里用 `disable`（不需要 `weight`）+
+    //   一个多余字段，`deny_unknown_fields` 不生效的话这条请求会正常
+    //   200 并且真的把上游摘掉。
+
+    #[test]
+    fn runtime_拼错字段名400且不生效() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        assert_eq!(t.pick_index_by(None), Some(0), "夹具本身应该是可用的");
+        // 这条 `disable` 本身的三个必填字段都对——`wieght` 是多出来的、
+        // 这条动作根本用不到的字段。没有 `deny_unknown_fields` 的话它会被
+        // 静默丢掉，这条 disable 照常生效（200，上游被摘掉）。
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9","wieght":7}]}"#,
+        );
+        assert_eq!(status, 400, "{text}");
+        assert_eq!(
+            t.pick_index_by(None),
+            Some(0),
+            "带着多余字段的动作不该生效——上游不该被摘掉"
+        );
+    }
+
+    #[test]
+    fn runtime_外层多出字段400且不生效() {
+        let a = app_runtime();
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        assert_eq!(t.pick_index_by(None), Some(0), "夹具本身应该是可用的");
+        // 外层 `Req` 同样要 `deny_unknown_fields`：`actions` 本身是完全合法的
+        // 一条 `disable`，多出来的顶层字段 `extra` 才是要挡的东西——
+        // 没有 `deny_unknown_fields` 的话它会被静默丢掉，这条请求照常生效。
+        let (status, text) = a.runtime(
+            br#"{"actions":[{"verb":"disable","site":"http://solo.example:8090","upstream":"10.40.0.9:9"}],"extra":"field"}"#,
+        );
+        assert_eq!(status, 400, "{text}");
+        assert_eq!(
+            t.pick_index_by(None),
+            Some(0),
+            "带着多余顶层字段的整份请求不该生效"
+        );
     }
 }

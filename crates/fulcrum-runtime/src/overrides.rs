@@ -41,8 +41,16 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// —— ⛔ 别在别处再拼一份「差不多的」，两份拼法迟早在某一格上分家。
 ///
 /// ⚠ 第三格是**归一化之后**那个串（`backend` → `backend:80`）：管理面对着的是**运行时**，
-/// 运行时里那个上游就叫 `backend:80`。⇒ 管理面收到的地址要**先过
-/// [`crate::normalize_upstream`]** 再拿来比键，否则运维照着配置写 `backend` 会被告知「找不到」。
+/// 运行时里那个上游就叫 `backend:80`。⇒ 运维照着配置原文写 `backend` 会被告知「找不到」——
+///
+/// ★ ★ ★ **这是有意的边界，不是缺陷**（裁决 R6 ⑤，M2 批 N 任务 4 的主 agent 裁决）：
+/// 管理面**不做归一化**，`(站点名, id, 上游地址)` 三格全部逐字精确匹配。
+/// ⛔ ⛔ **别在管理面那一侧加 `crate::normalize_upstream` 再拿来比键** ——
+/// 指不到时的解药不是"帮运维把地址补全"，而是 `POST /runtime` 的 400 报文
+/// **把该站点下全部合法的键逐条列出来**（`crates/fulcrum-server/src/admin.rs`
+/// 的 `runtime()`），运维照抄即可。做了归一化，那份"列出全部合法键"的清单就
+/// 变成永远走不到的死代码——而这与 Ruling 1（管理面不发明规则、只精确匹配）
+/// 是同一条纪律：输入处理越少，键就越是唯一的一个东西。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OverrideKey {
     /// 键的**第一格**：站点名（第一条地址的原文，与访问日志的 `site` 字段逐字同口径）。
@@ -175,17 +183,23 @@ pub struct OverrideEntry {
 
 /// 一条已经解析好、准备落到某一格的**操作**（**M2 批 N 任务 4**，`POST /runtime`）。
 ///
-/// ★ ★ 到这里的时候，`weight` 的值域**已经**在调用方（`admin.rs::runtime` 的解析阶段）
-/// 用 [`UpstreamOverride::set_weight`] 自己的判断校验过——对着一格临时的
-/// `UpstreamOverride::default()` 跑一遍，只借它的判断，不碰任何真实状态。
-/// ⇒ [`OverrideLayer::apply_all`] 收到的 `SetWeight` **保证合法**，不会再失败。
-/// ⛔ 别在这里再写一份平行的值域检查——`UpstreamOverride::set_weight` 的文档注释
-/// 原话就是「两份差不多的值域检查迟早分家」。
+/// ★ `admin.rs::runtime` 的解析阶段会**先**用 [`UpstreamOverride::set_weight`] 自己的
+/// 判断校验一遍 `weight`（对着一格临时的 `UpstreamOverride::default()` 跑，只借判断、
+/// 不碰真实状态）——这给出更贴切的错误消息（不与"这个键找不到"混在一起）。
+///
+/// ⚠ ⚠ ⚠ **但 `RuntimeOp` 与 [`OverrideLayer::apply_all`] 都是 `pub`**（修复轮 1，
+/// 评审 M4）：管理面之外的调用方——比如任务 5/6——完全可以绕过 `admin.rs` 那道预检，
+/// 直接构造一个越界的 `SetWeight(0)`。⇒ **值域的唯一真正守卫在 [`OverrideLayer::apply_all`]
+/// 自己身上**：它在施加前会用同一个 `UpstreamOverride::set_weight` 再校验一次，越界的
+/// 一律并入寻址失败的 `Err`，⛔ 不会静默吞掉。这不是"两份差不多的值域检查"——
+/// 两处调的是**同一个函数**，不是两份手写的平行逻辑；`admin.rs` 的预检只是为了更好的
+/// 错误消息，不是唯一的防线。
 #[derive(Debug, Clone, Copy)]
 pub enum RuntimeOp {
     /// 摘掉（`true`）或放回（`false`）。
     SetDisabled(bool),
-    /// 设一个覆盖权重，**值域已经校验过**（见上）。
+    /// 设一个覆盖权重。⚠ **值域到这里还没保证合法**——由 [`OverrideLayer::apply_all`]
+    /// 在施加前用 [`UpstreamOverride::set_weight`] 校验（见上）。
     SetWeight(u32),
 }
 
@@ -333,8 +347,19 @@ impl OverrideLayer {
     ///   而这一格真的已经被并发的一次 `/load` 收走了，这里仍然能当场发现并
     ///   拒绝，不会去改一个孤儿。
     ///
-    /// 任一条指不到 ⇒ **一格都不改**，返回全部指不到的键（`Err`，供调用方拼
-    /// 400 报文时逐条列出）。全部指得到 ⇒ 在这同一次持锁内逐条施加，`Ok(())`。
+    /// 任一条指不到、或任一条 `SetWeight` 越界 ⇒ **一格都不改**，返回全部这样的键
+    /// （`Err`，供调用方拼 400 报文时逐条列出）。全部通过 ⇒ 在这同一次持锁内逐条
+    /// 施加，`Ok(())`。
+    ///
+    /// # ⚠ ⚠ ⚠ 值域校验（修复轮 1，评审 M4）：这里**不信任调用方**
+    ///
+    /// `RuntimeOp` 与本方法都是 `pub`——`admin.rs` 不是唯一可能的调用方（任务 5/6
+    /// 已经在排队）。一个绕过 `admin.rs` 解析阶段、直接构造 `SetWeight(0)` 的调用方，
+    /// 如果这里只顾着"查存在"而不回头看值域，就会在下面的 `set_weight` 上悄悄拿到
+    /// 一个 `Err` 而继续把整批当 `Ok` 收尾——**命令回 200，权重却没真的变**。
+    /// ⇒ 值域检查**在这里、与寻址判定同一次遍历里**做一遍：借
+    /// [`UpstreamOverride::set_weight`] 自己的判断（对着一格临时格子跑），
+    /// 不是重新手写一份平行的边界检查。
     pub fn apply_all(
         &self,
         live: &BTreeSet<OverrideKey>,
@@ -342,18 +367,24 @@ impl OverrideLayer {
     ) -> Result<(), Vec<OverrideKey>> {
         let g = self.grids();
         let addressable = |k: &OverrideKey| live.contains(k) && g.contains_key(k);
-        let missing: Vec<OverrideKey> = actions
+        let valid = |op: &RuntimeOp| match *op {
+            RuntimeOp::SetDisabled(_) => true,
+            RuntimeOp::SetWeight(w) => UpstreamOverride::default().set_weight(w).is_ok(),
+        };
+        let bad: Vec<OverrideKey> = actions
             .iter()
-            .filter(|a| !addressable(&a.key))
+            .filter(|a| !addressable(&a.key) || !valid(&a.op))
             .map(|a| a.key.clone())
             .collect();
-        if !missing.is_empty() {
-            return Err(missing);
+        if !bad.is_empty() {
+            return Err(bad);
         }
-        // ★ 全部指得到，逐条施加。上面已经在**同一次**持锁内确认过每一格都在
-        //   `g` 里 ⇒ 下面的 `get` 结构上不会是 `None`（没有任何代码能在这次
-        //   持锁期间插进来改 `g`）。宁可静默跳过也不 panic——管理面不该因为
-        //   一格「不该发生」的数据就拖垮同一批里别的动作。
+        // ★ 全部指得到、值域也全部通过，逐条施加。上面已经在**同一次**持锁内
+        //   确认过每一格都在 `g` 里、每个 `SetWeight` 都合法 ⇒ 下面这两步结构上
+        //   都不会失败（没有任何代码能在这次持锁期间插进来改 `g`，`set_weight`
+        //   刚用同样的入参验证过一次）。`debug_assert!` 只是给这份"结构上不会
+        //   失败"的断言留一个看得见的钉子——真出现了就是这份不变量本身被破坏，
+        //   而不是把它悄悄吞掉再回 `Ok`。
         for a in actions {
             let Some(slot) = g.get(&a.key) else {
                 continue;
@@ -361,10 +392,8 @@ impl OverrideLayer {
             match a.op {
                 RuntimeOp::SetDisabled(v) => slot.set_disabled(v),
                 RuntimeOp::SetWeight(w) => {
-                    // ⚠ 值域已经在调用方用同一个 `set_weight` 校验过（见
-                    //   `RuntimeOp` 的文档）；这里的 `Err` 分支结构上到不了，
-                    //   丢弃就是诚实地表达这件事。
-                    let _ = slot.set_weight(w);
+                    let r = slot.set_weight(w);
+                    debug_assert!(r.is_ok(), "刚在同一次持锁内校验过的权重不该再被拒");
                 }
             }
         }

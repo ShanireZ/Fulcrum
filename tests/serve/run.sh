@@ -788,6 +788,44 @@ expect_status "管理面：坏载荷" 400 "$CODE"
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$HOST:$PROXY_PORT/")
 expect_status "坏载荷之后旧配置还在服务" 200 "$CODE"
 
+# ── ★ ★ ★ 增量通道：POST /runtime（M2 批 N 任务 4，裁决 R10；修复轮 1，评审 I1）──
+#
+# ⚠ ⚠ ⚠ 少了这一段，`/runtime` 这条路由**在生产上可以整个不存在**而没有任何
+#   门会红：全部 21 条 admin.rs 判据都是直接调 `self.runtime(&body)`，一条都没有
+#   经过 `process_new_http` 里的路由分发（那个 `match (method, path)`）。
+#   把路由表里 `("POST","/runtime") => self.runtime(&body)` 那一行删掉，
+#   21 条判据照样全绿，而这里回 404——`admin.rs` 自己的注释写着「一个判据漏掉
+#   一个入口，等于在那个入口上没有判据」。
+#   ★ ★ 判据挂在**数据面**上，不是挂在「`/runtime` 回了 200」上：
+#   `disable` 之后要走真流量确认那台上游**真的不再收流量**，`enable` 之后
+#   要走真流量确认它**真的收回来了**。
+echo "  · 增量通道：POST /runtime（disable 一个上游 ⇒ 数据面真的不再收流量）"
+
+# 基线：/api 现在应该是健康的（它指着 UP_PORT，没配 health_uri，没被摘过）。
+expect_status "/runtime 基线：/api 现在是健康的" 200 "$(probe "$BASE/api/x")"
+
+# ⚠ `site` 取的是这个站点块在 DSL 里的**原文**（`SiteRt::name`），不是拼出来的——
+#   本场景的主站点块头就是裸端口 `:PROXY_PORT`（没有 host、没有 scheme），
+#   替换之后就是 `:$PROXY_PORT`。上游地址是 IP 字面量，不需要归一化，
+#   与 `reverse_proxy` 那一行逐字相同。
+RUNTIME_SITE=":$PROXY_PORT"
+RUNTIME_UP="127.0.0.1:$UP_PORT"
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "POST /runtime disable" 200 "$CODE"
+
+# ★ ★ ★ 真正的判据：数据面上它必须真的不再收流量（不是「回了 200」）。
+#   `/rw`、`/cached` 与 `/api` 共享同一个覆盖格子（三条都没写 `id`，键相同）——
+#   这里只验 `/api`，上面那条 200 断言已经确认过它原本是健康的。
+CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/api/x")
+expect_status "★ ★ disable 之后 /api 在数据面上真的不再收流量" 502 "$CODE"
+
+# ★ 反向那一半：`enable` 把它撤回来，数据面也要真的恢复——只验「摘得掉」
+#   而不验「回得来」，一个单向的实现会让运维在真正需要撤销的时候束手无策。
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"enable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "POST /runtime enable" 200 "$CODE"
+expect_status "★ enable 之后 /api 在数据面上恢复了" 200 "$(probe "$BASE/api/x")"
+expect_body "enable 之后 /api" "up path=/api/x xup=1"
+
 # ★ ★ 端口集变了 → 409，**且旧配置还在服务**。
 #   这一条是「原子」的判据：一个「先换后校验」的实现在「换得动」那条上表现完全相同。
 printf '%s\n' ":$((PROXY_PORT + 40)) {" "    respond 200 \"moved-port\"" "}" \
