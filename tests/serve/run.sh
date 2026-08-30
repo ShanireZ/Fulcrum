@@ -783,7 +783,7 @@ CODE=$(admin_post /nope '{}')
 expect_status "管理面：不认识的路径" 404 "$CODE"
 
 # 坏 JSON → 400，**且旧配置一个字节都没动**。
-CODE=$(admin_post /load '{ not json')
+CODE=$(admin_post "/load?overrides=clear" '{ not json')
 expect_status "管理面：坏载荷" 400 "$CODE"
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$HOST:$PROXY_PORT/")
 expect_status "坏载荷之后旧配置还在服务" 200 "$CODE"
@@ -834,7 +834,7 @@ printf '%s\n' ":$((PROXY_PORT + 40)) {" "    respond 200 \"moved-port\"" "}" \
   echo "SERVE TESTS FAILED: compile 生成不出结构化配置" >&2
   exit 1
 }
-CODE=$(admin_post /load "$(cat "$WORK/otherport.json")")
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/otherport.json")")
 expect_status "管理面：端口集变了" 409 "$CODE"
 if grep -q 'systemctl reload' "$WORK/admin.out"; then
   ok "409 的正文说清了该怎么办（走 systemctl reload）"
@@ -856,7 +856,7 @@ printf '%s\n' "{" "    admin unix/$ADMIN_SOCK" "}" "" ":$PROXY_PORT {" \
   cat "$WORK/next.Fulcrumfile" >&2
   exit 1
 }
-CODE=$(admin_post /load "$(cat "$WORK/next.json")")
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/next.json")")
 expect_status "管理面：全量 load" 200 "$CODE"
 BODY=$(run_curl -s --max-time 5 "http://$HOST:$PROXY_PORT/")
 if [ "$BODY" = "after-load" ]; then
@@ -868,6 +868,173 @@ fi
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   --resolve "only.example:$NAMED_PORT:$HOST" "http://only.example:$NAMED_PORT/")
 expect_status "同一份里没改动的站点照旧" 200 "$CODE"
+
+# ── [3.5/4] `overrides` 必填 + R11 覆盖计数（M2 批 N 任务 5，G120 / R9 / R11）──
+echo "=== [3.5/4] POST /load?overrides= 与每次响应的覆盖计数 ==="
+
+# 上一节末尾把 :$PROXY_PORT 换成了裸 respond（after-load）——这里重新换出一份
+# 带 reverse_proxy 的，好让 overrides 的 keep/clear 有个真上游可以 disable。
+# ⚠ 监听端口集必须与当前完全相同（:$PROXY_PORT 裸 HTTP、only.example:$NAMED_PORT、
+#   secure.example:$TLS_PORT 走 tls），否则会撞 409，而那不是本节要测的东西。
+cat > "$WORK/ov.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+:$PROXY_PORT {
+    reverse_proxy 127.0.0.1:$UP_PORT
+}
+http://only.example:$NAMED_PORT {
+    respond 200 named-only
+}
+secure.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    respond 200 secure-ok
+}
+CONF
+"$BIN" compile "$WORK/ov.Fulcrumfile" > "$WORK/ov.json" 2>/dev/null || {
+  echo "SERVE TESTS FAILED: compile ov.Fulcrumfile 失败" >&2
+  exit 1
+}
+# 同样的骨架，但 :$PROXY_PORT 换成裸 respond——没有这个上游，拿来验悬空（判据 5）。
+cat > "$WORK/ov-dangling.Fulcrumfile" <<CONF
+{
+    admin unix/$ADMIN_SOCK
+}
+:$PROXY_PORT {
+    respond 200 "ov-dangling"
+}
+http://only.example:$NAMED_PORT {
+    respond 200 named-only
+}
+secure.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    respond 200 secure-ok
+}
+CONF
+"$BIN" compile "$WORK/ov-dangling.Fulcrumfile" > "$WORK/ov-dangling.json" 2>/dev/null || {
+  echo "SERVE TESTS FAILED: compile ov-dangling.Fulcrumfile 失败" >&2
+  exit 1
+}
+
+# 重新建立带上游的那份基线——`overrides` 必填，即使这次只是「重建夹具」也不例外。
+# ⚠ `RUNTIME_SITE` / `RUNTIME_UP` 是上面 [3/4] 那一节留下的（`:$PROXY_PORT` /
+#   `127.0.0.1:$UP_PORT`），这份 ov.Fulcrumfile 用的是同一个站点、同一个上游。
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
+expect_status "重建 overrides 夹具（首次也要带 overrides）" 200 "$CODE"
+expect_status "重建之后 / 走真上游" 200 "$(probe "$BASE/")"
+
+# ── 判据 1：缺 overrides ⇒ 400，且旧配置一个字节没动 ─────────────────────
+#   ⚠ ⚠ 判据写法纪律：body 是完全合法、会真的生效的 ov.json——唯一的毛病
+#   是没带 `?overrides=`，否则 400 可能来自别的原因，判据就 confound 了。
+CODE=$(admin_post /load "$(cat "$WORK/ov.json")")
+expect_status "缺 overrides ⇒ 400" 400 "$CODE"
+if grep -q 'overrides' "$WORK/admin.out"; then
+  ok "400 的正文点了 overrides 的名"
+else
+  fail "400 没说清是 overrides 缺了：$(cat "$WORK/admin.out")"
+fi
+expect_status "缺 overrides 被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
+
+# ── 判据 2：overrides 写了别的值 ⇒ 400，同上；夹具「除了这一处，其余完全合法」──
+CODE=$(admin_post "/load?overrides=bogus" "$(cat "$WORK/ov.json")")
+expect_status "overrides 写了不认识的值 ⇒ 400" 400 "$CODE"
+expect_status "写错值被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
+
+# ── 判据 3：overrides=keep ⇒ 覆盖还在，且仍作用在数据面上 ───────────────────
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "先摘掉这个上游（走 /runtime）" 200 "$CODE"
+expect_status "摘掉之后数据面确实不通了" 502 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
+
+CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov.json")")
+expect_status "overrides=keep 的 load" 200 "$CODE"
+expect_status "★ ★ keep 之后覆盖还在数据面上生效（继续 502）" 502 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
+
+# ── 判据 5：悬空——keep 之后键落不到任何上游的覆盖仍在、标了 dangling、回话点名 ──
+#   ⚠ 判据写法纪律：断言的地址（$RUNTIME_UP）是这份夹具自己的真实上游地址，
+#   不会出现在任何错误模板的固定字面量里。
+CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
+expect_status "keep：换成不带这个上游的配置" 200 "$CODE"
+if grep -qF "$RUNTIME_UP" "$WORK/admin.out"; then
+  ok "★ 悬空覆盖在回话里被逐条点名（地址 $RUNTIME_UP 出现在正文里）"
+else
+  fail "回话没点名悬空覆盖：$(cat "$WORK/admin.out")"
+fi
+if grep -q '悬空' "$WORK/admin.out"; then
+  ok "回话说清了这是「悬空」"
+else
+  fail "回话没说这是悬空：$(cat "$WORK/admin.out")"
+fi
+
+# ── 判据 4：overrides=clear ⇒ 覆盖没了，且回话里逐项列出被清掉的 ──────────────
+#   现在登记处里那一项是悬空的（上面 keep 换配置之后）。带回真有上游的那份，
+#   走 clear——clear 不分悬空不悬空，全清。
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
+expect_status "overrides=clear 的 load" 200 "$CODE"
+if grep -qF "$RUNTIME_UP" "$WORK/admin.out"; then
+  ok "★ clear 的回话逐项列出了被清掉的那一项（地址 $RUNTIME_UP 出现在正文里）"
+else
+  fail "clear 的回话没有逐项列出被清掉的：$(cat "$WORK/admin.out")"
+fi
+expect_status "★ clear 之后数据面恢复（不再是 502）" 200 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
+
+# ── 判据 10：clear 之后再设一次覆盖，数据面当场生效（身份没断的行为侧对照）──
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "clear 之后再 disable 一次" 200 "$CODE"
+expect_status "★ 身份没断：再 disable 立刻又生效" 502 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"enable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "收尾：enable 撤回来" 200 "$CODE"
+expect_status "撤回之后数据面恢复" 200 "$(probe "$BASE/")"
+
+# ── 判据 6 / 7：R11 —— 每一次响应都带「当前有 N 项临时覆盖生效中（其中 M 项悬空）」──
+#   ⚠ ⚠ 「每一次」就是每一次：200/400/404/413 都要带；413 那条在 process_new_http
+#   的另一个 reply() 调用点上（读 body 超上界），主路径的判据测不到它。
+# 先摆好一个已知读数：一项 disable（不悬空）+ 换成不带这个上游的配置 ⇒ 变悬空。
+CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
+expect_status "为 R11 摆一项生效中的覆盖" 200 "$CODE"
+CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
+expect_status "为 R11 摆一项悬空的覆盖（keep 一份不带这个上游的配置）" 200 "$CODE"
+# 现在：登记处应该有 1 项，且悬空。
+COUNT_LINE="当前有 1 项临时覆盖生效中（其中 1 项悬空）"
+if grep -qF "$COUNT_LINE" "$WORK/admin.out"; then
+  ok "★ ★ 200 响应带着正确的计数行：$COUNT_LINE"
+else
+  fail "200 响应没带正确的计数行，期望包含「$COUNT_LINE」：$(cat "$WORK/admin.out")"
+fi
+
+CODE=$(admin_post /nope '{}')
+expect_status "R11／404：不认识的路径" 404 "$CODE"
+if grep -qF "$COUNT_LINE" "$WORK/admin.out"; then
+  ok "★ ★ 404 响应也带着计数行"
+else
+  fail "404 响应没带计数行：$(cat "$WORK/admin.out")"
+fi
+
+CODE=$(admin_post "/load?overrides=clear" '{ not json')
+expect_status "R11／400：坏 JSON" 400 "$CODE"
+if grep -qF "$COUNT_LINE" "$WORK/admin.out"; then
+  ok "★ ★ 400 响应也带着计数行"
+else
+  fail "400 响应没带计数行：$(cat "$WORK/admin.out")"
+fi
+
+# ★ ★ ★ 413——在 process_new_http 的另一个 reply() 调用点上，主路径测不到它。
+#   真发一个超过 4 MiB 上界的载荷；写文件再用 @file，避免把 ~5MB 塞进单个
+#   shell 参数（ARG_MAX 会炸）。
+head -c 5000000 /dev/zero | tr '\0' 'a' > "$WORK/big.bin"
+CODE=$(curl -s -o "$WORK/admin.out" -w '%{http_code}' \
+  --unix-socket "$ADMIN_SOCK" -X POST --data-binary "@$WORK/big.bin" \
+  "http://localhost/load" 2>/dev/null || echo "000")
+expect_status "R11／413：载荷太大" 413 "$CODE"
+if grep -qF "$COUNT_LINE" "$WORK/admin.out"; then
+  ok "★ ★ ★ 413 响应也带着计数行——它在主路径之外，最容易被漏"
+else
+  fail "★ ★ ★ 413 响应没带计数行（brief 点名最容易漏的那条）：$(cat "$WORK/admin.out")"
+fi
+
+# 收尾：clear 掉，恢复数据面，别影响后面 [4/4] 的判据。
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
+expect_status "overrides 小节收尾：clear 恢复" 200 "$CODE"
+expect_status "收尾之后数据面恢复" 200 "$(probe "$BASE/")"
 
 # ── [4/4] 装载日志该说的话 ──────────────────────────────────────────────────
 echo "=== [4/4] 装载日志 ==="

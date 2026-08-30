@@ -473,7 +473,7 @@ fi
 }
 CODE=$(curl -s -o "$WORK/admin.out" -w '%{http_code}' \
   --unix-socket "$ADMIN_SOCK" -X POST --data-binary "$(cat "$WORK/bad.json")" \
-  "http://localhost/load" 2>/dev/null || echo 000)
+  "http://localhost/load?overrides=clear" 2>/dev/null || echo 000)
 if [ "$CODE" = "400" ]; then
   ok "★★ 管理面：日志路径打不开的配置被拒（400）"
 else
@@ -711,7 +711,7 @@ json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
 PY
 CODE=$(curl -s -o "$WORK/leak.admin" -w '%{http_code}' \
   --unix-socket "$ADMIN_SOCK" -X POST --data-binary "@$WORK/leak.json" \
-  "http://localhost/load" 2>/dev/null || echo 000)
+  "http://localhost/load?overrides=clear" 2>/dev/null || echo 000)
 if [ "$CODE" = "400" ]; then
   ok "★★★ 结构化那条路（POST /load）：白名单里写 Cookie ⇒ 400，整份不生效"
 else

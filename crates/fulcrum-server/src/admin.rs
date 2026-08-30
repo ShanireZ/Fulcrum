@@ -12,7 +12,7 @@
 //!
 //! | | 干什么 | 载荷 |
 //! |---|---|---|
-//! | `POST /load` | **全量原子 load**（G8）| 结构化配置 JSON（G48：与磁盘上那份**同一种**）|
+//! | `POST /load?overrides=keep\|clear` | **全量原子 load**（G8）；`overrides` **必填**、走查询串，⛔ 不接受载荷信封（G120）| 结构化配置 JSON（G48：与磁盘上那份**同一种**）|
 //! | `POST /renew` | **强制续期一个域名**（G74）| `{"domain":"…"}`；
 //!   加 `"force": true` 时**连退避一起清**（第二档）|
 //!
@@ -110,8 +110,69 @@ impl AdminApp {
         }
     }
 
-    /// 全量原子 load（G8）。
-    fn load(&self, body: &[u8]) -> (u16, String) {
+    /// 全量原子 load（G8）+ `overrides` 两档（**M2 批 N 任务 5**，G120 / R9）。
+    ///
+    /// # `?overrides=keep|clear`：必填，走**查询串**
+    ///
+    /// ⛔ ⛔ 不接受把它塞进载荷（`{"overrides":…,"config":{…}}` 的信封）——
+    /// 载荷是结构化配置，与磁盘上那份**同一种**（G48），多包一层信封就是两种
+    /// 格式分了家。缺这个参数、或写了 `keep`/`clear` 之外的值 ⇒ **400，且旧
+    /// 配置一个字节都不动**——这里在碰载荷之前就返回，原子性是结构上必然的。
+    ///
+    /// ★ ★ 不给默认值就是 G120 的全部内容：发布流水线要 `clear`（发布 = 回到
+    /// 期望状态），事故处理中的人要 `keep`（一次无关的发布不该把刚摘掉的坏
+    /// 节点放回去）——两种现实都对且互相冲突，任何默认值都会在另一种场景里
+    /// 悄悄做错事。
+    ///
+    /// `keep` 什么都不用做——`SharedRuntime::swap` 内部已经调了
+    /// `retain_after_swap`，悬空覆盖天然留着，这里只需把 `dangling` 的挑出来
+    /// 点名（裁决 R8）。`clear` 调
+    /// [`fulcrum_runtime::overrides::OverrideLayer::clear_all`] 撤销全部格子上
+    /// 的覆盖（⛔ 不是物理删格子——见该方法文档）。⚠ ⚠ **两档都必须在回话里
+    /// 逐项列出**（G120 明写 `clear`，裁决 R8 明写 `keep` 的悬空）：只给一个
+    /// 数字不算数，理由是要避开 HAProxy 那个「runtime 改动在 reload 后无声无息
+    /// 消失」的短处。
+    ///
+    /// ⚠ `dangling` 是相对**新运行时**算的 ⇒ 两档都必须在 `self.rt.swap()`
+    /// **之后**判定——下面的实现把这一段放在 `swap` 之后正是为此。
+    fn load(&self, body: &[u8], query: Option<&str>) -> (u16, String) {
+        /// `overrides` 查询参数的两档。⛔ 只在这个函数内部用——这个端点自己的
+        /// 字面量，仿照 `runtime()`/`purge()` 把小形状钉在唯一的调用点旁边。
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Directive {
+            /// 覆盖层原样留着；新运行时里键落不到任何上游的那些标 `dangling`，
+            /// 回话逐条点名。
+            Keep,
+            /// 覆盖层清空；回话逐项列出被清掉的。
+            Clear,
+        }
+        /// 从 `uri.query()` 解析。缺参数、或值不是 `keep`/`clear` 都是
+        /// `None`——两者在契约上是同一件事：拒绝，不猜。
+        fn parse_overrides(query: Option<&str>) -> Option<Directive> {
+            for pair in query.unwrap_or("").split('&') {
+                if let Some(v) = pair.strip_prefix("overrides=") {
+                    return match v {
+                        "keep" => Some(Directive::Keep),
+                        "clear" => Some(Directive::Clear),
+                        _ => None,
+                    };
+                }
+            }
+            None
+        }
+
+        let Some(directive) = parse_overrides(query) else {
+            return (
+                400,
+                "缺 `?overrides=keep` 或 `?overrides=clear`（G120：必填参数，没有\
+                 默认值——发布流水线要 `clear`，事故处理中的人要 `keep`，两种现实\
+                 都对且互相冲突，任何默认值都会在另一种场景里悄悄做错事），\
+                 **没有任何改动生效**。走查询串，不接受载荷里的字段：\
+                 `POST /load?overrides=keep` 或 `POST /load?overrides=clear`\n"
+                    .to_string(),
+            );
+        };
+
         let cfg: fulcrum_config::StructuredConfig = match serde_json::from_slice(body) {
             Ok(c) => c,
             Err(e) => {
@@ -272,8 +333,49 @@ impl AdminApp {
         // ⚠ `swap` 收 `Runtime` 而不是 `Arc<Runtime>`（批 N 任务 3）：装进来之前
         //   要把临时覆盖层的格子挂上去，而那要 `&mut` —— 那是结构保护，别绕过去。
         self.rt.swap(next);
+
+        // ── G120 / R8：`overrides` 落地 ────────────────────────────────────
+        //   ⚠ ⚠ 必须在 `swap` **之后**：`dangling` 是相对新运行时算的
+        //   （`SharedRuntime::override_entries` 走的是 `current()`）。
+        let overrides_report = match directive {
+            Directive::Keep => {
+                let dangling: Vec<_> = self
+                    .rt
+                    .override_entries()
+                    .into_iter()
+                    .filter(|e| e.dangling)
+                    .collect();
+                if dangling.is_empty() {
+                    "overrides=keep：覆盖层原样留着，没有悬空的。\n".to_string()
+                } else {
+                    let mut out = format!(
+                        "overrides=keep：覆盖层原样留着，其中 {} 项现在悬空（键落不到\
+                         任何上游，仍然生效中——这不是删，是 keep 的意义所在）：\n",
+                        dangling.len()
+                    );
+                    for e in &dangling {
+                        out.push_str(&format!("  · {}\n", e.key));
+                    }
+                    out
+                }
+            }
+            Directive::Clear => {
+                let live = self.rt.current().override_keys();
+                let cleared = self.rt.overrides().clear_all(&live);
+                if cleared.is_empty() {
+                    "overrides=clear：覆盖层本来就是空的，没有可清的。\n".to_string()
+                } else {
+                    let mut out = format!("overrides=clear：清掉了 {} 项覆盖：\n", cleared.len());
+                    for e in &cleared {
+                        out.push_str(&format!("  · {}\n", e.key));
+                    }
+                    out
+                }
+            }
+        };
+
         info!("全量 load 生效：{sites} 个站点（G8：原子换整份）");
-        (200, format!("已生效：{sites} 个站点\n"))
+        (200, format!("已生效：{sites} 个站点\n{overrides_report}"))
     }
 
     /// 强制续期（G74）。
@@ -594,6 +696,10 @@ impl HttpServerApp for AdminApp {
 
         let method = session.req_header().method.clone();
         let path = session.req_header().uri.path().to_string();
+        // ⚠ `overrides` 走查询串（R9），不是路径的一部分——`uri.path()` 已实测
+        //   是 path-only，加查询串不影响上面 `path` 的路由判定。这里同样先
+        //   `.to_string()`：下面还要 `&mut session` 读 body，不能带着借用过去。
+        let query = session.req_header().uri.query().map(|s| s.to_string());
 
         // 读 body，带上界。
         let mut body = Vec::new();
@@ -601,7 +707,11 @@ impl HttpServerApp for AdminApp {
             match session.read_request_body().await {
                 Ok(Some(chunk)) => {
                     if body.len() + chunk.len() > MAX_BODY {
-                        reply(&mut session, 413, "载荷太大\n").await;
+                        // ★ ★ ★ R11「每一次响应」就是每一次：这条 413 在
+                        //   路由分发**之外**——历史上最容易漏掉计数行的调用点
+                        //   （brief 点名）。`reply()` 把 `&self.rt` 设成必填参数，
+                        //   让「这个调用点忘了带」在结构上做不到。
+                        reply(&mut session, 413, "载荷太大\n", &self.rt).await;
                         return None;
                     }
                     body.extend_from_slice(&chunk);
@@ -615,7 +725,7 @@ impl HttpServerApp for AdminApp {
         }
 
         let (status, text) = match (method.as_str(), path.as_str()) {
-            ("POST", "/load") => self.load(&body),
+            ("POST", "/load") => self.load(&body, query.as_deref()),
             ("POST", "/renew") => self.renew(&body),
             ("POST", "/purge") => self.purge(&body),
             ("POST", "/runtime") => self.runtime(&body),
@@ -623,7 +733,7 @@ impl HttpServerApp for AdminApp {
             //   会让打错的命令看起来成功了。
             _ => unknown_route(method.as_str(), path.as_str()),
         };
-        reply(&mut session, status, &text).await;
+        reply(&mut session, status, &text, &self.rt).await;
         None
     }
 }
@@ -643,7 +753,15 @@ fn unknown_route(method: &str, path: &str) -> (u16, String) {
     )
 }
 
-async fn reply(session: &mut ServerSession, status: u16, text: &str) {
+/// 写回响应——★ ★ ★ 也是 R11「管理面的每一次响应都带覆盖层计数」（G18）落地
+/// 的**唯一**地方。
+///
+/// ⚠ ⚠ `rt` 是**必填**参数，不是「算好了顺手传一个」：`process_new_http` 里
+/// `reply()` 有两个调用点（413 那条在路由分发之外），让每个 handler 各自拼
+/// 一次计数行会是 N 处抄件——加第五条路径时必然漏一次。把它做进 `reply()`
+/// 自己，「某个调用点忘了带」在结构上做不到——与本仓把 `Upstream::weight`
+/// 设成私有字段是同一条纪律。
+async fn reply(session: &mut ServerSession, status: u16, text: &str, rt: &Arc<SharedRuntime>) {
     let mut h = match pingora_http::ResponseHeader::build(status, None) {
         Ok(h) => h,
         Err(e) => {
@@ -651,7 +769,11 @@ async fn reply(session: &mut ServerSession, status: u16, text: &str) {
             return;
         }
     };
-    let body = bytes::Bytes::from(text.to_string());
+    // ── R11：尾部追加覆盖层计数，200/400/404/409/413 一个不漏 ────────────
+    let (n, m) = rt.override_counts();
+    let mut full = text.to_string();
+    full.push_str(&format!("当前有 {n} 项临时覆盖生效中（其中 {m} 项悬空）\n"));
+    let body = bytes::Bytes::from(full);
     let _ = h.insert_header("Content-Type", "text/plain; charset=utf-8");
     let _ = h.insert_header("Content-Length", body.len().to_string());
     if session.write_response_header(Box::new(h)).await.is_err() {
@@ -710,7 +832,7 @@ mod tests {
              *.a.com {{\n  tls {{\n    dns dnspod {}\n    zones a.com\n    resolvers 1.1.1.1\n  }}\n  respond 200\n}}\n",
             fulcrum_config::secret::REDACTED
         );
-        let (code, body) = a.load(&json_of(&dsl));
+        let (code, body) = a.load(&json_of(&dsl), Some("overrides=clear"));
         assert_eq!(code, 400, "脱敏产物竟然被接受了：{body}");
         assert!(
             body.contains("--with-secrets"),
@@ -735,7 +857,7 @@ mod tests {
             .config
             .unwrap();
         let body = fulcrum_config::secret::reveal(|| serde_json::to_vec(&cfg).unwrap());
-        let (code, out) = a.load(&body);
+        let (code, out) = a.load(&body, Some("overrides=clear"));
         assert_eq!(code, 200, "带真凭据的载荷被拒了：{out}");
     }
 
@@ -759,7 +881,10 @@ mod tests {
     fn 端口集不变时换得动() {
         let a = app(vec![(8080, false)]);
         let before = a.rt.current();
-        let (status, text) = a.load(&json_of("http://b.com:8080 {\n  respond 204\n}\n"));
+        let (status, text) = a.load(
+            &json_of("http://b.com:8080 {\n  respond 204\n}\n"),
+            Some("overrides=clear"),
+        );
         assert_eq!(status, 200, "{text}");
         // ★ ★ 判据是**换到了**，不是「返回了 200」。
         //   ⚠ 断言 `listen_ports == [(8080,false)]` 是不行的 —— 那个值在新旧两份里
@@ -776,7 +901,10 @@ mod tests {
     fn 端口集变了就拒绝而且旧配置一个字节都没动() {
         let a = app(vec![(8080, false)]);
         let before = a.rt.current();
-        let (status, text) = a.load(&json_of("http://b.com:9090 {\n  respond 200\n}\n"));
+        let (status, text) = a.load(
+            &json_of("http://b.com:9090 {\n  respond 200\n}\n"),
+            Some("overrides=clear"),
+        );
         assert_eq!(status, 409, "{text}");
         assert!(text.contains("systemctl reload"), "要说清怎么办：{text}");
         // ⚠ 这一条才是「原子」的判据：**拒绝之后旧的还在**。
@@ -793,10 +921,13 @@ mod tests {
     fn 换缓存后端要被拒而且旧配置一个字节都没动() {
         let a = app(vec![(8080, false)]);
         let before = a.rt.current();
-        let (status, text) = a.load(&json_of(
-            "http://a.com:8080 {\n  cache {\n    disk /var/cache/fulcrum\n  }\n  \
-             reverse_proxy 127.0.0.1:1\n}\n",
-        ));
+        let (status, text) = a.load(
+            &json_of(
+                "http://a.com:8080 {\n  cache {\n    disk /var/cache/fulcrum\n  }\n  \
+                 reverse_proxy 127.0.0.1:1\n}\n",
+            ),
+            Some("overrides=clear"),
+        );
         assert_eq!(status, 409, "换后端居然被放行了：{text}");
         assert!(text.contains("缓存后端变了"), "要说清是哪件事：{text}");
         assert!(text.contains("systemctl reload"), "要说清怎么办：{text}");
@@ -810,9 +941,12 @@ mod tests {
     fn 只改缓存参数不动后端照常换得动() {
         let a = app(vec![(8080, false)]);
         let before = a.rt.current();
-        let (status, text) = a.load(&json_of(
-            "http://a.com:8080 {\n  cache {\n    ttl 5m\n  }\n  reverse_proxy 127.0.0.1:1\n}\n",
-        ));
+        let (status, text) = a.load(
+            &json_of(
+                "http://a.com:8080 {\n  cache {\n    ttl 5m\n  }\n  reverse_proxy 127.0.0.1:1\n}\n",
+            ),
+            Some("overrides=clear"),
+        );
         assert_eq!(status, 200, "{text}");
         assert!(
             !Arc::ptr_eq(&before, &a.rt.current()),
@@ -824,7 +958,7 @@ mod tests {
     fn 载荷坏掉时也一个字节都没动() {
         let a = app(vec![(8080, false)]);
         let before = a.rt.current();
-        let (status, _) = a.load(b"{ not json");
+        let (status, _) = a.load(b"{ not json", Some("overrides=clear"));
         assert_eq!(status, 400);
         assert!(Arc::ptr_eq(&before, &a.rt.current()));
     }
@@ -846,10 +980,45 @@ mod tests {
             .unwrap()
             .replace("10.0.0.0/8", "10.0.0.0/99");
         cfg = serde_json::from_str(&json).unwrap();
-        let (status, text) = a.load(serde_json::to_vec(&cfg).unwrap().as_slice());
+        let (status, text) = a.load(
+            serde_json::to_vec(&cfg).unwrap().as_slice(),
+            Some("overrides=clear"),
+        );
         assert_eq!(status, 400, "{text}");
         assert!(text.contains("没有任何改动生效"), "{text}");
         assert!(Arc::ptr_eq(&before, &a.rt.current()));
+    }
+
+    // ── 任务 5：`overrides` 必填参数（G120 / R9）───────────────────────────
+
+    #[test]
+    fn load缺overrides参数400且旧配置一个字节都没动() {
+        // ⚠ ⚠ 判据写法纪律：body 单独看完全合法、会真的生效（与「端口集不变时
+        //   换得动」用的是同一份夹具）——唯一的毛病是**没带 `?overrides=`**。
+        //   否则 400 可能来自别的原因，这条判据就 confound 了，测不到「缺
+        //   overrides 本身会被拒」这件事。
+        let a = app(vec![(8080, false)]);
+        let before = a.rt.current();
+        let (status, text) = a.load(&json_of("http://b.com:8080 {\n  respond 204\n}\n"), None);
+        assert_eq!(status, 400, "{text}");
+        assert!(
+            text.contains("overrides"),
+            "要点名是 overrides 缺了：{text}"
+        );
+        assert!(Arc::ptr_eq(&before, &a.rt.current()), "旧配置被动过了");
+    }
+
+    #[test]
+    fn load的overrides参数值不对400且旧配置一个字节都没动() {
+        // 同上一条同一条纪律：body 单独看完全合法，唯一的毛病是查询串里的值。
+        let a = app(vec![(8080, false)]);
+        let before = a.rt.current();
+        let (status, text) = a.load(
+            &json_of("http://b.com:8080 {\n  respond 204\n}\n"),
+            Some("overrides=bogus"),
+        );
+        assert_eq!(status, 400, "{text}");
+        assert!(Arc::ptr_eq(&before, &a.rt.current()), "旧配置被动过了");
     }
 
     #[test]
@@ -1292,5 +1461,86 @@ http://solo.example:8090 {
             Some(0),
             "带着多余顶层字段的整份请求不该生效"
         );
+    }
+
+    // ── 任务 5：`/load` 的 `overrides` 两档接上真实的覆盖层（G120 / R8）──────
+    //
+    // ★ 复用上面 `POST /runtime` 那组的 `RUNTIME_DSL` / `app_runtime` /
+    //   `find_target`：重新 `/load` 同一份 DSL 时监听端口集不变（装得进去），
+    //   正好用来验证 `overrides` 两档在真实覆盖层上的行为——不止「回了 200」。
+    //   ⚠ ⚠ 硬要求（brief）：这两档的**真正**判据必须从 `tests/serve/run.sh`
+    //   那条真 socket 上打；这里是**另外**补一遍语义（直接调 handler，不经过
+    //   `?overrides=` 的查询串解析那一步），不能取代 E2E。
+
+    #[test]
+    fn load的overrides等于keep时覆盖还在且仍作用在数据面上() {
+        let a = app_runtime();
+        let k = OverrideKey::new("http://solo.example:8090", "", "10.40.0.9:9");
+        a.rt.overrides().slot(&k).set_disabled(true);
+        {
+            let rt = a.rt.current();
+            let t = find_target(&rt, "http://solo.example:8090", "");
+            assert_eq!(t.pick_index_by(None), None, "夹具前提：已经摘掉了");
+        }
+
+        let (status, text) = a.load(&json_of(RUNTIME_DSL), Some("overrides=keep"));
+        assert_eq!(status, 200, "{text}");
+
+        // ★ ★ 判据挂在数据面上：**新**运行时里同一个上游，覆盖必须仍然生效。
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        assert_eq!(
+            t.pick_index_by(None),
+            None,
+            "overrides=keep 之后，覆盖应该仍然作用在新运行时的数据面上"
+        );
+    }
+
+    #[test]
+    fn load的overrides等于clear时覆盖被清且回话逐项列出() {
+        let a = app_runtime();
+        let k = OverrideKey::new("http://solo.example:8090", "", "10.40.0.9:9");
+        a.rt.overrides().slot(&k).set_disabled(true);
+
+        let (status, text) = a.load(&json_of(RUNTIME_DSL), Some("overrides=clear"));
+        assert_eq!(status, 200, "{text}");
+        // ⚠ ⚠ 判据写法纪律：真断言落在 `OverrideKey` 自己的 `Display` 输出上，
+        //   不手写格式字符串。
+        assert!(
+            text.contains(&k.to_string()),
+            "clear 的回话应该逐项列出被清掉的那一项：{text}"
+        );
+
+        let rt = a.rt.current();
+        let t = find_target(&rt, "http://solo.example:8090", "");
+        assert_eq!(
+            t.pick_index_by(None),
+            Some(0),
+            "overrides=clear 之后覆盖应该没了，上游恢复可用"
+        );
+    }
+
+    #[test]
+    fn load的overrides等于keep时悬空的覆盖被点名() {
+        let a = app_runtime();
+        let k = OverrideKey::new("http://solo.example:8090", "", "10.40.0.9:9");
+        a.rt.overrides().slot(&k).set_disabled(true);
+
+        // 换一份不再有 `reverse_proxy 10.40.0.9:9` 的配置——这一格现在悬空。
+        // ⚠ 监听端口集要保持 [(8080,false),(8090,false)] 不变，否则会撞 409：
+        //   两个站点名照旧，只把 solo.example 的 body 换成裸 `respond`。
+        let (status, text) = a.load(
+            &json_of(
+                "http://pool.example:8080 {\n  reverse_proxy 10.40.0.1:1\n}\n\
+                 http://solo.example:8090 {\n  respond 200\n}\n",
+            ),
+            Some("overrides=keep"),
+        );
+        assert_eq!(status, 200, "{text}");
+        assert!(
+            text.contains(&k.to_string()),
+            "keep 的回话应该把悬空的覆盖逐条点名：{text}"
+        );
+        assert!(text.contains("悬空"), "要说清这是悬空：{text}");
     }
 }

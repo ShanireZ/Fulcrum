@@ -188,7 +188,7 @@ if [ "$EXTERNAL" = 0 ]; then
   write_px local-ok-v2
   if "$BIN" compile "$WORK/px.Fulcrumfile" > "$WORK/px.json" 2>"$WORK/compile.err"; then
     LCODE=$(curl -s -o "$WORK/load.out" -w '%{http_code}' --unix-socket "$ADMIN_SOCK" \
-      -X POST --data-binary "@$WORK/px.json" http://localhost/load 2>/dev/null || echo "000")
+      -X POST --data-binary "@$WORK/px.json" "http://localhost/load?overrides=clear" 2>/dev/null || echo "000")
     if [ "$LCODE" = "200" ]; then
       RELOADED=1
       note "负载进行中完成了一次全量 load（HTTP $LCODE）"

@@ -322,6 +322,54 @@ impl OverrideLayer {
         before - g.len()
     }
 
+    /// `overrides=clear`（**M2 批 N 任务 5**，G120）：撤销登记处里**全部**格子
+    /// 上的覆盖，返回清空前确实带着覆盖的那些项（供调用方在回话里逐项列出，
+    /// G120 明写「必须逐项列出」，⛔ 只给个数字不算数）。
+    ///
+    /// # ⛔ ⛔ ★ ★ ★ 不物理删除格子
+    ///
+    /// 那些格子的 [`Arc`] 还被**正在服务的** `Upstream` 攥着（`override_slot()`）
+    /// —— 物理删掉的只是登记处里的映射：同一个键，登记处再也查不到，而数据面
+    /// 还在用着那一格；下一次 `build_with_overrides` 拿同一个键调 [`Self::slot`]
+    /// 会**现建一格新的 `Arc`**，与仍在服务的那份**分家**——「覆盖层与上游身上
+    /// 那两个量在结构上是同一份」这条本模块的立身之本当场破掉，而且不报错。
+    ///
+    /// ⇒ 这里对每一格调 [`UpstreamOverride::set_disabled`]`(false)` +
+    /// [`UpstreamOverride::clear_weight`]，让 [`UpstreamOverride::has_override`]
+    /// 变回 `false`——格子退化成**空格子**，身份不断、映射不断，下一次成功的
+    /// swap 由 [`Self::retain_after_swap`] 自然回收。
+    ///
+    /// # ⚠ ⚠ 同一次持锁内做完「枚举 + 清空 + 收集」
+    ///
+    /// 与 [`Self::apply_all`] 同一条纪律：⛔ 不许「先 [`Self::entries`] 列一遍、
+    /// 再在锁外逐个调 [`Self::slot`] 去改」——那是同一个 TOCTOU 窗口的第二个
+    /// 入口（`slot()` 在键不存在时还会现建一格，把一次并发的 `retain_after_swap`
+    /// 刚收走的键又救回来）。本方法用一次 [`Self::grids`] 贯穿读（记录清空前的
+    /// `disabled`/`weight`/`dangling`）与写（清空），中间不会被任何并发的
+    /// `apply_all` / `slot` / `retain_after_swap` 插进来。
+    ///
+    /// `live` 与 [`Self::entries`] 同一口径：调用方传
+    /// [`crate::SharedRuntime::override_entries`] 背后那份 **swap 之后**的键集，
+    /// 用来给每一项被清掉的覆盖标好 `dangling`。
+    pub fn clear_all(&self, live: &BTreeSet<OverrideKey>) -> Vec<OverrideEntry> {
+        let g = self.grids();
+        let mut cleared = Vec::new();
+        for (k, s) in g.iter() {
+            if !s.has_override() {
+                continue;
+            }
+            cleared.push(OverrideEntry {
+                key: k.clone(),
+                disabled: s.is_disabled(),
+                weight: s.weight(),
+                dangling: !live.contains(k),
+            });
+            s.set_disabled(false);
+            s.clear_weight();
+        }
+        cleared
+    }
+
     /// `POST /runtime` **唯一**的写入口（**M2 批 N 任务 4**）：一次持锁内做完
     /// 「每一条都指得到」与「全部施加」——**全有或全无**，且不会撞上
     /// [`Self::retain_after_swap`] 的 TOCTOU（任务 3 评审开出来的口子）。

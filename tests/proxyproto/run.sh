@@ -307,7 +307,7 @@ CONF
 }
 CODE=$(curl -s -o "$WORK/admin.out" -w '%{http_code}' \
   --unix-socket "$ADMIN_SOCK" -X POST --data-binary "$(cat "$WORK/a2.json")" \
-  "http://localhost/load" 2>/dev/null || echo "000")
+  "http://localhost/load?overrides=clear" 2>/dev/null || echo "000")
 if [ "$CODE" = "200" ]; then
   ok "管理面：把信任清单换成 10.0.0.0/8（不再含 127.0.0.1）"
 else

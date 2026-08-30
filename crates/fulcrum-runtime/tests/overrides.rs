@@ -699,3 +699,162 @@ fn 任务4_apply_all_越界的set_weight被拒而不是静默吞掉() {
         );
     }
 }
+
+// ── 任务 5：`OverrideLayer::clear_all`（`overrides=clear`，G120）──────────────
+
+/// ★ ★ ★ 判据 9（brief §5）：`clear_all` 之后，登记处按键取到的格子与
+/// **仍在服务的那个 `Upstream`** 身上那一格必须**还是同一个对象**
+/// （`Arc::ptr_eq`）。⛔ 不许比值相等——清空之后两边都是默认值，值相等
+/// **恒真**，那是一把在好坏两种情况下读数相同的尺。
+///
+/// 反证时把 `clear_all` 误写成「记录 + `grids.retain(...)` 物理摘掉」的形状，
+/// 这条测试必须红：`逐个比对象身份` 会在 `layer.get(&key)` 那一步直接
+/// panic——登记处已经查不到这个键了。
+#[test]
+fn 任务5_clear_all之后格子身份不变() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n",
+        ))
+        .unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let k2 = OverrideKey::new("a.com", "", "10.0.0.2:2");
+    shared.overrides().slot(&k1).set_disabled(true);
+    shared.overrides().slot(&k2).set_weight(9).unwrap();
+
+    let live = shared.current().override_keys();
+    let cleared = shared.overrides().clear_all(&live);
+    assert_eq!(cleared.len(), 2, "两格都设过覆盖，应该都在被清掉的清单里");
+
+    // ★ ★ ★ 身份判据：`逐个比对象身份` 逐一比对「登记处按键取到的格子」与
+    //   「Upstream 身上那一格」，clear 之后这条必须仍然成立。
+    let n = 逐个比对象身份(&shared.current(), shared.overrides());
+    assert_eq!(n, 2, "两个上游都应该还能比对上——身份没断");
+
+    // 反面确认：确实清空了（否则「身份不变」只是因为根本没清）。
+    assert!(!shared.overrides().get(&k1).unwrap().is_disabled());
+    assert_eq!(shared.overrides().get(&k2).unwrap().weight(), None);
+    assert_eq!(
+        shared.overrides().active_count(),
+        0,
+        "清完之后没有生效中的覆盖"
+    );
+}
+
+/// 判据 10（brief §5）：`clear_all` 之后再设一次覆盖，**数据面当场生效**——
+/// 判据 9（身份没断）的行为侧对照，从 `Upstream::pick_index_by` 这个真正的
+/// 调度读数上看。
+#[test]
+fn 任务5_clear_all之后再设一次覆盖数据面当场生效() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    shared.overrides().slot(&k1).set_disabled(true);
+
+    let rt = shared.current();
+    let t = rt
+        .keyed_proxies()
+        .into_iter()
+        .find(|p| p.site == "a.com")
+        .unwrap()
+        .target;
+    assert_eq!(t.pick_index_by(None), None, "clear 之前应该已经摘掉了");
+
+    let live = rt.override_keys();
+    shared.overrides().clear_all(&live);
+    assert_eq!(t.pick_index_by(None), Some(0), "clear 之后应该恢复可用");
+
+    // ★ 判据 10：clear 之后再设一次覆盖，数据面当场生效——身份没断的
+    //   可观察后果。如果 `clear_all` 把这一格的身份弄断了（比如物理删格子
+    //   之后 `slot()` 现建了一格新的），这里改的是一个孤儿，下面的断言会红。
+    shared.overrides().slot(&k1).set_disabled(true);
+    assert_eq!(
+        t.pick_index_by(None),
+        None,
+        "clear 之后再设一次覆盖，应该当场又生效"
+    );
+}
+
+/// `clear_all` 的返回值：只含清空前**确实带着覆盖**的那些格子，悬空的也在
+/// 内且标好 `dangling`；没设过覆盖的格子不出现在清单里，也不被碰。
+#[test]
+fn 任务5_clear_all返回值只含设过覆盖的格子_悬空的也标好() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n",
+        ))
+        .unwrap(),
+    ));
+    let k1 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let k2 = OverrideKey::new("a.com", "", "10.0.0.2:2");
+    // k1：设过覆盖，且当前运行时还认得（不悬空）。
+    shared.overrides().slot(&k1).set_disabled(true);
+    // k2：**没**设过覆盖——不该出现在返回值里，也不该被 clear_all 碰过。
+    let k2_slot_before = shared.overrides().slot(&k2);
+
+    // 悬空键：登记处里有，但不是这份运行时的任何上游（⚠ 判据写法纪律：
+    // 用 TEST-NET-3，不会撞上任何模板字面量）。
+    let dangling_key = OverrideKey::new("a.com", "", "203.0.113.77:9999");
+    shared
+        .overrides()
+        .slot(&dangling_key)
+        .set_weight(3)
+        .unwrap();
+
+    let live = shared.current().override_keys();
+    assert!(
+        !live.contains(&dangling_key),
+        "夹具前提：这个键本来就不在任何上游上"
+    );
+
+    let cleared = shared.overrides().clear_all(&live);
+    assert_eq!(cleared.len(), 2, "只有 k1 与悬空键设过覆盖：{cleared:?}");
+
+    let k1_entry = cleared
+        .iter()
+        .find(|e| e.key == k1)
+        .expect("k1 应该在被清掉的清单里");
+    assert!(k1_entry.disabled, "k1 清空前是 disabled");
+    assert!(!k1_entry.dangling, "k1 当时还管得到那个上游");
+
+    let dangling_entry = cleared
+        .iter()
+        .find(|e| e.key == dangling_key)
+        .expect("悬空键也该在被清掉的清单里——clear 不分悬空不悬空，全清");
+    assert_eq!(dangling_entry.weight, Some(3), "清空前的权重要如实报出来");
+    assert!(dangling_entry.dangling, "这个键当时确实悬空");
+
+    // k2 没设过覆盖：不在返回值里，也没被碰过（还是同一个空格子）。
+    assert!(
+        !cleared.iter().any(|e| e.key == k2),
+        "k2 没设过覆盖，不该出现在清单里"
+    );
+    assert!(
+        !k2_slot_before.has_override(),
+        "k2 全程都不该变成「有覆盖」"
+    );
+}
+
+/// 边界情形：登记处里一项覆盖都没有时，`clear_all` 返回空列表，也不留痕迹
+/// （格子数不变、`active_count` 仍是 0）。
+#[test]
+fn 任务5_clear_all没有覆盖时返回空列表且不留痕迹() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let before = shared.overrides().slot_count();
+    let live = shared.current().override_keys();
+    let cleared = shared.overrides().clear_all(&live);
+    assert!(
+        cleared.is_empty(),
+        "没有任何覆盖，清单应该是空的：{cleared:?}"
+    );
+    assert_eq!(
+        shared.overrides().slot_count(),
+        before,
+        "不该多出或少掉格子"
+    );
+    assert_eq!(shared.overrides().active_count(), 0);
+}

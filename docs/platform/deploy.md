@@ -189,7 +189,7 @@ systemctl stop 的耗时 ≈ grace_period + graceful_shutdown_timeout
 
 | 路 | 命令 | 能改什么 | 代价 |
 |---|---|---|---|
-| 全量原子 load（G8）| `curl --unix-socket /run/fulcrum/admin.sock -X POST --data-binary @cfg.json http://localhost/load` | 路由、上游、头、证书来源…… | 进程不换代，**改不了监听端口集**（端口变了回 **409**）|
+| 全量原子 load（G8）| `curl --unix-socket /run/fulcrum/admin.sock -X POST --data-binary @cfg.json "http://localhost/load?overrides=clear"` | 路由、上游、头、证书来源…… | 进程不换代，**改不了监听端口集**（端口变了回 **409**）；`overrides` **必填**、走查询串（G120）：发布流水线用 `clear`（回到期望状态），事故处理中想保留刚打的补丁就用 `?overrides=keep` |
 | 换代（G37）| `systemctl reload fulcrum` | **一切**，含监听端口集 | 起一个新进程，老的排空后退出；零停机 |
 
 ★ `systemctl reload` 会让下一代**重新读一遍 `/etc/fulcrum/Fulcrumfile`**——

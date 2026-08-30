@@ -285,7 +285,7 @@ CONF
   cat "$WORK/only-a.err" >&2
   exit 1
 }
-CODE=$(admin_post /load "$(cat "$WORK/only-a.json")")
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/only-a.json")")
 if [ "$CODE" = "200" ]; then
   ok "换上游（两个 → 一个）被接受：$CODE"
 else
@@ -325,7 +325,7 @@ CONF
   echo "L4 TESTS FAILED: compile moved 失败" >&2
   exit 1
 }
-CODE=$(admin_post /load "$(cat "$WORK/moved.json")")
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/moved.json")")
 if [ "$CODE" = "409" ]; then
   ok "换 L4 监听端口被拒（409）—— 端口在启动时绑定，要走 systemctl reload"
 else
@@ -339,7 +339,7 @@ esac
 
 # 把两个上游load 回来，后面两节要用。
 "$BIN" compile "$WORK/l4.Fulcrumfile" > "$WORK/both.json" 2>/dev/null
-CODE=$(admin_post /load "$(cat "$WORK/both.json")")
+CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/both.json")")
 if [ "$CODE" = "200" ]; then
   ok "两个上游 load 回来了"
 else
