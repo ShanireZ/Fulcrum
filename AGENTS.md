@@ -266,5 +266,5 @@ Read [docs/platform/supply-chain.md](docs/platform/supply-chain.md) before touch
 - **Issue tracker** — GitHub Issues in this repository: `docs/agents/issue-tracker.md`.
 - **Triage labels** — the five canonical labels: `docs/agents/triage-labels.md`.
 - **Domain docs** — single-context layout: `docs/agents/domain.md`.
-- **Engineering skills** — when to use them and how they compose: `docs/agents/skill-workflows.md`.
+Working rules by phase, completion criteria, and the skill mapping live in the workspace-root [`Docs/dev_guide.md`](../Docs/dev_guide.md), which is imported into every session. It replaced the per-project `docs/agents/skill-workflows.md` copies, which had drifted and named uninstalled skills.
 - **Documentation** — maintain `docs/` as an OKF bundle: `docs/agents/documentation.md`.
