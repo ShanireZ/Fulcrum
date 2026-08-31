@@ -1,14 +1,14 @@
 ---
 type: reference
 title: Host traps, gate discipline, scenario flags and port map
-description: Detail split out of AGENTS.md when the workspace put project guidelines on an 8 KiB resident-context budget.
+description: Detail split out of AGENTS.md when the workspace put project guidelines on a resident-context budget.
 tags: [gate, host, ports, dependencies]
 status: current
 ---
 
 # Host traps, gate discipline, scenario flags and port map
 
-> Split out of `AGENTS.md` (workspace `nxtplan.md` phase 2, 8 KiB budget). **Everything here is
+> Split out of `AGENTS.md` (workspace `nxtplan.md` phase 2, resident-context budget). **Everything here is
 > still a hard rule** — `AGENTS.md` keeps only the traps that bite most often and points here.
 
 ## Scenario flags
