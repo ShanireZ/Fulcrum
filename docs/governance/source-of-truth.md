@@ -64,4 +64,4 @@ sources:
 
 ★ **状态类句子最容易漂。** 「当前阶段」「还剩几项」「已同步」这类句子散落在文件头、徽章、引言和从句里，改了主表却忘了回头扫它们，是本工作区反复出现的病。
 
-本项目已经犯过一次：M0 通过、`spikes/m0-seam` 落地之后，`README.md` 的徽章仍写着 `planning-only` 与 `chartered, not started`，正文仍写着「当前只有文档，没有实现代码」。**每次状态变化后，这几处要当成一张清单整体扫一遍**——徽章、README 正文、`AGENTS.md`「Project status」、`PLAN.md` §1、以及工作区 [`../AGENTS.md`](../../../AGENTS.md) 的项目索引行。
+本项目已经犯过一次：M0 通过、`spikes/m0-seam` 落地之后，`README.md` 的徽章仍写着 `planning-only` 与 `chartered, not started`，正文仍写着「当前只有文档，没有实现代码」。**每次状态变化后，这几处要当成一张清单整体扫一遍**——徽章、README 正文、`AGENTS.md`「Project status」、`PLAN.md` §1、以及工作区 [`Docs/agents/projects.md`](../../../Docs/agents/projects.md) 的项目索引行（已从根 `AGENTS.md` 移出）。

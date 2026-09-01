@@ -8,8 +8,7 @@ status: current
 
 # Host traps, gate discipline, scenario flags and port map
 
-> Split out of `AGENTS.md` (workspace `nxtplan.md` phase 2, resident-context budget). **Everything here is
-> still a hard rule** — `AGENTS.md` keeps only the traps that bite most often and points here.
+> **Everything here is still a hard rule** — `AGENTS.md` keeps only the traps that bite most often and points here.
 
 ## Scenario flags
 

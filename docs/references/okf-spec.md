@@ -2,7 +2,7 @@
 type: 外部规范
 title: Open Knowledge Format v0.2
 description: 本 bundle 遵循的格式规范——plain markdown + YAML frontmatter 的知识 bundle。
-resource: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
+resource: https://github.com/GoogleCloudPlatform/open-knowledge-format
 tags: [规范, 元信息]
 status: stable
 generated:
@@ -10,7 +10,7 @@ generated:
   at: 2026-08-12T00:00:00Z
 sources:
   - id: spec
-    resource: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
+    resource: https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md
     title: OKF SPEC.md v0.2
   - id: blog
     resource: https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/
