@@ -1,5 +1,7 @@
 # AGENTS.md — 枢衡 Fulcrum project guide
 
+> Workspace-wide rules live in [`../AGENTS.md`](../AGENTS.md).
+
 Read this before touching anything. It is short on purpose; everything it points at is longer.
 
 ## Source of truth
@@ -22,11 +24,11 @@ Read this before touching anything. It is short on purpose; everything it points
 - **Never hand-write TLS, the HTTP/2 state machine, HPACK, or QUIC.** Use audited libraries.
 - **Expected state is the only authority.** Runtime overrides are not persisted but must be
   visible in stats and API output. Do not add a second persistent write path.
-- **Status sentences drift.** After any status change, sweep as one checklist:
-  `README.md` → `PLAN.md` §1 → `PLAN.md` §7.
+- **Status sentences drift.** Current milestone and execution status live only in `PLAN.md` §1;
+  other entry points link there and must not restate it.
 - **Docs and comments carry conclusions, not a running account** (G115). `handoff/` is
-  gitignored and stays local; anything worth keeping goes into `PLAN.md` or `docs/` as a
-  present-tense statement of what is done, not done, or still open.
+  gitignored and stays local; milestone status belongs in `PLAN.md`, while `docs/` keeps stable
+  technical conclusions or dated verification evidence rather than a second progress account.
 
 ### Two locked constraints (G6, as amended by G104)
 
@@ -135,4 +137,4 @@ Read [docs/platform/supply-chain.md](docs/platform/supply-chain.md) before touch
 
 - **Issue tracker** — GitHub Issues in this repository: `docs/agents/issue-tracker.md`.
 - Triage labels, domain-doc layout and the OKF documentation contract follow the workspace defaults: `docs/agents/index.md`.
-- Phase-by-phase working rules, completion criteria and the skill mapping live in the workspace-root [`Docs/dev_guide.md`](../Docs/dev_guide.md), which is imported into every session.
+- Read the workspace-root [`Docs/dev_guide.md`](../Docs/dev_guide.md) when entering this workspace for phase-by-phase rules, completion criteria, and the skill mapping. Claude imports it through the root `CLAUDE.md`; other runtimes must not assume automatic loading.

@@ -741,8 +741,8 @@ done < <(env)
 #
 # ⚠ ⚠ **路径必须用 `$REPO_HOST` 而不是 `$REPO_UNIX`**，而这不是风格问题：
 #   本脚本前面已经 `export MSYS_NO_PATHCONV=1`（那是为了让 docker 收到未转换的路径），
-#   于是在 Windows + Git Bash 上，原生 `python.exe` 拿到的会是字面的 `/d/WorkSpace/…`，
-#   它按当前盘解析成 `D:\d\WorkSpace\…` —— 报的是「找不到文件」，
+#   于是在 Windows + Git Bash 上，原生 `python.exe` 拿到的会是字面的 `/d/Workspace/…`，
+#   它按当前盘解析成 `D:\d\Workspace\…` —— 报的是「找不到文件」，
 #   而那个路径看起来又很像对的，排查方向会整个跑偏。
 #   ★ `REPO_HOST` 是上面用 `cygpath -m` 转过的那一份；**在 Linux 上它与 `REPO_UNIX` 逐字相同**。
 #   ⚠ 它与本文件开头那条「`MSYS_NO_PATHCONV=1` 一旦生效，`git rev-parse` 会失败」

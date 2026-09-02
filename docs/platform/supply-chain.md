@@ -273,7 +273,7 @@ python tools/supply-audit.py --cargo "..." --markdown  # 额外输出可直接�
 ★ ★ **一定要传 `--cargo`**，否则拿不到编译图，数字会偏大一倍（30 vs 13）。在这台机器上：
 
 ```bash
-python tools/supply-audit.py --cargo "docker run --rm -v D:/WorkSpace/Fulcrum:/w -v fulcrum-cargo:/usr/local/cargo/registry -v fulcrum-target:/w/target -w /w fulcrum-build:local cargo"
+python tools/supply-audit.py --cargo "docker run --rm -v D:/Workspace/Fulcrum:/w -v fulcrum-cargo:/usr/local/cargo/registry -v fulcrum-target:/w/target -w /w fulcrum-build:local cargo"
 ```
 
 **退出码**（★ 会叠加，风格同 `dep-check.py`）：

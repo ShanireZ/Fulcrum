@@ -53,7 +53,7 @@ sources:
 |---|---|---|
 | [`PLAN.md`](../../PLAN.md) | 定位、范围、里程碑、验收标准、风险、§10 决策清单、§11 待定清单 | ★ **是** |
 | [`AGENTS.md`](../../AGENTS.md) | agent 的项目级约束与最易踩错的硬约束 | 指针，不含独立结论 |
-| [`README.md`](../../README.md) | 对外介绍与现状速览 | 指针，不含独立结论 |
+| [`README.md`](../../README.md) | 稳定的对外介绍与权威导航 | 指针，不复制当前里程碑状态 |
 | `docs/architecture/`（本 bundle） | ★ **技术基线** | 服从 `PLAN.md` |
 | `docs/` 其余部分（本 bundle） | 概念导航、关系图、易错点索引 | **否** |
 | `docs/verification/` | 已跑过的验证及其原始证据 | ★ **是**（历史事实） |
@@ -62,6 +62,6 @@ sources:
 
 # 一条易错点
 
-★ **状态类句子最容易漂。** 「当前阶段」「还剩几项」「已同步」这类句子散落在文件头、徽章、引言和从句里，改了主表却忘了回头扫它们，是本工作区反复出现的病。
+★ **状态类句子最容易漂。** 当前里程碑、已完成/进行中/未开工与剩余项只在 `PLAN.md` §1 维护。README、AGENTS、roadmap 与工作区项目索引只保留稳定身份、约束和到 `PLAN.md` 的导航，不建立需要同步的状态副本。
 
-本项目已经犯过一次：M0 通过、`spikes/m0-seam` 落地之后，`README.md` 的徽章仍写着 `planning-only` 与 `chartered, not started`，正文仍写着「当前只有文档，没有实现代码」。**每次状态变化后，这几处要当成一张清单整体扫一遍**——徽章、README 正文、`AGENTS.md`「Project status」、`PLAN.md` §1、以及工作区 [`Docs/agents/projects.md`](../../../Docs/agents/projects.md) 的项目索引行（已从根 `AGENTS.md` 移出）。
+本项目曾在 M0 状态变化后留下过过期 README 徽章与正文。该历史说明了为什么要消除副本，而不是继续要求跨文件同步；带日期和上下文的实测结果继续留在 `docs/verification/`。

@@ -20,7 +20,7 @@ sources:
 
 | 章节 | 内容 | bundle 里的导航 |
 |---|---|---|
-| §1 | 当前状态 | [实施路线](/governance/roadmap.md) |
+| §1 | 当前状态 | [直接阅读唯一权威](../../PLAN.md#1-当前状态)；bundle 不复制当前状态 |
 | §2 | 项目定位 | [定位](/product/positioning.md) |
 | §3 | 要解决的问题；§3.1 竞争位置 | [定位](/product/positioning.md) |
 | §4 | 设计原则（七条）| [设计原则](/product/design-principles.md) |
