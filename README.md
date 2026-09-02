@@ -13,9 +13,12 @@
 - **静态文件** —— 目录索引、范围请求、条件请求、预压缩旁文件
 - **HTTP 缓存** —— 内存 + 磁盘两级、防惊群、`POST /purge`
 - **响应压缩** · **结构化访问日志**（JSON）
-- **Prometheus 指标** —— 站点块里的 `metrics` 指令，九个族，零新依赖
+- **Prometheus 指标** —— 站点块里的 `metrics` 指令，零新依赖
 - **HTTP/1.1 · HTTP/2 · HTTP/3**
 - **L4 面** —— TCP / UDP 透传、SNI / ALPN 分流、PROXY protocol
+- **管理面**（Unix socket，默认不出机器）—— 全量原子 `POST /load`（`overrides` 必填：`keep` / `clear`）·
+  增量 `POST /runtime` 改**临时覆盖层**（摘上游 / 改权重，不持久化但 `GET /stats` 里永远看得见）·
+  `POST /renew` · `POST /purge` · 只读快照 `GET /stats`
 - **零停机换代** —— systemd `Type=notify`，`systemctl reload` 换二进制、换配置、换监听端口集
 
 ## 安装

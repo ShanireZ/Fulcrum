@@ -11,7 +11,7 @@
 |---|---|
 | **M0** 接缝验证 | ✅ **通过** |
 | **M1** 接管一台机 | ✅ **通过** |
-| **M2** 接管两台 | ⏳ **进行中** —— 自研批次全部做完，剩**退出条件**与**观测的最后 1/3**（Runtime 实时 stats，批 N）|
+| **M2** 接管两台 | ⏳ **进行中** —— 自研批次全部做完，观测三件套 **3/3**；⛔ 只剩**退出条件**（两台机器由枢衡承载，那是**运维动作**不是工程任务）|
 | **M3** 对拍达标 | ⏳ 未开工 |
 | **M4** 发布 | ⏳ 未开工 |
 
@@ -36,11 +36,10 @@
 全量原子 load（Unix socket）· systemd `Type=notify` 托管下的**换代零中断** ·
 L4 面（TCP/UDP 透传、SNI/ALPN 分流、PROXY protocol 收）· 静态文件 · HTTP 缓存（内存 + 磁盘 +
 防惊群 + `POST /purge`）· 响应压缩 · **HTTP/3**（quiche，含换代时的跨进程连接转交）·
-结构化访问日志（JSON）· **Prometheus 指标**（站点块里的终结指令 `metrics`，九个族，
+结构化访问日志（JSON）· **Prometheus 指标**（站点块里的终结指令 `metrics`，
 text exposition 自研零依赖）。
 
-⏳ **未落地** —— 观测三件套还剩 **1/3**（Runtime 实时 stats）· Runtime 增量通道与
-临时覆盖层 · PROXY protocol 的「发」那半边 · 被动熔断（`passive_fail`）。
+⏳ **未落地** —— PROXY protocol 的「发」那半边 · 被动熔断（`passive_fail`）。
 
 ### 判据
 
@@ -237,18 +236,22 @@ Runtime 增量通道 + 临时覆盖层 · 观测三件套（Prometheus 指标、
 | J | HTTP/3 入口本体：quiche + Retry 地址验证 + `quiche::h3` 事件循环 + QUIC 监听器 `Service` 与 socket 移交。★ **SCID 从第一天就带 `gen_id` 前缀** —— CID 的形状是对外可见的，等批 K 再改会让批 J 发出去的连接在换代时全部认不出来 |
 | K | 换代时的 **QUIC 跨进程转交**（G109）。⇒ **换代零中断从此对 h3 也成立** |
 | L | 观测 ①：**结构化访问日志**（JSON，G113/G114）+ PROXY protocol 的 **HTTP 半边（只做「收」）** + 白名单头 + TLS 信息 |
-| M | ✅ 观测 ②：**Prometheus 指标**。站点块里的终结指令 `metrics`（G116）· 文本格式自研零依赖（G117）· `no_site_match` 计数器结掉 D26（G118）· 站点标签取「实际匹配到的那条地址字面量」（G121）。**九个族**，取数点只有 `Record::finish` 一处，门在 [`tests/metrics/run.sh`](tests/metrics/run.sh) |
-| N | ⏳ 观测 ③ + G8/G18 的另一半：**增量通道 → 临时覆盖层 → 只读 stats**，按这个顺序（G119）。`POST /load` 的 `overrides` 是必填参数（G120）|
+| M | ✅ 观测 ②：**Prometheus 指标**。站点块里的终结指令 `metrics`（G116）· 文本格式自研零依赖（G117）· `no_site_match` 计数器结掉 D26（G118）· 站点标签取「实际匹配到的那条地址字面量」（G121）。取数点只有 `Record::finish` 一处，门在 [`tests/metrics/run.sh`](tests/metrics/run.sh) |
+| N | ✅ 观测 ③ + G8/G18 的另一半：**增量通道 → 临时覆盖层 → 只读 stats**，按这个顺序（G119）。`POST /load` 的 `overrides` 是必填参数（G120）· `reverse_proxy` 的选填 `id` 与同键共享格子（G125）· 指标族 `fulcrum_overrides_active`（G126）。门在 [`tests/stats/run.sh`](tests/stats/run.sh) 与 `tests/serve/` `tests/metrics/` 三处 |
 | M′ | ⏳ **批 M 的收尾**（G122 的 TLS 那半 · G123 拆 `purge` · G124 的 `none` 判据）。★ 三件都落在**已有的取数点**上，不动 fork、不新增监听器钩子 —— 它们是在结掉批 M 自己留下的口径问题。⚠ **新族与 `observability.md` 那张基数表必须同一笔改**：那道把表钉在 `FAMILIES` 上的门会把「表里有、代码里没有」判红。 |
 | O | ⏳ **连接指标**（G122 的连接那半）：fork 第 15 处 + L4 TCP / L4 UDP / QUIC 三处，`Drop` 守卫，抓取时问活体。★ 有意**排在批 N 之后**：批 N 挡在 M2 打勾的路上，而这一格不挡。 |
 
 > ⚠ **批的字母不代表顺序**：批 K 的号早于批 L 写定，而 owner 后来拍 **G112** 把观测插到了
 > 批 K 之前。**不改号** —— 改号会让已有引用一起变成错的。
 
-✅ **批 M（Prometheus 指标）已落地** —— 九个族、`metrics` 终结指令、text exposition 自研零依赖，
-门在 [`tests/metrics/run.sh`](tests/metrics/run.sh)。⏳ **只剩批 N**（方案见
-[观测](docs/architecture/observability.md)，决定见 §10 的 G119/G120）。
-⚠ **一格里装三件事，最容易被读成一件**；观测这一格今天是 **2/3，仍然不是 ✅**。
+✅ **批 M（Prometheus 指标）已落地** —— `metrics` 终结指令、text exposition 自研零依赖，
+门在 [`tests/metrics/run.sh`](tests/metrics/run.sh)。
+✅ **批 N（Runtime 增量通道 → 临时覆盖层 → 只读 stats）已落地**（方案见
+[观测](docs/architecture/observability.md) 与 [管理面](docs/architecture/control-plane.md)，
+决定见 §10 的 G119/G120/G125/G126），门在 [`tests/stats/run.sh`](tests/stats/run.sh)
+与 [`tests/serve/run.sh`](tests/serve/run.sh)、[`tests/metrics/run.sh`](tests/metrics/run.sh)。
+⚠ **一格里装三件事，最容易被读成一件**；观测这一格今天是 **3/3**。
+⛔ **但 M2 仍然不能打勾** —— 剩的那半句是**运维动作**（两台机器由枢衡承载），不是工程任务。
 
 ⏳ **退出条件本身要拆成两半数**，因为它们的性质完全不同：
 
@@ -429,6 +432,8 @@ Runtime 增量通道 + 临时覆盖层 · 观测三件套（Prometheus 指标、
 | **G122** | **D32 结案 = 两半分别落地，且分别命名。** ① **TLS 那半**：新增 `fulcrum_tls_requests_total{version,cipher}`，取数点仍是 `Record::finish` **那一处**（`Record` 已经带着 `TlsFields`）。★ 两个标签都由**服务端协商**产生 ⇒ 上界由我们编进去的套件表定、不由访问者定，正好过 G118/G121 那条纪律；⛔ `sni` / `alpn` **不当标签**（访问者给的，与 G121 挡的是同一件事）。⚠ 名字里是 `requests` 不是 `handshakes` —— keep-alive 下一次握手对应多条请求，叫 `handshakes` 会是一句读起来完全成立的假话。② **连接那半**：`fulcrum_connections_total`（counter）+ `fulcrum_connections_active`（gauge），标签 `listen`（监听地址，上界由配置定）。⚠ ⚠ **它是四处，不是一处**：fork 第 15 处改动（`Service::run_endpoint`）覆盖 h1/h2 与 admin，而 L4 TCP · L4 UDP · QUIC **各有各的 accept 循环**，pingora 那个一次都不经过。★★★ gauge 的减一**必须用 `Drop` 守卫** —— 那个连接任务有三条退出路径（握手超时 / 握手失败 / 正常结束），手写三处 `fetch_sub` 正是 D18/G66 那个分家形状。★ 四处只负责 `+1/-1` 到**同一个** `ConnStats`，而它与标签定义只有一份。⚠ fork 够不到我们的 `metrics` 模块 ⇒ 只能由 fork 暴露计数、我们**抓取时问活体**（`upstream_inflight` 那条路子）。★ 顺序：**现在就在 fork 里做，不等 rebase**（改动是孤立新增，冲突面小；而投递或等待都不改变我们什么时候用得上 —— `ListenFds` 那条已证）；**投不投上游等 rebase 读过 `main` 之后再判** —— 上游 `main` 已把 `prometheus` 整条删掉，口味未知。 |
 | **G123** | **D31 结案 = 把 `purge` 拆成自己的族。** 新增 `fulcrum_cache_purged_entries_total`（单位「条目」），`fulcrum_cache_events_total{event}` 只剩 `hit` / `miss` / `stale` **三个同一分母的值** ⇒ `sum(cache_events_total)` 恢复成「查过缓存的请求数」，命中率直接可写。★ 这是**把一个靠用户记住的陷阱，换成一个结构上不存在的陷阱**。⚠ 「是哪一种命中」（`HIT` / `HIT-DISK`）**不进指标**：`CacheHandle` 全仓只建一次，`Backend` 是每进程一个、由配置定死的 ⇒ 那个区分在一个运行中的进程里**是常量**，做成标签携带的信息量恰好为零，只剩基数成本；要知道后端是哪个，装载日志那一行就说了。⚠ 另一半边界**保持现状并写在明处**：`miss` 记在**回源**那一处（有意不记在「查缓存没命中」那一处 —— 那里还会拐弯：`only-if-cached` 回 504 根本没回源、防惊群的 follower 等完重查会**命中**）⇒ 上游连不上的请求三格都不在，故障期间 `hit/(hit+miss)` 会偏高；★ 那时 `upstream_healthy` 与 `requests_total{outcome="error"}` 是两个更直接的信号。 |
 | **G124** | **D30 结案 = `status_class` 保持六个值，第六个是 `none`，并补一条判据。** `status == 0`（一个响应头都没写出去 —— 那不是「未知」，是**什么都没发生**）与 1–99 / 600+ 一起归 `none`。★★ 它**可达**这件事现在有实据：`response_written` 只在 `write_all` **成功之后**才被置上（`v1/server.rs`）⇒ 下游在我们写响应头之前断开时，站点已命中、`outcome` 是 `reverse_proxy` 之类，而 `status` 是 0，**且 `LogLevel::All.records(0)` 为真 ⇒ 这一行照样会被写进访问日志**。⛔ 因此「这类请求不计进 `requests_total`」当场破掉一致性门（日志有那一行、指标没那一笔）；⛔ 也不取 `0xx` —— HTTP 里没有这个类，它会被当成真的状态类去查规范。⚠ 而这条路**今天没有任何判据走过** ⇒ 本条同时要求在 `tests/metrics/run.sh` 里造一次「发完请求立刻关连接」，两边一起断言：访问日志真的多了一行 `status=0`，且指标里 `status_class="none"` 正好 +1。★ 否则这一格只存在于代码与文档里。 |
+| **G125** | **`reverse_proxy` 的选填 `id`，与覆盖层的三格键 `(站点名, id, 上游地址)`。**★ owner **两轮**拍板：先拍「发明 `id` + 同站点歧义就拒绝」，实测后**重拍为「保留 `id`，但撞键不拒绝 ——同键共享同一个覆盖格子」**。⇒ 一次 `disable` 把共享那一格的几条 `reverse_proxy` 一起摘掉，⛔ **不是错误、也不给告警**：「一个后端挂在几组 `handle` 路由后面」是反代最常见的写法，**现有配置一个字节都不用改**；而「一起摘掉」多半正是要的语义（那台机器坏了，它不该从任何路由收流量）。**想分开就给其中一条写一行 `id`**。⚠ ⚠ **键里的上游地址是归一化之后的那个串**（`backend` ⇒ `backend:80`）⇒ 两条写法不同、归一化后相同的 `reverse_proxy` **共享同一格** —— 这不是缺陷而是边界：管理面对着的是运行时。⚠ 「这一格管着几条」由 `GET /stats` 显示（G18），那是「以为 `disable` 只影响一条」唯一的提醒。⛔ **不自动派生 `id`**：内容哈希会让「发布时加一台机器」把刚摘掉的坏节点顶悬空，站点内序号会让「换一下书写顺序」静默改掉寻址 —— 与 `weight` 拒绝位置式是同一条理由。|
+| **G126** | **新增指标族 `fulcrum_overrides_active`（无标签单值 gauge，基数恒为 1）。**★ owner **推翻**了 AI 的建议（AI 选的是「不加，只从 `/stats` 出」）。值是**当前生效中的临时覆盖总数**，⚠ ⚠ **悬空的照样计入** —— 它确实还在登记处占着一格，且 `/load` 已经逐条点过名。⛔ **不按 `(站点, 上游)` 打标签**：那等于把 `/stats` 的 `overrides` 一节整个搬进指标（两份实现同一件事），而「是哪几项」本来就该去 `/stats` 看。★ 取数与 `/stats` **同源**（同一个 `OverrideLayer::entries()`），⛔ 不新增第二处计数；抓取路径上只许用**已持快照**的那一版（`override_entries_of`），因为 `override_counts()` 内部会再取一次快照，而一次抓取取两份快照会让两个族落在两份不同的配置上。⚠ **新族与 `observability.md` 那张基数表必须同一笔改**：把表钉在 `FAMILIES` 上的那道门会判红 ——★ 但它**只比族名**，`gauge / 活体 / 无标签 / 恒为 1` 那四格今天没有任何门守着。|
 
 ## 11. ⏳ 待定清单
 

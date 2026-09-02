@@ -398,7 +398,7 @@ expect_status "POST /purge（全清）" 200 "$(printf '%s' "$RESP" | tail -1)"
 
 # 管理面不认识的路径仍然是 404（新加一个端点不该让别的变松）。
 RESP=$(admin /nope '{}')
-expect_status "POST /nope（管理面仍然只认那三个）" 404 "$(printf '%s' "$RESP" | tail -1)"
+expect_status "POST /nope（管理面认识的那几个之外仍然是 404）" 404 "$(printf '%s' "$RESP" | tail -1)"
 
 # ── [6/7] 防惊群 ───────────────────────────────────────────────────────────
 echo

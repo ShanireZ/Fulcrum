@@ -78,16 +78,23 @@ run.** Flip the condition, break the input, or delete the fix — and watch it f
 back. If a gate cannot be made to fail, it is not a gate. Prefer gates carrying their own reverse
 test (`tests/m0/unclaimed.sh` asserts false at step 0 and true at step 2, so one run does both).
 
+⚠ ★ **A cross-crate injection is not fully reported by one compile** — cargo stops at the first
+failing crate and the truncated output reads exactly like a complete list (measured: 7 sites
+reported as 1). The criterion, and why one pass is sometimes enough by luck: the traps doc below.
+
 ⚠ ★ **On this host `cargo` can reuse a stale test binary after a `git rebase` or branch switch:
 the run is green and the new tests are simply not in it.** Measured: two identical `UNIT_ONLY`
 runs reported **289** and **288** tests while the source had **291**. Anchor on `Compiling
 <crate>` in the log, not on the green summary, and refresh mtimes from inside the container first:
 
 ```bash
-docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w fulcrum-build:local bash -c 'find crates spikes -name "*.rs" -o -name Cargo.toml | xargs touch'
+MSYS_NO_PATHCONV=1 docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w fulcrum-build:local bash -c 'find crates spikes -name "*.rs" -o -name Cargo.toml | xargs touch'
 ```
 
-The other five failure shapes and two corollaries: [docs/platform/host-and-gate-traps.md](docs/platform/host-and-gate-traps.md).
+⚠ **`MSYS_NO_PATHCONV=1` is load-bearing here, not decoration** — without it Git Bash rewrites
+`-w /w` into `W:/` and docker exits 125 with an error that says nothing about path translation.
+
+The other failure shapes and their corollaries: [docs/platform/host-and-gate-traps.md](docs/platform/host-and-gate-traps.md).
 
 ## Editing shell scripts on this host
 

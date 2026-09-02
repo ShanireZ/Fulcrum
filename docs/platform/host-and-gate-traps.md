@@ -99,9 +99,27 @@ someone else. Copy that check into any scenario that starts a generation the sam
 ⚠ The bug it caught was `GEN2=$(start_gen …)`: `$(…)` is a subshell, so `PIDS+=` updated a copy
 and `cleanup` killed nothing — while the scenario still reported PASSED.
 
-## Gate discipline — the five ways a green gate stops meaning anything
+## Gate discipline — the ways a green gate stops meaning anything
 
-Five ways a green gate stops meaning anything:
+### 0. An early stop truncates the probe, and the truncated output looks complete
+
+cargo stops at the **first** crate in the dependency chain that fails to compile, so everything
+downstream is never built. Measured on this repo: an injection placed at **7 sites across 4
+crates** came back naming **1**, from `fulcrum-config` alone — and that output reads exactly like
+a full list. Four rebuild passes were needed to collect them all.
+
+★ The criterion is **"the last pass produced no red crate downstream"**, not "the compiler printed
+N errors". A single pass that does report every site means the symbol happened to be private to
+one crate — **that is luck, not method**, and it will not hold for the next injection.
+
+⇒ **Print the injected count next to an independent census of the same category.** You only learn
+that something was missed when the two numbers disagree; one number alone can never tell you.
+
+⚠ Same shape, different clothes: `--fail-fast`, a CI job skipped because its `needs:` failed,
+`grep -m 1`, and short-circuiting boolean operators. Each returns a well-formed answer about a
+subset while looking like an answer about the whole.
+
+And the ways a gate that does run still stops meaning anything:
 
 - **The blind spot is in the fixture.** When a code path branches on the *shape* of an input
   (IP literal vs hostname, absolute vs relative, ASCII vs not), check the fixtures contain both
