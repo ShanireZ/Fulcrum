@@ -269,7 +269,7 @@ metrics.example:9443 {
 | `fulcrum_upstream_healthy` | gauge | 活体 | `upstream` | 配置定 |
 | `fulcrum_cert_expiry_seconds` | gauge | 活体 | `domain` | 配置定 —— ⚠ **前提是 `on_demand` 未接线**，接线那一批要回来重算这一行（见下）|
 | `fulcrum_acme_issue_total` | counter | 活体 | `result` | `ok`/`fail`/`deferred` |
-| `fulcrum_build_info` | gauge(=1) | 活体 | `version` | 1 |
+| `fulcrum_build_info` | gauge | 活体 | `version` | 1 —— ⚠ 而它的**值**也恒为 1（标记 gauge，两个 1 不是一回事）|
 | `fulcrum_overrides_active` | gauge | 活体 | 无 | 恒为 1（无标签单值；值 = 当前登记处的覆盖总条目数，悬空的照样计入，裁决 R13）|
 
 ⛔ **任何形态都不加 `uri` 标签。**
