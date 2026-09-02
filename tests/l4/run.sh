@@ -694,8 +694,15 @@ echo "=== [9/11] SNI / ALPN 分流 ==="
 cat > "$WORK/tcp-echo.py" <<'PYEOF'
 """收什么回什么：`<tag>:<收到字节的 hex>`。
 
+用法：tcp-echo.py <端口> <tag> [eof]
+
 ★ 回 hex 而不是原文，是因为 ClientHello 是二进制 —— 而这一格最要紧的一条判据
   正是「**枢衡看过 ClientHello，但一个字节都没吃掉**」。
+
+★ ★ ★ 第三个参数 `eof`：**读到发送方半关闭为止**，而不是「一次 recv 就算收完」。
+  ⚠ ⚠ 它修的是一条**在量别的东西**的判据 —— 详见 `serve()` 里那段。
+  ⛔ 不给它设成默认：curl 与 `hello.py` 那些客户端**不半关闭**，
+  对它们「读到 EOF」等于每条连接白等一个超时。
 """
 import socket
 import sys
@@ -703,6 +710,8 @@ import threading
 
 port = int(sys.argv[1])
 tag = sys.argv[2]
+# 读到发送方半关闭为止（见模块注释）。⚠ 逐字比较，不做前缀匹配。
+until_eof = len(sys.argv) > 3 and sys.argv[3] == "eof"
 srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", port))
@@ -710,6 +719,8 @@ srv.listen(16)
 
 
 def serve(conn):
+    # ⚠ 这个超时是**兜底**，不是判据：`eof` 模式的确定性来自半关闭，不来自它。
+    #   留着它只为「万一 EOF 没透过来」时别把整格挂死。
     conn.settimeout(1.0)
     data = b""
     try:
@@ -718,8 +729,19 @@ def serve(conn):
             if not chunk:
                 break
             data += chunk
-            # ★ 一次 recv 就够判断了；再等只会让每条断言多花 1 秒。
-            break
+            # ★ ★ ★ **「一次 recv」量的是 TCP 分段边界，不是「收到了什么」。**
+            #   实测（2026-09-02）：枢衡在 `l4.rs` 里分三次写给上游 ——
+            #   ① 建连时写 PROXY 头 · ② 重放 peek 走的字节 · ③ `copy_bidirectional`
+            #   搬其余流量。「只发不收」那条路上 ② 是空的，于是 ① 与 ③ 之间隔着
+            #   一个客户端往返 ⇒ **落不落进同一个段是赛跑**。
+            #   ⇒ 现场表现：`只发不收那条路上载荷丢了`，而载荷根本没丢，
+            #     它在下一段里；同一棵树重跑就绿 —— 一条会随机红的判据，
+            #     会把真正的回归伪装成「又是那条老 flaky」。
+            #   ★ `eof` 模式改成**读到发送方半关闭为止**：由发送方说「我说完了」，
+            #     与分段无关。半关闭能透过来是 `copy_bidirectional` 的性质，
+            #     `l4.rs` 那段注释正是靠它（「一端读到 EOF 就把另一端 shutdown 写方向」）。
+            if not until_eof:
+                break
     except OSError:
         pass
     try:
@@ -986,7 +1008,11 @@ for p in "$PP_UP" "$PP_CHAIN" "$PP_RECV" "$PP_UNTRUSTED" "$PP_SEND"; do
 done
 
 # 上游：复用分流那一格的回显脚本（收什么回什么，回的是 hex）。
-python3 "$WORK/tcp-echo.py" "$PP_UP" up-pp >"$WORK/up-pp.log" 2>&1 &
+#
+# ★ ★ ★ **这一格是唯一开 `eof` 的**：它的客户端是 `ppclient.py`（发完就半关闭），
+#   而这一格的判据要断「头**之后**跟着载荷」—— 那是两次独立的 write，
+#   「一次 recv」判不动它。⇒ 其余几格的上游仍走默认（curl / `hello.py` 不半关闭）。
+python3 "$WORK/tcp-echo.py" "$PP_UP" up-pp eof >"$WORK/up-pp.log" 2>&1 &
 PIDS+=($!)
 
 cat > "$WORK/pp.Fulcrumfile" <<PPCONF
@@ -1051,6 +1077,15 @@ head = b"" if head_hex == "none" else bytes.fromhex(head_hex)
 s = socket.create_connection(("127.0.0.1", port), timeout=3)
 try:
     s.sendall(head + payload)
+    # ★ ★ ★ **半关闭 = 「我说完了」**，上游那侧靠它知道该停止读了。
+    #   ⚠ 少了它，上游只能靠「一次 recv」或超时来断，而**前者量的是 TCP 分段边界**
+    #     （见 tcp-echo.py 里那段）。
+    #   ⚠ 坏头 / 信任来源不发头那两条路上枢衡会**直接关连接** ⇒ 这里可能抛，
+    #     那不是错误，是那两条判据要的结果 —— 所以单独吞掉，让下面照常去读回应。
+    try:
+        s.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
     s.settimeout(3)
     data = b""
     while b"\n" not in data:
