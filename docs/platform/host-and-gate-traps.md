@@ -25,6 +25,7 @@ Narrow it with one `*_ONLY=1`:
 | `H3_ONLY` / `RELAY_ONLY` | HTTP/3 end-to-end · cross-generation QUIC relay |
 | `PP_ONLY` / `LOG_ONLY` | PROXY protocol on the HTTP side · structured access log |
 | `METRICS_ONLY` | the Prometheus scrape endpoint (`metrics`, a terminal directive) end-to-end |
+| `STATS_ONLY` | `GET /stats` — the optional fields and the degenerate states, not "can it be scraped" |
 | `ACME_ONLY` / `RENEW_ONLY` | ACME against pebble (a real local CA) · renewal |
 | `SMOKE_ONLY` / `STRESS_ONLY` / `MUSL_ONLY` / `UNCLAIMED_ONLY` | smoke self-check · sustained load · musl static artifact · unclaimed inherited fd |
 
@@ -58,7 +59,17 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/log/` | 9900–9906 |
 | `tests/quic-relay/` | 9910–9911 |
 | `tests/metrics/` | 9920–9921 |
+| `tests/stats/` | 9930–9932 (range 9930–9935 reserved) |
+| *(registered, never listened on)* | 19999 — see below |
 | *(shared, hardcoded)* | 80 — see below |
+
+**19999 is registered precisely because nothing ever listens on it.** `tests/serve/run.sh` and
+`tests/metrics/run.sh` both use `127.0.0.1:19999` as a `reverse_proxy` address whose only job is
+to exist as an override key and then go dangling — neither scenario ever connects to it. That is
+why it is safe today, and it is also why it is easy to miss: it appears in no listener list. ⚠ It
+stops being safe the moment a scenario adds a *real* probe through it, because the connection
+would go to whatever happens to occupy 19999 on the host. Treat this row as a claim about
+intent — **if you need an address that is actually connected to, take one from your own range.**
 
 **Port 80 is the one exception, and it is shared on purpose.** `synthesize_http_redirect`
 (`crates/fulcrum-config/src/compile.rs`) gives every auto-HTTPS site a 308 redirect site on a

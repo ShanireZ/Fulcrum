@@ -365,21 +365,13 @@ curl_capture() {
   set -e
 }
 
-# ★ ★ ★ 通用版：任意命令可能非零退出、又想要它的输出时，用它代替裸的
-#   `VAR=$(cmd)`（修复轮 2，评审 N1）——道理与上面 `curl_capture()` 逐字
-#   相同（命令替换开的是子 shell，`$?` 不会传回父 shell），只是那个只服务
-#   curl；这个给别的命令（python3、cat、……）用。⇒ 全文件「捕获一个可能
-#   失败的命令」只有这一种写法，⛔ 别在别处再各自包一次 `set +e`/`set -e`。
-#   用法：`capture some_cmd args...`，读 `$CAPTURE_OUT`（合并了 stderr）与
-#   `$CAPTURE_RC`——调用方必须**立刻**读出来存进自己的变量，下一次
-#   `capture` 会覆盖这两个全局，就像 `$CURL_RC` 一样。
-CAPTURE_RC=0
-capture() {
-  set +e
-  CAPTURE_OUT=$("$@" 2>&1)
-  CAPTURE_RC=$?
-  set -e
-}
+# ★ ★ ★ 通用版（任意命令可能非零退出、又想要它的输出时，用它代替裸的
+#   `VAR=$(cmd)`；修复轮 2，评审 N1）连同「它为什么必须存在」都搬进了
+#   `tests/lib/capture.sh`（任务 7 收敛：本文件与 `tests/metrics/run.sh` 曾各有一份）。
+#   ⚠ 上面那个 `curl_capture()` **有意留在本文件**：它只服务 curl，且把正文落到
+#   `$WORK/curlw` 而不是变量里，与通用版不是同一件事。
+# shellcheck source=tests/lib/capture.sh
+. "$REPO/tests/lib/capture.sh"
 
 # 取状态码 + 响应体 + 某个响应头，一次请求全拿到。
 probe() {

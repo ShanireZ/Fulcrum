@@ -177,39 +177,10 @@ PY
 
 expo() { python3 "$EXPO" "$@"; }
 
-# ★ ★ ★ **捕获一个可能失败的命令，全文件只有这一种写法。**（评审 I3）
-#
-# 本文件顶上是 `set -euo pipefail`。裸写 `VAR=$(cmd)` 时，`cmd` 一旦非 0 就**硬中止**：
-# 脚本从那一行直接退出，后面的判据一条都不跑，**连收尾那段
-# 「METRICS TESTS FAILED：N 条断言没过」的汇总（含服务端日志与响应体转储）也不会打印**。
-# ⇒ 日志里看到的是「非 0 退出、没有任何测试报告正文」，而按 AGENTS.md 的门禁纪律，
-#   那个形态读作「这条命令根本没跑起来」—— 于是**一个真实的产品回归会被读成 harness 坏了**。
-#
-# ⚠ 会踩到的恰恰都是本该报红的场景：`stats_overrides_*` 走 `json.load`，
-#   `/stats` 非 200 或少了字段时 python 直接抛；`expo` 读到看不懂的 exposition 行时
-#   按设计 `raise SystemExit` —— 那正是这些判据存在的理由，不是让它去死的理由。
-#
-# ★ 判据是「**下一个人新写一行捕获时，正确写法应当是最省事的那一种**」：
-#   `capture cmd args…` 之后读 `$CAPTURE_OUT` / `$CAPTURE_RC`。
-#   （与 `tests/serve/run.sh` 里那份同形——任务 6 修复轮 2 先在那边抽的。）
-capture() {
-  set +e
-  CAPTURE_OUT=$("$@" 2>&1)
-  CAPTURE_RC=$?
-  set -e
-}
-
-# `capture` + 立刻把「取数命令自己跑成了没有」**断言出来**。
-# ⚠ 不这么写的话，取数失败只会让 `$CAPTURE_OUT` 变成一段 traceback，再由下游的 `eq`
-#   报成一条「期望 2 实际 Traceback…」—— 那条红指向的是判据，而真正坏掉的是取数。
-#   ⇒ 让 rc 自己成为一条判据，红起来指得准。
-# $1 = 说明，其余 = 命令。
-capture_ok() {
-  local what="$1"
-  shift
-  capture "$@"
-  [ "$CAPTURE_RC" -eq 0 ] || fail "$what：取数命令自己失败了（rc=$CAPTURE_RC）：$CAPTURE_OUT"
-}
+# ★ ★ ★ 「捕获一个可能失败的命令」的唯一写法，连同它为什么存在，都在
+#   `tests/lib/capture.sh` 里（任务 7 从本文件与 `tests/serve/run.sh` 各一份收敛而来）。
+# shellcheck source=tests/lib/capture.sh
+. "$REPO/tests/lib/capture.sh"
 
 # 一个数值断言。$1 说明 · $2 期望 · $3 实际。
 eq() {

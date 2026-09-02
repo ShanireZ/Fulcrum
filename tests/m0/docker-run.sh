@@ -101,6 +101,7 @@ selftest_only_mode() {
   #   仍然是加它之前的那些 —— 与「不自省的名单」同一个形状。
   printf 'MUSL_ONLY=1\n'      | only_mode_in || { echo "★ only_mode_in 认不出 MUSL_ONLY=1" >&2; rc=1; }
   printf 'METRICS_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 METRICS_ONLY=1" >&2; rc=1; }
+  printf 'STATS_ONLY=1\n'     | only_mode_in || { echo "★ only_mode_in 认不出 STATS_ONLY=1" >&2; rc=1; }
   [ "$rc" -eq 0 ] || {
     echo "  *_ONLY 判据自测未通过——**本次跑不跑 M1 场景的结论一律不可信**。" >&2
     exit 1
@@ -602,6 +603,8 @@ elif [ "${LOG_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/log/run.sh"
 elif [ "${METRICS_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/metrics/run.sh"
+elif [ "${STATS_ONLY:-0}" = "1" ]; then
+  CMD="$CMD && bash tests/stats/run.sh"
 elif [ "${RELAY_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/quic-relay/run.sh"
 elif [ "${ACME_ONLY:-0}" = "1" ]; then
@@ -658,6 +661,13 @@ elif [ "${BUILD_ONLY:-0}" != "1" ]; then
   #   ② 50 个未知 Host 之后 series 条数不增长**且**那一格正好 +50（只判前半的话，
   #      「计数器根本没在加」也能过）；③ 两个「site」在同一条请求上给出不同的值（G121 / R3）。
   [ "${METRICS_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/metrics/run.sh"
+  # `GET /stats` 的**可选字段与退化态**（M2 批 N 任务 7）。★ 有意排在 metrics 之后：
+  #   「/stats 抓得到、与 /metrics 同源」由 serve 与 metrics 两格守着，那两格先成立，
+  #   这一格红了才指得准。★ 独有判据：① `certs: []`（有解析器零证书）与 `certs: [一张]`
+  #   是两个不同的状态——其余两格的实例形态固定，各自只走得到一边；② `cache.entries`
+  #   是活体读数（缓存一条之后它真的动），⛔ 不是「这个字段在不在」；
+  #   ③ `config_loaded_at_unix` 在一次 `/load` 之后真的变（今天没有任何东西看它会不会动）。
+  [ "${STATS_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/stats/run.sh"
   # 换代时的 QUIC 跨进程转交。⚠ 唯一一格会在一次跑里起两代产品进程（SIGQUIT + `-u`）。
   [ "${RELAY_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/quic-relay/run.sh"
   # ACME：产品里唯一一条「要有一个真的对端才算数」的路（G64 加 pebble 的全部理由）。
