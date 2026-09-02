@@ -198,7 +198,7 @@ impl Backend {
 /// # ★ ★ ★ 为什么是枚举而不是一个 `&str`
 ///
 /// 同一件事要在两个粒度上说出来：响应头要分辨内存与磁盘（`HIT` / `HIT-DISK`），
-/// 而 `fulcrum_cache_events_total{event}` 那张表把上界写死成四个值 ⇒ 两者折成一格。
+/// 而 `fulcrum_cache_events_total{event}` 那张表把上界写死成一个闭集 ⇒ 两者折成一格。
 /// ⚠ ⚠ 若把状态当字符串传，那个折叠就只能写成 `match s { … , _ => … }` ——
 /// 而 `&str` 的 `match` **必须**有兜底臂，于是**将来新增的一种状态会静默地被算成别的**：
 /// 指标数字照涨，只是涨错了格，没有任何东西会说出来（R7 明令禁止的形状）。
@@ -234,27 +234,26 @@ impl CacheState {
     }
 }
 
-/// `fulcrum_cache_events_total{event}` 的取值 —— **闭集，四个**（R7）。
+/// `fulcrum_cache_events_total{event}` 的取值 —— **闭集**（R7）。
 ///
-/// # ⚠ ⚠ ⚠ 四个**不在同一个分母里**（D31）
+/// # ★ ★ 三个值**同一个分母**（G123，D31 结案）
 ///
-/// `Hit` / `Miss` / `Stale` 的单位是「**一条请求**」，`Purge` 的单位是
-/// 「**一条缓存条目**」⇒ **`sum(fulcrum_cache_events_total)` 不是任何一个有意义的量**。
-/// 权威是
+/// `Hit` / `Miss` / `Stale` 的单位都是「**一条请求**」
+/// ⇒ `sum(fulcrum_cache_events_total)` 就是「查过缓存**并且**已经定下这条响应的内容
+/// 从哪来的请求数」，命中率直接可写。权威是
 /// [`docs/architecture/observability.md`](../../../../docs/architecture/observability.md)
-/// 与 `PLAN.md` §11 **D31**。
+/// 与 `PLAN.md` §10 **G123**。
 ///
-/// ★ ★ **这句话极容易写反，而写反的那一版读起来毫无破绽**：把「一条请求」与
-/// 「一条缓存条目」并列列出来，再用一句「单位都是『条』」收口 —— 「条」这个量词
-/// 对两者都成立，于是整句自洽，**而它断言的那个等价关系是假的**。
-/// ⚠ 代价落在读 PromQL 的人身上：照那种说法写一条
-/// `sum(rate(fulcrum_cache_events_total[5m]))` 当「缓存总事件速率」，
-/// 得到的是请求数与条目数相加的一个数 —— 它长得完全正常、也会随流量涨，
-/// 而一次 `POST /purge all` 清掉十万条时那个尖峰**读起来像是流量突增**。
+/// ⚠ ⚠ **「被清掉的条目数」不在这里** —— 它数的是**条目**不是请求，
+/// 在 [`record_purged_entries`] 那一族。
+/// ★ ★ 那次拆分**把一个靠用户记住的陷阱换成了一个结构上不存在的陷阱**：
+/// 两个不同的分母不再共用一个族，于是「求和求出个没意义的数」这件事**做不到了**。
+/// ⛔ **不要把它搬回来**，哪怕只是「顺手多一个 `event` 值」——
+/// 那一句「单位都是『条』」对请求与条目都成立，于是整段读起来自洽，
+/// **而它断言的那个等价关系是假的**。
 ///
 /// ⚠ 只有 `Hit` 与 `Stale` 在 `X-Fulcrum-Cache` 里露过面（见 [`CacheState`]）：
-/// **回源那条路没有这个头**（契约里写死的，所以访问日志里也没有 `cache` 那一格），
-/// 而 `Purge` 根本不发生在请求路径上。
+/// **回源那条路没有这个头**（契约里写死的，所以访问日志里也没有 `cache` 那一格）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheEvent {
     /// 从缓存发出去（含磁盘后端）。
@@ -263,8 +262,6 @@ pub enum CacheEvent {
     Miss,
     /// 重验证之后把缓存里那份发出去。
     Stale,
-    /// 被清掉的条目数。
-    Purge,
 }
 
 impl CacheEvent {
@@ -275,14 +272,28 @@ impl CacheEvent {
             CacheEvent::Hit => "hit",
             CacheEvent::Miss => "miss",
             CacheEvent::Stale => "stale",
-            CacheEvent::Purge => "purge",
         }
     }
 
-    /// 记 `n` 次。★ 收一个 `n` 是因为 `purge` 天生成批（一次清掉了 N 条）。
+    /// 记 `n` 次。
+    ///
+    /// ⚠ 今天所有调用方传的都是 `1`（三个值数的都是「一条请求」）——
+    /// ★ 保留 `n` 是因为签名与 [`crate::metrics::Family::inc_by`] 同形，
+    /// ⛔ **不是**留给「成批的事件」用：真成批的那一个已经搬走了。
     pub fn record(self, n: u64) {
         crate::metrics::CACHE_EVENTS_TOTAL.inc_by(&[self.label()], n);
     }
+}
+
+/// 记下 `POST /purge` 清掉了 `n` 条**缓存条目**（G123）。
+///
+/// ⚠ ⚠ **它有意不是 [`CacheEvent`] 的一个变体**：那个族数的是请求，这里数的是条目，
+/// 两个分母混进一个族的代价见 [`CacheEvent`] 的类型文档。
+/// ★ 取数点**只有一处**（`admin.rs` 的 `purge` 收尾），与本仓其余族同一条纪律。
+/// ⚠ 清掉 0 条时**照样调**：那让这条 series 存在，而「从来没 purge 过」与
+/// 「purge 过、只是没清到东西」在抓取端要分得开。
+pub fn record_purged_entries(n: u64) {
+    crate::metrics::CACHE_PURGED_ENTRIES_TOTAL.inc_by(&[], n);
 }
 
 /// 一个站点上生效的缓存实例。
@@ -472,46 +483,46 @@ mod tests {
     }
 
     #[test]
-    fn 四个事件的标签值就是那张表写死的四个_而且互不相同() {
-        // ⚠ 上界是这四个：加一个变体，`label` 的 `match` 当场编不过。
+    fn 事件的标签值就是那张表写死的那几个_而且互不相同() {
+        // ⚠ 上界就是这几个：加一个变体，`label` 的 `match` 当场编不过。
         //   ★ 这条判据钉住的是**标签值本身** —— 改一个字就是改抓取端的查询语句。
         assert_eq!(CacheEvent::Hit.label(), "hit");
         assert_eq!(CacheEvent::Miss.label(), "miss");
         assert_eq!(CacheEvent::Stale.label(), "stale");
-        assert_eq!(CacheEvent::Purge.label(), "purge");
 
-        // ★ ★ 反向那半：四个标签值**互不相同**。
-        //   ⚠ 一次复制粘贴就能让两个变体共用一个词，而上面四条只要有一条跟着改
+        // ★ ★ 反向那半：标签值**互不相同**。
+        //   ⚠ 一次复制粘贴就能让两个变体共用一个词，而上面几条只要有一条跟着改
         //     就照样全绿 —— 现场是两件事被加进同一格，数字看起来完全正常。
-        let mut labels: Vec<&str> = [
-            CacheEvent::Hit,
-            CacheEvent::Miss,
-            CacheEvent::Stale,
-            CacheEvent::Purge,
-        ]
-        .iter()
-        .map(|e| e.label())
-        .collect();
+        let mut labels: Vec<&str> = [CacheEvent::Hit, CacheEvent::Miss, CacheEvent::Stale]
+            .iter()
+            .map(|e| e.label())
+            .collect();
         labels.sort_unstable();
         labels.dedup();
-        assert_eq!(labels, ["hit", "miss", "purge", "stale"]);
+        assert_eq!(labels, ["hit", "miss", "stale"]);
+
+        // ★ ★ ★ **`purge` 不许回到这个族里**（G123）。
+        //   ⚠ 它不是「少写了一个变体」——两个不同的分母共用一个族，会让
+        //     `sum(cache_events_total)` 变成请求数与条目数相加的一个数，
+        //     而那个数长得完全正常。⇒ 这条判据是那次拆分的**唯一**守卫。
+        assert!(
+            !labels.contains(&"purge"),
+            "`purge` 回到了 fulcrum_cache_events_total 里 —— \
+             它数的是**条目**，另外几个数的是**请求**，两个分母不许共用一个族（G123）"
+        );
     }
 
     #[test]
-    fn 四个事件都进得了那张进程级的表() {
+    fn 每个事件都进得了那张进程级的表_而被清掉的条目数在自己那一族里() {
         // ★ 只判「这一格存在」，不判读数：别的判据也在往同一张表里写，
         //   而**存在**是单调的 ⇒ 这条判据不会因为测试跑的顺序而红。
         // ⚠ `record(0)` 照样把这条 series 建出来 —— counter 在 Prometheus 里
         //   本来就该尽早存在（「族在、值是 0」与「族根本没出现过」是两件事）。
-        let all = [
-            CacheEvent::Hit,
-            CacheEvent::Miss,
-            CacheEvent::Stale,
-            CacheEvent::Purge,
-        ];
+        let all = [CacheEvent::Hit, CacheEvent::Miss, CacheEvent::Stale];
         for e in all {
             e.record(0);
         }
+        record_purged_entries(0);
         let out = crate::metrics::render();
         for e in all {
             assert!(
@@ -523,5 +534,17 @@ mod tests {
                 e.label()
             );
         }
+        // ★ ★ 新族**无标签** ⇒ 渲出来是不带花括号的单条 series（G123）。
+        assert!(
+            out.contains("fulcrum_cache_purged_entries_total "),
+            "被清掉的条目数那一族没渲出来：\n{out}"
+        );
+        // ★ ★ ★ 反向那半：**它不许再以 `event` 标签的形式出现**。
+        //   ⚠ 少了这一条，一个「两边都记一笔」的实现在上面每一条上都是绿的 ——
+        //     而那正是 G123 要消掉的那个形状。
+        assert!(
+            !out.contains("fulcrum_cache_events_total{event=\"purge\"}"),
+            "`purge` 又出现在 cache_events_total 里了（G123 拆走的就是它）：\n{out}"
+        );
     }
 }

@@ -50,7 +50,8 @@
 //! |---|---|
 //! | `fulcrum_requests_total` · `fulcrum_request_duration_seconds` | [`crate::access_log::Record::finish`]，**只有那一处** |
 //! | `fulcrum_no_site_match_total` | `lib.rs` 里写 `outcome = "no_site_match"` 的同一处 |
-//! | `fulcrum_cache_events_total` | `hit` / `stale` 在 `write_cached`，`miss` 在回源那一处，`purge` 在 `POST /purge` |
+//! | `fulcrum_cache_events_total` | `hit` / `stale` 在 `write_cached`，`miss` 在回源那一处 |
+//! | `fulcrum_cache_purged_entries_total` | `POST /purge` 收尾那一处 |
 //!
 //! **② 抓取时去问活体（[`Source::Live`]）** —— 注册表里**永远没有它们的数**，
 //! [`render`] 那一刻现问 [`LiveSources`] 里那几个对象：
@@ -146,7 +147,7 @@ const BUCKETS: &[f64] = &[
 /// ⚠ 下面那几个 `pub const` 句柄按**下标**指进来 —— 重排这张表就会让某个句柄换个族，
 /// 而那种错**在输出里看起来完全正常**（数字照涨，只是涨在另一条 series 上）。
 /// ⇒ 单测 `族句柄指的就是它名字上那个族` 把每个句柄的名字逐个钉住。
-const FAMILIES: [Family; 10] = [
+const FAMILIES: [Family; 11] = [
     Family {
         name: "fulcrum_requests_total",
         kind: Kind::Counter,
@@ -165,7 +166,7 @@ const FAMILIES: [Family; 10] = [
         name: "fulcrum_cache_events_total",
         kind: Kind::Counter,
         source: Source::Event,
-        help: "HTTP 缓存事件数：命中、回源、重验证后发出、被清掉的条目。",
+        help: "HTTP 缓存事件数：命中、回源、重验证后发出；三个值同一个分母（一条请求）。",
         labels: &["event"],
     },
     Family {
@@ -217,6 +218,13 @@ const FAMILIES: [Family; 10] = [
         help: "当前生效中的临时覆盖总数；悬空的（键指向的上游已经不在当前配置里）照样计入（裁决 R13）。",
         labels: &[],
     },
+    Family {
+        name: "fulcrum_cache_purged_entries_total",
+        kind: Kind::Counter,
+        source: Source::Event,
+        help: "被 POST /purge 清掉的缓存条目数；单位是条目，不是请求。",
+        labels: &[],
+    },
 ];
 
 /// 请求总数。
@@ -230,6 +238,13 @@ pub const REQUEST_DURATION_SECONDS: &Family = &FAMILIES[1];
 
 /// 缓存事件数。⚠ `event` 是闭集，折叠函数不许有兜底臂 —— 否则将来新增的一种状态
 /// 会**静默地被算成别的**。
+///
+/// ★ ★ **三个值同一个分母**（**M2 批 M′ 任务 2**，G123 / D31 结案）：`hit` · `miss` ·
+/// `stale` 数的都是「**一条请求**」⇒ `sum(fulcrum_cache_events_total)` 就是
+/// 「查过缓存并且已经定下内容从哪来的请求数」，命中率直接可写。
+/// ⇒ 「被清掉的条目数」搬去了 [`CACHE_PURGED_ENTRIES_TOTAL`]，因为它数的是**条目**。
+/// ★ 这是把一个**靠用户记住**的陷阱换成一个**结构上不存在**的陷阱：
+/// 两个不同的分母不再共用一个族，也就没有「求和求出个没意义的数」这回事了。
 pub const CACHE_EVENTS_TOTAL: &Family = &FAMILIES[2];
 
 /// 没匹配到站点的请求数（G118）。⚠ `host` 由请求方给 ⇒ 只有出现在配置里的才带真值，
@@ -275,6 +290,24 @@ const BUILD_INFO: &Family = &FAMILIES[8];
 /// 搬进指标 —— 两份实现同一件事，而「是哪几项」本来就该去 `/stats` 看。
 /// ⇒ 这个族**无标签、基数恒为 1**。
 const OVERRIDES_ACTIVE: &Family = &FAMILIES[9];
+
+/// 被 `POST /purge` 清掉的缓存**条目**数（**M2 批 M′ 任务 2**，G123 / D31 结案）。
+///
+/// ⚠ ⚠ **单位是「条目」，不是「请求」** —— 这正是它必须自成一族的全部理由：
+/// 它此前是 `fulcrum_cache_events_total{event="purge"}` 的一格，而那个族另外三格
+/// 数的是请求 ⇒ `sum(cache_events_total)` 得到的是**请求数与条目数相加**的一个数，
+/// 它长得完全正常、也会随流量涨，而一次 `POST /purge all` 清掉十万条时那个尖峰
+/// **读起来像是流量突增**。
+///
+/// ★ 记的是**被清掉的条目数**，不是「purge 被调了几次」—— 问「清掉了多少」的人
+/// 远多于问「这个接口被调了几次」的人。
+/// ⚠ **一条都没清掉时也照记 `+0`**：那让这条 series **存在**，而「这个进程从来没
+/// purge 过」与「purge 过、只是没清到东西」是两件事，在抓取端要分得开。
+/// ★ 这与 `hit`/`miss`/`stale`「发生了才出现」**有意不对称**。
+///
+/// ⛔ **无标签**：`POST /purge` 的三种粒度（`key` / `prefix` / `all`）不做标签 ——
+/// 「这一次清的是哪种粒度」是调用方自己刚说过的话，指标上再说一遍信息量为零。
+pub const CACHE_PURGED_ENTRIES_TOTAL: &Family = &FAMILIES[10];
 
 /// 一条直方图 series。
 struct Hist {

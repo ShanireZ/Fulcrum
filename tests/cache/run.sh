@@ -155,6 +155,16 @@ cat > "$WORK/cache.Fulcrumfile" <<'CONF'
 }
 
 :PORT {
+    # ★ ★ 这个端点只给 [5/7] 的 G123 判据用：**被清掉的条目数自成一族**这件事，
+    #   只有在一个真的缓存了东西、又真的被 purge 过的进程上才验得到。
+    #   ⚠ 路径与上游那几条 handle 互不重叠。
+    @m {
+        remote_ip 127.0.0.0/8
+        path /_metrics
+    }
+    handle @m {
+        metrics
+    }
     # ⚠ `max_size` 有意配得很小（50 字节）：/big 那条要验「超过单条目上限 ⇒ 不缓存」。
     cache {
         ttl 30s
@@ -399,6 +409,80 @@ expect_status "POST /purge（全清）" 200 "$(printf '%s' "$RESP" | tail -1)"
 # 管理面不认识的路径仍然是 404（新加一个端点不该让别的变松）。
 RESP=$(admin /nope '{}')
 expect_status "POST /nope（管理面认识的那几个之外仍然是 404）" 404 "$(printf '%s' "$RESP" | tail -1)"
+
+# ── ★ ★ ★ G123：被清掉的**条目**数自成一族，不再挤进 cache_events_total ────
+#
+# 这一格验的是**接线**：`admin.rs` 的 purge 收尾把真实条目数记进了新族。
+# ⚠ 单测只证得了「这个族渲得出来」（它调的是 `record_purged_entries(0)`），
+#   证不到「n 真的从 purge 那条路上传过来了」—— 那一段只有在这里走得到。
+#
+# 读一个**无标签** counter 的当前读数。
+# ⛔ 它不是第二个 exposition 解析器（那一份是 `tests/metrics/run.sh` 的 `expo`）——
+#   它只取一行已知形状的样本的第二个字段。⚠ 若第三个场景也要读 exposition，
+#   正确做法是把 `expo` 抽进 `tests/lib/`，⛔ 不是再抄一份。
+bare_counter() {
+  awk -v n="$2" '$1 == n { print $2 }' "$1"
+}
+scrape_metrics() {
+  curl -sS -o "$1" --max-time 5 "$BASE/_metrics" 2>/dev/null
+}
+
+# ★ 造 **3** 条缓存条目 —— ⚠ 有意不是 1 条：「记条目数」与「记 purge 调了几次」
+#   在只清掉 1 条时给出**同一个读数**，那样的夹具两种实现都全绿。
+for p in /maxage /nofresh /authonly; do
+  probe -H "X-Nonce: g123" "$BASE$p" > /dev/null
+done
+
+scrape_metrics "$WORK/m-before.txt"
+PURGED_BEFORE=$(bare_counter "$WORK/m-before.txt" fulcrum_cache_purged_entries_total)
+
+# ★ ★ 取数端先自证：命中得了，也落空得了 —— 一个恒答空的读法会让下面每一条空转。
+if [ -n "$PURGED_BEFORE" ]; then
+  ok "取数端自证①：读得到 fulcrum_cache_purged_entries_total（$PURGED_BEFORE）"
+else
+  fail "取数端自证①：读不到 fulcrum_cache_purged_entries_total —— 下面几条证不到东西"
+fi
+if [ -z "$(bare_counter "$WORK/m-before.txt" fulcrum_不存在的族)" ]; then
+  ok "取数端自证②：对不存在的族落空（不是恒答一个值）"
+else
+  fail "取数端自证②：对一个不存在的族也读出了东西 —— 这个读法是坏的"
+fi
+
+RESP=$(admin /purge '{"all":true}')
+expect_status "POST /purge（全清，G123 判据用）" 200 "$(printf '%s' "$RESP" | tail -1)"
+CLEARED=$(printf '%s' "$RESP" | sed -n 's/^清掉 \([0-9]\+\) 条.*/\1/p')
+
+scrape_metrics "$WORK/m-after.txt"
+PURGED_AFTER=$(bare_counter "$WORK/m-after.txt" fulcrum_cache_purged_entries_total)
+
+if [ "$CLEARED" = "1" ] || [ -z "$CLEARED" ]; then
+  fail "夹具纪律没守住：这一次只清掉了「$CLEARED」条 —— 要 ≥2 条，否则「记条目数」与「记调用次数」读数相同"
+else
+  ok "★ 夹具纪律：这一次清掉了 $CLEARED 条（不是 1 条）"
+fi
+# 浮点：exposition 里 counter 渲成 `3` 还是 `3.0` 由渲染器定 ⇒ 用 awk 算差，不做字符串比。
+DELTA=$(awk -v a="$PURGED_AFTER" -v b="$PURGED_BEFORE" 'BEGIN { printf "%d", a - b }')
+if [ "$DELTA" = "$CLEARED" ]; then
+  ok "★★★ fulcrum_cache_purged_entries_total 正好涨了 $CLEARED —— 与 purge 回话里那个数逐一对得上"
+else
+  fail "★★★ 新族涨了 $DELTA，而 purge 说清掉了 $CLEARED 条（before=$PURGED_BEFORE after=$PURGED_AFTER）"
+fi
+
+# ★ ★ ★ 反向那半：**它不许再以 `event="purge"` 的形式出现**。
+#   ⚠ 少了这一条，一个「两边都记一笔」的实现在上面每一条上都是绿的 ——
+#     而那正是 G123 要消掉的形状（两个分母共用一个族）。
+if grep -q 'fulcrum_cache_events_total{event="purge"}' "$WORK/m-after.txt"; then
+  fail "★★★ purge 又回到 cache_events_total 里了 —— 它数的是条目，那个族数的是请求（G123）"
+else
+  ok "★★★ cache_events_total 里没有 event=\"purge\" —— 两个分母不再共用一个族（G123）"
+fi
+# ★ 而那个族本身**还在**，且真的有样本 —— 否则上面那条反向断言在「整个族都没渲出来」
+#   的情况下也会绿，那时它证明的不是 G123，只是指标坏了。
+if grep -q '^fulcrum_cache_events_total{event="' "$WORK/m-after.txt"; then
+  ok "★ 而 cache_events_total 本身还在且有样本（上一条不是在对着一个空族说话）"
+else
+  fail "★ cache_events_total 一条样本都没有 —— 上面那条反向断言因此什么都没证明"
+fi
 
 # ── [6/7] 防惊群 ───────────────────────────────────────────────────────────
 echo

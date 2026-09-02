@@ -558,18 +558,34 @@ eq "抓取端点回 200" 200 "$CODE"
 CT=$(content_type "$S1.hdr")
 eq "★★ Content-Type 逐字" "text/plain; version=0.0.4; charset=utf-8" "$CT"
 
-# 十个族的 `# HELP` / `# TYPE` 一个都不许少（★ 批 N 任务 6.5 之后是十个，
-#   不再是九个——`fulcrum_overrides_active`，G126）。
-for f in fulcrum_requests_total fulcrum_request_duration_seconds fulcrum_cache_events_total \
-  fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy \
-  fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info \
-  fulcrum_overrides_active; do
+# 每个族的 `# HELP` / `# TYPE` 一个都不许少。
+#
+# ⛔ **这里不写族的个数**：一个写在注释里的计数没有任何门守着，加族时它当场过期
+#   而不会红（批 N 任务 8 因此把这类计数从五个文件里全部拿掉了）。
+#   ★ 下面那条 `# TYPE` 行数比对**就是**那个计数，而它是从真实抓取里数出来的。
+FAMILIES_EXPECTED="fulcrum_requests_total fulcrum_request_duration_seconds
+fulcrum_cache_events_total fulcrum_cache_purged_entries_total
+fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy
+fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info
+fulcrum_overrides_active"
+for f in $FAMILIES_EXPECTED; do
   if expo meta "$S1" "$f"; then
     ok "族 $f 的 HELP/TYPE 都在"
   else
     fail "族 $f 缺 HELP 或 TYPE"
   fi
 done
+
+# ★ ★ ★ **反向那半：抓取里不许有这张单子之外的族。**
+#
+# ⚠ ⚠ 少了它，上面那个循环只证明「单子里的都在」—— 新增一个族却忘了写进单子时
+#   **一条都不会红**，而这个文件正是那种遗漏唯一会露头的地方
+#   （`FAMILIES` ↔ 基数表那道门在单测里，它看不见这份手抄单子）。
+# ★ 判据是**数出来的**：`# TYPE` 一族一行，拿它与单子的条数比。
+TYPE_LINES=$(grep -c '^# TYPE ' "$S1")
+WANT_FAMILIES=$(echo "$FAMILIES_EXPECTED" | wc -w)
+eq "★★★ 抓取里的族数与上面这张单子逐个对得上（多一个族没写进单子就红）" \
+  "$WANT_FAMILIES" "$TYPE_LINES"
 
 # ★ 整份正文过一遍结构检查：每条样本都有声明 · 没有重复的 series · counter 名字带 `_total`。
 #   ⚠ 「重复的 series」这一条尤其值钱：抓取端会把它算成两条，而正文读起来完全正常。

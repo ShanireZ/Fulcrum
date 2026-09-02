@@ -14,7 +14,7 @@ sources:
     title: PLAN.md §10 G16（观测基线）、G8（Runtime 通道）、G23（首版不做 Web UI）、G116–G121（指标与 stats）
   - id: plan-11
     resource: /references/plan.md
-    title: PLAN.md §11 D9（版本与兼容性策略）、D30（status_class 的第 6 个值）、D31（缓存事件的折叠口径与边界）、D32（连接类与 TLS 类指标缺席）
+    title: PLAN.md §11 D9（版本与兼容性策略）、D30（status_class 的第 6 个值）、G123（缓存事件的折叠口径与边界，D31 结案）、D32（连接类与 TLS 类指标缺席）
 ---
 
 ★ 本页属**技术基线**，带真内容。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。
@@ -263,7 +263,7 @@ metrics.example:9443 {
 |---|---|---|---|---|
 | `fulcrum_requests_total` | counter | 事件点 | `site` `outcome` `status_class` `proto` | (address 数 + 1) × 8 × **6** × 3 |
 | `fulcrum_request_duration_seconds` | histogram | 事件点 | `site` `outcome` | (address 数 + 1) × 8，桶写死 |
-| `fulcrum_cache_events_total` | counter | 事件点 | `event` | `hit`/`miss`/`stale`/`purge` |
+| `fulcrum_cache_events_total` | counter | 事件点 | `event` | `hit`/`miss`/`stale` —— ★ 三个值同一个分母（一条请求）|
 | `fulcrum_no_site_match_total` | counter | 事件点 | `host` | 见下（G118）|
 | `fulcrum_upstream_inflight` | gauge | 活体 | `upstream` | 配置定 |
 | `fulcrum_upstream_healthy` | gauge | 活体 | `upstream` | 配置定 |
@@ -271,6 +271,7 @@ metrics.example:9443 {
 | `fulcrum_acme_issue_total` | counter | 活体 | `result` | `ok`/`fail`/`deferred` |
 | `fulcrum_build_info` | gauge | 活体 | `version` | 1 —— ⚠ 而它的**值**也恒为 1（标记 gauge，两个 1 不是一回事）|
 | `fulcrum_overrides_active` | gauge | 活体 | 无 | 恒为 1（无标签单值；值 = 当前登记处的覆盖总条目数，悬空的照样计入，裁决 R13）|
+| `fulcrum_cache_purged_entries_total` | counter | 事件点 | 无 | 恒为 1（无标签单值；单位是**缓存条目**，不是请求 —— G123）|
 
 ⛔ **任何形态都不加 `uri` 标签。**
 
@@ -355,10 +356,10 @@ metrics.example:9443 {
 ⚠ 代价写在明处：**只知道有多少、来自哪个已知 host，不知道具体是哪个未知 host。**
 这是有意的 —— 不让外人往我们的内存与时序库里写任意字符串。
 
-## `fulcrum_cache_events_total{event}`：四个取值，**两个分母**
+## `fulcrum_cache_events_total{event}`：一个闭集，**一个分母**
 
-`event` 是**闭集，四个**：`hit`（从缓存发出去，**含磁盘后端**）· `miss`（回源）·
-`stale`（重验证之后把缓存里那份发出去）· `purge`（被清掉的条目数）。
+`event` 是**闭集**：`hit`（从缓存发出去，**含磁盘后端**）· `miss`（回源）·
+`stale`（重验证之后把缓存里那份发出去）。**三个值数的都是「一条请求」。**
 
 ⚠ 它比 `X-Fulcrum-Cache` **粗**：`HIT` 与 `HIT-DISK` 折成同一个 `hit`。
 ★ 想知道「是哪一种命中」去看访问日志 —— 它记的是 `cache` 的原值。
@@ -371,7 +372,6 @@ metrics.example:9443 {
 |---|---|
 | `hit` / `stale` | **发缓存**那一处（`write_cached`），与响应头、访问日志那一格取同一个状态、在同一处赋 |
 | `miss` | **回源**那一处 —— 即「这条响应的内容来自上游」唯一的判定点 |
-| `purge` | `POST /purge` 收尾处，记的是**被清掉的条目数** |
 
 ⚠ ⚠ **`miss` 有意不记在「查缓存没命中」那一处**：那里之后还会拐弯 ——
 `only-if-cached` 回 504 **根本没回源**，防惊群的 follower 等完重查一次会**命中**。
@@ -384,17 +384,30 @@ metrics.example:9443 {
 
 ★ 写下这个边界本身就是判据的一部分：**一个没写下来的边界才是会咬人的那个。**
 
-### ⚠ ⚠ `purge` 与另外三个**不在同一个分母里**
+## `fulcrum_cache_purged_entries_total`：被清掉的**条目**数，自成一族（G123）
 
-`hit` / `miss` / `stale` 的单位是「**一条请求**」，`purge` 的单位是「**一条缓存条目**」
-⇒ **`sum(cache_events_total)` 不是任何一个有意义的量**，写 PromQL 的人必须知道这件事。
+它数的是 `POST /purge` 清掉了多少条**缓存条目**，⛔ 不是「purge 被调了几次」——
+问「清掉了多少」的人远多于问「这个接口被调了几次」的人。**无标签**：
+三种粒度（`key` / `prefix` / `all`）是调用方自己刚说过的话，指标上再说一遍信息量为零。
 
-⚠ 并且 `purge` **清掉 0 条时也记一次 `+0`**（让那条 series 尽早存在）——
+⚠ **清掉 0 条时也记一次 `+0`**（让那条 series 尽早存在）——
 「这个进程从来没 purge 过」与「purge 过、只是没清到东西」在抓取端要分得开。
 ★ 这与 `hit`/`miss`/`stale`「发生了才出现」**有意不对称**。
 
-> ⏳ 折叠口径与上面这个边界由实施计划替 owner 裁下，
-> 已登记为 [`PLAN.md`](../../PLAN.md) §11 的 **D31**。
+### ★ ★ ★ 它为什么必须自成一族（**D31 由 G123 结案**）
+
+它此前是 `fulcrum_cache_events_total{event="purge"}` 的一格，而那个族另外三格数的是
+**请求** ⇒ `sum(cache_events_total)` 得到的是**请求数与条目数相加**的一个数。
+⚠ ⚠ 那个数**长得完全正常、也会随流量涨**，而一次 `POST /purge all` 清掉十万条时
+那个尖峰**读起来像是流量突增**。
+
+★ ★ 拆开之后，`sum(cache_events_total)` 恢复成「查过缓存并且已经定下内容从哪来的
+请求数」，**命中率直接可写**。⇒ 这是**把一个靠用户记住的陷阱，换成一个结构上不存在的
+陷阱**：两个分母不再共用一个族，也就没有「求和求出个没意义的数」这回事了。
+
+⛔ **不要把它搬回去**，哪怕只是「顺手多一个 `event` 值」。⚠ 那种提议通常长这样：
+把「一条请求」与「一条缓存条目」并列列出来，再用一句「单位都是『条』」收口 ——
+「条」这个量词对两者都成立，于是整段读起来自洽，**而它断言的等价关系是假的**。
 
 ## `fulcrum_cert_expiry_seconds` 的值 = `notAfter` 的**绝对 Unix 秒**
 

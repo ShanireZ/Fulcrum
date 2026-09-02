@@ -609,20 +609,19 @@ impl AdminApp {
                 "要给 `key` / `prefix` / `url` / `all` 之一\n".to_string(),
             );
         };
-        // ── 缓存事件：`purge`（R7）────────────────────────────────────────
+        // ── 被清掉的条目数：自成一族（G123，D31 结案）──────────────────────
         //
         // ★ 记的是**被清掉的条目数**，不是「purge 被调了几次」——
         //   问「清掉了多少」的人远多于问「这个接口被调了几次」的人。
-        // ⚠ ⚠ 正因如此，这一格与另外三个**不在同一个分母里**（D31）：
-        //   `hit`/`miss`/`stale` 数的是「一条请求」，本格数的是「一条缓存条目」
-        //   ⇒ **`sum(cache_events_total)` 不是任何一个有意义的量**。
-        //   ★ 别把它写成「四个事件单位都是『条』」——「条」这个量词对两者都成立，
-        //     那种说法自洽、读起来毫无破绽，而它断言的等价关系是假的。
-        //     口径的权威在 `docs/architecture/observability.md` 与 `PLAN.md` §11 D31。
+        // ⚠ ⚠ 正因如此它**自成一族**，而不是 `cache_events_total` 的第四个值：
+        //   那个族数的是「一条请求」，本族数的是「一条缓存条目」
+        //   ⇒ 混在一起时 `sum(cache_events_total)` 不是任何一个有意义的量。
+        //   ★ 拆开之后那个陷阱**结构上不存在**了，不再靠谁记得住。
+        //   口径的权威在 `docs/architecture/observability.md` 与 `PLAN.md` §10 G123。
         // ⚠ 一条都没清掉时也照记（`+0`）：那让这条 series **存在**，而
         //   「这个进程从来没 purge 过」与「purge 过、只是没清到东西」是两件事，
         //   在抓取端要分得开。
-        crate::cache::CacheEvent::Purge.record(n as u64);
+        crate::cache::record_purged_entries(n as u64);
         let (used, left) = cache.store.stats();
         // ★ **清掉 0 条也是 200**：purge 的语义是「让它不在」，而它本来就不在
         //   同样满足这个语义。⚠ 回 404 会让「清一个从没被缓存过的 URL」
