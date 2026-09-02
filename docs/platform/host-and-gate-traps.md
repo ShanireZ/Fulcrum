@@ -37,7 +37,7 @@ a row to that self-test and the `<NAME>_ONLY` / `<NAME>_TESTS` pair. The shellch
 longer on that list**: it is derived from the tree (`tests/ci/shellcheck-all.sh`), so a new
 directory is covered without anyone remembering.
 
-## ### Port allocation
+## Port allocation
 
 Scenarios run sequentially, but each one claims its own range so a leftover process from a
 previous run cannot be mistaken for the one under test. A new scenario takes a free range.
