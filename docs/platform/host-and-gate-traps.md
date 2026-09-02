@@ -148,6 +148,24 @@ And the ways a gate that does run still stops meaning anything:
   ```
 - **A ruler that reads the same in both cases cannot tell them apart.** Before trusting a gauge,
   ask what it reads in the good case and in the bad case, and make sure those readings differ.
+- **A criterion can name one quantity and measure another — and the tell is that it goes red at
+  random.** `tests/l4`'s PROXY-protocol case asserted "the payload follows the header" by having
+  the upstream fixture do a **single** `recv`. But `l4.rs` writes to the upstream three times:
+  the PROXY header at connect, the peeked prelude, then whatever `copy_bidirectional` relays. On
+  the send-only listener the prelude is empty, so header and payload are separated by a client
+  round trip ⇒ whether they land in one TCP segment is a race, and the assertion was reading
+  **segment boundaries**, not delivery. Measured 2026-09-02: red in a full gate run, green on a
+  rerun of the same tree with **zero** changes; forcing a 150 ms gap before the payload made it
+  red **100 %** of the time, which is what turned a guess into a mechanism.
+  ★ ★ **The expensive part is not the flake — it is what a flake teaches people.** Once a line is
+  known to go red at random, a real regression on that line reads as "that flaky one again", and
+  the criterion has quietly become worse than no criterion.
+  ⇒ Fix by making the **sender** say it is finished — half-close (`shutdown(SHUT_WR)`) and read to
+  EOF — a structural end marker instead of a timing one. Keep a socket timeout as a backstop and
+  say in the comment that the backstop is **not** the criterion, or the next reader will tune it.
+  ⚠ Same shape, different clothes: any assertion whose subject is "what had arrived by the time I
+  looked" — one `recv`, one `read`, a fixed `sleep` before scraping a log, a single poll of a
+  metrics endpoint. Ask what makes the observation point the *right* one; "it passed" does not.
 
 Two corollaries:
 
