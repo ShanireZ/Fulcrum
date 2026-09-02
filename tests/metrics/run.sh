@@ -177,6 +177,40 @@ PY
 
 expo() { python3 "$EXPO" "$@"; }
 
+# ★ ★ ★ **捕获一个可能失败的命令，全文件只有这一种写法。**（评审 I3）
+#
+# 本文件顶上是 `set -euo pipefail`。裸写 `VAR=$(cmd)` 时，`cmd` 一旦非 0 就**硬中止**：
+# 脚本从那一行直接退出，后面的判据一条都不跑，**连收尾那段
+# 「METRICS TESTS FAILED：N 条断言没过」的汇总（含服务端日志与响应体转储）也不会打印**。
+# ⇒ 日志里看到的是「非 0 退出、没有任何测试报告正文」，而按 AGENTS.md 的门禁纪律，
+#   那个形态读作「这条命令根本没跑起来」—— 于是**一个真实的产品回归会被读成 harness 坏了**。
+#
+# ⚠ 会踩到的恰恰都是本该报红的场景：`stats_overrides_*` 走 `json.load`，
+#   `/stats` 非 200 或少了字段时 python 直接抛；`expo` 读到看不懂的 exposition 行时
+#   按设计 `raise SystemExit` —— 那正是这些判据存在的理由，不是让它去死的理由。
+#
+# ★ 判据是「**下一个人新写一行捕获时，正确写法应当是最省事的那一种**」：
+#   `capture cmd args…` 之后读 `$CAPTURE_OUT` / `$CAPTURE_RC`。
+#   （与 `tests/serve/run.sh` 里那份同形——任务 6 修复轮 2 先在那边抽的。）
+capture() {
+  set +e
+  CAPTURE_OUT=$("$@" 2>&1)
+  CAPTURE_RC=$?
+  set -e
+}
+
+# `capture` + 立刻把「取数命令自己跑成了没有」**断言出来**。
+# ⚠ 不这么写的话，取数失败只会让 `$CAPTURE_OUT` 变成一段 traceback，再由下游的 `eq`
+#   报成一条「期望 2 实际 Traceback…」—— 那条红指向的是判据，而真正坏掉的是取数。
+#   ⇒ 让 rc 自己成为一条判据，红起来指得准。
+# $1 = 说明，其余 = 命令。
+capture_ok() {
+  local what="$1"
+  shift
+  capture "$@"
+  [ "$CAPTURE_RC" -eq 0 ] || fail "$what：取数命令自己失败了（rc=$CAPTURE_RC）：$CAPTURE_OUT"
+}
+
 # 一个数值断言。$1 说明 · $2 期望 · $3 实际。
 eq() {
   if [ "$2" = "$3" ]; then
@@ -877,7 +911,7 @@ OV_UP="127.0.0.1:19999"
 #   只按「端口 + 是否 TLS」比较，加一个新主机名不会让它们对不上而撞 409）。
 #   ⚠ ⚠ 不能把这个站点摆进**第一代**：那样一来 [2/8] 那条「没有 reverse_proxy
 #   ⇒ upstream_inflight/healthy 零样本」的判据就会被这里的真实上游破坏——
-#   两族族在样本无与本节的覆盖夹具，天然只能分两代。
+#   「两族族在、样本无」这条判据与本节的覆盖夹具互斥，天然只能分两代摆。
 cat > "$WORK/ov.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1012,9 +1046,9 @@ S9B="$WORK/s9b.txt"
 CODE=$(scrape "$S9B")
 eq "GET /metrics（数据面，真 HTTP）" 200 "$CODE"
 
-ST1_TOTAL=$(stats_overrides_total "$WORK/ov_stats1.json")
-ST1_DANGLING=$(stats_overrides_dangling "$WORK/ov_stats1.json")
-M1_VALUE=$(expo sum "$S9B" fulcrum_overrides_active)
+capture_ok "/stats 总条目数（0 悬空这一刻）" stats_overrides_total    "$WORK/ov_stats1.json"; ST1_TOTAL="$CAPTURE_OUT"
+capture_ok "/stats 悬空条目数（0 悬空这一刻）" stats_overrides_dangling "$WORK/ov_stats1.json"; ST1_DANGLING="$CAPTURE_OUT"
+capture_ok "/metrics 的 overrides_active（0 悬空这一刻）" expo sum "$S9B" fulcrum_overrides_active; M1_VALUE="$CAPTURE_OUT"
 eq "★ 夹具前提：/stats 里两项覆盖都还没悬空" 0 "$ST1_DANGLING"
 eq "★ 夹具前提：/stats 里总数是 2" 2 "$ST1_TOTAL"
 eq "★★★ 判据 2：fulcrum_overrides_active 与 /stats 的 overrides 总条目数同源（0 悬空这一刻）" \
@@ -1032,9 +1066,9 @@ S9C="$WORK/s9c.txt"
 CODE=$(scrape "$S9C")
 eq "GET /metrics（换代之后，真 HTTP）" 200 "$CODE"
 
-ST2_TOTAL=$(stats_overrides_total "$WORK/ov_stats2.json")
-ST2_DANGLING=$(stats_overrides_dangling "$WORK/ov_stats2.json")
-M2_VALUE=$(expo sum "$S9C" fulcrum_overrides_active)
+capture_ok "/stats 总条目数（1 悬空这一刻）" stats_overrides_total    "$WORK/ov_stats2.json"; ST2_TOTAL="$CAPTURE_OUT"
+capture_ok "/stats 悬空条目数（1 悬空这一刻）" stats_overrides_dangling "$WORK/ov_stats2.json"; ST2_DANGLING="$CAPTURE_OUT"
+capture_ok "/metrics 的 overrides_active（1 悬空这一刻）" expo sum "$S9C" fulcrum_overrides_active; M2_VALUE="$CAPTURE_OUT"
 eq "★ 夹具前提：/stats 里总数还是 2（R8：设过覆盖的悬空了也不删）" 2 "$ST2_TOTAL"
 eq "★ 夹具前提：/stats 里悬空数是 1（id=ova 那把）" 1 "$ST2_DANGLING"
 # ⚠ ⚠ 判据写法纪律：总数（2）与悬空数（1）必须不相等，否则一个把两者读串了

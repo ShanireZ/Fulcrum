@@ -61,7 +61,7 @@
 //! | `fulcrum_cert_expiry_seconds` | `SniResolver::expiries()`（R5：值是 `notAfter` 的**绝对 Unix 秒**）|
 //! | `fulcrum_acme_issue_total` | `AcmeManager::issue_counts()` |
 //! | `fulcrum_build_info` | 这个二进制自己（`CARGO_PKG_VERSION`），不需要任何活体源 |
-//! | `fulcrum_overrides_active` | `SharedRuntime::override_counts()` 的第一个数（悬空的照样计入，裁决 R13）|
+//! | `fulcrum_overrides_active` | `SharedRuntime::override_entries_of()` 的条目数（悬空的照样计入，裁决 R13）|
 //!
 //! ★ ★ ★ **第二类为什么不在事件点记账**：能从被测对象本身问到的东西，
 //! 就不要在旁边再记一份 —— 否则两份迟早不一致，而**不一致的那天没有任何东西会说**。
@@ -265,8 +265,11 @@ const BUILD_INFO: &Family = &FAMILIES[8];
 ///
 /// ⚠ ⚠ **悬空的照样计入**：R13 把「悬空的算不算生效中」定死为「算」——它确实
 /// 还在登记处占着一格，且 `/load` 已经逐条点过名。⇒ 这一格的值**必须**是
-/// [`SharedRuntime::override_counts`] 返回的 `(N, M)` 里的 **N**（全部条目数），
-/// ⛔ 不是 `N - M`（非悬空数），也不是 `M`（悬空数）。
+/// [`SharedRuntime::override_entries_of`] 那份列表的**长度**（全部条目数），
+/// ⛔ 不是「非悬空数」，也不是「悬空数」。
+/// ★ 它与 [`SharedRuntime::override_counts`] 的 `.0` 恒等（后者就是
+/// `override_entries().len()`），但 `override_counts` 内部会**自己再取一次快照**
+/// ⇒ 抓取路径上只许用 `_of` 这一版，理由见 `snapshot()` 里那段注释。
 ///
 /// ⛔ **不按 `(站点, 上游)` 打标签**：那等于把 `/stats` 的 `overrides` 一节整个
 /// 搬进指标 —— 两份实现同一件事，而「是哪几项」本来就该去 `/stats` 看。
@@ -404,16 +407,22 @@ fn snapshot(src: &LiveSources) -> Registry {
             r.set(UPSTREAM_HEALTHY, &[addr], if healthy { 1.0 } else { 0.0 });
         }
 
-        // ── fulcrum_overrides_active：唯一取数口是 SharedRuntime::override_counts ──
-        //   ⛔ 不在这里重新遍历 OverrideLayer、也不再调一次 override_entries().len()——
-        //   道理与上面 upstream 两个族的注释同一条：能从被测对象本身问到的东西，
-        //   就不要在旁边再记一份。★ 任务 6 的 `/stats` 也是从这一个函数取「有几项
-        //   生效中」的数（回话尾巴那一行），两处同源。
-        //   ⚠ ⚠ 只取第一个数（全部条目数，悬空的已经算在里面——裁决 R13），
-        //   不取第二个（悬空数）。★ 无条件调用、无条件写入：0 覆盖时也要出一条
-        //   样本（值是 0），不能因为「没有覆盖」就让整族的这一格消失——
-        //   那会让「没接上」与「没数据」在抓取端看起来一模一样。
-        let (overrides_active, _dangling) = rt.override_counts();
+        // ── fulcrum_overrides_active：取数口是 SharedRuntime::override_entries_of ──
+        //   ⛔ 不在这里重新遍历 OverrideLayer、也不另记一份计数：道理与上面 upstream
+        //   两个族的注释同一条——能从被测对象本身问到的东西，就不要在旁边再记一份。
+        //   ★ ★ **与 `/stats` 同源，而且是同一个函数**：`admin.rs` 的 `stats()` 也走
+        //   `override_entries_of(&rt)`，两处落在同一个 `OverrideLayer::entries()` 上。
+        //   ⛔ ⛔ **不许改调 `override_counts()` / `override_entries()`**：那两个内部
+        //   会再调一次 `current()`，而本块开头（`let snap`）已经取过一份 ——
+        //   一次抓取取两份快照正是上面那条注释挡的东西，也正是任务 6 修复轮 1
+        //   刚从 `/stats` 上删掉的同一处缺陷。★ `SharedRuntime::override_entries`
+        //   的文档**逐字点名了 `metrics.rs`** 要求已持快照的调用方改用本函数。
+        //   ⚠ ⚠ 值是**全部条目数**：`entries()` 只按 `has_override()` 过滤，悬空的
+        //   只是被打上 `dangling` 标记、照样在列表里（裁决 R13 要的就是这个数）。
+        //   ★ 无条件调用、无条件写入：0 覆盖时也要出一条样本（值是 0），不能因为
+        //   「没有覆盖」就让整族的这一格消失——那会让「没接上」与「没数据」
+        //   在抓取端看起来一模一样。
+        let overrides_active = rt.override_entries_of(&snap).len();
         r.set(OVERRIDES_ACTIVE, &[], overrides_active as f64);
     }
 
@@ -871,6 +880,12 @@ mod tests {
             OVERRIDES_ACTIVE.labels.is_empty(),
             "fulcrum_overrides_active 不该带任何标签"
         );
+        // ★ ★ `kind` 必须**直接**钉住（评审 M6）：把基数表钉在 `FAMILIES` 上的那道门
+        //   只逐项比**族名**，`gauge / 活体 / 无 / 恒为 1` 那四格它一个都不读 ——
+        //   文档那一行写成 `counter | 事件 | site | 无上界` 照样是绿的。
+        //   ⚠ 而 `Kind` 写错在别处只是**间接**露头（`Counter` 会撞 `_total` 命名规则、
+        //   `Histogram` 会让样本数掉到 0），间接的判据红起来指的是别的地方。
+        assert_eq!(OVERRIDES_ACTIVE.kind, Kind::Gauge);
 
         // ★ ★ 每个族的**来处**也逐个钉住：`source` 写错不会让任何一条内容断言变红 ——
         //   活体族被标成 `Event` 的表现是它**永远没有样本**，而那与「没接上活体源」
@@ -1433,6 +1448,12 @@ mod tests {
         );
         shared.overrides().slot(&k_alive).set_disabled(true);
         shared.overrides().slot(&k_dangling).set_disabled(true);
+        // ⚠ ⚠ 这是一条**前提断言**，排在真判据前面 ⇒ 它对哪一层瞎、要说清（评审 M2）：
+        //   它读的是**取数函数**，不是渲出来的文本。所以往 `snapshot()` 里注入
+        //   （比如改写成「非悬空数」）时它照样通过，缺陷由下面那条判据接住 —— 这正是
+        //   本条存在的形态。⛔ 但往 `override_counts()` / `OverrideLayer::entries()`
+        //   里注入时，**本行先炸，下面那条判据一次都不会执行** ——
+        //   在那一层做反证的人会误以为是判据把它逮住的。
         assert_eq!(
             shared.override_counts(),
             (2, 1),
