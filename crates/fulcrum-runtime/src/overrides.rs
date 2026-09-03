@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// 覆盖层的键：`(站点名, reverse_proxy 的 id, 归一化后的上游地址)`（裁决 R6 ⇒ G125）。
 ///
@@ -102,9 +102,46 @@ pub struct UpstreamOverride {
     /// 而不是「权重 0」：裁决 R3 明写 `0` 不是合法权重，
     /// 「不参与调度」**只有一种表达方式**，就是 `disable`。
     weight: AtomicU32,
+    /// 这一格**最后一次被设定**的墙钟时刻，`UNIX_EPOCH` 起的**纳秒**。`0` = 从来没设过。
+    ///
+    /// ★ ★ ★ 语义是 **「最后一次改动」**（owner 拍板，R6 留下的那条），
+    /// ⛔ 不是「首次被覆盖」：运维问的那句话是「这台机器摘掉多久了」，
+    /// 而那句话问的是**当前形态**的年龄，不是这一格的年龄。
+    /// ⇒ 连着调 `set_weight` 会让它一直往前走 —— 那**正确**，形态确实一直在变。
+    ///
+    /// ⚠ 取**墙钟**而不是 `Instant`：这个值是给人看的、要能与日志对时间。
+    /// 代价写在明处：**墙钟会跳**（NTP 校正、手工改时间）⇒ 极端情况下两项覆盖的
+    /// 先后与它们的时间戳顺序可以不一致。⛔ 不为此引入第二个单调时钟：
+    /// 那会让 `/stats` 出现两种时间，而「这两个为什么不一样」没人答得出来。
+    ///
+    /// ⚠ 纳秒装进 `u64` 到 **2554 年**溢出。⛔ 不存秒：与
+    /// [`crate::SharedRuntime::loaded_at`] 同一条理由 —— 秒级粒度在一次跑得很快的
+    /// 判据里会落在同一秒，那会让「改动会推进它」这条判据偶发抖动。
+    set_at_nanos: AtomicU64,
 }
 
 impl UpstreamOverride {
+    /// 盖一次时间戳。**每一个会改动这一格的入口都要调它。**
+    ///
+    /// ⚠ 「设成同一个值」也算一次改动：管理面分不出「设成 X」与「又设了一次 X」，
+    /// 两者都是运维对这一格动的一次手。
+    fn 盖时间戳(&self) {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        self.set_at_nanos.store(n, Ordering::Relaxed);
+    }
+
+    /// 这一格最后一次被设定的墙钟时刻。没设过就是 `UNIX_EPOCH`。
+    ///
+    /// ★ 出现在清单里的每一格都设过（[`Self::has_override`] 为真的唯一途径就是
+    /// 走过下面那几个 setter），所以 [`OverrideEntry::set_at`] 上不需要 `Option`。
+    pub fn set_at(&self) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH
+            + std::time::Duration::from_nanos(self.set_at_nanos.load(Ordering::Relaxed))
+    }
+
     /// 这个上游被运维摘掉了吗。
     pub fn is_disabled(&self) -> bool {
         self.disabled.load(Ordering::Relaxed)
@@ -116,6 +153,7 @@ impl UpstreamOverride {
     /// 一格上两个量都回到默认值之后，它就不再是一项覆盖了（见 [`Self::has_override`]）。
     pub fn set_disabled(&self, v: bool) {
         self.disabled.store(v, Ordering::Relaxed);
+        self.盖时间戳();
     }
 
     /// 覆盖权重。`None` = **没覆盖**，调度该用配置里那个。
@@ -144,12 +182,14 @@ impl UpstreamOverride {
             ));
         }
         self.weight.store(w, Ordering::Relaxed);
+        self.盖时间戳();
         Ok(())
     }
 
     /// 撤掉覆盖权重，回到配置里那个。
     pub fn clear_weight(&self) {
         self.weight.store(0, Ordering::Relaxed);
+        self.盖时间戳();
     }
 
     /// 这一格**现在**带着覆盖吗。
@@ -179,6 +219,16 @@ pub struct OverrideEntry {
     /// 正相反 —— `keep` 就是 keep，而「它现在管不到谁」这件事**说出来**。
     /// ⚠ 悬空的**照样算「生效中」**（R13 明写）：它确实还在登记处占着一格。
     pub dangling: bool,
+    /// 这一格**最后一次被设定**的墙钟时刻（R6 留下的那条，owner 拍板取「最后一次改动」）。
+    ///
+    /// ⚠ ⚠ 它答的是「**这台机器现在这个样子摆了多久**」，⛔ 不是「这一格多老」——
+    /// 先改 `weight` 再 `disable`，取「首次」的读数会让人以为它已经被摘掉两天了，
+    /// 而其实两分钟前才摘。
+    ///
+    /// ★ 换成绝对 Unix 秒是**落到 `/stats` 那一刻**才做的事（`metrics::unix_secs`，
+    /// 与 `config_loaded_at_unix` / `not_after_unix` 同一个换算）——⛔ 这里不存秒，
+    /// 理由与 [`crate::SharedRuntime::loaded_at`] 逐字相同。
+    pub set_at: std::time::SystemTime,
 }
 
 /// 一条已经解析好、准备落到某一格的**操作**（**M2 批 N 任务 4**，`POST /runtime`）。
@@ -303,6 +353,9 @@ impl OverrideLayer {
                 disabled: s.is_disabled(),
                 weight: s.weight(),
                 dangling: !live.contains(k),
+                // ★ 从**那一格自己**身上读，⛔ 不在这里取一次 `now()`：
+                //   那样每次列清单都会把所有时间刷成现在，而三条判据里只有一条看得出来。
+                set_at: s.set_at(),
             })
             .collect()
     }
@@ -363,6 +416,10 @@ impl OverrideLayer {
                 disabled: s.is_disabled(),
                 weight: s.weight(),
                 dangling: !live.contains(k),
+                // ⚠ **在清掉之前读**：这条清单说的是「被清掉的那项覆盖当时是什么样」，
+                //   而下面两行清空动作本身也会盖一次时间戳 —— 读晚了就变成
+                //   「每一项都是刚刚设的」，那对每一条都是错的。
+                set_at: s.set_at(),
             });
             s.set_disabled(false);
             s.clear_weight();

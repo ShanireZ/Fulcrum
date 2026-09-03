@@ -858,3 +858,115 @@ fn 任务5_clear_all没有覆盖时返回空列表且不留痕迹() {
     );
     assert_eq!(shared.overrides().active_count(), 0);
 }
+
+// ── R6 留下的那条：每项覆盖带**设置时间**（owner 拍板：取「最后一次改动」）────
+//
+// ★ ★ ★ 语义是 owner 拍的：这一格记的是**它现在这个形态是什么时候定下来的**，
+//   ⛔ 不是「这一格第一次有覆盖是什么时候」。运维问的那句话是「这台机器摘掉多久了」，
+//   而那句话问的是**当前形态**的年龄，不是这一格的年龄。
+// ⚠ 取**墙钟**（`SystemTime`）而不是 `Instant`：这个值是给人看的、要能与日志对时间。
+//   代价写在明处：墙钟会跳（NTP 校正、手工改时间）⇒ 极端情况下两项覆盖的先后
+//   与它们的时间戳顺序可以不一致。⛔ 不为此引入第二个单调时钟 —— 那会让 `/stats`
+//   出现两种时间，而「这两个时间为什么不一样」没人答得出来。
+// ⚠ ⚠ 存的是 `SystemTime` 而**不是秒级整数**，与 `SharedRuntime::loaded_at` 同一条理由：
+//   秒级粒度在一次跑得很快的测试里会落在同一秒，那会让下面两条判据偶发抖动。
+//   落到 `/stats` 上再由 `metrics::unix_secs` 换成绝对 Unix 秒（那个换算只有一份）。
+
+/// ★ 设一项覆盖 ⇒ 它的设置时间落在「动手之前 .. 现在」这个闭区间里。
+///
+/// ⚠ ⛔ **不断言等于某个具体值**：那要求测试与被测对象共用时钟且零延迟。
+#[test]
+fn r6_覆盖带着设置时间且落在合理区间内() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let 之前 = std::time::SystemTime::now();
+    shared
+        .overrides()
+        .slot(&OverrideKey::new("a.com", "", "10.0.0.1:1"))
+        .set_disabled(true);
+    let 之后 = std::time::SystemTime::now();
+    let es = shared.override_entries();
+    assert_eq!(es.len(), 1);
+    assert!(
+        es[0].set_at >= 之前 && es[0].set_at <= 之后,
+        "设置时间 {:?} 不在 [{:?}, {:?}] 里",
+        es[0].set_at,
+        之前,
+        之后
+    );
+}
+
+/// ★ ★ **再改一次会把它推进** —— 这一条把「最后一次改动」这个语义钉死。
+///
+/// ⇒ 一个取「首次被覆盖」的实现会**在这里红**，而它在上面那条上是绿的。
+#[test]
+fn r6_再改一次会把设置时间推进() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let k = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    shared.overrides().slot(&k).set_weight(7).unwrap();
+    let 第一次 = shared.override_entries()[0].set_at;
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    shared.overrides().slot(&k).set_disabled(true);
+    let 第二次 = shared.override_entries()[0].set_at;
+    assert!(
+        第二次 > 第一次,
+        "形态改了而时间没往前走：第一次 {第一次:?}、第二次 {第二次:?}"
+    );
+}
+
+/// ★ ★ **动别的格子不许推进本格的时间。**
+///
+/// ⚠ 少了这一条，一个「每次取清单就把所有时间刷成现在」的实现在上面两条上
+/// **都是绿的** —— 而它给出的读数对每一格都是错的。
+#[test]
+fn r6_动别的格子不会推进本格的时间() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置(
+            "a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n",
+        ))
+        .unwrap(),
+    ));
+    let 甲 = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    let 乙 = OverrideKey::new("a.com", "", "10.0.0.2:2");
+    shared.overrides().slot(&甲).set_disabled(true);
+    let 甲时间 = shared
+        .override_entries()
+        .into_iter()
+        .find(|e| e.key == 甲)
+        .expect("甲应该在清单里")
+        .set_at;
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    shared.overrides().slot(&乙).set_disabled(true);
+    let es = shared.override_entries();
+    let 甲现在 = es.iter().find(|e| e.key == 甲).unwrap().set_at;
+    let 乙现在 = es.iter().find(|e| e.key == 乙).unwrap().set_at;
+    assert_eq!(甲现在, 甲时间, "动了乙，甲的时间被一起刷新了");
+    assert!(乙现在 > 甲时间, "乙是刚设的，它的时间该比甲新");
+}
+
+/// ★ **撤销覆盖再设一次，读到的是新时间**（`clear_weight` / `enable` 也算改动）。
+///
+/// ⚠ 它守的是一个具体现场：一格被 `disable`、`enable`、再 `disable`，
+/// 运维问「摘掉多久了」时该读到**最后那一次**，而不是第一次那个老时间。
+#[test]
+fn r6_撤销之后再设一次读到的是新时间() {
+    let shared = SharedRuntime::new(Arc::new(
+        Runtime::build(&配置("a.com {\n  reverse_proxy 10.0.0.1:1\n}\n")).unwrap(),
+    ));
+    let k = OverrideKey::new("a.com", "", "10.0.0.1:1");
+    shared.overrides().slot(&k).set_disabled(true);
+    let 第一次 = shared.override_entries()[0].set_at;
+    // 放回去 ⇒ 这一格不再是一项覆盖，清单里就没有它了。
+    shared.overrides().slot(&k).set_disabled(false);
+    assert!(
+        shared.override_entries().is_empty(),
+        "放回去之后它不该还算一项覆盖"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    shared.overrides().slot(&k).set_disabled(true);
+    let 第二次 = shared.override_entries()[0].set_at;
+    assert!(第二次 > 第一次, "再摘一次读到的还是那个老时间");
+}

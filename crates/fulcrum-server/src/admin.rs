@@ -137,6 +137,17 @@ struct OverrideStat {
     /// `None` = 只是 `disable`，没有改权重。
     weight: Option<u32>,
     dangling: bool,
+    /// 这一格**最后一次被设定**的时刻，**绝对 Unix 秒**（R6 留下的那条，owner 拍板）。
+    ///
+    /// ⚠ ⚠ 语义是「**最后一次改动**」而不是「首次被覆盖」：运维问的那句话是
+    /// 「这台机器摘掉多久了」，问的是**当前形态**的年龄。⇒ 先改 `weight` 再 `disable`，
+    /// 取「首次」的读数会让人以为它两天前就摘了，而其实两分钟前才摘。
+    ///
+    /// ⛔ **不写「已经过了多少秒」** —— 与 R5 在 [`CertStat::not_after_unix`] 上钉过的
+    /// 是同一条：相对秒读起来完全正常，而它在两次抓取之间的含义会变。
+    /// ★ 换算走 `metrics::unix_secs`，与 `config_loaded_at_unix` / `not_after_unix`
+    /// **是同一份**，⛔ 这里不自己算。
+    set_at_unix: f64,
 }
 
 /// 一格覆盖层键管着几条 `reverse_proxy`（[`fulcrum_runtime::ProxyKeyFanout`]
@@ -885,6 +896,9 @@ impl AdminApp {
                 disabled: e.disabled,
                 weight: e.weight,
                 dangling: e.dangling,
+                // ★ 从**那一格自己**带过来的时刻换算，⛔ 这里不取 `now()`：
+                //   在这儿取一次 now() 会让每一行都印同一个数，而那对每一格都是错的。
+                set_at_unix: crate::metrics::unix_secs(e.set_at),
             })
             .collect();
 
@@ -2124,6 +2138,70 @@ http://pool.example:8080 {
         assert_eq!(solo_row["disabled"], false, "{v}");
         assert_eq!(solo_row["weight"].as_u64(), Some(9), "{v}");
         assert_eq!(solo_row["dangling"], false, "{v}");
+    }
+
+    // ── overrides 一节：**每项覆盖带设置时间**（R6 留下的那条，owner 拍板）──────
+    //
+    // ★ 语义是「**最后一次改动**」，⛔ 不是「首次被覆盖」。语义本身由
+    //   `fulcrum-runtime` 的 `tests/overrides.rs` 那三条钉住；这里钉的是
+    //   **它真的进了这份 JSON、而且换算没错**（brief §8 第 2 条：断言打在最终文本上）。
+
+    #[test]
+    fn stats的overrides每一项都带着设置时间且是绝对unix秒() {
+        let a = app_stats();
+        let k = OverrideKey::new("http://pool.example:8080", "", "10.70.0.1:1");
+        let 之前 = crate::metrics::unix_secs(std::time::SystemTime::now());
+        a.rt.overrides().slot(&k).set_disabled(true);
+        let 之后 = crate::metrics::unix_secs(std::time::SystemTime::now());
+
+        let v = stats_json(&a);
+        let row = &v["overrides"].as_array().expect("overrides 应该是数组")[0];
+        let t = row["set_at_unix"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("set_at_unix 应该是数字：{v}"));
+        // ⚠ ⛔ 不断言等于某个具体值：那要求判据与被测对象共用时钟且零延迟。
+        assert!(
+            t >= 之前 && t <= 之后,
+            "set_at_unix={t} 不在 [{之前}, {之后}] 里：{v}"
+        );
+        // ★ ★ **它必须是绝对时刻，⛔ 不是「已经过了多少秒」** —— 与 R5 在
+        //   `not_after_unix` 上钉过的是同一条：相对秒读起来完全正常，
+        //   而它在两次抓取之间的含义会变。判据：这个数落在「今天」的量级上，
+        //   一个「已过秒数」的实现会是个接近 0 的小数。
+        assert!(
+            t > 1_700_000_000.0,
+            "set_at_unix={t} 看起来不是绝对 Unix 秒（像是「已经过了多少秒」）：{v}"
+        );
+    }
+
+    /// ★ ★ **同一次抓取里，两格覆盖各有各的时间** —— ⛔ 不是同一个值。
+    ///
+    /// ⚠ 少了它，一个「在 `stats()` 里取一次 `now()` 给所有行」的实现在上面那条
+    /// 区间判据上是**绿的**，而它给出的读数对每一格都是错的。
+    #[test]
+    fn stats的overrides两格覆盖各有各的时间_不是同一个数() {
+        let a = app_stats();
+        let k1 = OverrideKey::new("http://pool.example:8080", "", "10.70.0.1:1");
+        let k2 = OverrideKey::new("http://pool.example:8080", "solo", "10.70.0.2:2");
+        a.rt.overrides().slot(&k1).set_disabled(true);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        a.rt.overrides().slot(&k2).set_weight(9).unwrap();
+
+        let v = stats_json(&a);
+        let rows = v["overrides"].as_array().expect("overrides 应该是数组");
+        let t = |id: &str| {
+            rows.iter()
+                .find(|o| o["id"] == id)
+                .unwrap_or_else(|| panic!("没找到 id={id}：{v}"))["set_at_unix"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("set_at_unix 应该是数字：{v}"))
+        };
+        assert!(
+            t("solo") > t(""),
+            "后设的那格时间没有更晚：先设的 {}、后设的 {}：{v}",
+            t(""),
+            t("solo")
+        );
     }
 
     // ★ ★ ★ 判据写法纪律（brief §8 三条硬要求第 3 条）：总数与悬空数必须不
