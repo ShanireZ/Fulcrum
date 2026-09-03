@@ -154,6 +154,55 @@ pub trait ProxyProtocolPolicy: std::fmt::Debug + Send + Sync {
     fn feed(&self, buf: &[u8]) -> ProxyProtocolVerdict;
 }
 
+/// 这个监听器上多了一条 / 少了一条连接（**★ 枢衡改动 15**）。
+///
+/// ★ ★ **本 crate 只知道「多了一条 / 少了一条」**：它不认识 counter 与 gauge、
+/// 不认识标签、不知道 Prometheus 存在。`listen` 递的是 [`TransportStack::as_str`]
+/// 给出的那个**监听地址原样**，怎么用由使用方决定。
+///
+/// ⚠ 一个 [`Listeners`] 可以有多个监听地址，而 [`Listeners::set_connection_counter`]
+/// 给它们设的是**同一个**实现 ⇒ 实现方必须按 `listen` 分格，
+/// ⛔ 不能假设「一个计数器只服务一个地址」。
+pub trait ConnectionCounter: Send + Sync {
+    /// 一条连接开始了。
+    ///
+    /// ⚠ 调用点在 **accept 之后、握手之前** —— 于是「还在握手的连接」也算在里面。
+    /// ★ 那是有意的：TLS 握手被打爆时，这条路上的堆积正是最该看得见的东西。
+    fn enter(&self, listen: &str);
+
+    /// 那条连接结束了。
+    ///
+    /// ⛔ ⛔ **不要手写调用它** —— 唯一的调用点是 [`ConnGuard`] 的 `Drop`，理由见那里。
+    fn leave(&self, listen: &str);
+}
+
+/// [`ConnectionCounter::leave`] 的**唯一**调用点（**★ 枢衡改动 15**）。
+///
+/// ★ ★ ★ 它存在的全部理由：那条连接任务有**三条退出路径**
+/// （握手超时 / 握手失败 / 正常结束），手写三处减一是一个「三处迟早分家」的形状 ——
+/// ⚠ 而分家时的表现是 **gauge 只涨不降**，counter 照常，**没有任何东西会说**。
+///
+/// **构造即 `enter`，析构即 `leave`** —— 两半绑在同一个值的生命期上，
+/// 于是「加了没减」在结构上做不到。
+pub struct ConnGuard {
+    counter: Arc<dyn ConnectionCounter>,
+    listen: Arc<str>,
+}
+
+impl ConnGuard {
+    /// 构造即 [`ConnectionCounter::enter`]。
+    pub fn new(counter: Arc<dyn ConnectionCounter>, listen: Arc<str>) -> ConnGuard {
+        counter.enter(&listen);
+        ConnGuard { counter, listen }
+    }
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.counter.leave(&self.listen);
+    }
+}
+
 /// 读 PROXY 头时缓冲区的**硬上界**。
 ///
 /// ★ 它不是协议上界（那由 [`ProxyProtocolPolicy::feed`] 自己的 `Invalid` 给），
@@ -284,6 +333,8 @@ struct TransportStackBuilder {
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
     /// ★ 枢衡改动 12：PROXY protocol 的「收」半边。`None` = 这个端口不收。
     proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    /// ★ 枢衡改动 15：连接计数。`None` = 这个端口不数。
+    connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
 
 impl TransportStackBuilder {
@@ -310,6 +361,7 @@ impl TransportStackBuilder {
             l4,
             tls: self.tls.take().map(|tls| Arc::new(tls.build())),
             proxy_protocol: self.proxy_protocol.clone(),
+            connection_counter: self.connection_counter.clone(),
         })
     }
 }
@@ -320,11 +372,18 @@ pub(crate) struct TransportStack {
     tls: Option<Arc<Acceptor>>,
     /// ★ 枢衡改动 12。
     proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    /// ★ 枢衡改动 15。
+    connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
 
 impl TransportStack {
     pub fn as_str(&self) -> &str {
         self.l4.as_str()
+    }
+
+    /// ★ 枢衡改动 15：这个端点上的连接计数器（`None` = 不数）。
+    pub fn connection_counter(&self) -> Option<&Arc<dyn ConnectionCounter>> {
+        self.connection_counter.as_ref()
     }
 
     pub async fn accept(&self) -> Result<UninitializedStream> {
@@ -381,6 +440,8 @@ pub struct Listeners {
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
     /// ★ 枢衡改动 12。
     proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    /// ★ 枢衡改动 15。
+    connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
 
 impl Listeners {
@@ -391,6 +452,7 @@ impl Listeners {
             #[cfg(feature = "connection_filter")]
             connection_filter: None,
             proxy_protocol: None,
+            connection_counter: None,
         }
     }
     /// Create a new [`Listeners`] with a TCP server endpoint from the given string.
@@ -482,6 +544,21 @@ impl Listeners {
         }
     }
 
+    /// ★ 枢衡改动 15：给**所有**端点（已有的与之后加的）设连接计数器。
+    ///
+    /// ⚠ 与 `set_proxy_protocol` 及上游自己的 `set_connection_filter` 同一个形状，
+    /// 而这不是省事：连接计数是**连接级**的 —— 一条连接上还没有 Host，
+    /// 还不知道它会落到哪个站点。
+    ///
+    /// ⚠ ⚠ 这里设的是**同一个**实现，而 `self.stacks` 可以有多个监听地址
+    /// ⇒ 实现方必须按 [`ConnectionCounter::enter`] 收到的 `listen` 分格。
+    pub fn set_connection_counter(&mut self, counter: Arc<dyn ConnectionCounter>) {
+        self.connection_counter = Some(counter.clone());
+        for stack in &mut self.stacks {
+            stack.connection_counter = Some(counter.clone());
+        }
+    }
+
     /// Add the given [`ServerAddress`] to `self` with the given [`TlsSettings`] if provided
     pub fn add_endpoint(&mut self, l4: ServerAddress, tls: Option<TlsSettings>) {
         self.stacks.push(TransportStackBuilder {
@@ -490,6 +567,7 @@ impl Listeners {
             #[cfg(feature = "connection_filter")]
             connection_filter: self.connection_filter.clone(),
             proxy_protocol: self.proxy_protocol.clone(),
+            connection_counter: self.connection_counter.clone(),
         })
     }
 
@@ -527,6 +605,48 @@ mod test {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
     use tokio::time::{sleep, Duration};
+
+    /// ★ 枢衡改动 15 的回归守卫（手法照改动 13：**长在上游自己的测试模块里**）。
+    ///
+    /// ⚠ ⚠ **它只覆盖 [`ConnGuard`] 本身，不覆盖 `run_endpoint` 里的那个调用点。**
+    /// 具体说：把 `services/listening.rs` 里那句 `let _conn_guard = conn_guard;`
+    /// 写成裸 `let _ = conn_guard;`（当场 drop）**这一条抓不住** ——
+    /// 抓它的是枢衡自己那侧的端到端判据（`tests/metrics/run.sh` 里
+    /// 「连上 TLS 端口什么都不发 ⇒ active +1」那一条）。
+    /// ★ 写在这里，是免得下一个人以为这条测试覆盖了整条路。
+    #[test]
+    fn 枢衡改动15_连接守卫在_drop_时减一() {
+        use std::sync::atomic::{AtomicUsize as 计数, Ordering as 序};
+        #[derive(Default)]
+        struct 假计数器 {
+            进: 计数,
+            出: 计数,
+            最后地址: std::sync::Mutex<String>,
+        }
+        impl ConnectionCounter for 假计数器 {
+            fn enter(&self, listen: &str) {
+                self.进.fetch_add(1, 序::Relaxed);
+                *self.最后地址.lock().unwrap() = listen.to_string();
+            }
+            fn leave(&self, _listen: &str) {
+                self.出.fetch_add(1, 序::Relaxed);
+            }
+        }
+
+        let c = Arc::new(假计数器::default());
+        {
+            let _g = ConnGuard::new(c.clone(), Arc::from("127.0.0.1:1"));
+            assert_eq!(c.进.load(序::Relaxed), 1, "构造 guard 就该 enter 一次");
+            assert_eq!(c.出.load(序::Relaxed), 0, "还没 drop，不该 leave");
+        }
+        // ★ ★ 这一条是整条改动的全部意义：**离开作用域就减一，无论那条路怎么走**。
+        assert_eq!(c.出.load(序::Relaxed), 1, "drop 之后必须 leave 一次");
+        assert_eq!(
+            *c.最后地址.lock().unwrap(),
+            "127.0.0.1:1",
+            "递过去的是监听地址原样"
+        );
+    }
 
     #[tokio::test]
     async fn test_listen_tcp() {

@@ -763,6 +763,70 @@ self.body_bytes_sent += write_buf.len();
 ⚠ 那条路对**只想要 SNI/ALPN** 的人来说，代价是每条握手多一趟挂起/恢复，
 而这一点大概率上游自己也没量过。**本条尚未投稿。**
 
+### ★ ★ ★ 15. 加了一条能力：连接计数接缝（2026-09-03，M2 批 O）
+
+**上游没有任何按监听器统计连接数的出口**：`Service::run_endpoint` 那条 accept 循环
+把连接直接 spawn 出去，`TransportStack` 是 `pub(crate)`，外部够不到那一刻。
+枢衡要的是 `fulcrum_connections_total` / `fulcrum_connections_active{listen,entrypoint}`
+（`PLAN.md` §10 的 **G122 ②**），而它必须在 **accept 之后、握手之前**记一笔。
+
+⚠ **本条属「加能力」那一类**，G30 刻意让这一类保持稀有 —— 现存的另外两处是改动 11 与 12。
+
+#### 改了什么：**两个文件，146 行，一处删除（一行 import 重排）**
+
+`pingora-core/src/listeners/mod.rs`：
+
+| 加了什么 | 说明 |
+|---|---|
+| `pub trait ConnectionCounter` | **接缝本身**，两个方法（`enter` / `leave`）都由使用方实现 |
+| `pub struct ConnGuard` | ★★★ `leave` 的**唯一**调用点。构造即 `enter`，`Drop` 即 `leave` |
+| `Listeners` / `TransportStackBuilder` / `TransportStack` 各一个字段 | 把计数器从 `Listeners` 一路带到那条连接上 |
+| `Listeners::set_connection_counter()` | 与上游自己的 `set_connection_filter()`、与改动 12 的 `set_proxy_protocol()` **逐字同形**（含「已有的与之后加的都设上」那半）|
+| `TransportStack::connection_counter()` | `run_endpoint` 取句柄用 |
+
+`pingora-core/src/services/listening.rs` 的 `run_endpoint`：循环外取一次句柄与
+`Arc<str>` 地址，**spawn 之前**构造 guard 并把它移进任务。
+
+★ ★ ★ **这段代码不认识 Prometheus 的任何一个概念**：它不知道 counter 与 gauge 的区别、
+不认识标签、也不知道 `entrypoint` 是什么。它只递一个 `listen: &str`（就是
+`TransportStack::as_str()` 那个监听地址原样），别的全在
+[`crates/fulcrum-server/src/conn_stats.rs`](../../crates/fulcrum-server/src/conn_stats.rs)。
+⇒ rebase 时它不会成为负担。
+
+#### ⚠ ⚠ ★ 为什么 `ConnGuard` 必须长在**这一侧**
+
+它完全可以定义在枢衡那一侧，fork 只留一个两方法的 trait —— fork 会更薄。
+**但那样 `run_endpoint` 里就变成「先 `enter`、再自己构造 guard」两步**，
+而**漏掉构造 guard 那一行正是 rebase 冲突里最容易被合掉的形状**。
+⚠ 它失效时的表现是 **gauge 只涨不降**：正文格式合法、counter 在动、series 也都在，
+只有一个数字永远只增 —— **没有任何东西会红**。
+⇒ 放在这一侧，是让「守卫存在」成为**结构事实**而不是使用方的纪律。
+
+#### ⚠ ⚠ ⚠ 那个必须绑名字的变量
+
+`run_endpoint` 里那句 **`let _conn_guard = conn_guard;`** 写成裸 `let _ = conn_guard;`
+会让它**当场 drop**，于是每条连接进来就立刻减一 ⇒ gauge 恒为 0 而 counter 照涨。
+★ 那一行上写了注释说明这件事。⚠ 本文件里那条回归守卫
+（`枢衡改动15_连接守卫在_drop_时减一`）**抓不住这个注入** —— 它验的是 `ConnGuard` 本身，
+不经过 `run_endpoint`。逮它的是枢衡那侧的端到端判据（`tests/metrics/run.sh` 里
+「连上 TLS 端口什么都不发 ⇒ `active` +1」那一条）。
+
+#### 守卫
+
+照改动 13 的手法，**回归守卫长在上游自己的测试模块里**
+（`listeners/mod.rs` 的 `mod test`）：一个假的 `ConnectionCounter`，
+断言「构造即 enter 一次」「drop 即 leave 一次」「递过去的是监听地址原样」。
+★ 反证实测：把 `ConnGuard::new` 里那句 `counter.enter(&listen)` 删掉 ⇒ 它当场红，
+且 `tests/vendor/run.sh` 把它定向重跑一次后判为「**重跑仍失败 —— 这才是 fork 该被判红的东西**」。
+
+#### 归零条件
+
+⏳ **没有已知的归零路径。** 上游没有表达过要给监听器加统计出口的意思，
+而这条接缝服务的是枢衡自己的指标契约。⇒ 它是一项**要跟着 rebase 的常年成本**。
+★ 与改动 8/8b/10 那三条不同：它们的归零条件挂在「上游动一下」上，本条不指望上游做什么。
+⏳ **投不投上游等 rebase 读过上游 `main` 之后再判**（G122 已定）——
+上游 `main` 已把 `prometheus` 整条删掉，口味未知。
+
 ### 9. 没有动的一个：`daemonize`
 
 ★ **`daemonize` 原样保留，这是一个经过权衡的决定，不是遗漏。**

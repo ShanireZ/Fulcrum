@@ -23,7 +23,13 @@ use crate::listeners::tls::TlsSettings;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
 use crate::listeners::{
-    ConnectionFilter, Listeners, ServerAddress, TcpSocketOptions, TransportStack,
+    // ★ 枢衡改动 15：`ConnGuard`。
+    ConnGuard,
+    ConnectionFilter,
+    Listeners,
+    ServerAddress,
+    TcpSocketOptions,
+    TransportStack,
 };
 use crate::protocols::Stream;
 #[cfg(unix)]
@@ -186,6 +192,13 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         mut stack: TransportStack,
         mut shutdown: ShutdownWatch,
     ) {
+        // ── ★ 枢衡改动 15：连接计数 ────────────────────────────────────────────
+        //
+        // ★ 句柄与地址都在**循环外**取一次 ⇒ 每条连接只 clone 两个 `Arc`，
+        //   accept 这条热路径上**零分配**。
+        let conn_counter = stack.connection_counter().cloned();
+        let listen_addr: std::sync::Arc<str> = std::sync::Arc::from(stack.as_str());
+
         // the accept loop, until the system is shutting down
         loop {
             let new_io = tokio::select! { // TODO: consider biased for perf reason?
@@ -211,7 +224,19 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                 Ok(io) => {
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
+                    // ★ ★ ★ 枢衡改动 15：**`enter` 在 spawn 之前、握手之前**。
+                    //   于是「还在握手的连接」也算进 active —— TLS 握手被打爆时
+                    //   那条路上的堆积正是最该看得见的东西。
+                    let conn_guard = conn_counter
+                        .as_ref()
+                        .map(|c| ConnGuard::new(c.clone(), listen_addr.clone()));
                     current_handle().spawn(async move {
+                        // ⚠ ⚠ ⚠ **必须绑一个有名字的变量。** 写成 `let _ = conn_guard;`
+                        //   会让它**当场 drop**，于是 gauge 恒为 0 而 counter 照涨 ——
+                        //   ★ 而那种失效**不会有任何东西红**：正文格式合法、
+                        //     counter 在动、系列也都在，只有一个数字永远是 0。
+                        //   ⇒ 逮它的是枢衡那侧的端到端判据（连上 TLS 端口什么都不发 ⇒ active +1）。
+                        let _conn_guard = conn_guard;
                         let peer_addr = io.peer_addr();
                         match timeout(Duration::from_secs(60), io.handshake()).await {
                             Ok(handshake) => {
