@@ -21,9 +21,106 @@
 //!
 //! ★ **不记录环境变量**（基线第 3 条）：hook 的凭据就在里面。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
+
+/// Linux 的 `ETXTBSY`。⚠ 直接写数字而不引 `libc`：为一个常量新增一个包，
+/// 撞的是「新增 0 个包」那条纪律，而这个值是 ABI 的一部分，不会变。
+const ETXTBSY: i32 = 26;
+
+/// `ETXTBSY` 的**现场取证**：到底是谁以写方式开着这个文件。
+///
+/// # ★ ★ ★ 它为什么存在
+///
+/// 门禁里有一条**偶发**红：`起不来 DNS hook …：Text file busy (os error 26)`，
+/// 只在并发跑全套单测时出现，单独复跑全绿。⛔ **owner 明令不许加重试** ——
+/// 重试会把这条测试真正守着的那个缺陷一起盖掉。
+/// ⇒ 那就**先建证据**：`ETXTBSY` 在 Linux 上的含义是**有进程以写方式打开着这个文件**，
+/// 而「是谁」`/proc` 答得出来。★ 根因没定位之前的修复是猜。
+///
+/// # ⚠ 它答不了什么
+///
+/// 取证发生在**失败之后**，那一刻持有者**可能已经关掉了**（如果它是一个瞬时的写句柄，
+/// 那正是本条最可能的形态）⇒ **扫不到持有者不等于当时没有**。
+/// ⛔ 因此「没找到」要说成「没找到」，不许说成「没有人持有」。
+///
+/// ⚠ 只在 Linux 上有 `/proc`；别的平台回空串（本产品只发行 Linux，G13）。
+fn etxtbsy_现场(program: &Path, e: &std::io::Error) -> String {
+    if e.raw_os_error() != Some(ETXTBSY) {
+        return String::new();
+    }
+    // ⚠ `/proc/<pid>/fd/<n>` 是**解析过**的路径 ⇒ 比较之前两边都要归一化，
+    //   否则 `/tmp/...` 与 `/private/tmp/...` 这类差别会让取证**永远扫不到**，
+    //   而它给出的答案（「没找到持有者」）读起来完全正常。
+    let program = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let program = program.as_path();
+    let mut 持有者 = Vec::new();
+    let mut 扫过的进程 = 0usize;
+    if let Ok(procs) = std::fs::read_dir("/proc") {
+        for p in procs.flatten() {
+            let 名 = p.file_name();
+            let Some(pid) = 名
+                .to_str()
+                .filter(|s| s.bytes().all(|b| b.is_ascii_digit()))
+            else {
+                continue;
+            };
+            扫过的进程 += 1;
+            let fd_dir = format!("/proc/{pid}/fd");
+            let Ok(fds) = std::fs::read_dir(&fd_dir) else {
+                continue; // 别的用户的进程，读不了 —— ⚠ 这也是「扫不到」的一种
+            };
+            for fd in fds.flatten() {
+                let Ok(target) = std::fs::read_link(fd.path()) else {
+                    continue;
+                };
+                if target != program {
+                    continue;
+                }
+                let fd_名 = fd.file_name().to_string_lossy().into_owned();
+                let flags = std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd_名}"))
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .find_map(|l| l.strip_prefix("flags:"))
+                            .and_then(|v| u32::from_str_radix(v.trim(), 8).ok())
+                    });
+                // O_WRONLY = 1、O_RDWR = 2 ⇒ 低两位非零就是「可写」。
+                let 可写 = flags.map(|f| f & 0o3 != 0);
+                let cmd = std::fs::read(format!("/proc/{pid}/cmdline"))
+                    .map(|b| {
+                        String::from_utf8_lossy(&b)
+                            .replace('\0', " ")
+                            .trim()
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+                持有者.push(format!(
+                    "pid={pid} fd={fd_名} 可写={} cmd={cmd:?}",
+                    match 可写 {
+                        Some(true) => "是",
+                        Some(false) => "否",
+                        None => "读不出",
+                    }
+                ));
+            }
+        }
+    }
+    if 持有者.is_empty() {
+        format!(
+            "\n  ★ ETXTBSY 现场：扫了 {扫过的进程} 个进程的 /proc/*/fd，\
+             **没找到**还开着这个文件的进程。\
+             ⚠ 这不等于当时没有 —— 取证发生在失败之后，瞬时的写句柄可能已经关掉了；\
+             读不了的进程（别的用户）也数在「扫过」里而看不见它的 fd。"
+        )
+    } else {
+        format!(
+            "\n  ★ ETXTBSY 现场（扫了 {扫过的进程} 个进程）：\n    {}",
+            持有者.join("\n    ")
+        )
+    }
+}
 
 /// hook 的 stdout / stderr 各自最多收多少字节。
 ///
@@ -158,7 +255,13 @@ impl ExecHook {
             //   而且还握着我们的 DNS 凭据。
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| format!("起不来 DNS hook {}：{e}", self.program.display()))?;
+            .map_err(|e| {
+                format!(
+                    "起不来 DNS hook {}：{e}{}",
+                    self.program.display(),
+                    etxtbsy_现场(&self.program, &e)
+                )
+            })?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -419,5 +522,73 @@ mod tests {
         let e = rt().block_on(h.run("set", "a.com", "v")).unwrap_err();
         assert!(e.contains("起不来"), "{e}");
         assert!(e.contains("/nonexistent/fulcrum-hook"), "{e}");
+    }
+
+    /// ★ ★ ★ [`etxtbsy_现场`] 的自证 —— **三个方向**。
+    ///
+    /// ⚠ ⚠ 取证代码**只在已经要红的路径上执行** ⇒ 一趟绿的门禁从来不碰它，
+    /// 它坏了要等到真出事那天才发现，**而那一次现场也就跟着白丢了**。
+    /// ★ 这与 `tests/acme/self-check.sh` 挂在 lint 那一格是同一条理由。
+    #[test]
+    fn etxtbsy_取证三个方向都成立() {
+        let 沙箱 = Sandbox::new("forensics");
+        let p = 沙箱.path("target.bin");
+        std::fs::write(&p, b"x").unwrap();
+        let busy = std::io::Error::from_raw_os_error(ETXTBSY);
+
+        // ① 别的 errno **不许**触发取证 —— 否则每一次「文件不存在」都会去扫一遍 /proc。
+        let 别的 = std::io::Error::from_raw_os_error(2); // ENOENT
+        assert!(
+            etxtbsy_现场(&p, &别的).is_empty(),
+            "非 ETXTBSY 的错误竟然也去取证了"
+        );
+
+        // ② 命中：本进程以**写**方式开着它，取证必须指出是自己。
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        let 现场 = etxtbsy_现场(&p, &busy);
+        assert!(
+            现场.contains(&format!("pid={}", std::process::id())),
+            "取证没把持有者指成本进程：{现场}"
+        );
+        assert!(现场.contains("可写=是"), "取证没认出这是个可写句柄：{现场}");
+        drop(f);
+
+        // ③ 落空：没人开着它 —— ⚠ 而措辞必须是「**没找到**」，
+        //    ⛔ 不许说成「没有人持有」（取证发生在失败之后，那不是同一句话）。
+        let 空 = etxtbsy_现场(&p, &busy);
+        assert!(
+            空.contains("没找到") && !空.contains("可写=是"),
+            "没人持有时取证的措辞不对：{空}"
+        );
+    }
+
+    /// ★ ★ ★ **把那条偶发红确定性地复现一次**，并证明取证真的接在错误信息上。
+    ///
+    /// 机制：Linux 上**握着一个可写 fd 去 exec 同一个文件必然 `ETXTBSY`**。
+    /// ⇒ 这条不是「等它偶发」，是**当场造出来**。
+    ///
+    /// ⚠ ⚠ 它证的是**接线**（现场进得了错误信息），⛔ **不是**门禁里那条偶发红的根因 ——
+    /// 那一条至今没定位：候选是 docker overlayfs 的可见性延迟，或某个还没看见的持有者。
+    /// ★ 而这条测试正是为下一次它偶发时**留下现场**用的。
+    #[test]
+    fn 起不来时错误信息里带着_etxtbsy_现场() {
+        let _serial = exec_hook_guard();
+        let sb = Sandbox::new("busy");
+        let s = sb.script("exit 0");
+        // ★ 就是这一句造出 ETXTBSY：写句柄还开着，内核不许 exec 它。
+        let 写句柄 = std::fs::OpenOptions::new().write(true).open(&s).unwrap();
+        let h = ExecHook::new(&s, Duration::from_secs(10));
+        let e = rt().block_on(h.run("set", "a.com", "v")).unwrap_err();
+        drop(写句柄);
+
+        assert!(e.contains("起不来"), "{e}");
+        assert!(
+            e.contains("ETXTBSY 现场"),
+            "ETXTBSY 起不来时错误信息里没有现场 —— 取证没接上：{e}"
+        );
+        assert!(
+            e.contains(&format!("pid={}", std::process::id())),
+            "现场没把持有者指成本进程（而本进程正握着那个写句柄）：{e}"
+        );
     }
 }
