@@ -239,7 +239,7 @@ Runtime 增量通道 + 临时覆盖层 · 观测三件套（Prometheus 指标、
 | M | ✅ 观测 ②：**Prometheus 指标**。站点块里的终结指令 `metrics`（G116）· 文本格式自研零依赖（G117）· `no_site_match` 计数器结掉 D26（G118）· 站点标签取「实际匹配到的那条地址字面量」（G121）。取数点只有 `Record::finish` 一处，门在 [`tests/metrics/run.sh`](tests/metrics/run.sh) |
 | N | ✅ 观测 ③ + G8/G18 的另一半：**增量通道 → 临时覆盖层 → 只读 stats**，按这个顺序（G119）。`POST /load` 的 `overrides` 是必填参数（G120）· `reverse_proxy` 的选填 `id` 与同键共享格子（G125）· 指标族 `fulcrum_overrides_active`（G126）。门在 [`tests/stats/run.sh`](tests/stats/run.sh) 与 `tests/serve/` `tests/metrics/` 三处 |
 | M′ | ✅ **批 M 的收尾**（G122 的 TLS 那半 · G123 拆 `purge` · G124 的 `none` 判据 · 基数表那道门扩到读全行）。★ 三件都落在**已有的取数点**上，不动 fork、不新增监听器钩子 —— 它们结掉的是批 M 自己留下的口径问题。⚠ **新族与 `observability.md` 那张基数表必须同一笔改**：那道把表钉在 `FAMILIES` 上的门会把「表里有、代码里没有」判红，而它现在**逐字读到类型/来处/标签**（不只是族名）。★ G124 那一格顺带量出一条与直觉相反的机制，写在 [`observability.md`](docs/architecture/observability.md) 的 `status_class` 一节。 |
-| O | ⏳ **连接指标**（G122 的连接那半）：fork 第 15 处 + L4 TCP / L4 UDP / QUIC 三处，`Drop` 守卫，抓取时问活体。★ 有意**排在批 N 之后**：批 N 挡在 M2 打勾的路上，而这一格不挡。 |
+| O | ✅ **连接指标**（G122 的连接那半，D32 就此两半都落地）：`fulcrum_connections_total` / `_active{listen,entrypoint}`。**fork 第 15 处**（`ConnectionCounter` 接缝 + `ConnGuard`）覆盖 h1/h2 **与 admin**，L4 TCP / L4 UDP / QUIC 各自那条循环再接三处 —— 四处记进**同一个**族，抓取时问活体。★ 减一只有 `ConnGuard` 的 `Drop` 一个调用点；⚠ `l4_udp` 那一格数的是**会话**，从 `sessions.len()` 派生而**不是** `+1/-1`。★ 有意排在批 N 之后：批 N 挡在 M2 打勾的路上，而这一格不挡。 |
 
 > ⚠ **批的字母不代表顺序**：批 K 的号早于批 L 写定，而 owner 后来拍 **G112** 把观测插到了
 > 批 K 之前。**不改号** —— 改号会让已有引用一起变成错的。
