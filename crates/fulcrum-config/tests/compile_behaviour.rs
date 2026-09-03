@@ -1601,3 +1601,86 @@ fn 配了_weight_的配置序列化成对象并且能读回来() {
         serde_json::from_str(&j).expect("结构化配置是公开入口，必须读得回来");
     assert_eq!(back, cfg, "往返必须无损");
 }
+
+// ── `id` 的**取值域**：`[A-Za-z0-9_.-]`、长度 1–64（owner 拍板，R6 那三条小项之三）─
+//
+// ★ ★ ★ **真正的理由只有一条半**，⛔ 别把它说成「基数风险」——
+//   那是假话，而假理由会让下一个人把限制放宽回去（G126 明写
+//   `fulcrum_overrides_active` **无标签**，`id` 一个字都不进指标）：
+//   ① 硬的那条：本仓用 `<other>` / `<none>` / `<unknown>` / `<undeclared>` 当
+//      「取不到 / 兜底」的记号，靠的是**尖括号在真值里不可能出现** ——
+//      而在这条收紧之前，`id <none>` 是**合法**的；
+//   ② 软的那半条：可读性 —— `id` 里的换行会让 `/stats` 那一行在人眼里断成两行。
+// ⚠ 这是一次**收紧**：今天能装上的某些配置以后装不上。M4 还没到（没有版本号、
+//   没有兼容性承诺，PLAN.md §7）⇒ **要收就现在收最便宜**（owner 拍板）。
+
+#[test]
+fn id_里有空格或尖括号或超长都装不上() {
+    // ⚠ 三种形态各一条，⛔ 不合并：它们各自对应一个**不同的**失效现场，
+    //   而一条「只判其中一种」的实现在合并写法下照样绿。
+    for (什么, 值) in [
+        ("空格", "\"a b\"".to_string()),
+        ("尖括号（与兜底记号撞车）", "\"<none>\"".to_string()),
+        ("换行", "\"a\nb\"".to_string()),
+        ("中文", "\"网页池\"".to_string()),
+        ("65 个字符（上限 64）", format!("\"{}\"", "a".repeat(65))),
+    ] {
+        let src = format!("http://a.com {{\n  reverse_proxy x:1 {{\n    id {值}\n  }}\n}}\n");
+        let cs = codes(&src);
+        assert!(
+            cs.contains(&DiagCode::BAD_PROXY_ID),
+            "`id` 里的{什么}没被拦下：{cs:?}"
+        );
+    }
+}
+
+#[test]
+fn id_的诊断说得出合法的样子长什么样() {
+    // ★ 一条只说「不合法」的诊断，会让人一次次去试 —— 判据要求它**把值域说出来**。
+    let o = compile_str(
+        "t.Fulcrumfile",
+        "http://a.com {\n  reverse_proxy x:1 {\n    id \"<none>\"\n  }\n}\n",
+    );
+    let d = o
+        .diagnostics
+        .items()
+        .iter()
+        .find(|d| d.code == DiagCode::BAD_PROXY_ID)
+        .unwrap_or_else(|| panic!("该报 FUL-DSL-0043，实际：\n{}", o.render_diagnostics()));
+    let 全文 = format!("{} {} {:?} {:?}", d.message, d.label, d.help, d.note);
+    assert!(全文.contains("64"), "没说长度上限：{全文}");
+    assert!(
+        全文.contains("A-Za-z0-9_.-") || 全文.contains("字母") ,
+        "没说清允许哪些字符：{全文}"
+    );
+}
+
+#[test]
+fn 正常的_id_照旧装得上() {
+    // ★ ★ 反向那一半。⚠ 少了它，一个把**所有** `id` 都拒掉的实现在上面两条上全绿 ——
+    //   而它会让 `id` 这个功能整个变成死的。
+    for 名 in ["pool_web", "web-1", "a.b_c", "A", &"z".repeat(64)] {
+        let src = format!("http://a.com {{\n  reverse_proxy x:1 {{\n    id {名}\n  }}\n}}\n");
+        let cfg = ok(&src);
+        let StepBody::ReverseProxy { id, .. } = &cfg.sites[0].chain[0].body else {
+            panic!("应当是 reverse_proxy")
+        };
+        assert_eq!(id.as_deref(), Some(名), "`id {名}` 该照旧装得上");
+    }
+}
+
+#[test]
+fn 空的_id_仍然报它自己那条而不是被取值域顶掉() {
+    // ⚠ ⚠ 空串有它**自己的**诊断（FUL-DSL-0042）与自己的那段解释
+    //   （「`id \"\"` 与根本不写是同一个键」）——那句话是这条诊断的全部价值。
+    //   ⇒ 新的取值域判据不许把它顶成一句泛泛的「不合法」。
+    let cs = codes("http://a.com {\n  reverse_proxy x:1 {\n    id \"\"\n  }\n}\n");
+    assert!(
+        cs.contains(&DiagCode::EMPTY_PROXY_ID),
+        "空串该报它自己那条，而不是被取值域顶掉：{cs:?}"
+    );
+    assert!(
+        !cs.contains(&DiagCode::BAD_PROXY_ID),
+        "空串不该同时报两条：{cs:?}"
+    );
+}

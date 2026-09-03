@@ -469,6 +469,49 @@ pub const MIN_UPSTREAM_WEIGHT: u32 = 1;
 /// ★ 它与管理面 `set_weight` 的值域**是同一对常量**，不是两处各写一个 65535。
 pub const MAX_UPSTREAM_WEIGHT: u32 = 65_535;
 
+/// `reverse_proxy { id … }` 的长度上限（owner 拍板，R6 那三条小项之三）。
+pub const MAX_PROXY_ID_LEN: usize = 64;
+
+/// 这个 `id` 在取值域里吗：`[A-Za-z0-9_.-]`，长度 `1..=`[`MAX_PROXY_ID_LEN`]。
+///
+/// # ★ ★ ★ 收紧的理由只有一条半，⛔ 别把它记成「基数风险」
+///
+/// 1. **硬的那条 —— 与兜底记号撞车**：本仓用 `<other>` / `<none>` / `<unknown>` /
+///    `<undeclared>` 表示「取不到 / 兜底」，靠的是**尖括号在真值里不可能出现**。
+///    而在这条之前，`id <none>` 是合法的。
+/// 2. **软的那半条 —— 可读性**：`id` 里的换行会让 `/stats` 与日志上那一行
+///    在人眼里断成两行。
+///
+/// ⛔ **不是**指标基数：G126 明写 `fulcrum_overrides_active` **无标签**，
+/// `id` 一个字都不进指标。★ 一个假理由会让下一个人理直气壮地把限制放宽回去。
+///
+/// # ⚠ 空串在这里回 `false`，但它有**自己的**诊断
+///
+/// `id ""` 与「根本没写」是同一个键（[`crate::diag::DiagCode::EMPTY_PROXY_ID`]
+/// 那段解释是它的全部价值）⇒ 调用方要**先**判空串，⛔ 别让这条泛泛的
+/// 「不合法」把那句话顶掉。
+///
+/// # ⚠ 两条路都要调它
+///
+/// DSL 那条在 `compile.rs`，**结构化配置**那条（`POST /load`，G11 的公开入口，
+/// 不经过 `fulcrum compile`）在 `fulcrum-runtime` 建图时。
+/// ★ 两处调的是**这一个**函数，不是两份手写的平行逻辑 —— 与
+/// [`MIN_UPSTREAM_WEIGHT`] / [`MAX_UPSTREAM_WEIGHT`] 同一条纪律。
+pub fn is_valid_proxy_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_PROXY_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'-')
+}
+
+/// 那句「合法的 id 长什么样」的话，**只有一份**。
+///
+/// ★ 两条路的诊断/装载错误都拼它 —— ⛔ 两处各写一句，改的时候必定只改一处。
+pub fn proxy_id_shape() -> String {
+    format!("合法的 `id` 只含 `A-Za-z0-9_.-`，长度 1–{MAX_PROXY_ID_LEN}（例 `pool_web` / `web-1`）")
+}
+
 /// 一条 `reverse_proxy` 上的一个上游：地址 + **配置权重**（**M2 批 N**，裁决 R1/R2）。
 ///
 /// # ★ ★ 序列化契约（G11 的公开入口，两个方向都钉住）
