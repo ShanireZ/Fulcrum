@@ -121,7 +121,7 @@ h3 是 `H3Session`（拿 `quiche::Connection`）。
 
 ★ `tls_version` 恒为 `TLSv1.3` **不是猜的**：RFC 9001 §4.2 写死了 QUIC 只能用 TLS 1.3。
 
-> ✅ **D27 与 D28 一起结案** —— 落点是 **fork 改动 14**
+> ✅ **D27 与 D28 一起结案**（`PLAN.md` §10 **G128**）—— 落点是 **fork 改动 14**
 > （`SslDigest` 直接多两格 `sni` / `alpn`）。⚠ 顺带把 D28 那趟「每条握手多一次挂起/恢复」
 > 也消掉了：那两格不再需要 `TlsAccept` 回调。
 

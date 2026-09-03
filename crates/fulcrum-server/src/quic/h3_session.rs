@@ -95,7 +95,7 @@ pub const NOT_HONORED: &[&str] = &[
     "enable_retry_buffering",
     "retry_buffer_truncated",
     "get_retry_buffer",
-    // ★ ★ ★ `digest` / `digest_mut` **于（§10，D27 结案）
+    // ★ ★ ★ `digest` / `digest_mut` **于 G128（§10，D27 结案）
     //   从这张表上删掉了** —— 不是「让门闭嘴」，是它们**真的被实现出来了**。
     //   ⚠ 判据：`不兑现承诺的那一组回安全值而不是_panic` 现在断言 `digest().is_some()`，
     //     而访问日志那一格（`tests/log/run.sh`）在**真的 h3 请求**上量 `tls_*` 三格。
@@ -132,7 +132,7 @@ pub struct H3Session {
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     drain_timeout: Option<Duration>,
-    /// 这条 QUIC 连接的 TLS 摘要（**，D27 结案**）。
+    /// 这条 QUIC 连接的 TLS 摘要（**G128，D27 结案**）。
     ///
     /// ★ 由 [`quic_digest`] 在**连接**那一层造一份，每条流克隆一个
     /// （`Digest` 里那份 `SslDigest` 是 `Arc`，克隆只是一次引用计数）。
@@ -140,7 +140,7 @@ pub struct H3Session {
     digest: Option<Digest>,
 }
 
-/// 给一条 QUIC 连接造一份 `Digest`（**，D27 结案**）。
+/// 给一条 QUIC 连接造一份 `Digest`（**G128，D27 结案**）。
 ///
 /// # ★ ★ 三格从哪来，第四格为什么没有
 ///
@@ -737,7 +737,7 @@ mod tests {
         );
     }
 
-    /// `digest` 真的被兑现了（**，D27 结案**），而不是「从名单里删掉了名字」。
+    /// `digest` 真的被兑现了（**G128，D27 结案**），而不是「从名单里删掉了名字」。
     ///
     /// ★ ★ 这一条是上面那道门的**另一半**：门只管「执行链别调没兑现的」，
     /// 而**「它到底兑现没有」得由这里说**。⚠ 少了它，一次「把名字从 NOT_HONORED 删掉

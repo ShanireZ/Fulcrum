@@ -192,7 +192,7 @@ pub async fn run(
         }
     };
     let mut h3: Option<quiche::h3::Connection> = None;
-    // ★ ★ 这条连接的 TLS 摘要（**，D27 结案**）——**每条连接算一次**，
+    // ★ ★ 这条连接的 TLS 摘要（**G128，D27 结案**）——**每条连接算一次**，
     //   逐流克隆（里面那份 `SslDigest` 是 `Arc`，克隆只是一次引用计数）。
     //   ⚠ 在 h3 层建起来的那一刻取，不能更早：握手没完时 `server_name()` /
     //     `application_proto()` 还没有值，而**那时取到的空值会被原样带进日志**。
