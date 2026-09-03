@@ -1681,7 +1681,8 @@ async fn write_with_headers(
     }
 }
 
-/// 把装载结论打出来：回落路由（G52）与未接线能力（[`fulcrum_runtime::UNWIRED`]）。
+/// 把装载结论打出来：生效的默认值（G52 的接班人）、自环、
+/// 未接线能力（[`fulcrum_runtime::UNWIRED`]）。
 ///
 /// ★ 装载时说清楚，而不是等出事再查——回落是真实的性能与运维成本，
 /// 未接线的能力是真实的功能缺口，两者都不该需要另外去问才知道。
@@ -1775,6 +1776,18 @@ pub fn log_load_summary(
     //   与回落层那条「死配置」是同一个形状（那一层没了，教训留下）。
     if !rt.cache_settings().is_empty() && rt.all_upstreams().is_empty() {
         warn!("★ 配了 `cache`，而这份配置里**没有任何 reverse_proxy** —— 缓存不会生效");
+    }
+    // ★ ★ ★ **自环：`reverse_proxy` 指回枢衡自己**（M2 批 G 从回落层挪过来）。
+    //
+    // ⚠ ⚠ 这几句话此前**算了却没人说**：`Runtime::self_loop_warnings` 在建图那一刻
+    //   就算好了，而全仓唯一的读者是单测 ⇒ 「算得对」与「运维看得见」在同一个字段上
+    //   长得一模一样，而现场读到的是一片安静。★ `fulcrum-runtime` 有意不依赖 `log`
+    //   （它返回话、不自己打印），所以「说出来」这一步只能落在这里。
+    // ⚠ **是 warn 不是 error**：指回自己可能是有意的（自己终止 TLS 再回自己的明文口）
+    //   ⇒ 说出来，但不替用户拒绝。判据在 `tests/serve/run.sh` 的 [4/4]（含反向那一半：
+    //   不自环的上游不许被说进去），单测那侧钉的是扁平站点、这里钉的是容器下钻。
+    for w in &rt.self_loop_warnings {
+        warn!("{w}");
     }
     for (k, why) in rt.unwired_in_use(cfg) {
         warn!("⏳ `{k}` 这一批还没接线：{why}");

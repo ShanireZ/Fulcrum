@@ -240,6 +240,14 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
             health_timeout 1s
         }
     }
+    # ★ ★ ★ **自环：一个装在容器里的 `reverse_proxy` 指回本进程自己的监听口。**
+    #   ⚠ 有意**嵌在 `handle` arm 里**：`crates/fulcrum-runtime/tests/fallback.rs`
+    #   那条单测用的是**扁平**站点（`:9999 { reverse_proxy 127.0.0.1:9999 }`），
+    #   于是「容器要下钻才找得到」这一半在任何一层都没有判据。
+    #   ⛔ **不许给这条路径打真流量** —— 真打进去就是一个无限转发循环。
+    handle /selfloop/* {
+        reverse_proxy 127.0.0.1:PROXY_PORT
+    }
     handle {
         respond 200 root
     }
@@ -1545,6 +1553,43 @@ if grep -qF 'default_sni secure.example' "$WORK/proxy.log"; then
 else
   fail "装载日志没说 default_sni 生效到了哪个名字"
   grep -i 'SNI' "$WORK/proxy.log" >&2 || true
+fi
+# ── ★ ★ ★ 自环：容器里的 `reverse_proxy` 指回自己，装载日志必须说出来 ────────
+#
+# ⚠ ⚠ 这条警告在 `fulcrum-runtime` 里算了很久，而**一个消费者都没有**：
+#   `Runtime::self_loop_warnings` 全仓唯一的读者是单测，`log_load_summary`
+#   一个字都不说。⇒ 端到端这一层此前的读数是「算得对」，而运维现场读到的是
+#   **一片安静** —— 正是本仓那条老形状：*一个用来「出了事你能知道」的东西，
+#   自己不说话时没人知道。*
+# ★ 与单测分工：单测钉**扁平**站点的判定，这一格钉**容器下钻**（夹具里那条
+#   `/selfloop/*` 嵌在 `handle` arm 里）+ **它真的被打印出来了**。
+SELFLOOP_LINES=$(grep -F '转发回自己' "$WORK/proxy.log" || true)
+if [ -n "$SELFLOOP_LINES" ]; then
+  ok "★ 装载日志说出了自环（容器里的 reverse_proxy 指回本进程的监听口）"
+else
+  fail "装载日志一个字都没提自环 —— 而夹具里 /selfloop/* 指着 127.0.0.1:$PROXY_PORT"
+fi
+# ★ 点得出是**哪个上游**：一句「有自环」而不说是谁，运维得自己翻整份配置。
+if printf '%s' "$SELFLOOP_LINES" | grep -qF "127.0.0.1:$PROXY_PORT"; then
+  ok "★ 自环警告点名了那个上游地址"
+else
+  fail "自环警告没说是哪个上游：$SELFLOOP_LINES"
+fi
+# ★ ★ 反向那一半：**不自环的上游不许出现在这条警告里。**
+#   ⚠ 少了它，一个「对每条 reverse_proxy 都报一句」的实现在上面两条上全绿，
+#   而现场是每份正常配置都挨一堆假警告 —— 而假警告会把真的那条一起埋掉
+#   （这一节上面那条「已接线的能力不许出现在未接线公告里」守的是同一件事）。
+if printf '%s' "$SELFLOOP_LINES" | grep -qF "127.0.0.1:$UP_PORT"; then
+  fail "自环警告把不自环的上游 127.0.0.1:$UP_PORT 也说进去了：$SELFLOOP_LINES"
+else
+  ok "★ 不自环的上游没有被说成自环（没有假警告）"
+fi
+# ★ 恰好一条：夹具里只有一处自环，多出来的每一条都是噪音。
+SELFLOOP_N=$(printf '%s' "$SELFLOOP_LINES" | grep -cF '转发回自己' || true)
+if [ "$SELFLOOP_N" = "1" ]; then
+  ok "★ 自环警告恰好一条（夹具里就一处自环）"
+else
+  fail "自环警告有 $SELFLOOP_N 条，夹具里只有一处自环：$SELFLOOP_LINES"
 fi
 
 echo
