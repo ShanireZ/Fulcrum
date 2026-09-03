@@ -269,6 +269,8 @@ pub struct QuicListenerService {
     /// ★ 取的是**换代 socket 的父目录** —— 两者本来就是同一件事的两半
     /// （都只在升级窗口里有意义），⇒ 一个能换代的部署，这个目录必然可写。
     run_dir: std::path::PathBuf,
+    /// 这个监听器的连接计数格（**M2 批 O**）。★ 与 HTTP 那一侧共用同一个 `ConnGuard`。
+    conn: crate::conn_stats::BoundConn,
 }
 
 impl QuicListenerService {
@@ -280,7 +282,10 @@ impl QuicListenerService {
         gen_id: GenId,
         handler: Arc<dyn H3RequestHandler>,
         run_dir: std::path::PathBuf,
+        conn_reg: Arc<crate::conn_stats::ConnRegistry>,
     ) -> Self {
+        // ★ `bind()` 顺手声明这一格 ⇒ 从第一秒起就有一条 `0` 的样本。
+        let conn = conn_reg.bind(crate::conn_stats::Entrypoint::Quic, &bind);
         QuicListenerService {
             fd_key: format!("fulcrum-quic:{bind}"),
             name: format!("fulcrum-quic-{bind}"),
@@ -291,6 +296,7 @@ impl QuicListenerService {
             resolver,
             handler,
             run_dir,
+            conn,
         }
     }
 }
@@ -392,6 +398,7 @@ impl Service for QuicListenerService {
             config,
             self.handler.clone(),
             relay,
+            Some(self.conn.clone()),
         )
         .await;
     }
@@ -483,6 +490,9 @@ pub async fn serve(
     mut config: quiche::Config,
     handler: Arc<dyn H3RequestHandler>,
     relay: Option<Relay>,
+    // 这个监听器的连接计数格（**M2 批 O**）。`None` = 不数（单测走这条）。
+    // ⚠ 名字不叫 `conn`：这个函数里 `conn` 已经是**一条 quiche 连接**了。
+    conn_stats_slot: Option<crate::conn_stats::BoundConn>,
 ) {
     let local: SocketAddr = match sock.local_addr() {
         Ok(a) => a,
@@ -656,14 +666,16 @@ pub async fn serve(
                             }
                         };
                         let (tx, rx) = mpsc::channel(CONN_QUEUE);
-                        let handle = tokio::spawn(h3_conn::run(
-                            conn,
-                            sock.clone(),
-                            rx,
-                            local,
-                            peer,
-                            handler.clone(),
-                        ));
+                        // ★ 连接计数（**M2 批 O**）：包一层而不改 `h3_conn::run` 的签名。
+                        let g = conn_stats_slot.as_ref().map(|b| b.guard());
+                        let sock_c = sock.clone();
+                        let handler_c = handler.clone();
+                        let handle = tokio::spawn(async move {
+                            // ⚠ ⚠ **必须绑名字**：写成 `let _ = g;` 会当场 drop，
+                            //   于是 active 恒为 0 而 total 照涨，且不会有东西红。
+                            let _g = g;
+                            h3_conn::run(conn, sock_c, rx, local, peer, handler_c).await
+                        });
                         let key = scid.to_vec();
                         // 首包要立刻喂给它，否则握手不会开始。
                         let _ = tx.try_send((pkt.to_vec(), peer, local));
@@ -1281,6 +1293,7 @@ mod tests {
             // ★ 这两条端到端只验 h3 本体，不验换代 ⇒ 不给转交口。
             //   ⚠ 而「没有转交口时 select! 不许 panic」正好被它们顺带钉住。
             None,
+            None,
         ));
 
         let got = tokio::time::timeout(Duration::from_secs(20), one_h3_request(server, "/hi?x=1"))
@@ -1465,6 +1478,7 @@ mod tests {
             Arc::new(RetryKey::random()),
             server_config(),
             Arc::new(EchoBodyHandler),
+            None,
             None,
         ));
 

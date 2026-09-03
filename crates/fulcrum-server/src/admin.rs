@@ -2392,6 +2392,8 @@ http://pool.example:8080 {
             runtime: Some(a.rt.clone()),
             resolver: None,
             acme: None,
+            // ★ 本条判据只对上游那两个族，连接那两个族与它无关 ⇒ 不接。
+            conn: None,
         });
         let metrics_inflight =
             metrics_gauge_value(&metrics_text, "fulcrum_upstream_inflight", "10.80.0.1:1");

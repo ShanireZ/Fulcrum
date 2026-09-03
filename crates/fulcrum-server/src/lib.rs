@@ -1911,10 +1911,19 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     // ⚠ `acme` 这一格可以是 `None`（这份配置里没有自动签发）—— 那时
     //   `fulcrum_acme_issue_total` 只出 HELP/TYPE、不出样本，而**不是整族消失**：
     //   整族消失会让「没接上」与「没数据」在抓取端看起来一模一样。
+    // ── 连接计数的登记处（**M2 批 O**，G122 的连接那半）────────────────────────
+    //
+    // ★ ★ 它的格子由**创建服务的那一行**顺手声明（`view` / `guard_for` 都会声明）——
+    //   ⛔ 有意不在这里先枚举一遍监听器：那会是**第二条枚举路径**，而
+    //   `Runtime::all_proxy_targets` 的文档正是为这个形状写的警告
+    //   （「⚠ ⚠ 有意不自己再走一遍……走法分家的表现是某条在某一张清单里不存在」）。
+    let conn_reg = conn_stats::ConnRegistry::new();
+
     metrics::register_live(metrics::LiveSources {
         runtime: Some(shared.clone()),
         resolver: Some(plan.resolver.clone()),
         acme: acme.clone(),
+        conn: Some(conn_reg.clone()),
     });
 
     // ── ★ ★ 本代的身份（**G109 ①**）——**一个进程一把，不是一个端口一把** ─────
@@ -1962,6 +1971,14 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
             .set_proxy_protocol(proxy_protocol_policy.clone());
 
         let bind = format!("{}:{port}", opts.bind_host);
+
+        // ── 连接计数（**M2 批 O**，fork 改动 15 的接缝）─────────────────────────
+        //
+        // ★ `view()` 顺手**声明**这一格 ⇒ 这个监听器从进程起来的第一秒就有一条 `0`
+        //   的样本，而不是「有连接了才出现」。⚠ 那个区分正是「我配了这个端口怎么
+        //   没流量」要靠的东西：没有 series 与「有 series 但值是 0」在抓取端分不开。
+        svc.endpoints()
+            .set_connection_counter(conn_reg.view(conn_stats::Entrypoint::Http, &bind));
         if is_tls {
             // ⚠ ⚠ ★ **别把这一行换成 `TlsSettings::with_callbacks`「顺手拿点什么」。**
             //   带回调时上游走 `handshake_with_callback()`，每次握手都要多走一趟
@@ -2027,6 +2044,7 @@ acme-tls/1";
                 // ★ ★ **M2 批 K**：换代转交 socket 落在**换代 socket 的父目录**里。
                 //   ⚠ 那是一条推导，所以 `run_dir_of` 有自己的判据 —— 见它的文档。
                 quic::listener::run_dir_of(&opts.upgrade_sock),
+                conn_reg.clone(),
             ));
         }
     }
@@ -2086,6 +2104,7 @@ acme-tls/1";
                         &l.listen,
                         bind,
                         opts.upgrade,
+                        conn_reg.clone(),
                     ));
                 }
                 fulcrum_runtime::L4Proto::Udp => {
@@ -2094,6 +2113,7 @@ acme-tls/1";
                         &l.listen,
                         bind,
                         opts.upgrade,
+                        conn_reg.clone(),
                     ));
                 }
             }
@@ -2156,6 +2176,11 @@ acme-tls/1";
                     Some(plan.resolver.clone()),
                 );
                 let mut svc = ListeningService::new("fulcrum-admin".to_string(), app);
+                // ★ 连接计数（**M2 批 O**）：管理面单列一格 `entrypoint="admin"`，
+                //   ⛔ 不并进 `http` —— 跨平面求和之前先按 entrypoint 过滤，
+                //   是抓取端唯一能把数据面与管理面分开的办法。
+                svc.endpoints()
+                    .set_connection_counter(conn_reg.view(conn_stats::Entrypoint::Admin, &path));
                 // ★ 0600：**这就是管理面的全部访问控制**（G14：交给文件系统 ACL）。
                 svc.add_uds(
                     &path,

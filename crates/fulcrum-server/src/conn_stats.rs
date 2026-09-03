@@ -155,30 +155,16 @@ impl ConnRegistry {
         })
     }
 
-    /// 给我们自己那三条循环用：声明这一格，并直接拿一个守卫。
+    /// 给我们自己那三条循环用：**声明这一格**，并返回一个已经绑好 `(ep, listen)` 的句柄。
     ///
-    /// ★ 与 HTTP 那条路**共用同一个 [`ConnGuard`] 类型** ⇒ 减一仍然只有那一处。
-    pub fn guard_for(self: &Arc<Self>, ep: Entrypoint, listen: &str) -> ConnGuard {
-        let v = self.view(ep, listen);
-        ConnGuard::new(v, Arc::from(listen))
-    }
-
-    /// 把某一格的 `active` **设成**这个数（⛔ 不是加上）。
-    ///
-    /// ★ ★ 只服务 [`Entrypoint::L4Udp`]：那一格是从会话表 `sessions.len()` **派生**的，
-    /// 而 `sessions.len()` 本身就是权威 —— 在旁边再记一份 `+1/-1` 会让清扫、
-    /// 到上限被拒、停机不再收包这三条路各需要记得减一。
-    pub fn set_active(&self, ep: Entrypoint, listen: &str, n: usize) {
-        self.cell(ep, listen)
-            .active
-            .store(n as i64, Ordering::Relaxed);
-    }
-
-    /// 只把某一格的 `total` 加一（⛔ 不动 `active`）。
-    ///
-    /// ★ 只服务 [`Entrypoint::L4Udp`] 的「新建了一条会话」那一处。
-    pub fn bump_total(&self, ep: Entrypoint, listen: &str) {
-        self.cell(ep, listen).total.fetch_add(1, Ordering::Relaxed);
+    /// ★ ★ 绑一次、用很多次 ⇒ 「声明的那一格」与「写入的那一格」**在结构上是同一个**，
+    /// ⛔ 不会出现「声明了 A 却往 B 上写」那种在今天的配置上全绿的错法。
+    pub fn bind(self: &Arc<Self>, ep: Entrypoint, listen: &str) -> BoundConn {
+        BoundConn {
+            counter: self.view(ep, listen),
+            cell: self.declare(ep, listen),
+            listen: Arc::from(listen),
+        }
     }
 
     /// 渲染那一刻的读数，**按键排序**（`BTreeMap` 天然如此）。
@@ -197,6 +183,37 @@ impl ConnRegistry {
                 )
             })
             .collect()
+    }
+}
+
+/// 已经绑好 `(entrypoint, listen)` 的一格 —— 我们自己那三条 accept 循环拿的是它。
+///
+/// ★ 它与 fork 那条路**共用同一个 [`ConnGuard`]** ⇒ 减一仍然只有那一个调用点。
+#[derive(Clone)]
+pub struct BoundConn {
+    counter: Arc<dyn ConnectionCounter>,
+    cell: Arc<ConnCell>,
+    listen: Arc<str>,
+}
+
+impl BoundConn {
+    /// 拿一个守卫：构造即 `+1`，`Drop` 即 `-1`。
+    ///
+    /// ⚠ ⚠ 调用方**必须把它绑到一个有名字的变量上**（`let _g = …;`）——
+    /// 写成裸 `let _ = …;` 会当场 drop，于是 `active` 恒为 0 而 `total` 照涨，
+    /// **且不会有任何东西红**。
+    pub fn guard(&self) -> ConnGuard {
+        ConnGuard::new(self.counter.clone(), self.listen.clone())
+    }
+
+    /// 把 `active` **设成**这个数（⛔ 不是加上）。★ 只服务 L4 UDP 的会话表派生。
+    pub fn set_active(&self, n: usize) {
+        self.cell.active.store(n as i64, Ordering::Relaxed);
+    }
+
+    /// 只把 `total` 加一（⛔ 不动 `active`）。★ 只服务 L4 UDP 的「新建了一条会话」。
+    pub fn bump_total(&self) {
+        self.cell.total.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -297,9 +314,9 @@ mod tests {
         //   ⛔ 不是「加上这个数」。累加的话它只涨不降 —— 而那正是「不用 +1/-1」
         //   要躲开的东西，写成累加等于把躲开的坑原样挖回来。
         let reg = ConnRegistry::new();
-        reg.view(Entrypoint::L4Udp, "0.0.0.0:53");
-        reg.set_active(Entrypoint::L4Udp, "0.0.0.0:53", 3);
-        reg.set_active(Entrypoint::L4Udp, "0.0.0.0:53", 1);
+        let b = reg.bind(Entrypoint::L4Udp, "0.0.0.0:53");
+        b.set_active(3);
+        b.set_active(1);
         assert_eq!(reg.snapshot()[0].3, 1);
     }
 
@@ -308,9 +325,9 @@ mod tests {
         // ★ UDP 的 total 是事件点（新建会话那一处），而 active 是派生的 ——
         //   两者有意走不同的路，这一条把「别顺手把 active 也加了」钉住。
         let reg = ConnRegistry::new();
-        reg.view(Entrypoint::L4Udp, "0.0.0.0:53");
-        reg.bump_total(Entrypoint::L4Udp, "0.0.0.0:53");
-        reg.bump_total(Entrypoint::L4Udp, "0.0.0.0:53");
+        let b = reg.bind(Entrypoint::L4Udp, "0.0.0.0:53");
+        b.bump_total();
+        b.bump_total();
         let s = reg.snapshot();
         assert_eq!(s[0].2, 2, "total 该涨 2");
         assert_eq!(s[0].3, 0, "active 一点都不该动");

@@ -71,10 +71,21 @@ pub struct TcpProxyService {
     /// 分成「首次启动，正常」与「升级时交接失败，必须报错」两种。
     upgrading: bool,
     name: String,
+    /// 这个监听器的连接计数格（**M2 批 O**）。★ 与 HTTP 那一侧**共用同一个** `ConnGuard`。
+    conn: crate::conn_stats::BoundConn,
 }
 
 impl TcpProxyService {
-    pub fn new(shared: Arc<SharedRuntime>, listen: &str, bind: String, upgrading: bool) -> Self {
+    pub fn new(
+        shared: Arc<SharedRuntime>,
+        listen: &str,
+        bind: String,
+        upgrading: bool,
+        conn_reg: Arc<crate::conn_stats::ConnRegistry>,
+    ) -> Self {
+        // ★ `bind()` 顺手**声明**这一格 ⇒ 这个监听器从第一秒起就有一条 `0` 的样本，
+        //   而不是「有连接了才出现」。
+        let conn = conn_reg.bind(crate::conn_stats::Entrypoint::L4Tcp, &bind);
         Self {
             shared,
             listen: listen.to_string(),
@@ -82,6 +93,7 @@ impl TcpProxyService {
             name: format!("fulcrum-l4-tcp-{bind}"),
             bind,
             upgrading,
+            conn,
         }
     }
 }
@@ -759,7 +771,14 @@ impl Service for TcpProxyService {
                             }
                             let shared = self.shared.clone();
                             let listen = self.listen.clone();
-                            tokio::spawn(handle_conn(shared, listen, sock));
+                            // ★ 连接计数（**M2 批 O**）：包一层而不改 `handle_conn` 的签名。
+                            let g = self.conn.guard();
+                            tokio::spawn(async move {
+                                // ⚠ ⚠ **必须绑名字**：写成 `let _ = g;` 会当场 drop，
+                                //   于是 active 恒为 0 而 total 照涨，且不会有东西红。
+                                let _g = g;
+                                handle_conn(shared, listen, sock).await
+                            });
                         }
                         Err(e) => {
                             error!("[l4] accept 出错：{e}");
@@ -921,10 +940,20 @@ pub struct UdpProxyService {
     fd_key: String,
     upgrading: bool,
     name: String,
+    /// 这个监听器的连接计数格（**M2 批 O**）。⚠ UDP 那一格数的是**会话**，且是从
+    /// `sessions.len()` **派生**的 —— 见 `run()` 里循环开头那一行。
+    conn: crate::conn_stats::BoundConn,
 }
 
 impl UdpProxyService {
-    pub fn new(shared: Arc<SharedRuntime>, listen: &str, bind: String, upgrading: bool) -> Self {
+    pub fn new(
+        shared: Arc<SharedRuntime>,
+        listen: &str,
+        bind: String,
+        upgrading: bool,
+        conn_reg: Arc<crate::conn_stats::ConnRegistry>,
+    ) -> Self {
+        let conn = conn_reg.bind(crate::conn_stats::Entrypoint::L4Udp, &bind);
         Self {
             shared,
             listen: listen.to_string(),
@@ -932,6 +961,7 @@ impl UdpProxyService {
             name: format!("fulcrum-l4-udp-{bind}"),
             bind,
             upgrading,
+            conn,
         }
     }
 }
@@ -1071,6 +1101,17 @@ impl Service for UdpProxyService {
         let mut last_cap_warn: Option<Instant> = None;
 
         loop {
+            // ── 连接计数：`active` 从会话表**派生**（**M2 批 O**）──────────────
+            //
+            // ★ ★ ⛔ **不在旁边再记一份 `+1/-1`**：`sessions.len()` 本身就是权威，
+            //   而另记一份会让清扫 `abort()`、到上限被拒、停机不再收包这三条路
+            //   各需要记得减一 —— 那正是 D18/G66 那个分家形状。
+            // ⚠ ⚠ **写在循环体开头而不是末尾**：下面 recv 那一支有七八处 `continue`，
+            //   而 `continue` **跳过循环体末尾** ⇒ 写在末尾的话，「到上限被拒」
+            //   「找不到上游」「建 socket 失败」这些路径上它根本不执行。
+            // ★ 开头则**每一轮迭代必经**；而阻塞在 `select!` 期间 `sessions` 不可能变
+            //   （这个循环是它唯一的改写者）⇒ 这个读数是**精确**的，不是陈旧的。
+            self.conn.set_active(sessions.len());
             tokio::select! {
                 _ = shutdown.changed() => {
                     // ★ ★ ★ **这一支是 UDP 与 TCP 最重要的差别**：停机信号一到就
@@ -1168,6 +1209,9 @@ impl Service for UdpProxyService {
                     let sock = session.up.clone();
                     let task = session.task.abort_handle();
                     debug!("[l4] {}：新会话 {peer} → {}（UDP）", self.bind, up.addr);
+                    // ★ `total` 是**事件点**（这一处），而 `active` 是派生的 ——
+                    //   两者有意走不同的路：前者要累计、后者要与会话表恒等。
+                    self.conn.bump_total();
                     if sessions.admit(peer, session, now) == UdpAdmit::AtCapacity {
                         // ⚠ 走不到（上面已经查过上限），但**不假设**：真到了这里
                         //   就把刚起的任务收掉，否则它会成为一个没人认领的 fd。

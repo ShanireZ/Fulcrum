@@ -71,6 +71,16 @@ TLS_PORT=${TLS_PORT:-9922}
 # ⚠ 它不是枢衡的监听器，但它照样占着一个端口 ⇒ 进 AGENTS.md 指的那张端口表，
 #   也进 cleanup 那份「走的时候还回去了没有」的单子。
 ABORT_UP_PORT=${ABORT_UP_PORT:-9923}
+# ── 连接指标（M2 批 O，G122 的连接那半）用的 L4 两格 ────────────────────────
+# ★ ★ 为什么 l4 也要摆进本场景：这个族的核心断言是「**四个互不相干的 accept 循环
+#   都记进了同一个族，而 entrypoint 分得开**」—— 那句话只有在同一个进程里同时有
+#   五种入口（http / admin / quic / l4_tcp / l4_udp）时才验得了。拆到 tests/l4 去，
+#   它就永远验不到。
+# ★ L4 TCP 的上游复用 $ABORT_UP_PORT（那个慢上游是个 TCP 监听器，透传够用）；
+#   UDP 另起一个回显上游。
+L4T_PORT=${L4T_PORT:-9924}
+L4U_PORT=${L4U_PORT:-9925}
+UDPUP_PORT=${UDPUP_PORT:-9926}
 LOGFILE="$WORK/access.json"
 EXPO="$WORK/expo.py"
 # 抓取路径。★ 它同时是「站点 B 上打的同一路径」。
@@ -112,7 +122,7 @@ cleanup() {
   # ⚠ 本格不碰 `:80`：前四个站点都是 `http://`，而 `auto_https` 的站点 T 由全局
   #   `auto_http_redirect false` 按住（见文件头）⇒ 单子里没有它。
   local p leaked=""
-  for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$ABORT_UP_PORT"; do
+  for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$ABORT_UP_PORT" "$L4T_PORT" "$L4U_PORT" "$UDPUP_PORT"; do
     waited=0
     while port_listening "$p" && [ "$waited" -lt 30 ]; do
       sleep 0.1
@@ -441,14 +451,16 @@ PY
 # ★ ★ 三条自证：端口没被占（否则量的是别人的服务）；访问日志此刻不存在
 #   （否则「多了几行」分不出「刚写的」与「本来就有的」）；读取端量得了东西。
 echo "=== [0/8] 基线：端口空着 · 日志文件还不存在 · exposition 读取端自证 ==="
-for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$ABORT_UP_PORT"; do
+for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$L4T_PORT" "$ABORT_UP_PORT" "$UDPUP_PORT"; do
   if port_listening "$p"; then
     echo "METRICS TESTS FAILED: 端口 $p 已经被占，本次结果不可采信。" >&2
     exit 1
   fi
 done
 # ⛔ 不在这句话里写个数：那个计数一道门都没有，加一个端口时它当场过期而不会红。
-ok "本格用到的端口都空着（$A_PORT $BC_PORT $TLS_PORT $ABORT_UP_PORT）"
+# ⚠ $L4U_PORT 与 $UDPUP_PORT 是 UDP，`port_listening` 是 TCP 探测 ⇒ 探不到它们，
+#   基线里有意不查（查了也恒为「空着」，那是一条读起来成立而实际空转的断言）。
+ok "本格用到的 TCP 端口都空着（$A_PORT $BC_PORT $TLS_PORT $L4T_PORT $ABORT_UP_PORT $UDPUP_PORT）"
 if [ -e "$LOGFILE" ]; then
   echo "METRICS TESTS FAILED: $LOGFILE 已经存在，本次结果不可采信。" >&2
   exit 1
@@ -535,6 +547,19 @@ a.example:$TLS_PORT {
     }
     respond 200 "t-ok"
 }
+
+# ★ ★ L4 两格（**M2 批 O**）：连接族要在同一个进程里同时看到五种入口。
+# ⚠ ⚠ 它必须出现在**三份**配置里 —— 「POST /load」按 (协议, 监听地址原样) 比 L4
+#   监听器集，少写一份就是 409，而红会落在 overrides 那一节、指向完全错误的方向。
+# ⚠ 这个 heredoc 不带引号（要展开端口变量）⇒ 注释里一律用「」，别用反引号。
+l4 {
+    tcp :$L4T_PORT {
+        proxy 127.0.0.1:$ABORT_UP_PORT
+    }
+    udp :$L4U_PORT {
+        proxy 127.0.0.1:$UDPUP_PORT
+    }
+}
 CONF
 
 # 一份**没有任何来源匹配器**的 metrics 配置 —— 只用来证那条诊断真的会说话。
@@ -553,14 +578,14 @@ RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/a.Fulcrumfile" \
   > "$WORK/a.log" 2>&1 &
 PIDS+=($!)
 
-for p in "$A_PORT" "$BC_PORT" "$TLS_PORT"; do
+for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$L4T_PORT"; do
   wait_port "$p" || {
     echo "METRICS TESTS FAILED: 端口 $p 起不来。日志：" >&2
     cat "$WORK"/*.log >&2
     exit 1
   }
 done
-ok "监听都起来了（$A_PORT $BC_PORT $TLS_PORT）"
+ok "TCP 监听都起来了（$A_PORT $BC_PORT $TLS_PORT $L4T_PORT）"
 
 if [ -f "$LOGFILE" ] && [ "$(lines)" = "0" ]; then
   ok "访问日志装载时就开好了，此刻 0 行（一致性门的基线）"
@@ -620,7 +645,8 @@ FAMILIES_EXPECTED="fulcrum_requests_total fulcrum_request_duration_seconds
 fulcrum_cache_events_total fulcrum_cache_purged_entries_total
 fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy
 fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info
-fulcrum_overrides_active fulcrum_tls_requests_total"
+fulcrum_overrides_active fulcrum_tls_requests_total
+fulcrum_connections_total fulcrum_connections_active"
 for f in $FAMILIES_EXPECTED; do
   if expo meta "$S1" "$f"; then
     ok "族 $f 的 HELP/TYPE 都在"
@@ -1182,6 +1208,19 @@ a.example:$TLS_PORT {
     }
     respond 200 "t-ok"
 }
+
+# ★ ★ L4 两格（**M2 批 O**）：连接族要在同一个进程里同时看到五种入口。
+# ⚠ ⚠ 它必须出现在**三份**配置里 —— 「POST /load」按 (协议, 监听地址原样) 比 L4
+#   监听器集，少写一份就是 409，而红会落在 overrides 那一节、指向完全错误的方向。
+# ⚠ 这个 heredoc 不带引号（要展开端口变量）⇒ 注释里一律用「」，别用反引号。
+l4 {
+    tcp :$L4T_PORT {
+        proxy 127.0.0.1:$ABORT_UP_PORT
+    }
+    udp :$L4U_PORT {
+        proxy 127.0.0.1:$UDPUP_PORT
+    }
+}
 CONF
 "$BIN" compile "$WORK/ov.Fulcrumfile" > "$WORK/ov.json" 2>/dev/null || {
   echo "METRICS TESTS FAILED: compile ov.Fulcrumfile 失败" >&2
@@ -1246,6 +1285,19 @@ a.example:$TLS_PORT {
         level info
     }
     respond 200 "t-ok"
+}
+
+# ★ ★ L4 两格（**M2 批 O**）：连接族要在同一个进程里同时看到五种入口。
+# ⚠ ⚠ 它必须出现在**三份**配置里 —— 「POST /load」按 (协议, 监听地址原样) 比 L4
+#   监听器集，少写一份就是 409，而红会落在 overrides 那一节、指向完全错误的方向。
+# ⚠ 这个 heredoc 不带引号（要展开端口变量）⇒ 注释里一律用「」，别用反引号。
+l4 {
+    tcp :$L4T_PORT {
+        proxy 127.0.0.1:$ABORT_UP_PORT
+    }
+    udp :$L4U_PORT {
+        proxy 127.0.0.1:$UDPUP_PORT
+    }
 }
 CONF
 "$BIN" compile "$WORK/ov-dangling.Fulcrumfile" > "$WORK/ov-dangling.json" 2>/dev/null || {
@@ -1500,6 +1552,231 @@ NONE_A_AFTER=$(expo sum "$SN2" fulcrum_requests_total site=a.example status_clas
 eq "★★★ 而且那一笔落在 site=a.example 上（与日志那一行是同一条请求）" \
   1 "$((NONE_A_AFTER - NONE_A_BEFORE))"
 
+# ── 连接那两个族（M2 批 O，G122 的连接那半）─────────────────────────────────
+#
+# ★ ★ ★ 这一节的核心断言只有一句：**四个互不相干的 accept 循环都记进了同一个族，
+#   而 entrypoint 分得开。** 五种入口（http / admin / quic / l4_tcp / l4_udp）
+#   必须在**同一个进程**里同时存在，那句话才验得了 —— 这就是 l4 块摆进本场景的理由。
+#
+# ⚠ 判据一律**从夹具派生** listen 的值，⛔ 不写死：它随 --bind-host 变，
+#   而 admin 那条是每次跑都不同的 $WORK/admin.sock。
+echo "=== 连接那两个族（M2 批 O，G122 的连接那半）==="
+
+# UDP 回显上游（L4 UDP 那一格要）。★ 接住 SIGINT/SIGTERM 干净退出，
+# 否则收尾那段要走到 kill -9，日志末尾会多出一行「Killed」被读成「有东西崩了」。
+cat > "$WORK/udp_echo.py" <<'PY'
+import signal
+import socket
+import sys
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.settimeout(0.5)
+try:
+    while True:
+        try:
+            data, peer = s.recvfrom(65536)
+        except socket.timeout:
+            continue
+        s.sendto(data, peer)
+except (KeyboardInterrupt, SystemExit):
+    pass
+finally:
+    s.close()
+PY
+python3 "$WORK/udp_echo.py" "$UDPUP_PORT" > "$WORK/udp_echo.log" 2>&1 &
+PIDS+=($!)
+ok "UDP 回显上游起来了（$UDPUP_PORT）"
+
+# 这个族此刻的某一格。$1 抓取文件 · $2 族名 · $3 entrypoint · $4 listen。
+conn_val() { expo sum "$1" "$2" "entrypoint=$3" "listen=$4"; }
+# 这个族此刻的全部 (entrypoint,listen) 对，排序后一行一个。
+conn_keys() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+out = set()
+pat = re.compile(r'^fulcrum_connections_active\{(.*)\}\s')
+for line in open(sys.argv[1], encoding="utf-8"):
+    m = pat.match(line)
+    if not m:
+        continue
+    kv = dict(re.findall(r'(\w+)="((?:[^"\\]|\\.)*)"', m.group(1)))
+    out.add("%s %s" % (kv.get("entrypoint"), kv.get("listen")))
+for k in sorted(out):
+    print(k)
+PY
+}
+
+SC0="$WORK/sc0.txt"
+CODE=$(scrape "$SC0"); eq "抓取回 200（连接族的基线）" 200 "$CODE"
+
+# ── 判据 1：series 集合 == 本进程的监听器集合（逐字，从夹具派生）──────────────
+#
+# ★ 一条断言同时验掉两件事：「建成就出样本」（不是有连接才出现）与
+#   「**四处都记进了同一个族**」—— 少接一处，这一条当场少一行。
+EXPECT_KEYS=$(printf '%s\n' \
+  "admin $ADMIN_SOCK" \
+  "http $HOST:$A_PORT" \
+  "http $HOST:$BC_PORT" \
+  "http $HOST:$TLS_PORT" \
+  "l4_tcp $HOST:$L4T_PORT" \
+  "l4_udp $HOST:$L4U_PORT" \
+  "quic $HOST:$TLS_PORT" | sort)
+GOT_KEYS=$(conn_keys "$SC0")
+if [ "$EXPECT_KEYS" = "$GOT_KEYS" ]; then
+  ok "★★★ 判据 1：series 集合与本进程的监听器集合逐字相同（五个 entrypoint 都在）"
+else
+  fail "★★★ 判据 1：series 集合对不上
+    期望：$(echo "$EXPECT_KEYS" | tr '\n' '|')
+    实际：$(echo "$GOT_KEYS" | tr '\n' '|')"
+fi
+
+# ── 判据 2：五个 entrypoint **各打一条连接 ⇒ 那一格 total 正好 +1** ───────────
+#
+# ⚠ ⚠ **分开打、分开断**：合成一条（「打五次、涨 5」）的话，一个只在 http 上记的
+#   实现照样全绿 —— 与批 M′ 任务 3 里 h1/h2 那条同一形状。
+conn_case() {
+  # $1 说明 · $2 entrypoint · $3 listen · $4 上一份抓取 · 其余 = 打一条连接的命令
+  local what=$1 ep=$2 listen=$3 prev=$4
+  shift 4
+  local before after here
+  before=$(conn_val "$prev" fulcrum_connections_total "$ep" "$listen")
+  "$@" >/dev/null 2>&1 || true
+  sleep 0.4
+  here="$WORK/sc-$ep.txt"
+  scrape "$here" >/dev/null
+  after=$(conn_val "$here" fulcrum_connections_total "$ep" "$listen")
+  eq "★★★ 判据 2（$what）：$ep 那一格 total 正好 +1" 1 "$((after - before))"
+  LAST_CONN_SCRAPE="$here"
+}
+
+# ⚠ http 那一格：抓取自己也走 http ⇒ 用一条**别的** http 请求量它会多算抓取那一笔。
+#   ⇒ 这一格改成量 BC_PORT（抓取走的是 A_PORT），两者是不同的监听器、不同的 series。
+conn_case "l4_tcp：连一下 L4 TCP 端口" l4_tcp "$HOST:$L4T_PORT" "$SC0" \
+  timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$L4T_PORT"
+conn_case "http：打一条到站点 B 的请求" http "$HOST:$BC_PORT" "$LAST_CONN_SCRAPE" \
+  curl -sS --max-time 5 -H "Host: b.example" -o /dev/null "http://$HOST:$BC_PORT/conn"
+conn_case "admin：一次 GET /stats" admin "$ADMIN_SOCK" "$LAST_CONN_SCRAPE" \
+  curl -sS --max-time 5 --unix-socket "$ADMIN_SOCK" -o /dev/null "http://localhost/stats"
+conn_case "quic：一次 --http3-only" quic "$HOST:$TLS_PORT" "$LAST_CONN_SCRAPE" \
+  curl -sS -o /dev/null -k --max-time 5 --http3-only \
+    --resolve "a.example:$TLS_PORT:$HOST" "https://a.example:$TLS_PORT/conn-h3"
+# ⚠ L4 UDP 那一格的 total 是**事件点**（新建会话那一处），active 才是派生的。
+conn_case "l4_udp：发一个数据报" l4_udp "$HOST:$L4U_PORT" "$LAST_CONN_SCRAPE" \
+  python3 -c "
+import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2)
+s.sendto(b'ping', ('127.0.0.1', int(sys.argv[1])))
+try: s.recvfrom(65536)
+except OSError: pass
+s.close()
+" "$L4U_PORT"
+
+SC1="$LAST_CONN_SCRAPE"
+
+# ── 判据 6：L4 UDP 那一格的 active 是从**会话表**派生的 ─────────────────────
+#
+# ★ ★ UDP 上没有连接，只有会话。上面那个数据报刚建了一条会话（空闲超时 60s，
+#   此刻它还在表里）⇒ active 必须是 1。
+# ⚠ ⚠ 这一条是**唯一**碰得到 `BoundConn::set_active` 的判据 —— 判据 2 走的是
+#   `bump_total`，两者有意是两条不同的路。少了这一条，把循环开头那行 `set_active`
+#   整个删掉**不会有任何东西红**。
+eq "★★★ 判据 6：发过一个数据报之后，l4_udp 那一格 active = 1（从 sessions.len() 派生）" \
+  1 "$(conn_val "$SC1" fulcrum_connections_active l4_udp "$HOST:$L4U_PORT")"
+
+# ── 判据 3：★★★ **握手中也算** —— Drop 守卫在非正常退出路径上真的在守 ─────────
+#
+# 连上 TLS 端口**什么都不发**并保持 ⇒ 那条连接卡在握手里，而 enter 在握手之前
+# ⇒ active 必须 +1。★ 这一条是「enter 在 spawn 之前」那条口径的唯一实据，
+#   也是「run_endpoint 里那句 let _conn_guard 写成裸 let _」唯一抓得住的地方。
+BEFORE_ACTIVE=$(conn_val "$SC1" fulcrum_connections_active http "$HOST:$TLS_PORT")
+python3 - "$HOST" "$TLS_PORT" "$WORK" <<'PY' &
+import socket
+import sys
+import time
+
+host, port, work = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+s = socket.create_connection((host, port), timeout=5)
+# ⚠ 一个字节都不发：TLS 握手因此永远开始不了，那条连接停在握手里。
+open(work + "/halfopen.ready", "w").close()
+time.sleep(4)
+s.close()
+PY
+HALF_PID=$!
+for _ in $(seq 1 50); do [ -f "$WORK/halfopen.ready" ] && break; sleep 0.1; done
+sleep 0.5
+SC2="$WORK/sc2.txt"
+scrape "$SC2" >/dev/null
+DURING_ACTIVE=$(conn_val "$SC2" fulcrum_connections_active http "$HOST:$TLS_PORT")
+eq "★★★ 判据 3：连上 TLS 端口什么都不发 ⇒ active 正好 +1（enter 在握手之前）" \
+  1 "$((DURING_ACTIVE - BEFORE_ACTIVE))"
+wait "$HALF_PID" 2>/dev/null || true
+sleep 0.8
+SC3="$WORK/sc3.txt"
+scrape "$SC3" >/dev/null
+eq "★★★ 判据 3（另一半）：那条连接断掉之后 active 回到基线（Drop 守卫收了它）" \
+  "$BEFORE_ACTIVE" "$(conn_val "$SC3" fulcrum_connections_active http "$HOST:$TLS_PORT")"
+
+# ── 判据 4：握手失败 ⇒ total +1 而 active 回到基线 ──────────────────────────
+BEFORE_T=$(conn_val "$SC3" fulcrum_connections_total http "$HOST:$TLS_PORT")
+BEFORE_A=$(conn_val "$SC3" fulcrum_connections_active http "$HOST:$TLS_PORT")
+python3 - "$HOST" "$TLS_PORT" <<'PY' || true
+import socket
+import sys
+
+s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5)
+# ⚠ 一串不是 ClientHello 的垃圾 ⇒ TLS 握手当场失败。
+s.sendall(b"\x00" * 64 + b"not-a-clienthello\r\n\r\n")
+try:
+    s.recv(1024)
+except OSError:
+    pass
+s.close()
+PY
+sleep 0.8
+SC4="$WORK/sc4.txt"
+scrape "$SC4" >/dev/null
+eq "★★★ 判据 4：往 TLS 端口发垃圾字节 ⇒ total +1（握手失败的连接也算接进来过）" \
+  1 "$(($(conn_val "$SC4" fulcrum_connections_total http "$HOST:$TLS_PORT") - BEFORE_T))"
+eq "★★★ 判据 4（另一半）：而 active 回到基线 —— 握手失败那条退出路径也被 Drop 守卫收了" \
+  "$BEFORE_A" "$(conn_val "$SC4" fulcrum_connections_active http "$HOST:$TLS_PORT")"
+
+# ── 判据 5：active ≤ total 逐格成立 ─────────────────────────────────────────
+BAD=$(python3 - "$SC4" <<'PY'
+import re
+import sys
+
+tot, act = {}, {}
+pat = re.compile(r'^fulcrum_connections_(total|active)\{(.*?)\}\s+(\S+)')
+for line in open(sys.argv[1], encoding="utf-8"):
+    m = pat.match(line)
+    if not m:
+        continue
+    kind, labels, val = m.groups()
+    (tot if kind == "total" else act)[labels] = float(val)
+bad = [k for k in act if act[k] > tot.get(k, -1)]
+print(" ".join(bad))
+PY
+)
+if [ -z "$BAD" ]; then
+  ok "★★ 判据 5：active ≤ total 在**每一格**上都成立"
+else
+  fail "★★ 判据 5：这些格子上 active > total —— $BAD"
+fi
+
+# ⚠ ⚠ **两条路径有意不验，理由写在这里**，免得下一个人当成漏了：
+#   ① fork 的握手超时（60s，写死）：它与握手失败是**同一个 future 的两种结束方式**，
+#      而判据 4 已经走过那个 future 的非正常结束。等 60 秒买不到新信息。
+#   ② L4 UDP 的会话空闲超时（60s）：那一格是 sessions.len() 的**恒等式派生**
+#      （一处写入、一个表达式），且 UdpSessionTable::sweep 自己有注入时钟的单测
+#      「到点才回收而且回收的是空闲的那条」。
+# ⛔ 另外不写「sum(fulcrum_connections_total) 等于某个数」：抓取自己走 http，
+#   每抓一次就 +1，那种判据会在自己身上红。
+
 echo
 if [ "$FAILS" -ne 0 ]; then
   echo "METRICS TESTS FAILED：$FAILS 条断言没过。" >&2
@@ -1513,4 +1790,4 @@ if [ "$FAILS" -ne 0 ]; then
   tail -10 "$LOGFILE" >&2 || true
   exit 1
 fi
-echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · TLS 族只数 TLS 请求且 h1/h2/h3 各自与访问日志对得上、h3 那一格是 <unknown> 不是空串 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入 · status_class=none 那条路真的走得到且两边一起对得上）。"
+echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · TLS 族只数 TLS 请求且 h1/h2/h3 各自与访问日志对得上、h3 那一格是 <unknown> 不是空串 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入 · status_class=none 那条路真的走得到且两边一起对得上 · 连接族在五个入口上都记到了同一个族里、握手中与握手失败两条路都被 Drop 守卫收住）。"

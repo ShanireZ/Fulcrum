@@ -23,7 +23,7 @@ sources:
 
 | 面 | 形态 |
 |---|---|
-| **指标** | Prometheus 端点。✅ **已落地** —— 有哪些族看下面「指标清单与基数」那张表，⛔ 这里**不另抄一份清单**（那张表被一道门逐项钉在 `FAMILIES` 上，抄件没有）。⚠ **连接**那一类今天仍然一个族都没有：**D32 已由 G122 结案**成「两半分别落地、分别命名」——TLS 那半就是 `fulcrum_tls_requests_total`，连接那半（`fulcrum_connections_total` / `fulcrum_connections_active`）还没做。★ 那不是漏做，是 G122 有意排在后面 |
+| **指标** | Prometheus 端点。✅ **已落地** —— 有哪些族看下面「指标清单与基数」那张表，⛔ 这里**不另抄一份清单**（那张表被一道门逐项钉在 `FAMILIES` 上，抄件没有）。★ **D32 已由 G122 结案**成「两半分别落地、分别命名」，**两半现在都落地了**：TLS 那半是 `fulcrum_tls_requests_total`，连接那半是 `fulcrum_connections_total` / `fulcrum_connections_active`。⚠ 这一行此前写着「连接那一类今天仍然一个族都没有」——**它在批 O 落地的那一刻就成了假话**，而本仓内没有任何门看得见一句过期的散文。⇒ 状态别写在这里，去看那张被门钉住的基数表 |
 | **日志** | 结构化访问日志与错误日志；**字段清单与格式已由 G113 + G114 定稿**（D7 结案）—— 见下面「访问日志的字段契约」|
 | **实时** | Runtime 通道上的**只读 stats**：每上游的实时连接数、队列、错误、健康态，以及**临时覆盖层清单**。⏳ **方案已定（批 N，G119/G120）**，见下面「Runtime 实时 stats」一节 |
 
@@ -277,6 +277,8 @@ metrics.example:9443 {
 | `fulcrum_overrides_active` | gauge | 活体 | 无 | 恒为 1（无标签单值；值 = 当前登记处的覆盖总条目数，悬空的照样计入，裁决 R13）|
 | `fulcrum_cache_purged_entries_total` | counter | 事件点 | 无 | 恒为 1（无标签单值；单位是**缓存条目**，不是请求 —— G123）|
 | `fulcrum_tls_requests_total` | counter | 事件点 | `version` `cipher` | 版本表 × 套件表，各多一格 `<unknown>` —— ★ 两个都是**服务端协商**的结果，访问者添不进值（G122 / G127）|
+| `fulcrum_connections_total` | counter | 活体 | `listen` `entrypoint` | **= 监听器数** —— ★ 每个监听器只属于**一个** entrypoint，⛔ 不是 5 × 监听器数（G122）|
+| `fulcrum_connections_active` | gauge | 活体 | `listen` `entrypoint` | 同上 —— 与 `_total` 是同一批 series |
 
 ⛔ **任何形态都不加 `uri` 标签。**
 
@@ -491,6 +493,56 @@ h3 走 quiche，而 `Handshake::cipher()` 锁在私有 `mod tls` 里 ⇒ 那一�
 ⚠ **但三者动机各不相同**：`<other>` 挡的是**访问者可控的无界基数**、
 `<none>` 说的是**这条请求没匹配到站点**、`<unknown>` 说的是**我们问不出来**。
 
+## `fulcrum_connections_{total,active}{listen,entrypoint}`：连接（G122 的连接那半）
+
+### ⚠ ⚠ 它是**四处 accept 循环**记的，不是一处
+
+pingora 的 `Service::run_endpoint`（覆盖 h1/h2 **与 admin**，经 **fork 改动 15** 的接缝）·
+L4 TCP · L4 UDP · QUIC —— 后三者**各有各的循环**，pingora 那个一次都不经过。
+★ 四处只负责把数加到**同一个** `conn_stats::ConnRegistry` 上，而标签定义只有一份。
+
+### ⚠ ⛔ 第二个标签叫 `entrypoint`，**不叫 `proto`**
+
+`fulcrum_requests_total` 已经有一个 `proto`，取值是 `HTTP/1.1` 那一族。
+⇒ 同名不同值域会让运维跨族写同一个过滤器时**拿到空集而不报错**。
+★ 闭集五值：`http` · `admin` · `quic` · `l4_tcp` · `l4_udp`，由穷尽 `match` 派生
+（加一种入口就编不过）。
+
+### ★ 上界 = **监听器数**，⛔ 不是 5 × 监听器数
+
+每个监听器**只属于一个** entrypoint。⚠ 而两截标签缺一不可：只按 `listen` 分的话，
+G110 下同一个端口号上的 TCP（h1/h2）与 UDP（QUIC）会**合并成一条 series**；
+只按 `entrypoint` 分的话，一个 `Listeners` 的多个地址会合并。
+
+### ★ ★ 计在**握手之前** ⇒ `active` 含还在握手的连接
+
+`enter` 的调用点在 accept 之后、TLS 握手之前 ⇒ 一条握手失败的连接**也会** `total +1`。
+★ 那是有意的：握手阶段的堆积（打爆 TLS、slowloris）正是最该看得见的东西，
+而计在握手之后就把它整段藏起来了。
+
+### ★ ★ ★ 减一**只有一个**调用点
+
+那条连接任务有三条退出路径（握手超时 / 握手失败 / 正常结束），减一全部由 fork 那侧
+`ConnGuard` 的 `Drop` 做。⚠ 手写三处 `fetch_sub` 正是 D18/G66 那个分家形状 ——
+**分家时的表现是这个数只涨不降**，counter 照常，**没有任何东西会说**。
+
+### ⚠ `entrypoint="l4_udp"` 那一格数的是**会话**，不是连接
+
+UDP 上没有连接。那一格从 L4 UDP 的会话表 `sessions.len()` **派生**，⛔ 不是 `+1/-1`：
+`sessions.len()` 本身就是权威，在旁边再记一份会让清扫、到上限被拒、停机不再收包
+三条路各需要记得减一。
+⚠ 写入点在**循环体开头**而不是末尾 —— 那个 `select!` 的 recv 分支里有七八处 `continue`，
+而 `continue` **跳过循环体末尾**。★ 开头则每一轮迭代必经；而阻塞在 `select!` 期间
+`sessions` 不可能变（循环是它唯一的改写者）⇒ 这个读数是**精确**的，不是陈旧的。
+
+### ★ 每个监听器**建成就出样本**（值是 0）
+
+⇒ 「这个监听器在、只是没人连」与「配置里根本没有它」分得开 ——
+而后者正是「我配了这个端口怎么没流量」要靠的第一个区分。
+⚠ 一个**没被声明过**的 `listen` 会落进 `listen="<undeclared>"` 并 warn 一次：
+⛔ 不丢掉那一笔 —— 丢掉的话，「接线漏了一个监听器」表现为指标上什么都没有，
+而那与「那个端口没人连」长得一模一样。
+
 ## `fulcrum_cert_expiry_seconds` 的值 = `notAfter` 的**绝对 Unix 秒**
 
 不是「还剩多少秒」。★ 绝对值**不随时间漂**，抓取端一句 `- time()` 就得到剩余量；
@@ -568,6 +620,7 @@ Prometheus 的 text exposition 是行式纯文本，自己写约百行。
 | 一致性门 | `fulcrum_requests_total` 在站点 A 上的增量 = 访问日志新增行数 **+ 1**（那个 +1 是左端那次抓取自己）|
 | G121 的正面判据 | 同一条请求上，指标的 `site="a2.example"` 与日志的 `site="http://a.example:9920"` 给出**不同的值**；且 `site` 标签的取值是一个**闭集** = 四条地址字面量 + `<none>` |
 | `status_class="none"`（G124）| **两边一起断**：一条「发完请求立刻 RST、而上游还要 1.5s 才回话且**不带 `Content-Length`**」的请求 ⇒ ① 访问日志真的多了一行，`status` 是 **0**、`outcome` 仍是 `reverse_proxy`（⛔ 不是 `aborted`）、`site` 在；② `fulcrum_requests_total{status_class="none"}` 正好 **+1**，且那一笔落在 `site=a.example` 上（证明两边说的是**同一条请求**）。★ 对照组（同一条路、客户端正常收完）拿到 200 且 `none` 一格不涨 —— 少了它，一个 `status` 恒为 0 的实现也全绿 |
+| 连接那两个族（G122 的连接半）| ★★★ **series 集合与本进程的监听器集合逐字相同**（从夹具派生）—— 一条断言同时验掉「建成就出样本」与「**四处都记进了同一个族**」· 五个 entrypoint **各打一条连接、各断一条**（合成一条的话，一个只在 http 上记的实现照样全绿）· ★★★ **连上 TLS 端口什么都不发** ⇒ `active` +1（唯一证明「`enter` 在握手之前」与「`run_endpoint` 里那句 `let _conn_guard` 没写成裸 `let _`」的地方）· **发垃圾字节** ⇒ `total` +1 而 `active` 回基线（Drop 守卫在非正常退出路径上真的在守）· l4_udp 那一格 `active` 从 `sessions.len()` 派生 · `active ≤ total` 逐格成立 |
 | TLS 族（G122 / G127）| 明文请求**一笔都不记**（先自证那几条明文真的被 `requests_total` 数到了）· h1 与 h2 **分开打、分开断**，每条正好 +1，且涨的那一条的 `{version,cipher}` 与**访问日志刚报出来的那一对值**逐字相同（⛔ 不写死套件名）· h3 那一条落在 `cipher="<unknown>"` 上 · 而**同一条 h3 请求的日志行里 `tls_cipher` 必须不出现**（两侧两种处置一并钉住）· ★★★ 这个族里**一个空标签值都不许有**（G127 的正主，它不看是不是 h3）· 标签键集合逐字 `{cipher, version}`（⛔ 不许有 `sni`/`alpn`）· `sum(tls) 严格小于 sum(requests)` |
 
 ⚠ ⚠ 反向 ② 的**两句都要**：实测把那句 `inc` 删掉之后，「series 条数不增长」是**绿的** ——

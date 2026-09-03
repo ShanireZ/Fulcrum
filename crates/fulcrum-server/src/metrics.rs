@@ -147,7 +147,7 @@ const BUCKETS: &[f64] = &[
 /// ⚠ 下面那几个 `pub const` 句柄按**下标**指进来 —— 重排这张表就会让某个句柄换个族，
 /// 而那种错**在输出里看起来完全正常**（数字照涨，只是涨在另一条 series 上）。
 /// ⇒ 单测 `族句柄指的就是它名字上那个族` 把每个句柄的名字逐个钉住。
-const FAMILIES: [Family; 12] = [
+const FAMILIES: [Family; 14] = [
     Family {
         name: "fulcrum_requests_total",
         kind: Kind::Counter,
@@ -231,6 +231,20 @@ const FAMILIES: [Family; 12] = [
         source: Source::Event,
         help: "走 TLS 的请求数，按协商出来的版本与密码套件分；明文请求不计，问不出来的那一格记 <unknown>。",
         labels: &["version", "cipher"],
+    },
+    Family {
+        name: "fulcrum_connections_total",
+        kind: Kind::Counter,
+        source: Source::Live,
+        help: "累计接进来过多少条连接，按监听地址与入口种类分；计在握手之前。",
+        labels: &["listen", "entrypoint"],
+    },
+    Family {
+        name: "fulcrum_connections_active",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "此刻还活着的连接数，按监听地址与入口种类分；含还在握手的那些。l4_udp 那一格数的是会话。",
+        labels: &["listen", "entrypoint"],
     },
 ];
 
@@ -355,6 +369,44 @@ pub const CACHE_PURGED_ENTRIES_TOTAL: &Family = &FAMILIES[10];
 /// 出现」这回事** —— 每条 series 都必须给每个标签一个值。⇒ 同一个空串，两处两种处置。
 pub const TLS_REQUESTS_TOTAL: &Family = &FAMILIES[11];
 
+/// 累计接进来过多少条连接（**M2 批 O**，G122 的**连接那半**）。
+///
+/// # ⚠ ⚠ 它是**四处** accept 循环记的，而不是一处
+///
+/// pingora 的 `Service::run_endpoint`（h1/h2 与 admin，经 **fork 改动 15** 的接缝）·
+/// L4 TCP · L4 UDP · QUIC —— 后三者各有各的循环，pingora 那个一次都不经过。
+/// ★ 四处只负责把数加到**同一个** [`crate::conn_stats::ConnRegistry`] 上，
+/// 而标签定义只有一份。
+///
+/// # ★ 计在**握手之前**
+///
+/// `enter` 的调用点在 accept 之后、TLS 握手之前 ⇒ 一条握手失败的连接
+/// **也会** +1。★ 那是有意的：握手阶段的堆积（打爆 TLS、slowloris）正是最该
+/// 看得见的东西，而计在握手之后就把它整段藏起来了。
+pub const CONNECTIONS_TOTAL: &Family = &FAMILIES[12];
+
+/// 此刻还活着的连接数（**M2 批 O**）。
+///
+/// # ★ ★ ★ 减一**只有一个**调用点
+///
+/// 那条连接任务有三条退出路径（握手超时 / 握手失败 / 正常结束），
+/// 而减一全部由 fork 那侧的 `ConnGuard` 的 `Drop` 做 —— 手写三处 `fetch_sub`
+/// 正是 D18/G66 那个分家形状，⚠ 而分家时的表现是**这个数只涨不降**，
+/// counter 照常，**没有任何东西会说**。
+///
+/// # ⚠ `entrypoint="l4_udp"` 那一格数的是**会话**，不是连接
+///
+/// UDP 上没有连接。那一格从 L4 UDP 的会话表 `sessions.len()` **派生**
+/// （[`crate::conn_stats::ConnRegistry::set_active`]），⛔ 不是 `+1/-1` ——
+/// 因为 `sessions.len()` 本身就是权威，在旁边再记一份会让清扫、到上限被拒、
+/// 停机不再收包三条路各需要记得减一。
+///
+/// # ⚠ ⛔ 标签叫 `entrypoint`，不叫 `proto`
+///
+/// [`REQUESTS_TOTAL`] 已经有一个 `proto`，取值是 `HTTP/1.1` 那一族。同名不同值域
+/// 会让运维跨族写同一个过滤器时**拿到空集而不报错**。
+pub const CONNECTIONS_ACTIVE: &Family = &FAMILIES[13];
+
 /// 标签值**取不到**时记的那个记号（G127）。
 ///
 /// ★ 尖括号形状随 G118 的 `<other>` 与 G121 的 `<none>`：尖括号在真实的套件名
@@ -442,6 +494,11 @@ pub struct LiveSources {
     pub resolver: Option<Arc<SniResolver>>,
     /// ACME 签发计数。`None` = 这份配置里没有自动签发（`acme::build` 返回 `None`）。
     pub acme: Option<Arc<AcmeManager>>,
+    /// 连接计数的登记处（**M2 批 O**，G122 的连接那半）。
+    ///
+    /// ★ 四处 accept 循环都往它上面加数，抓取那一刻现问 —— fork 够不到本模块，
+    /// 所以只能走这条「它加、我们问」的路（与 `upstream_inflight` 同一条路子）。
+    pub conn: Option<Arc<crate::conn_stats::ConnRegistry>>,
 }
 
 fn live() -> &'static OnceLock<LiveSources> {
@@ -524,6 +581,27 @@ fn snapshot(src: &LiveSources) -> Registry {
         //   在抓取端看起来一模一样。
         let overrides_active = rt.override_entries_of(&snap).len();
         r.set(OVERRIDES_ACTIVE, &[], overrides_active as f64);
+    }
+
+    // ── 连接那两个族（**M2 批 O**）──────────────────────────────────────────
+    //
+    // ★ ★ 每一格在**接线那一刻**就被声明过了 ⇒ 一个监听器从进程起来的第一秒
+    //   就有一条 `0` 的样本，而不是「有连接了才出现」。
+    //   ⚠ 那不是可有可无的：没有 series 与「有 series 但值是 0」在抓取端**分不开**，
+    //   而「我配了这个端口怎么没流量」正是要靠这个区分来答的第一个问题。
+    // ⚠ `total` 是 counter 却走 `Source::Live`：数累加在**注册表**里而不是本模块的
+    //   `Registry` 里 ⇒ 从本模块看它就是「抓取时问活体」。先例是 `acme_issue_total`。
+    // ⚠ ⚠ `total` 走 `inc_by` 而不是 `set`：`Registry::set` 那一处 `assert!` 只收
+    //   gauge（写错时**当场 panic**，不是静默写进另一个桶）—— ★ 这一批实测撞过一次：
+    //   写成 `set` 之后 `/metrics` 的连接被丢弃、curl 拿到 000，而正文里什么都没有。
+    //   ⇒ 这里与 `acme_issue_total`（同样是 Live + Counter）逐字同一种写法。
+    // ★ 那份 `snapshot()` 是**这一刻**的全量读数，而本函数每次抓取都新建一个
+    //   `Registry` ⇒ `inc_by` 从 0 起加，得到的就是那个绝对值，不会跨抓取累积。
+    if let Some(conn) = &src.conn {
+        for (ep, listen, total, active) in conn.snapshot() {
+            r.inc_by(CONNECTIONS_TOTAL, &[&listen, ep.as_str()], total);
+            r.set(CONNECTIONS_ACTIVE, &[&listen, ep.as_str()], active as f64);
+        }
     }
 
     if let Some(resolver) = &src.resolver {
@@ -1001,6 +1079,16 @@ mod tests {
         assert_eq!(TLS_REQUESTS_TOTAL.name, "fulcrum_tls_requests_total");
         assert_eq!(TLS_REQUESTS_TOTAL.kind, Kind::Counter);
         assert_eq!(TLS_REQUESTS_TOTAL.labels, &["version", "cipher"]);
+        // ⛔ 标签叫 `entrypoint` 不叫 `proto`（`REQUESTS_TOTAL` 已占用 `proto`，
+        //   取值域完全不同 ⇒ 跨族写同名过滤器会拿到空集而不报错）。
+        //   ⚠ 顺序也是契约：`{listen, entrypoint}` 与 `{entrypoint, listen}` 渲染出来
+        //   是两条不同的 series，而那种错在输出里看起来完全正常。
+        assert_eq!(CONNECTIONS_TOTAL.name, "fulcrum_connections_total");
+        assert_eq!(CONNECTIONS_TOTAL.kind, Kind::Counter);
+        assert_eq!(CONNECTIONS_TOTAL.labels, &["listen", "entrypoint"]);
+        assert_eq!(CONNECTIONS_ACTIVE.name, "fulcrum_connections_active");
+        assert_eq!(CONNECTIONS_ACTIVE.kind, Kind::Gauge);
+        assert_eq!(CONNECTIONS_ACTIVE.labels, &["listen", "entrypoint"]);
 
         // ★ ★ 每个族的**来处**也逐个钉住：`source` 写错不会让任何一条内容断言变红 ——
         //   活体族被标成 `Event` 的表现是它**永远没有样本**，而那与「没接上活体源」
@@ -1019,6 +1107,11 @@ mod tests {
                 "fulcrum_acme_issue_total",
                 "fulcrum_build_info",
                 "fulcrum_overrides_active",
+                // ⚠ counter 走 `Live` 不是笔误：连接数累加在 `conn_stats` 的注册表里
+                //   而不是本模块的 `Registry` 里 ⇒ 从本模块看它就是「抓取时问活体」。
+                //   先例是上面的 `fulcrum_acme_issue_total`。
+                "fulcrum_connections_total",
+                "fulcrum_connections_active",
             ]
         );
 
