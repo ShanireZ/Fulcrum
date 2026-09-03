@@ -150,7 +150,8 @@ done
 ok "两个端口都空着"
 
 # ★ `:80` 在这里**只记不判**：占着它不是本场景的错，也不该拦住本场景开跑
-#   （它由自动 HTTPS 合成出来，七个场景共用，见 AGENTS.md 端口表）。
+#   （它由自动 HTTPS 合成出来，好几个场景共用 —— ⛔ 这里有意不抄个数，
+#    是哪几个见 docs/platform/host-and-gate-traps.md 那张端口表）。
 #   记下来是为了收尾时能分清「本场景漏了」与「进来时就有人占着」。
 PORT80_AT_START=free
 if port_listening 80; then
