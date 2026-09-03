@@ -11,7 +11,7 @@ generated:
 sources:
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G6（Pingora 底座 + quinn/h3）、G7（自研四块）、G17（上游发现）
+    title: PLAN.md §10 G6（Pingora 底座 —— ⚠ HTTP/3 那半已由 G103 从 quinn/h3 改成 quiche）、G7（自研四块）、G17（上游发现）
   - id: plan-6
     resource: /references/plan.md
     title: PLAN.md §6.1 首版自研范围

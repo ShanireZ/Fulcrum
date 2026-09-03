@@ -11,10 +11,10 @@ generated:
 sources:
   - id: plan-51
     resource: /references/plan.md
-    title: PLAN.md §5.1 第 1 条硬约束（TLS 后端锁死 rustls）
+    title: PLAN.md §5.1 第 1 条硬约束（TLS 后端统一 BoringSSL —— ⚠ 原文锁的是 rustls，已由 G104 推翻）
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G6（统一 rustls）、G12（自动 HTTPS）、G15（On-Demand 准入强制）
+    title: PLAN.md §10 G104（TLS 栈统一 BoringSSL，推翻 G6 原来的 rustls 口径）、G12（自动 HTTPS）、G15（On-Demand 准入强制）
   - id: plan-10-d4
     resource: /references/plan.md
     title: PLAN.md §10 G53–G57（D4 结案：ACME 客户端、挑战类型、证书存储、续期与失败退避、DNS-01 的落法）

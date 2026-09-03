@@ -14,7 +14,7 @@ sources:
     title: PLAN.md §10 G103（D11 结案：HTTP/3 取 quiche）与它的两条前置
   - id: plan-51
     resource: /references/plan.md
-    title: PLAN.md §5.1 G6 三条硬约束（rustls 锁死 / tower 用不上 / QUIC 监听器必须参与 socket 移交）
+    title: PLAN.md §5.1 G6 三条硬约束（① TLS 后端 —— 原文锁 rustls，已由 G104 改成统一 BoringSSL；② tower 用不上；③ QUIC 监听器必须参与 socket 移交 —— 已由 M0 解除）
   - id: open-seams
     resource: /verification/open-seams.md
     title: 升级窗口内的 QUIC 连接归属；`ResolvesServerCert` 能否同时服务两个入口
