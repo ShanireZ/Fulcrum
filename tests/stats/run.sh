@@ -34,8 +34,15 @@
 #   9931 上游 —— 一个真的 HTTP 上游（python）。
 #   9932 站点 T —— **第二阶段**才起，`t.example:9932` 带 `tls` ⇒ `certs` 从空变非空。
 #
-# ⚠ 本格三个站点全部显式写端口且第一阶段全是 `http://` ⇒ **不合成 `:80` 重定向站点**，
-#   与那个共享端口无关。★ 但 cleanup 仍然断言端口已经还回去（照 tests/quic-relay/run.sh）。
+# ⚠ ⚠ **本格不碰共享的 `:80`，而这件事需要两句话才成立**：
+#   ① 第一、二代的站点写的是 `http://s.example:9930` ⇒ 天然不合成重定向站点；
+#   ② 第三代写的是 `t.example:9932`（没写 scheme ⇒ 推成 `https` ⇒ `auto_https`），
+#      它**本来会**合成一个 `:80` 站点 —— 由那一份配置里的 `auto_http_redirect false` 按住，
+#      并由一条**编译期**判据守着（见 gen3 那一段）。
+#   ★ 这一段此前只写了 ①，于是那句「不合成 `:80` 重定向站点」在第三代上是**假话**，
+#     而它读起来完全成立 —— 2026-09-03 实测 `fulcrum compile` 才发现（当时本格确实在绑 `:80`，
+#     且不在 AGENTS.md 那张表点名的名单里）。
+# ★ cleanup 仍然断言本格用过的端口都已还回去（照 tests/quic-relay/run.sh）。
 
 set -euo pipefail
 
@@ -376,8 +383,13 @@ http://s.example:$S_PORT {
     }
 }
 CONF
-capture_ok "compile 第二代" "$BIN" compile "$WORK/gen2.Fulcrumfile"
-printf '%s' "$CAPTURE_OUT" > "$WORK/gen2.json"
+# ⚠ 同上：**分流 stderr**。这一份配置今天没有 `tls` ⇒ stderr 恰好是空的，
+#   于是原来那种 `capture_ok` + `printf "$CAPTURE_OUT"` 的写法**靠运气**是对的 ——
+#   谁给它加一行 `tls`，那句「已装载 N 个 SNI 的证书」就会被拼进 JSON 里。
+if ! "$BIN" compile "$WORK/gen2.Fulcrumfile" > "$WORK/gen2.json" 2> "$WORK/gen2.err"; then
+  fail "compile 第二代失败：$(head -3 "$WORK/gen2.err" | tr '
+' ' ')"
+fi
 
 capture_ok "POST /load（overrides 必填，G120）" \
   admin_post "/load?overrides=clear" "$(cat "$WORK/gen2.json")"
@@ -434,12 +446,42 @@ ok "自签证书生成好了（现签，⛔ 不入库）"
 cat > "$WORK/gen3.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
+    auto_http_redirect false
 }
 t.example:$T_PORT {
     tls $WORK/tls.crt $WORK/tls.key
     respond 200 t-ok
 }
 CONF
+
+# ── ★ ★ ★ 那行 `auto_http_redirect false` 是**承重的，不是样板** ──────────────
+#
+# 「t.example:$T_PORT」没写 scheme ⇒ `parse_address` 按主机名非空推成 `https`
+# ⇒ `auto_https` 为真 ⇒ 而 `auto_http_redirect` **默认是开的**
+# ⇒ `synthesize_http_redirect` 会给它合成一个 **`http://t.example:80`** 站点。
+# ⚠ ⚠ 那会让本场景**隐式绑住共享的 `:80`** —— 而本仓实测过：占着 `:80` 能让
+#   **别的端口**起不来（`ListenerEndpoint::listen` 持着进程级 `ListenFds` 锁去 bind，
+#   一个占用把那把锁停住最多 30 秒），症状落在一个无辜的端口上。
+# ⚠ 写 `tls <crt> <key>` **摘不掉**它：那一行只决定 TLS 开不开，与 `auto_https` 无关。
+#
+# ★ ★ 这条判据**落在编译产物上而不是运行时**：它是确定性的（不拼时序、不拼谁先起），
+#   而且删掉上面那一行就当场红。
+# ⚠ ⚠ **compile 的输出不能用 `capture_ok` 接**：`capture` 是 `2>&1` 合并的，而
+#   `fulcrum compile` 会把「已装载 N 个 SNI 的证书」这类话写到 **stderr**
+#   ⇒ 拿到的是「一行中文 + JSON」，`json.load` 当场炸。★ 实测过一次。
+#   ⇒ 要解析的输出一律**分流到文件**，只让判据去接 python 那一步。
+if ! "$BIN" compile "$WORK/gen3.Fulcrumfile" > "$WORK/gen3.json" 2> "$WORK/gen3.err"; then
+  fail "compile 第三代失败：$(head -3 "$WORK/gen3.err" | tr '
+' ' ')"
+fi
+capture_ok "第三代的端口集" python3 -c '
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+print(" ".join(str(p) for p in sorted({a["port"] for s in cfg["sites"] for a in s["addresses"]})))
+' "$WORK/gen3.json"
+GEN3_PORTS="$CAPTURE_OUT"
+eq "★★★ 第三代的端口集里没有 80 —— 本场景不碰那个共享端口（守着上面那行 auto_http_redirect false）" \
+  "$T_PORT" "$GEN3_PORTS"
 
 RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/gen3.Fulcrumfile" \
   --bind-host "$HOST" \

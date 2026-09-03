@@ -75,14 +75,16 @@ intent — **if you need an address that is actually connected to, take one from
 (`crates/fulcrum-config/src/compile.rs`) gives every auto-HTTPS site a 308 redirect site on a
 hardcoded `:80`, so these scenarios bind it implicitly: `tests/acme/run.sh` ·
 `tests/acme/renew.sh` · `tests/serve/` · `tests/log/` · `tests/h3/` · `tests/proxyproto/` ·
-`tests/quic-relay/` · **`tests/stats/`**. Making it configurable is open as **D29**.
+`tests/quic-relay/`. Making it configurable is open as **D29**.
 
-⚠ ⚠ **`tests/stats/` was missing from that list until 2026-09-03, and its own file comment
-said the opposite** ("三个站点全部显式写端口且第一阶段全是 `http://` ⇒ 不合成 `:80` 重定向站点").
-That sentence is true of its *first* generation only: the later `gen3.Fulcrumfile` has
-`t.example:9932 { tls … }`, and `fulcrum compile` on exactly that shape emits **two** sites —
-the second being `http://t.example:80`. ⚠ Its `cleanup` still does not assert `:80` was handed
-back. ★ The list here is now correct; the scenario file and its cleanup are **not yet fixed**.
+⚠ ★ **`tests/stats/` was on that list on 2026-09-03 and was taken back off the same day** —
+worth reading, because it shows both failure modes. Its `gen3.Fulcrumfile` has
+`t.example:9932 { tls … }`, and `fulcrum compile` on exactly that shape emits **two** sites,
+the second being `http://t.example:80` — so it *was* binding `:80`, while its own file comment
+said the opposite and this list did not name it. ⇒ Fixed by giving that generation a global
+`auto_http_redirect false`, guarded by a **compile-time** assertion in the scenario (its port
+set must be exactly `{9932}`). ★ That gate is deterministic — no runtime timing, and deleting
+the `auto_http_redirect false` line turns it red immediately.
 
 ⚠ ★ **A scenario is on that list the moment it has one auto-HTTPS address**, which is any
 address with a hostname and no explicit `http://` — the scheme defaults to `https` in
