@@ -42,6 +42,8 @@ pub mod access_log;
 pub mod acme;
 pub mod admin;
 pub mod cache;
+/// 连接计数的登记处（**M2 批 O**，G122 的连接那半）。
+pub mod conn_stats;
 pub mod dns;
 /// 响应压缩（M2 批 I）：`encode` 接线，用的是 fork 里那份压缩模块（G100）。
 pub mod encode;
