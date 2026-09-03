@@ -58,7 +58,7 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/proxyproto/` | 9800–9803 |
 | `tests/log/` | 9900–9906 |
 | `tests/quic-relay/` | 9910–9911 |
-| `tests/metrics/` | 9920–9922 |
+| `tests/metrics/` | 9920–9923 (9923 is a python slow upstream, not a Fulcrum listener) |
 | `tests/stats/` | 9930–9932 (range 9930–9935 reserved) |
 | *(registered, never listened on)* | 19999 — see below |
 | *(shared, hardcoded)* | 80 — see below |

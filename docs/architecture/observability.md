@@ -317,7 +317,33 @@ metrics.example:9443 {
 ⚠ **1–99 与 600 以上也归 `none`**（上游给的一个编出来的数），⛔ 不给它们各开一格 ——
 ★ 那等于把这一格的**上界交回给别人**，而基数这张表管的正是这件事。
 
-> ⏳ 这一条由实施计划替 owner 裁下，已登记为 [`PLAN.md`](../../PLAN.md) §11 的 **D30**。
+> ✅ **D30 已由 G124 结案**（六个值，第六个是 `none`，并要求补一条端到端判据）。
+
+#### ★ ★ ★ `status == 0` 到底要什么条件才走得到（**实测，2026-09-03**）
+
+⚠ ⚠ **「下游在我们写响应头之前断开」不足以让 `status` 变成 0**，而那句话读起来像是够的。
+三种构型，同一棵树同一天：
+
+| 构型 | `status` |
+|---|---|
+| `respond` 站点，发完请求立刻 RST | **200** |
+| `reverse_proxy` 打到睡 1.5s 的上游（**带** `Content-Length`），RST 之后 1.2s 才写 | **200**（而 `resp_size` 是 0）|
+| 同上，但上游响应**不带** `Content-Length` | **0** ✅ |
+
+机制在 pingora 的 `write_response_header`（`v1/server.rs`）：响应头 `write_all` 进的是
+**带缓冲的流**，而 flush 只在「1xx 或**没有** `Content-Length`」时才发生
+⇒ 带 CL 的响应头**根本不产生 syscall**，`write_all` 返回 `Ok`，`response_written` 照样被
+置上，于是 `status` 是 200 —— 哪怕对端早就 RST 了。
+★ 只有会 flush 的那一支才真的碰 socket，也只有它会在被 RST 掉的连接上失败；
+失败了 `write_response_header` 才返回 `Err`，`response_written` 才留在 `None`。
+
+⇒ 判据用的是**不带 `Content-Length` 的慢上游**：它把「服务端此刻还一个字节都没写」与
+「写的时候真的会有一次 syscall」两件事同时钉住 —— ⛔ **那不是一场竞赛**。
+★ 对照组（同一条路、客户端正常收完）拿到 200，那证明这把尺子量得了两边。
+
+⚠ ★ **G124 在 `PLAN.md` §10 里给的可达性论证只说到「`response_written` 只在 `write_all`
+成功之后才被置上」为止** —— 那句话本身对，但推不出结论：带 `Content-Length` 时那次
+`write_all` 根本没碰 socket。**决定不变，欠的是这半句机制**，现补在这里。
 
 ### `site` 那一格 = 请求**实际匹配到的那条地址字面量**（G121）
 
@@ -541,6 +567,7 @@ Prometheus 的 text exposition 是行式纯文本，自己写约百行。
 | 反向 ② | 50 个互不相同的未知 `Host` 之后 series 条数**不增长**，**且**`host="<other>"` 那一格正好 **+50** |
 | 一致性门 | `fulcrum_requests_total` 在站点 A 上的增量 = 访问日志新增行数 **+ 1**（那个 +1 是左端那次抓取自己）|
 | G121 的正面判据 | 同一条请求上，指标的 `site="a2.example"` 与日志的 `site="http://a.example:9920"` 给出**不同的值**；且 `site` 标签的取值是一个**闭集** = 四条地址字面量 + `<none>` |
+| `status_class="none"`（G124）| **两边一起断**：一条「发完请求立刻 RST、而上游还要 1.5s 才回话且**不带 `Content-Length`**」的请求 ⇒ ① 访问日志真的多了一行，`status` 是 **0**、`outcome` 仍是 `reverse_proxy`（⛔ 不是 `aborted`）、`site` 在；② `fulcrum_requests_total{status_class="none"}` 正好 **+1**，且那一笔落在 `site=a.example` 上（证明两边说的是**同一条请求**）。★ 对照组（同一条路、客户端正常收完）拿到 200 且 `none` 一格不涨 —— 少了它，一个 `status` 恒为 0 的实现也全绿 |
 | TLS 族（G122 / G127）| 明文请求**一笔都不记**（先自证那几条明文真的被 `requests_total` 数到了）· h1 与 h2 **分开打、分开断**，每条正好 +1，且涨的那一条的 `{version,cipher}` 与**访问日志刚报出来的那一对值**逐字相同（⛔ 不写死套件名）· h3 那一条落在 `cipher="<unknown>"` 上 · 而**同一条 h3 请求的日志行里 `tls_cipher` 必须不出现**（两侧两种处置一并钉住）· ★★★ 这个族里**一个空标签值都不许有**（G127 的正主，它不看是不是 h3）· 标签键集合逐字 `{cipher, version}`（⛔ 不许有 `sni`/`alpn`）· `sum(tls) 严格小于 sum(requests)` |
 
 ⚠ ⚠ 反向 ② 的**两句都要**：实测把那句 `inc` 删掉之后，「series 条数不增长」是**绿的** ——

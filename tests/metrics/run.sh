@@ -26,6 +26,8 @@
 #   9922 站点 T —— `a.example:9922` + `tls`（**M2 批 M′ 任务 3**，`fulcrum_tls_requests_total`）。
 #        ★ G110 让有 TLS 的端口在**同一个端口号**上自动听 UDP ⇒ h1 / h2 / h3 三条路
 #          都在这一个端口上量，不另起服务。
+#   9923 **不是枢衡的监听器**，是一个 python 慢上游（**M2 批 M′ 任务 4**，G124）：
+#        睡 1.5s 才回话，而且**有意不带 `Content-Length`**。理由见本文件末尾那一节。
 #
 # ⚠ ⚠ ★ **站点 W 补的是夹具形状上的洞，不是多一条覆盖。** 另外四条地址全是**精确**
 #   字面量 ⇒ 对每一条命中站点的请求，`ctx.host` 与命中的那条地址**逐字相等**。
@@ -65,6 +67,10 @@ BC_PORT=${BC_PORT:-9921}
 # 站点 T：TLS 那一格（M2 批 M′ 任务 3）。★ 同一个端口号上同时有 TCP 与 UDP（G110）
 #   ⇒ h1 / h2 / h3 三条路共用它。
 TLS_PORT=${TLS_PORT:-9922}
+# status_class="none" 那条路（M2 批 M′ 任务 4，G124）要的**慢上游**。
+# ⚠ 它不是枢衡的监听器，但它照样占着一个端口 ⇒ 进 AGENTS.md 指的那张端口表，
+#   也进 cleanup 那份「走的时候还回去了没有」的单子。
+ABORT_UP_PORT=${ABORT_UP_PORT:-9923}
 LOGFILE="$WORK/access.json"
 EXPO="$WORK/expo.py"
 # 抓取路径。★ 它同时是「站点 B 上打的同一路径」。
@@ -106,7 +112,7 @@ cleanup() {
   # ⚠ 本格不碰 `:80`：前四个站点都是 `http://`，而 `auto_https` 的站点 T 由全局
   #   `auto_http_redirect false` 按住（见文件头）⇒ 单子里没有它。
   local p leaked=""
-  for p in "$A_PORT" "$BC_PORT" "$TLS_PORT"; do
+  for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$ABORT_UP_PORT"; do
     waited=0
     while port_listening "$p" && [ "$waited" -lt 30 ]; do
       sleep 0.1
@@ -435,14 +441,14 @@ PY
 # ★ ★ 三条自证：端口没被占（否则量的是别人的服务）；访问日志此刻不存在
 #   （否则「多了几行」分不出「刚写的」与「本来就有的」）；读取端量得了东西。
 echo "=== [0/8] 基线：端口空着 · 日志文件还不存在 · exposition 读取端自证 ==="
-for p in "$A_PORT" "$BC_PORT" "$TLS_PORT"; do
+for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$ABORT_UP_PORT"; do
   if port_listening "$p"; then
     echo "METRICS TESTS FAILED: 端口 $p 已经被占，本次结果不可采信。" >&2
     exit 1
   fi
 done
 # ⛔ 不在这句话里写个数：那个计数一道门都没有，加一个端口时它当场过期而不会红。
-ok "本格用到的端口都空着（$A_PORT $BC_PORT $TLS_PORT）"
+ok "本格用到的端口都空着（$A_PORT $BC_PORT $TLS_PORT $ABORT_UP_PORT）"
 if [ -e "$LOGFILE" ]; then
   echo "METRICS TESTS FAILED: $LOGFILE 已经存在，本次结果不可采信。" >&2
   exit 1
@@ -1127,6 +1133,13 @@ http://a.example:$A_PORT, http://a2.example:$A_PORT {
     handle @internal {
         metrics
     }
+    # ★ 「status_class=none」那条路（M2 批 M′ 任务 4，G124）。⚠ 它挂在**站点 A** 上
+    #   是有意的：那一条要求「访问日志真的多了一行」，而站点 A 是本格唯一配了 log 的
+    #   HTTP 站点。⚠ ⚠ 它**不能**摆进第一代配置 —— 那会让 [2/8] 那条「没有上游 ⇒
+    #   upstream_inflight/healthy 零样本」当场破掉（与 ov.example 同一个理由）。
+    handle /abort {
+        reverse_proxy 127.0.0.1:$ABORT_UP_PORT
+    }
     respond 403
 }
 
@@ -1195,6 +1208,10 @@ http://a.example:$A_PORT, http://a2.example:$A_PORT {
     }
     handle @internal {
         metrics
+    }
+    # ★ 与上一份逐字相同（G124 那条路；判据跑在这一代上）。
+    handle /abort {
+        reverse_proxy 127.0.0.1:$ABORT_UP_PORT
     }
     respond 403
 }
@@ -1312,6 +1329,177 @@ eq "★★★ 判据 5：即便有 2 项覆盖，fulcrum_overrides_active 也只
   1 "$(expo series "$S9C" fulcrum_overrides_active)"
 eq "★ 那一行不带任何标签" "" "$(expo labelkeys "$S9C" fulcrum_overrides_active)"
 
+# ── status_class="none"：那条路真的走得到（M2 批 M′ 任务 4，G124 / D30 结案）──
+#
+# ★ ★ ★ G124 明写这一格要**两边一起断**：访问日志真的多了一行 `status=0`，
+#   且 `fulcrum_requests_total{status_class="none"}` 正好 +1。
+#   ⇒ 在这之前，闭集里的第六个值只存在于代码与文档里，**一条端到端判据都没走过**。
+#
+# ⚠ ⚠ ⚠ **「下游断开」本身不足以让 status 变成 0**，而那句话读起来像是够的。
+#   开工前的探针实测（三种构型，同一棵树同一天）：
+#     · `respond` 站点 + 发完请求立刻 RST                      ⇒ status **200**
+#     · 慢上游（**带** Content-Length）+ RST 之后 1.2s 才写     ⇒ status **200**（resp_size 是 0）
+#     · 慢上游（**不带** Content-Length）+ RST                  ⇒ status **0** ✅
+#
+#   机制在 pingora 的 `write_response_header`（`v1/server.rs`）：响应头 `write_all`
+#   进的是**带缓冲的流**，而 flush 只在「1xx 或**没有** Content-Length」时才发生
+#   ⇒ 带 CL 的响应头**根本不产生 syscall**，`write_all` 返回 Ok，`response_written`
+#   照样被置上，于是 status 是 200。★ 只有会 flush 的那一支才真的碰 socket，
+#   也只有它会在一条被 RST 掉的连接上失败 —— 失败了 `response_written` 才留在 None。
+#
+# ⇒ 夹具用的是**不带 Content-Length 的慢上游**：它把「服务端此刻还一个字节都没写」
+#   与「写的时候真的会有一次 syscall」两件事同时钉住 —— ⛔ **这不是一场竞赛**。
+# ★ 对照组（同一条路、客户端正常收完）拿到 200，那证明这把尺子量得了两边。
+echo "=== status_class=\"none\"（M2 批 M′ 任务 4，G124 / D30 结案）==="
+
+# 慢上游：睡 1.5s，再回一个**不带 Content-Length** 的响应（关闭定界）。
+# ⚠ 每条连接一个线程：`wait_port` 的探测连接会被 accept 一次，单线程的话它会把
+#   accept 循环占住 1.5s，真正那条请求就排在后面了。
+cat > "$WORK/slow_up.py" <<'PY'
+import signal
+import socket
+import sys
+import threading
+import time
+
+
+def handle(conn):
+    try:
+        if not conn.recv(65536):
+            return          # `wait_port` 的探测连接：收到 EOF 就走，别睡。
+        time.sleep(1.5)
+        # ⚠ ⚠ **有意不带 Content-Length**（关闭定界）——它让枢衡在写响应头那一步
+        #   真的 flush 一次，而那一次 syscall 正是本节判据要的东西。
+        conn.sendall(b"HTTP/1.1 200 OK\r\nX-Slow-Upstream: 1\r\n\r\nslow-body")
+    except OSError:
+        pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(16)
+# ⚠ 收尾那段先发 SIGINT、等 5s 再 SIGKILL。⛔ 让它走到 SIGKILL 的代价不是「慢 5 秒」，
+#   是门禁日志末尾多出一行 `… Killed …` —— 而下一个读日志的人会把它读成「有东西崩了」。
+#   ⇒ 两个信号都接住，干净退出。★ `settimeout` 让主线程每 0.5s 回一次 Python，
+#     信号才有机会被处理（阻塞在 accept() 里的时候它不一定回得来）。
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+srv.settimeout(0.5)
+try:
+    while True:
+        try:
+            c, _ = srv.accept()
+        except socket.timeout:
+            continue
+        c.settimeout(None)
+        threading.Thread(target=handle, args=(c,), daemon=True).start()
+except (KeyboardInterrupt, SystemExit):
+    pass
+finally:
+    srv.close()
+PY
+
+# 客户端。$1 = read | rst · $2 端口 · $3 路径 · $4 Host。
+# ⚠ curl 做不了这件事：要的是 **SO_LINGER(1,0) + close ⇒ 立刻发 RST**，
+#   而不是正常的 FIN —— 半关之下服务端第一次写照样成功（探针实测过）。
+cat > "$WORK/abort_req.py" <<'PY'
+import socket
+import struct
+import sys
+
+mode, port, path, host = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+s.sendall(
+    ("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (path, host)).encode()
+)
+if mode == "read":
+    s.settimeout(10)
+    buf = b""
+    try:
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    except OSError:
+        pass
+    s.close()
+    print(buf.split(b"\r\n", 1)[0].decode("latin-1") if buf else "<空>")
+else:
+    # linger=0 ⇒ close() 立刻发 RST，而不是走 FIN 那条正常路。
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    s.close()
+    print("RST")
+PY
+
+python3 "$WORK/slow_up.py" "$ABORT_UP_PORT" > "$WORK/slow_up.log" 2>&1 &
+PIDS+=($!)
+wait_port "$ABORT_UP_PORT" || {
+  echo "METRICS TESTS FAILED: 慢上游端口 $ABORT_UP_PORT 起不来。" >&2
+  cat "$WORK/slow_up.log" >&2 || true
+  exit 1
+}
+# ⛔ 这句话有意**只说端口起来了**：「它睡 1.5s 且不带 Content-Length」是夹具的性质，
+#   写进这一行就成了一句**没有任何东西验证的散文** —— 实测过：给上游加回
+#   `Content-Length` 之后这一行照样打印「且不带 Content-Length」，而下面三条判据红。
+# ★ 那两个性质**有门守着，只是门在下面**：带了 CL 的话 status 就是 200，
+#   「那一行的 status 是 0」当场红。⇒ 属性由判据说，不由这一行说。
+ok "慢上游起来了（$ABORT_UP_PORT）"
+
+SN0="$WORK/sn0.txt"
+CODE=$(scrape "$SN0"); eq "抓取回 200（none 那一格的基线）" 200 "$CODE"
+NONE0=$(expo sum "$SN0" fulcrum_requests_total status_class=none)
+sleep 0.3
+LN0=$(lines)
+
+# ── ★ 对照组先跑：同一条路、客户端**正常收完** ⇒ 200，而 none 那一格不涨 ──────
+#   ⚠ 少了它，下面那两条在一个「status 恒为 0」的实现上也全绿。
+capture_ok "对照组请求（正常收完）" python3 "$WORK/abort_req.py" read "$A_PORT" /abort a.example
+CTRL_LINE="$CAPTURE_OUT"
+case "$CTRL_LINE" in
+  "HTTP/1.1 200"*) ok "★ 对照：客户端自己收到了 $CTRL_LINE（这条路本身是通的）" ;;
+  *) fail "★ 对照：客户端没收到 200 状态行，拿到的是「$CTRL_LINE」" ;;
+esac
+sleep 0.5
+LN1=$(lines)
+eq "★ 对照：访问日志多了一行" 1 "$((LN1 - LN0))"
+eq "★ 对照：那一行 status=200" 200 "$(field status)"
+eq "★ 对照：那一行 outcome=reverse_proxy" reverse_proxy "$(field outcome)"
+SN1="$WORK/sn1.txt"
+CODE=$(scrape "$SN1"); eq "抓取回 200" 200 "$CODE"
+NONE1=$(expo sum "$SN1" fulcrum_requests_total status_class=none)
+eq "★★ 对照：status_class=none 一格没涨（这把尺子不是恒答有）" 0 "$((NONE1 - NONE0))"
+sleep 0.3
+# ⚠ 基线要在**这次抓取自己那一行**写进去之后再取：抓取也是一条被记的请求，
+#   拿 LN1 当左端的话，下面那条「多了一行」会算成 2。
+LN1B=$(lines)
+
+# ── ★ ★ ★ 正主：发完请求立刻 RST，而上游还要 1.5s 才回话 ────────────────────
+capture_ok "abort 请求（发完立刻 RST）" python3 "$WORK/abort_req.py" rst "$A_PORT" /abort a.example
+sleep 2.5
+LN2=$(lines)
+eq "★★★ G124 ①：访问日志真的多了一行（站点匹配上了 ⇒ 它记得进去）" 1 "$((LN2 - LN1B))"
+eq "★★★ G124 ①：那一行的 status 是 0 —— 一个响应头都没写出去" 0 "$(field status)"
+# ⚠ ⚠ 这一条守的是契约里那句「此时 outcome 仍是执行链给的那个值，**不是** aborted」。
+eq "★★★ 而 outcome 仍是执行链给的那个值，⛔ 不是 aborted" reverse_proxy "$(field outcome)"
+eq "★ 那一行也有 site（它属于站点 A，所以才记得进访问日志）" \
+  "http://a.example:$A_PORT" "$(field site)"
+SN2="$WORK/sn2.txt"
+CODE=$(scrape "$SN2"); eq "抓取回 200" 200 "$CODE"
+eq "★★★ G124 ②：fulcrum_requests_total{status_class=\"none\"} 正好 +1" \
+  1 "$(($(expo sum "$SN2" fulcrum_requests_total status_class=none) - NONE1))"
+# ★ 两边一起断的最后一句：那一笔落在**站点 A** 上，而不是 site=<none> ——
+#   ⚠ 它证明「日志有那一行、指标有那一笔」说的是**同一条请求**，不是两件碰巧同时发生的事。
+NONE_A_BEFORE=$(expo sum "$SN1" fulcrum_requests_total site=a.example status_class=none)
+NONE_A_AFTER=$(expo sum "$SN2" fulcrum_requests_total site=a.example status_class=none)
+eq "★★★ 而且那一笔落在 site=a.example 上（与日志那一行是同一条请求）" \
+  1 "$((NONE_A_AFTER - NONE_A_BEFORE))"
+
 echo
 if [ "$FAILS" -ne 0 ]; then
   echo "METRICS TESTS FAILED：$FAILS 条断言没过。" >&2
@@ -1325,4 +1513,4 @@ if [ "$FAILS" -ne 0 ]; then
   tail -10 "$LOGFILE" >&2 || true
   exit 1
 fi
-echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · TLS 族只数 TLS 请求且 h1/h2/h3 各自与访问日志对得上、h3 那一格是 <unknown> 不是空串 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入）。"
+echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · TLS 族只数 TLS 请求且 h1/h2/h3 各自与访问日志对得上、h3 那一格是 <unknown> 不是空串 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入 · status_class=none 那条路真的走得到且两边一起对得上）。"
