@@ -30,7 +30,7 @@ sources:
 | §8 | 性能验收标准 | [性能验收标准](/verification/performance-bar.md) |
 | §9 | 主要风险 | [尚未验证的接缝](/verification/open-seams.md) · [供应链现状](/platform/supply-chain.md) |
 | **§10** | ★ **决策日志** | [决策日志](/governance/decision-log.md) |
-| **§11** | ★ **待定清单 D2–D12** | [待定清单](/governance/open-questions.md) |
+| **§11** | ★ **待定清单**（⛔ 这里有意不抄 D 号范围：它只列仍然开着的，抄一个范围过来就会随着结案悄悄变成假话）| [待定清单](/governance/open-questions.md) |
 | §12 | 官方技术入口 | [上游技术入口](/references/upstream.md) |
 
 # 引用它的时候

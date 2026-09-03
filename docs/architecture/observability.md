@@ -14,7 +14,7 @@ sources:
     title: PLAN.md §10 G16（观测基线）、G8（Runtime 通道）、G23（首版不做 Web UI）、G116–G121（指标与 stats）
   - id: plan-11
     resource: /references/plan.md
-    title: PLAN.md §11 D9（版本与兼容性策略）、G123（缓存事件的折叠口径与边界，D31 结案）、G124（status_class 的第 6 个值，D30 结案）、G122（连接类与 TLS 类指标，D32 结案）、G127（标签值取不到时记 <unknown>）
+    title: PLAN.md §11 D9（版本与兼容性策略）、G123（缓存事件的折叠口径与边界，D31 结案）、G124（status_class 的第 6 个值，D30 结案）、G122（连接类与 TLS 类指标，D32 结案）、G127（标签值取不到时记 <unknown>）、G128（h3 的 TLS 三格走 fork 改动 14，D27 + D28 结案）
 ---
 
 ★ 本页属**技术基线**，带真内容。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。

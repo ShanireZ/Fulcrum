@@ -44,7 +44,7 @@ sources:
 
 DSL → 结构化配置 → 运行时全链路；全量原子 load API（Unix socket）；自动 HTTPS（含 `.cn` / `.cc` 双域）；反向代理 + 基础负载均衡 + 主动健康检查 + DNS 定期重解析；未实现能力回落。
 
-线程模型、DSL 指令集、ACME、路径约定与回落层进程管理必须服从 `PLAN.md` 中 D2–D6 的后续拍板记录，见 [待定清单](/governance/open-questions.md)。
+线程模型、DSL 指令集、ACME、路径约定与回落层进程管理当初登记为 **D2–D6**，⚠ 这几条**都已经拍过板** —— 结论在 `PLAN.md` §10（见 [决策日志](/governance/decision-log.md)），**它们不在** [待定清单](/governance/open-questions.md) **里了**。
 
 ## M2 · 接管两台
 

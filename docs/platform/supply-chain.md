@@ -252,7 +252,10 @@ OSV.dev 对全部 176 包的查询结果：
 
 **合计 ~76 个调用点。** ★ 两个最初看起来最麻烦的（`openssl-probe` 与 `lru` 在 s2n 后端的用法）**在 rustls-only 构建下根本不参与编译**。
 
-两个失维包的处置与 fork 的长期维护方式登记为 **D12**，见 [待定清单](/governance/open-questions.md)。
+两个失维包的处置与 fork 的长期维护方式当初登记为 **D12**，⚠ **它已经不在**
+[待定清单](/governance/open-questions.md) **里了**：fork 的长期维护方式由 **G32** 定
+（有公告支撑的上界推 PR 给上游，其余常年 rebase），两个失维包各自的现状见本页上文
+（`derivative` 已换成 `educe`；`daemonize` 是权衡后保留的）。
 
 # 怎么重跑这份快照
 

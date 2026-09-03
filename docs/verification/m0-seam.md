@@ -138,7 +138,9 @@ pingora_core::server] SIGQUIT received, sending socks and gracefully exiting
 
 M0 跑在 `threads: 2` / `listener_tasks_per_fd: 1` / `work_stealing: true` 下全绿。这说明 Pingora 的默认多线程 work-stealing 模型**对自建服务没有额外约束**——自建 `Service` 拿到的是 `current_handle()` 所在的那个 runtime，行为与原生服务一致。
 
-D2 仍然待定，但★ **至少不存在「自建服务必须单线程」这类隐藏限制**。
+★ **D2 此后已经不再待定** —— 线程模型的结论是 `PLAN.md` §10 的 **G35**（保持
+`work_stealing = true`；线程数按 service 角色定默认、配置可覆盖）。本节留下的是当时给它的
+实测依据：★ **至少不存在「自建服务必须单线程」这类隐藏限制**。
 
 # 7. 读日志时不要误判的一行
 

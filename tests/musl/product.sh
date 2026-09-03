@@ -39,7 +39,7 @@ DOCKERFILE="docker/Dockerfile.musl-product"
 #   仓库根那份 `.dockerignore` 负责把 `target/` 挡在上下文之外。
 CONTEXT="."
 # ★ 默认只跑 amd64。aarch64 要在 qemu 上编**整个产品**（不只是探针那点代码），
-#   ⏳ 何时把它也挂上是 D22 留下的下一问 —— 写在这里而不是留白。
+#   ⏳ 何时把它也挂上今天挂在 **D24** 名下（D22 本身已由 G108 结案）—— 写在这里而不是留白。
 ARCHES=${ARCHES:-"amd64"}
 REVERSE=${REVERSE:-1}
 

@@ -56,7 +56,8 @@ sources:
 
 # 0. ★★★ 先纠正 D11 那行里的一处比较错位
 
-`PLAN.md` §11 的 D11 把候选写成 **`h3` / `quiche` / `s2n-quic` 三选一**。
+D11 当初把候选写成 **`h3` / `quiche` / `s2n-quic` 三选一**（⚠ **它已由 G103 结案取
+`quiche`**，不在 §11 里了 —— 本节记的是那次拍板前的比较）。
 而实测出来的分层是：
 
 | | QUIC 传输层 | HTTP/3 语义层 | 合起来要几个 crate |
@@ -360,7 +361,7 @@ s2n-quic 的 `default` 是 `['provider-address-token-default', 'provider-tls-def
 # 相关
 
 [尚未验证的接缝](/verification/open-seams.md)（两条前置的完整推导） ·
-[待定清单](/governance/open-questions.md)（D11 现状） ·
+[决策日志](/governance/decision-log.md)（D11 由 **G103** 结案：取 `quiche`） ·
 [技术栈](/platform/tech-stack.md) ·
 [供应链现状](/platform/supply-chain.md)（脱字号需求自带上界；重复依赖让整张回归网停摆过一次） ·
 [TLS 与自动 HTTPS](/architecture/tls.md)
