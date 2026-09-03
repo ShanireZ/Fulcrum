@@ -172,6 +172,22 @@ def need_key(v, k):
     return v[k]
 
 
+def certs_len_of(v):
+    """`certs` 的条数；`null` **当场判负**。回 (rc, 一行输出)。
+
+    ⚠ ⚠ `null` 要说清楚，⛔ 不许靠 `len(None)` 抛 TypeError 崩掉 —— 崩出来的是一段
+    traceback，而读日志的人要多花一轮才看出「哦，它是 null」。
+    ★ 这一格与 `cache_is_object` 合起来钉的是「两个可选字段在真二进制上恒为非 null」
+    （`admin.rs` 上那两段字段文档指的就是这里）。
+    ⚠ 它只证得了**当前构型**，⛔ 证不了「所有构型」—— 而那正是这条契约今天的全部内容。
+    """
+    c = need_key(v, "certs")
+    if c is None:
+        return 1, ("/stats 的 `certs` 是 null —— 而生产装配无条件传 Some(…)，"
+                   "它到不了这个状态")
+    return 0, str(len(c))
+
+
 def main(argv):
     cmd = argv[1]
 
@@ -195,6 +211,14 @@ def main(argv):
         if need_key(sample, "config_loaded_at_unix") != 1.5:
             print("selftest: 取到的值不是原样", file=sys.stderr)
             rc = 1
+        # ★ `certs` 的 null 判据也要两个方向 —— ⛔ 且走的是**判据本体那段代码**，
+        #   不是在这里重写一遍（重写一遍的自证什么都证不了）。
+        if certs_len_of({"certs": []}) != (0, "0"):
+            print("selftest: 空数组竟然没被判成 0 条", file=sys.stderr)
+            rc = 1
+        if certs_len_of({"certs": None})[0] == 0:
+            print("selftest: certs 是 null 竟然没被判负 —— 那条判据是空的", file=sys.stderr)
+            rc = 1
         if rc == 0:
             print("stats_check.py 自证通过（命中与落空各证一遍）")
         return rc
@@ -202,7 +226,10 @@ def main(argv):
     v = load(argv[2])
 
     if cmd == "certs_len":
-        print(len(need_key(v, "certs")))
+        rc, out = certs_len_of(v)
+        print(out, file=sys.stderr if rc else sys.stdout)
+        if rc:
+            return rc
     elif cmd == "certs_domains":
         # ★ 逐项列出，⛔ 不只回条数：一个只渲染第一项的实现，`len()` 仍然是对的。
         print(",".join(sorted(c["domain"] for c in need_key(v, "certs"))))
