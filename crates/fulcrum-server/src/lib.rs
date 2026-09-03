@@ -154,10 +154,12 @@ impl<'a> Downstream<'a> {
     /// 而不是叫其中一件事的效果 —— 否则下一个人会以为另一件事是「顺带的」。
     pub(crate) fn h1h2(session: &'a mut ServerSession, alt_svc: Option<&'a str>) -> Downstream<'a> {
         // ★ h1 与 h2 的区别问 session 自己 —— 那是它**知道**的事，不是推断。
+        // ★ 用常量而不是字面量：`access_log::PROTOS` 是基数表那道门算上界用的闭集，
+        //   而它必须与**产生这些值的这一处**是同一批名字，⛔ 不能是一份抄件。
         let proto = if session.is_http2() {
-            "HTTP/2.0"
+            access_log::PROTO_H2
         } else {
-            "HTTP/1.1"
+            access_log::PROTO_H1
         };
         Downstream {
             session,
@@ -171,7 +173,7 @@ impl<'a> Downstream<'a> {
         Downstream {
             session,
             alt_svc: None,
-            record: access_log::Record::new("HTTP/3.0"),
+            record: access_log::Record::new(access_log::PROTO_H3),
         }
     }
 
@@ -490,7 +492,7 @@ impl FulcrumApp {
             //   ⇒ 这一条记不进访问日志（与 421 同一个形状 —— 那是 D26，
             //     ✅ 已由 G118 结案：给 `no_site_match` 一个计数器）。
             //   ★ 仍然把 `outcome` 填对：它不进日志，但填对了不白填。
-            session.record.outcome = "acme_http01";
+            session.record.outcome = OUTCOME_ACME_HTTP01;
             // RFC 8555 §8.3 建议 `application/octet-stream`。
             write_with_headers(
                 session,
@@ -508,7 +510,7 @@ impl FulcrumApp {
             //   `default_server` 那类行为的温床。
             let status = rt.defaults.no_site_match;
             debug!("无站点匹配：Host={host} port={}", self.port);
-            session.record.outcome = "no_site_match";
+            session.record.outcome = OUTCOME_NO_SITE_MATCH;
             // ── `fulcrum_no_site_match_total{host}`（G118）─────────────────
             //
             // ★ 记在**写 `outcome` 的同一处**：这两句说的是同一件事，
@@ -679,7 +681,7 @@ impl FulcrumApp {
         // ★ 进到这里就意味着这一条最终是**错误页** —— 无论它原本要去哪。
         //   ⚠ 写在函数第一行而不是每个调用点各写一次：调用点有四处，
         //   而「第五处随时会出现」（G110 那次的原话）。
-        session.record.outcome = "error";
+        session.record.outcome = OUTCOME_ERROR;
         match rt.error_page(site) {
             Some(page) => {
                 // ★ `handle_errors` 块内 `{status}` 指的是**原始**错误码，
@@ -1469,15 +1471,54 @@ fn host_of(req: &RequestHeader) -> String {
 /// ★ **穷尽 `match` 是判据**：契约写着 `outcome` 是闭集，而「闭集」要有东西守着才算数
 /// ⇒ 给 [`Outcome`] 加一种终结方式时**这里编不过**。若改成在每个分支各赋一次值，
 /// 加一种就只是少一个赋值，不会有任何报错 —— 日志里会静静出现一个 `aborted`。
+/// `fulcrum_requests_total{outcome}` 的八个取值，**一个常量一个** ——
+/// [`outcome_name`] 与三处直接赋值都用它们，⇒ [`OUTCOMES`] 与产生这些值的代码
+/// 是**同一批名字**，⛔ 不是一份抄件。
+pub const OUTCOME_RESPOND: &str = "respond";
+/// 见 [`OUTCOME_RESPOND`]。
+pub const OUTCOME_REDIR: &str = "redir";
+/// 见 [`OUTCOME_RESPOND`]。
+pub const OUTCOME_REVERSE_PROXY: &str = "reverse_proxy";
+/// 见 [`OUTCOME_RESPOND`]。
+pub const OUTCOME_FILE_SERVER: &str = "file_server";
+/// 见 [`OUTCOME_RESPOND`]。
+pub const OUTCOME_METRICS: &str = "metrics";
+/// 见 [`OUTCOME_RESPOND`]。⚠ 下面三个是**路由之前或路由失败之后直接赋**的 ——
+/// 那时根本没有 [`Outcome`] 可映射。
+pub const OUTCOME_ACME_HTTP01: &str = "acme_http01";
+/// 见 [`OUTCOME_RESPOND`]。
+pub const OUTCOME_NO_SITE_MATCH: &str = "no_site_match";
+/// 见 [`OUTCOME_RESPOND`]。
+pub const OUTCOME_ERROR: &str = "error";
+
+/// `fulcrum_requests_total{outcome}` 的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+///
+/// ⚠ ⚠ 它有**两个来处，缺一不可**：
+/// ① [`outcome_name`] 对 [`Outcome`] 的**穷尽** match（加一个变体就编不过）；
+/// ② 上面那三个常量 —— 直接赋的，因为赋值时还没有（或已经不会有）`Outcome`。
+///
+/// ★ 单测 `outcome 闭集与产生它的两处对得上` 把 ① 的值域与本常量对起来，
+/// 并逐个断言 ② 在集合里 ⇒ ⛔ **本常量不是一份手抄**。
+pub const OUTCOMES: &[&str] = &[
+    OUTCOME_RESPOND,
+    OUTCOME_REDIR,
+    OUTCOME_REVERSE_PROXY,
+    OUTCOME_FILE_SERVER,
+    OUTCOME_METRICS,
+    OUTCOME_ERROR,
+    OUTCOME_ACME_HTTP01,
+    OUTCOME_NO_SITE_MATCH,
+];
+
 fn outcome_name(o: &Outcome<'_>) -> &'static str {
     match o {
-        Outcome::Respond { .. } => "respond",
-        Outcome::Redirect { .. } => "redir",
-        Outcome::Proxy(_) => "reverse_proxy",
-        Outcome::FileServer(_) => "file_server",
+        Outcome::Respond { .. } => OUTCOME_RESPOND,
+        Outcome::Redirect { .. } => OUTCOME_REDIR,
+        Outcome::Proxy(_) => OUTCOME_REVERSE_PROXY,
+        Outcome::FileServer(_) => OUTCOME_FILE_SERVER,
         // ★ 闭集的**第 8 个值**（M2 批 M，G116）。
-        Outcome::Metrics => "metrics",
-        Outcome::NoRouteMatch => "error",
+        Outcome::Metrics => OUTCOME_METRICS,
+        Outcome::NoRouteMatch => OUTCOME_ERROR,
     }
 }
 

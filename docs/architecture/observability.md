@@ -278,7 +278,7 @@ metrics.example:9443 {
 | `fulcrum_cache_purged_entries_total` | counter | 事件点 | 无 | 恒为 1（无标签单值；单位是**缓存条目**，不是请求 —— G123）|
 | `fulcrum_tls_requests_total` | counter | 事件点 | `version` `cipher` | 版本表 × 套件表，各多一格 `<unknown>` —— ★ 两个都是**服务端协商**的结果，访问者添不进值（G122 / G127）|
 | `fulcrum_connections_total` | counter | 活体 | `listen` `entrypoint` | **= 监听器数** —— ★ 每个监听器只属于**一个** entrypoint，⛔ 不是 5 × 监听器数（G122）|
-| `fulcrum_connections_active` | gauge | 活体 | `listen` `entrypoint` | 同上 —— 与 `_total` 是同一批 series |
+| `fulcrum_connections_active` | gauge | 活体 | `listen` `entrypoint` | **= 监听器数**（与 `_total` 是同一批 series）—— `entrypoint` 是 **5** 个值的闭集，而每个监听器只占其中一个 |
 
 ⛔ **任何形态都不加 `uri` 标签。**
 

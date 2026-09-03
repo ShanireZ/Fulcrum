@@ -197,6 +197,19 @@ impl JsonLine {
     }
 }
 
+/// `proto` 这一格的三个取值。★ **两个入口构造函数直接用这三个常量**
+/// （[`crate::Downstream::h1h2`] / [`crate::Downstream::h3`]）⇒ [`PROTOS`] 与产生它们的
+/// 那段代码是**同一批名字**，不是抄来的。
+///
+/// ⚠ 它答不了的：**新加一个入口而忘了把它写进 [`PROTOS`]** —— 那时基数表那道门看不见。
+/// ★ 但 `Record::new` 只有那两个非测试调用点，加第三个入口时人一定会经过它们。
+pub const PROTO_H1: &str = "HTTP/1.1";
+pub const PROTO_H2: &str = "HTTP/2.0";
+pub const PROTO_H3: &str = "HTTP/3.0";
+
+/// `fulcrum_requests_total{proto}` 的取值闭集。见 [`PROTO_H1`]。
+pub const PROTOS: &[&str] = &[PROTO_H1, PROTO_H2, PROTO_H3];
+
 /// 一次请求在日志里的样子。**由 [`crate::Downstream`] 持有，逐段填。**
 ///
 /// ⚠ ⚠ 它**不是**「一份日志行的缓存」：`status` / `resp_size` 不在这里，
@@ -514,8 +527,17 @@ impl Record {
 /// 1–99 与 600 以上不是 HTTP 状态码，只可能来自上游给的一个编出来的数。
 /// ★ 给它们开新格，就是把这一格的**上界交回给别人** —— 而基数那张表管的正是这件事。
 ///
+/// `status_class` 这一格的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+///
+/// ⚠ ⚠ ★ **它不是一份手抄**：下面那条单测**穷举整个 `u16`**，断言
+/// [`status_class`] 的值域与本常量**互为子集**（两个方向）——
+/// ⇒ 这里多一个、少一个、拼错一个，或者 `status_class` 多一条臂，**当场红**。
+/// ★ 立它的直接原因：`observability.md` 那张基数表里的 `6` 此前是**抄**过来的，
+/// 而这一格从 5 变 6 的那一刻，那张表说了假话且**没有任何东西会红**。
+pub const STATUS_CLASSES: &[&str] = &["1xx", "2xx", "3xx", "4xx", "5xx", "none"];
+
 /// ⚠ 有意**不写 `_ =>` 兜底臂**：范围铺满整个 `u16`，闭集是不是穷尽的由编译器证。
-fn status_class(status: u16) -> &'static str {
+pub(crate) fn status_class(status: u16) -> &'static str {
     match status {
         100..=199 => "1xx",
         200..=299 => "2xx",

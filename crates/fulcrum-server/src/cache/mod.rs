@@ -264,7 +264,29 @@ pub enum CacheEvent {
     Stale,
 }
 
+/// `fulcrum_cache_events_total{event}` 的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+///
+/// ⚠ ⚠ ⛔ **它不是一份手抄**：单测 `event 闭集与 CacheEvent::label 对得上` 把
+/// [`CacheEvent::ALL`] 逐个映射一遍，与本常量**互为子集**；而 `ALL` 自己由一条**穷尽
+/// match** 守着 ⇒ 加一个变体就编不过，⛔ 不是静默多出一个没人认得的标签值。
+pub const CACHE_EVENTS: &[&str] = &["hit", "miss", "stale"];
+
 impl CacheEvent {
+    /// 全部变体。⚠ 它的完整性由 [`CacheEvent::穷尽性自证`] 那条**穷尽 match** 守着。
+    pub const ALL: [CacheEvent; 3] = [CacheEvent::Hit, CacheEvent::Miss, CacheEvent::Stale];
+
+    /// ⚠ ⚠ **这个函数存在的唯一理由是让编译器守住 [`CacheEvent::ALL`] 的完整性。**
+    /// 加一个变体 ⇒ 这条 match 编不过 ⇒ 人被逼着回来同时改 `ALL`。
+    /// ⛔ 别把它改成带 `_ =>` 兜底臂的写法，那样它就什么都不守了。
+    #[cfg(test)]
+    pub(crate) fn 穷尽性自证(self) -> Self {
+        match self {
+            CacheEvent::Hit => self,
+            CacheEvent::Miss => self,
+            CacheEvent::Stale => self,
+        }
+    }
+
     /// 标签值。⚠ 与 [`CacheState::header_base`] 不同，这几个是**小写**的 ——
     /// Prometheus 标签值的习惯，而且它们与响应头本来就不是同一套词。
     pub fn label(self) -> &'static str {

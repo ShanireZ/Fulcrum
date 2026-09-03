@@ -55,7 +55,38 @@ pub enum Entrypoint {
     L4Udp,
 }
 
+/// `fulcrum_connections_*{entrypoint}` 的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+///
+/// ⚠ ⚠ ⛔ **不是手抄**：单测把 [`Entrypoint::ALL`] 逐个过 [`Entrypoint::as_str`]，
+/// 与本常量互为子集；而 `as_str` 那条 match 是穷尽的 ⇒ 加一种入口就编不过。
+pub const ENTRYPOINTS: &[&str] = &["http", "admin", "quic", "l4_tcp", "l4_udp"];
+
 impl Entrypoint {
+    /// ⚠ ⚠ **这个函数存在的唯一理由是让编译器守住 [`Entrypoint::ALL`] 的完整性。**
+    /// 加一种入口 ⇒ 这条 match 编不过 ⇒ 人被逼着回来同时改 `ALL`。
+    /// ⛔ 别给它加 `_ =>` 兜底臂，那样它就什么都不守了。
+    /// ★ 只靠 [`Entrypoint::as_str`] 的穷尽性是不够的：那只逼人改 `as_str`，
+    /// 而「顺手也改 `ALL`」是**一句写在注释里的话，没有门守着**。
+    #[cfg(test)]
+    pub(crate) fn 穷尽性自证(self) -> Self {
+        match self {
+            Entrypoint::Http => self,
+            Entrypoint::Admin => self,
+            Entrypoint::Quic => self,
+            Entrypoint::L4Tcp => self,
+            Entrypoint::L4Udp => self,
+        }
+    }
+
+    /// 全部入口。⚠ 完整性由 [`Entrypoint::穷尽性自证`] 那条穷尽 match 守着。
+    pub const ALL: [Entrypoint; 5] = [
+        Entrypoint::Http,
+        Entrypoint::Admin,
+        Entrypoint::Quic,
+        Entrypoint::L4Tcp,
+        Entrypoint::L4Udp,
+    ];
+
     /// 标签里那个词。
     ///
     /// ⚠ `match` 是**穷尽**的 ⇒ 将来加一种入口时**这里编不过**，

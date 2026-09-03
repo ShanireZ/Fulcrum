@@ -119,6 +119,37 @@ pub enum Source {
     Live,
 }
 
+/// ACME 那一族 `result` 标签的三个取值。★ 渲染那一处直接用这三个常量 ⇒
+/// [`ACME_RESULTS`] 与产生它们的代码是同一批名字，⛔ 不是抄件。
+pub const ACME_RESULT_OK: &str = "ok";
+/// 见 [`ACME_RESULT_OK`]。
+pub const ACME_RESULT_FAIL: &str = "fail";
+/// 见 [`ACME_RESULT_OK`]。
+pub const ACME_RESULT_DEFERRED: &str = "deferred";
+/// `fulcrum_acme_issue_total{result}` 的取值闭集。见 [`ACME_RESULT_OK`]。
+pub const ACME_RESULTS: &[&str] = &[ACME_RESULT_OK, ACME_RESULT_FAIL, ACME_RESULT_DEFERRED];
+
+/// 一个标签的**取值域** —— `observability.md` 那张基数表第 5 列里那些数字的事实源。
+///
+/// # ★ ★ ★ 它存在的理由
+///
+/// 第 5 列此前只被一条**单向蕴含**钉着（无标签 ⇒ 恒为 1），而列里的 `8 × 6 × 3`
+/// 是**手抄**的。⚠ `status_class` 从 5 变 6 的那一刻那张表就说了假话，
+/// **而那正是这道门当初被立起来的起因** —— 它却逮不到自己的起因。
+/// ⇒ 把每个标签的取值域声明出来，第 5 列里的整数由它算。
+#[derive(Debug, Clone, Copy)]
+pub enum Domain {
+    /// 代码里的**闭集**。判据：上界那一格必须出现 `len()` 这个整数，
+    /// **或**逐字列出全部取值（真表里两种写法都有：`× 6` 与 `hit`/`miss`/`stale`）。
+    Closed(&'static [&'static str]),
+    /// 由**配置**定（站点地址、上游名、域名、监听地址…）。
+    /// ⇒ 那一格写的是散文（`配置定`、`address 数 + 1`），⛔ 本门不判它。
+    Config,
+    /// 由**编译期**定（构建版本号、编进去的 TLS 版本表与套件表）。
+    /// ⚠ 它的大小会随构建配置变，钉住只会变成噪音 ⇒ ⛔ 本门不判它。
+    Compiled,
+}
+
 /// 一个指标族的**全部声明**：名字、类型、数从哪来、HELP 文本、标签名清单。
 ///
 /// ⚠ ⚠ `labels` 那一行是**契约**：写入时给的标签值要与它**逐项对上**（个数与顺序），
@@ -132,6 +163,17 @@ pub struct Family {
     /// 带换行或反斜杠的 HELP 会当场把 exposition 撕坏。由单测守。
     help: &'static str,
     labels: &'static [&'static str],
+    /// 每个标签的取值域，**与 [`Family::labels`] 一一对应、同序**。
+    ///
+    /// ⚠ 长度必须相等 —— 由单测 `每个族的 domains 与 labels 一一对应` 守着；
+    /// ⛔ 少一格的话，后面那些标签会**静默地错位对到别人的域上**。
+    ///
+    /// ⚠ ⚠ **只有基数表那道门（`#[cfg(test)]`）读它** ⇒ 非测试构建里它确实没人读。
+    /// ★ `allow` 写在这一格上而不是模块级，免得把别的死代码一起放过去。
+    /// ⛔ **有意不在写入路径上校验标签值属不属于它的域**：那是每条请求都要付的钱，
+    /// 而它挡的那件事（贴一个域外的标签值）由各自的闭集在**源头**就挡住了。
+    #[allow(dead_code)]
+    domains: &'static [Domain],
 }
 
 /// 直方图的桶边界，**单位是秒**（渲染时再补一格 `+Inf`）。
@@ -154,6 +196,12 @@ const FAMILIES: [Family; 14] = [
         source: Source::Event,
         help: "请求总数，按站点地址字面量、结果、状态码类与协议分。",
         labels: &["site", "outcome", "status_class", "proto"],
+        domains: &[
+            Domain::Config,
+            Domain::Closed(crate::OUTCOMES),
+            Domain::Closed(crate::access_log::STATUS_CLASSES),
+            Domain::Closed(crate::access_log::PROTOS),
+        ],
     },
     Family {
         name: "fulcrum_request_duration_seconds",
@@ -161,6 +209,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Event,
         help: "请求耗时分布，单位秒。",
         labels: &["site", "outcome"],
+        domains: &[Domain::Config, Domain::Closed(crate::OUTCOMES)],
     },
     Family {
         name: "fulcrum_cache_events_total",
@@ -168,6 +217,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Event,
         help: "HTTP 缓存事件数：命中、回源、重验证后发出；三个值同一个分母（一条请求）。",
         labels: &["event"],
+        domains: &[Domain::Closed(crate::cache::CACHE_EVENTS)],
     },
     Family {
         name: "fulcrum_no_site_match_total",
@@ -175,6 +225,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Event,
         help: "没匹配到任何站点的请求数；host 只有出现在配置里的才带真值，其余归 <other>。",
         labels: &["host"],
+        domains: &[Domain::Config],
     },
     Family {
         name: "fulcrum_upstream_inflight",
@@ -182,6 +233,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "每个上游地址当前在飞的连接数；同一地址被多处引用时求和。",
         labels: &["upstream"],
+        domains: &[Domain::Config],
     },
     Family {
         name: "fulcrum_upstream_healthy",
@@ -189,6 +241,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "上游地址的健康位，1 为健康；同一地址被多处引用时全都健康才为 1；没配 health_uri 的恒为 1。",
         labels: &["upstream"],
+        domains: &[Domain::Config],
     },
     Family {
         name: "fulcrum_cert_expiry_seconds",
@@ -196,6 +249,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "已装载证书的 notAfter，取绝对 Unix 秒；抓取端减去 time() 就是剩余量。",
         labels: &["domain"],
+        domains: &[Domain::Config],
     },
     Family {
         name: "fulcrum_acme_issue_total",
@@ -203,6 +257,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "ACME 巡检的签发结果计数；deferred 是退避中或这一批接不了，不含还不到续期点的。",
         labels: &["result"],
+        domains: &[Domain::Closed(ACME_RESULTS)],
     },
     Family {
         name: "fulcrum_build_info",
@@ -210,6 +265,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "恒为 1 的版本标记；标签只有 version，别往里加会随换代变化的东西。",
         labels: &["version"],
+        domains: &[Domain::Compiled],
     },
     Family {
         name: "fulcrum_overrides_active",
@@ -217,6 +273,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "当前生效中的临时覆盖总数；悬空的（键指向的上游已经不在当前配置里）照样计入（裁决 R13）。",
         labels: &[],
+        domains: &[],
     },
     Family {
         name: "fulcrum_cache_purged_entries_total",
@@ -224,6 +281,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Event,
         help: "被 POST /purge 清掉的缓存条目数；单位是条目，不是请求。",
         labels: &[],
+        domains: &[],
     },
     Family {
         name: "fulcrum_tls_requests_total",
@@ -231,6 +289,7 @@ const FAMILIES: [Family; 14] = [
         source: Source::Event,
         help: "走 TLS 的请求数，按协商出来的版本与密码套件分；明文请求不计，问不出来的那一格记 <unknown>。",
         labels: &["version", "cipher"],
+        domains: &[Domain::Compiled, Domain::Compiled],
     },
     Family {
         name: "fulcrum_connections_total",
@@ -238,6 +297,10 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "累计接进来过多少条连接，按监听地址与入口种类分；计在握手之前。",
         labels: &["listen", "entrypoint"],
+        domains: &[
+            Domain::Config,
+            Domain::Closed(crate::conn_stats::ENTRYPOINTS),
+        ],
     },
     Family {
         name: "fulcrum_connections_active",
@@ -245,6 +308,10 @@ const FAMILIES: [Family; 14] = [
         source: Source::Live,
         help: "此刻还活着的连接数，按监听地址与入口种类分；含还在握手的那些。l4_udp 那一格数的是会话。",
         labels: &["listen", "entrypoint"],
+        domains: &[
+            Domain::Config,
+            Domain::Closed(crate::conn_stats::ENTRYPOINTS),
+        ],
     },
 ];
 
@@ -618,9 +685,11 @@ fn snapshot(src: &LiveSources) -> Registry {
         let (ok, fail, deferred) = acme.issue_counts().snapshot();
         // ★ 三格**无条件都出**，哪怕是 0：一条从来没出现过的 series 与一条恒为 0 的
         //   series，在告警规则里是两种完全不同的东西（前者让 `rate()` 直接没有数据）。
-        r.inc_by(ACME_ISSUE_TOTAL, &["ok"], ok);
-        r.inc_by(ACME_ISSUE_TOTAL, &["fail"], fail);
-        r.inc_by(ACME_ISSUE_TOTAL, &["deferred"], deferred);
+        // ★ 用常量而不是字面量：`ACME_RESULTS` 是基数表那道门算上界用的闭集，
+        //   而它必须与**产生这些值的这一处**是同一批名字，⛔ 不能是一份抄件。
+        r.inc_by(ACME_ISSUE_TOTAL, &[ACME_RESULT_OK], ok);
+        r.inc_by(ACME_ISSUE_TOTAL, &[ACME_RESULT_FAIL], fail);
+        r.inc_by(ACME_ISSUE_TOTAL, &[ACME_RESULT_DEFERRED], deferred);
     }
 
     r
@@ -923,6 +992,7 @@ mod tests {
             source: Source::Event,
             help: "请求数。",
             labels: &["site", "outcome"],
+            domains: &[Domain::Config, Domain::Config],
         },
         // ★ 一个**不带标签**的族：它渲染出来没有那对花括号。
         Family {
@@ -931,6 +1001,7 @@ mod tests {
             source: Source::Event,
             help: "就绪。",
             labels: &[],
+            domains: &[],
         },
         Family {
             name: "t_latency_seconds",
@@ -938,6 +1009,7 @@ mod tests {
             source: Source::Event,
             help: "时延，秒。",
             labels: &["route"],
+            domains: &[Domain::Config],
         },
         // ★ 一个**一条样本都没有**的族：它照样要出 HELP/TYPE。
         Family {
@@ -946,6 +1018,7 @@ mod tests {
             source: Source::Event,
             help: "一次都没发生过。",
             labels: &["x"],
+            domains: &[Domain::Config],
         },
     ];
     const T_REQUESTS: &Family = &T[0];
@@ -998,6 +1071,7 @@ mod tests {
                 source: Source::Event,
                 help: "",
                 labels: &[],
+                domains: &[],
             },
             Family {
                 name: "bad_gauge_total",
@@ -1005,6 +1079,7 @@ mod tests {
                 source: Source::Event,
                 help: "",
                 labels: &[],
+                domains: &[],
             },
             Family {
                 name: "bad_hist_total",
@@ -1012,6 +1087,7 @@ mod tests {
                 source: Source::Event,
                 help: "",
                 labels: &[],
+                domains: &[],
             },
         ];
         for f in &坏表 {
@@ -1178,6 +1254,7 @@ mod tests {
             source: Source::Event,
             help: "转义。",
             labels: &["v"],
+            domains: &[Domain::Config],
         }];
         let 原值 = "a\"b\\c\nd\te/f'g=h{i}中";
         // ★ 先证样本里真有那三种字符 —— 否则下面那条 golden 只是在量一个普通字符串。
@@ -1730,6 +1807,7 @@ mod tests {
             source: Source::Event,
             help: "无穷。",
             labels: &["v"],
+            domains: &[Domain::Config],
         }];
         let mut r = Registry::default();
         r.set(&G[0], &["pos"], f64::INFINITY);
@@ -1863,14 +1941,42 @@ mod tests {
                 )),
                 Some(_) => {}
             }
-            // ★ 上界那一格只钉**单向蕴含**，理由见本测试的文档注释。
+            // ★ 上界那一格的第一条：**无标签 ⇒ 恒为 1**（单向蕴含，反向不成立）。
             if f.labels.is_empty() && !格[4].starts_with("恒为 1") {
                 差.push(format!(
                     "上界：这个族无标签 ⇒ 只可能有一条 series，那一格却写着 `{}`",
                     格[4]
                 ));
             }
+            // ★ ★ ★ 上界那一格的第二条（**M2 批 P**）：每个 `Closed` 标签的**取值个数**
+            //   必须在那一格里说得出来 —— 要么出现 `len()` 这个整数，要么逐字列出全部取值。
+            for (标签, 域) in f.labels.iter().zip(f.domains) {
+                let Domain::Closed(取值) = 域 else {
+                    continue;
+                };
+                let 个数 = 取值.len();
+                let 有数字 = 独立整数(格[4]).any(|n| n == 个数);
+                let 有全部取值 = 取值.iter().all(|v| 格[4].contains(v));
+                if !有数字 && !有全部取值 {
+                    差.push(format!(
+                        "上界：标签 `{标签}` 的闭集是 {个数} 个值 {取值:?}，\
+                         而那一格既没出现 `{个数}`、也没逐字列出它们：`{}`\n\
+                         ⇒ **先改文档，不是改这道门** —— 闭集在代码里，那一格是抄它的结果。",
+                        格[4]
+                    ));
+                }
+            }
             差
+        }
+
+        /// 一段文本里所有**独立**的十进制整数。
+        ///
+        /// ⚠ 「独立」是承重的：`× 16` 里的 `16` ⛔ 不许被读成 `1` 或 `6` ——
+        /// 否则一个闭集从 6 个变成 16 个时，那一格照旧「命中」而它已经是假话。
+        fn 独立整数(s: &str) -> impl Iterator<Item = usize> + '_ {
+            s.split(|c: char| !c.is_ascii_digit())
+                .filter(|t| !t.is_empty())
+                .filter_map(|t| t.parse::<usize>().ok())
         }
 
         const DOC: &str = include_str!(concat!(
@@ -1922,6 +2028,18 @@ mod tests {
         //   删掉表里一行时，红的会是「只解析出 8 个」而不是「少了哪一个」。
         //   ★ 一条把更精确的判据挡在后面的自证，是负收益。
         //   ⇒ 计数由方向 ① 顺带守住：① 过了就意味着 表里的 ⊇ 声明的。
+        // ★ ★ 第 5 列那条判据的「样本里真有东西」自证（**M2 批 P**）：
+        //   真表里必须**真的有** `Closed` 域，否则那条判据在真表上是**空转** ——
+        //   ⚠ 全是 `Config` / `Compiled` 时它一个字都不查，而这道门依然全绿。
+        //   ⛔ 不写死个数（那又是一个没有门的计数），只要求「不是零」。
+        assert!(
+            FAMILIES
+                .iter()
+                .flat_map(|f| f.domains)
+                .any(|d| matches!(d, Domain::Closed(_))),
+            "一个 `Domain::Closed` 都没有 —— 上界那一列的判据在真表上什么都没查"
+        );
+
         let 声明的: std::collections::BTreeSet<&str> = FAMILIES.iter().map(|f| f.name).collect();
 
         // ── 方向 ①：声明表里的每一个族，文档那张表里都要有一行 ────────────
@@ -1961,6 +2079,37 @@ mod tests {
             全部问题.join("\n  ")
         );
 
+        // ── ★ ★ ★ 第 5 列判据的**端到端**反向（**M2 批 P**）─────────────────
+        //
+        // 拿**真表里那一行**（`fulcrum_requests_total`）配一个「闭集多了一个值」的族 ⇒
+        // 必须红在上界那一格。★ 它答的是那条链子的最后一环：
+        // 「`status_class` 真的涨到 7 个时，文档里那个 `6` 会不会被逮到」。
+        // ⛔ 不需要改任何真文件 —— `对不上的地方` 两个入参都能现造，
+        //   而共享工作树上「扰动真文件再复原」是不安全的。
+        {
+            static 多一个: &[&str] = &["1xx", "2xx", "3xx", "4xx", "5xx", "none", "7xx"];
+            static 假域: [Domain; 4] = [
+                Domain::Config,
+                Domain::Config,
+                Domain::Closed(多一个),
+                Domain::Config,
+            ];
+            let 假族 = Family {
+                name: "fulcrum_requests_total",
+                kind: Kind::Counter,
+                source: Source::Event,
+                help: "",
+                labels: &["site", "outcome", "status_class", "proto"],
+                domains: &假域,
+            };
+            let 差 = 对不上的地方(&假族, &行表["fulcrum_requests_total"]);
+            assert!(
+                差.iter().any(|d| d.starts_with("上界")),
+                "把 status_class 的闭集撑到 7 个之后，真表那一行竟然还是绿的 —— \
+                 那说明第 5 列这条判据在真表上没接上。实际报的是：{差:?}"
+            );
+        }
+
         // ── ★ ★ 反向那半：**这几条判得动坏行**。────────────────────────────
         //
         // ⚠ 只对真表断言的话，把 `对不上的地方` 改成恒返回空表一样全绿 ——
@@ -1973,6 +2122,7 @@ mod tests {
             source: Source::Live,
             help: "",
             labels: &[],
+            domains: &[],
         };
         let 好行 = ["`fulcrum_probe`", "gauge", "活体", "无", "恒为 1"];
         assert!(
@@ -2017,6 +2167,7 @@ mod tests {
             source: Source::Event,
             help: "",
             labels: &["site", "outcome"],
+            domains: &[Domain::Config, Domain::Config],
         };
         assert!(
             对不上的地方(
@@ -2033,5 +2184,139 @@ mod tests {
             .any(|d| d.starts_with("标签")),
             "标签换了顺序却没红 —— 那说明这道门比的是集合，而顺序才是契约"
         );
+
+        // ── ★ ★ ★ 第 5 列那条新判据（**M2 批 P**）的反向 ────────────────────
+        //
+        // ⚠ 三个方向都要：① 数字对不上要红；② 数字对得上不许红；
+        //   ③ 逐字列出全部取值这条**替代分支**也不许红。
+        //   ★ 少了 ②③，一个恒红的实现照样能让 ① 通过。
+        const 三个值: &[&str] = &["hit", "miss", "stale"];
+        static 三值域: [Domain; 1] = [Domain::Closed(三个值)];
+        let 闭集族 = Family {
+            name: "fulcrum_probe3",
+            kind: Kind::Counter,
+            source: Source::Event,
+            help: "",
+            labels: &["event"],
+            domains: &三值域,
+        };
+        let 行 = |上界: &'static str| ["`fulcrum_probe3`", "counter", "事件点", "`event`", 上界];
+
+        assert!(
+            对不上的地方(&闭集族, &行("× 3"))
+                .iter()
+                .all(|d| !d.starts_with("上界")),
+            "闭集是 3 个而那一格写着 3，却被判红了 —— 这道门会在正确的行上报错"
+        );
+        assert!(
+            对不上的地方(&闭集族, &行("`hit`/`miss`/`stale`"))
+                .iter()
+                .all(|d| !d.starts_with("上界")),
+            "那一格逐字列出了全部取值，却被判红了 —— **替代分支**没接上"
+        );
+        assert!(
+            对不上的地方(&闭集族, &行("× 5"))
+                .iter()
+                .any(|d| d.starts_with("上界")),
+            "闭集是 3 个而那一格写着 5，竟然没红 —— 这道门是空的"
+        );
+        // ⚠ ⚠ 这一条守的是 `独立整数`：`× 33` 里那个 `33` ⛔ 不许被读成两个 `3`。
+        assert!(
+            对不上的地方(&闭集族, &行("× 33"))
+                .iter()
+                .any(|d| d.starts_with("上界")),
+            "`33` 竟然算命中了 `3` —— 那么闭集从 3 涨到 33 时这道门会安静地放过去"
+        );
+    }
+
+    /// ⚠ ⚠ **`domains` 与 `labels` 必须一一对应、同序。**
+    ///
+    /// ⛔ 长度不等的话，后面那些标签会**静默地错位对到别人的取值域上** ——
+    /// 而错位之后那道基数判据仍然会给出一个像样的答案，只是答的是另一个问题。
+    #[test]
+    fn 每个族的_domains_与_labels_一一对应() {
+        for f in &FAMILIES {
+            assert_eq!(
+                f.domains.len(),
+                f.labels.len(),
+                "`{}` 的 domains 有 {} 个而 labels 有 {} 个",
+                f.name,
+                f.domains.len(),
+                f.labels.len()
+            );
+        }
+    }
+
+    /// ★ ★ ★ **`Closed` 声明的那些闭集，必须与产生它们的代码对得上。**
+    ///
+    /// ⚠ 少了这一条，「把闭集挂到 `Family` 上」就只是**把手抄从文档搬进了代码** ——
+    /// 而基数表那道门会一本正经地拿一份抄件去校验另一份抄件。
+    #[test]
+    fn 闭集与产生它的代码对得上() {
+        use std::collections::BTreeSet;
+
+        // ① `status_class`：**穷举整个 `u16`**（只有 65536 个，很便宜）。
+        //    ★ 两个方向：值域 ⊆ 常量，且常量里每个值都取得到。
+        let 实际: BTreeSet<&str> = (0..=u16::MAX)
+            .map(crate::access_log::status_class)
+            .collect();
+        let 声明: BTreeSet<&str> = crate::access_log::STATUS_CLASSES.iter().copied().collect();
+        assert_eq!(
+            实际, 声明,
+            "STATUS_CLASSES 与 status_class() 的值域对不上 —— \
+             ⚠ 这正是那张基数表里的 `6` 当初变成假话的那条路"
+        );
+
+        // ② `event`：`ALL` 逐个映射。`ALL` 的完整性由 `穷尽性自证` 那条 match 守着。
+        let 实际: BTreeSet<&str> = crate::cache::CacheEvent::ALL
+            .iter()
+            .map(|e| e.穷尽性自证().label())
+            .collect();
+        let 声明: BTreeSet<&str> = crate::cache::CACHE_EVENTS.iter().copied().collect();
+        assert_eq!(实际, 声明, "CACHE_EVENTS 与 CacheEvent::label 对不上");
+
+        // ③ `entrypoint`：同上。
+        let 实际: BTreeSet<&str> = crate::conn_stats::Entrypoint::ALL
+            .iter()
+            .map(|e| e.穷尽性自证().as_str())
+            .collect();
+        let 声明: BTreeSet<&str> = crate::conn_stats::ENTRYPOINTS.iter().copied().collect();
+        assert_eq!(实际, 声明, "ENTRYPOINTS 与 Entrypoint::as_str 对不上");
+
+        // ④ `result`：渲染那三行直接用这三个常量 ⇒ 这里只需钉住**没有重复、没有空值**。
+        //    ⚠ 它比 ①②③ 弱，写在明处：`ACME_RESULTS` 与那三行是同一批名字，
+        //    但「有没有第四种结果被漏掉」没有门看得见。
+        let 声明: BTreeSet<&str> = ACME_RESULTS.iter().copied().collect();
+        assert_eq!(声明.len(), ACME_RESULTS.len(), "ACME_RESULTS 里有重复");
+        assert!(!声明.contains(""), "ACME_RESULTS 里有空值");
+
+        // ⑤ `proto`：同 ④，三个常量就是两个入口构造函数用的那三个。
+        let 声明: BTreeSet<&str> = crate::access_log::PROTOS.iter().copied().collect();
+        assert_eq!(
+            声明.len(),
+            crate::access_log::PROTOS.len(),
+            "PROTOS 里有重复"
+        );
+
+        // ⑥ `outcome`：八个取值**各有一个常量**，`outcome_name` 的五条 match 臂与
+        //    三处直接赋值用的都是它们 ⇒ 同一批名字。这里钉的是集合本身自洽。
+        //    ⚠ ⚠ **已知缺口，写在明处**：`Outcome` 是别的 crate 的类型且变体带数据，
+        //    单测造不出实例 ⇒ 「新增一个变体、`outcome_name` 多一条臂，而**忘了把
+        //    新常量写进 `OUTCOMES`**」这一种**今天没有门**。★ 编译器只逼你改
+        //    `outcome_name`（那条 match 是穷尽的），逼不了你回来改这张表。
+        let 声明: BTreeSet<&str> = crate::OUTCOMES.iter().copied().collect();
+        assert_eq!(声明.len(), crate::OUTCOMES.len(), "OUTCOMES 里有重复");
+        for v in [
+            crate::OUTCOME_RESPOND,
+            crate::OUTCOME_REDIR,
+            crate::OUTCOME_REVERSE_PROXY,
+            crate::OUTCOME_FILE_SERVER,
+            crate::OUTCOME_METRICS,
+            crate::OUTCOME_ERROR,
+            crate::OUTCOME_ACME_HTTP01,
+            crate::OUTCOME_NO_SITE_MATCH,
+        ] {
+            assert!(声明.contains(v), "常量 `{v}` 不在 OUTCOMES 里");
+        }
     }
 }
