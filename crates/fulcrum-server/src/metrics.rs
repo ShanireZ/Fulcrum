@@ -48,7 +48,7 @@
 //!
 //! | 族 | 取数点 |
 //! |---|---|
-//! | `fulcrum_requests_total` · `fulcrum_request_duration_seconds` | [`crate::access_log::Record::finish`]，**只有那一处** |
+//! | `fulcrum_requests_total` · `fulcrum_request_duration_seconds` · `fulcrum_tls_requests_total` | [`crate::access_log::Record::finish`]，**只有那一处** |
 //! | `fulcrum_no_site_match_total` | `lib.rs` 里写 `outcome = "no_site_match"` 的同一处 |
 //! | `fulcrum_cache_events_total` | `hit` / `stale` 在 `write_cached`，`miss` 在回源那一处 |
 //! | `fulcrum_cache_purged_entries_total` | `POST /purge` 收尾那一处 |
@@ -147,7 +147,7 @@ const BUCKETS: &[f64] = &[
 /// ⚠ 下面那几个 `pub const` 句柄按**下标**指进来 —— 重排这张表就会让某个句柄换个族，
 /// 而那种错**在输出里看起来完全正常**（数字照涨，只是涨在另一条 series 上）。
 /// ⇒ 单测 `族句柄指的就是它名字上那个族` 把每个句柄的名字逐个钉住。
-const FAMILIES: [Family; 11] = [
+const FAMILIES: [Family; 12] = [
     Family {
         name: "fulcrum_requests_total",
         kind: Kind::Counter,
@@ -224,6 +224,13 @@ const FAMILIES: [Family; 11] = [
         source: Source::Event,
         help: "被 POST /purge 清掉的缓存条目数；单位是条目，不是请求。",
         labels: &[],
+    },
+    Family {
+        name: "fulcrum_tls_requests_total",
+        kind: Kind::Counter,
+        source: Source::Event,
+        help: "走 TLS 的请求数，按协商出来的版本与密码套件分；明文请求不计，问不出来的那一格记 <unknown>。",
+        labels: &["version", "cipher"],
     },
 ];
 
@@ -308,6 +315,66 @@ const OVERRIDES_ACTIVE: &Family = &FAMILIES[9];
 /// ⛔ **无标签**：`POST /purge` 的三种粒度（`key` / `prefix` / `all`）不做标签 ——
 /// 「这一次清的是哪种粒度」是调用方自己刚说过的话，指标上再说一遍信息量为零。
 pub const CACHE_PURGED_ENTRIES_TOTAL: &Family = &FAMILIES[10];
+
+/// 走 TLS 的请求数，按协商出来的 `version` / `cipher` 分（**M2 批 M′ 任务 3**，
+/// G122 的 **TLS 那半** / G127）。
+///
+/// # ⚠ ⚠ 它的总数**不等于** [`REQUESTS_TOTAL`] 的总数，而且那是有意的
+///
+/// 明文请求的 `Record::tls` 是 `None` ⇒ **一笔都不记**。
+/// ⛔ 因此**不许写「这两个族的总数相等」那种判据** —— 它会在第一条明文请求上红，
+/// 而那条请求什么问题都没有。★ 说得出口的关系只有一条：
+/// `sum(tls_requests_total) ≤ sum(requests_total)`。
+///
+/// # ★ 基数上界由**服务端**定，不由访问者定
+///
+/// 两个标签都是**协商结果**：`version` 来自 TLS 版本（我们编进去的那几个），
+/// `cipher` 来自我们编进去的套件表 ⇒ 上界是两张表的乘积，访问者一个值都添不进来。
+/// ⛔ **`sni` / `alpn` 不当标签**：那两个是**访问者给的**，与 G121 挡住 `host` 是同一件事。
+///
+/// # ⚠ 名字里是 `requests` 不是 `handshakes`
+///
+/// 取数点在 [`crate::access_log::Record::finish`]（**与 [`REQUESTS_TOTAL`] 逐字同一处**）
+/// ⇒ 数的是**请求**。keep-alive 下一次握手对应多条请求，叫 `handshakes`
+/// 会是一句**读起来完全成立的假话**。
+///
+/// # ★ ★ 取不到的那一格记 `<unknown>`，⛔ 不记空串（G127）
+///
+/// h3 走 quiche，而 `Handshake::cipher()` 锁在私有 `mod tls` 里 ⇒ 那一格问不出来。
+/// ⚠ ⚠ **在 Prometheus 数据模型里空标签值等同于「这个标签不存在」** ⇒ 记空串的话，
+/// 「今天这一格取不到」与「明天把 `cipher` 整个删掉」在抓取端**分不开**；
+/// 而 `cipher=""` 恰好是 PromQL 里「该标签不存在」的惯用写法，运维照着写出来的过滤器
+/// 会命中一批他没打算命中的 series。
+///
+/// ⚠ ⚠ **判据落在「值为空」上，⛔ 不落在「是不是 h3」上**：后者是把一个今天成立的
+/// 巧合钉进代码 —— 哪天别的传输也读不出套件，它会走到分支外面记一个空串，
+/// **而那时不会有任何东西红**。⇒ 落法见 [`label_or_unknown`]。
+///
+/// ⚠ **它与访问日志那一侧的处置有意不同，别当成同一条**：日志里空串 = **那一格不出现**
+/// （`tests/log/run.sh` 有一条反向断言防着有人给它编一个值）；而指标**没有「那一格不
+/// 出现」这回事** —— 每条 series 都必须给每个标签一个值。⇒ 同一个空串，两处两种处置。
+pub const TLS_REQUESTS_TOTAL: &Family = &FAMILIES[11];
+
+/// 标签值**取不到**时记的那个记号（G127）。
+///
+/// ★ 尖括号形状随 G118 的 `<other>` 与 G121 的 `<none>`：尖括号在真实的套件名
+/// （`TLS_AES_256_GCM_SHA384`）、地址字面量与主机名里都不可能出现 ⇒ 撞不上真值。
+/// ⚠ **三个记号动机各不相同，别并成一条**：`<other>` 挡的是**访问者可控的无界基数**、
+/// `<none>` 说的是**这条请求没有匹配到站点**、`<unknown>` 说的是**我们问不出来**。
+pub const UNKNOWN_LABEL: &str = "<unknown>";
+
+/// 取不到（空串）就换成 [`UNKNOWN_LABEL`]，否则原样返回（G127）。
+///
+/// ⚠ ⚠ **判据是「值为空」，⛔ 不是「这条请求走的是哪种传输」** —— 后者会把一个
+/// 今天成立的巧合钉进代码。⇒ 这个函数**看不见**调用它的是 h1/h2 还是 h3，
+/// 那正是它的全部意义。
+///
+/// ⛔ **不在 [`Family::inc`] 里统一替换**：那会让「记了个空串」这件事在**任何**族上
+/// 都变得不可能，包括将来某个把空串当成一个正当取值的族 —— 而它替换掉的那一刻
+/// 不会有任何东西说。★ 记号是取数点的决定，落在取数点那一行上，与 `<none>` 同一种写法。
+pub fn label_or_unknown(v: &str) -> &str {
+    if v.is_empty() { UNKNOWN_LABEL } else { v }
+}
 
 /// 一条直方图 series。
 struct Hist {
@@ -919,6 +986,21 @@ mod tests {
         //   ⚠ 而 `Kind` 写错在别处只是**间接**露头（`Counter` 会撞 `_total` 命名规则、
         //   `Histogram` 会让样本数掉到 0），间接的判据红起来指的是别的地方。
         assert_eq!(OVERRIDES_ACTIVE.kind, Kind::Gauge);
+        // ⛔ 无标签：`POST /purge` 的三种粒度不做标签（G123）。
+        assert_eq!(
+            CACHE_PURGED_ENTRIES_TOTAL.name,
+            "fulcrum_cache_purged_entries_total"
+        );
+        assert_eq!(CACHE_PURGED_ENTRIES_TOTAL.kind, Kind::Counter);
+        assert!(
+            CACHE_PURGED_ENTRIES_TOTAL.labels.is_empty(),
+            "fulcrum_cache_purged_entries_total 不该带任何标签"
+        );
+        // ⛔ 只有 `version` / `cipher` 两格，**顺序也是契约**（G122）——
+        //   ⛔ 不许加 `sni` / `alpn`：那两个是**访问者给的**，与 G121 挡住 `host` 同一件事。
+        assert_eq!(TLS_REQUESTS_TOTAL.name, "fulcrum_tls_requests_total");
+        assert_eq!(TLS_REQUESTS_TOTAL.kind, Kind::Counter);
+        assert_eq!(TLS_REQUESTS_TOTAL.labels, &["version", "cipher"]);
 
         // ★ ★ 每个族的**来处**也逐个钉住：`source` 写错不会让任何一条内容断言变红 ——
         //   活体族被标成 `Event` 的表现是它**永远没有样本**，而那与「没接上活体源」
@@ -945,6 +1027,42 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), n, "声明表里有重名的族");
+    }
+
+    #[test]
+    fn 取不到的标签值记_unknown_而不是空串() {
+        // ── 正向：空串 ⇒ 记号 ────────────────────────────────────────────────
+        //
+        // ⚠ ⚠ 记空串在 Prometheus 数据模型里等同于「这个标签不存在」⇒ 「今天取不到」
+        //   与「明天把这个标签整个删掉」在抓取端分不开（G127）。
+        assert_eq!(label_or_unknown(""), "<unknown>");
+        assert_eq!(label_or_unknown(""), UNKNOWN_LABEL);
+
+        // ── 反向：**有值的一律原样** ──────────────────────────────────────────
+        //
+        // ★ 少了这半条，一个「恒答 `<unknown>`」的实现会通过上半条 —— 而它把
+        //   每一条 TLS series 都并成同一格，读起来是「一个套件都没协商出来」。
+        for 真值 in ["TLSv1.3", "TLSv1.2", "TLS_AES_256_GCM_SHA384", " ", "0"] {
+            assert_eq!(
+                label_or_unknown(真值),
+                真值,
+                "有值的标签必须原样记 —— `{真值}` 被改写了"
+            );
+        }
+
+        // ── ★ 记号撞不上真值 ────────────────────────────────────────────────
+        //
+        // 尖括号在 TLS 版本名与套件名里不可能出现 ⇒ `<unknown>` 与任何一个真值
+        // 都区分得开。⚠ 这一条守的是**记号的选取**，不是替换逻辑：换一个可能
+        // 与真值撞车的记号（比如 `none`）时，上面两条一条都不会红。
+        assert!(
+            UNKNOWN_LABEL.starts_with('<') && UNKNOWN_LABEL.ends_with('>'),
+            "记号要用尖括号形状，才与 <other> / <none> 同一族且撞不上真值"
+        );
+
+        // ★ ★ 「判据落在值为空上、⛔ 不落在是不是 h3 上」这条**由签名保证**：
+        //   `label_or_unknown` 收的就只有那个值，看不见调用方走的是哪种传输。
+        //   ⇒ 这里没有对应的断言可写，那正是它比一条断言更强的地方。
     }
 
     #[test]

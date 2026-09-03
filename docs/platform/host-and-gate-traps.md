@@ -58,7 +58,7 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/proxyproto/` | 9800–9803 |
 | `tests/log/` | 9900–9906 |
 | `tests/quic-relay/` | 9910–9911 |
-| `tests/metrics/` | 9920–9921 |
+| `tests/metrics/` | 9920–9922 |
 | `tests/stats/` | 9930–9932 (range 9930–9935 reserved) |
 | *(registered, never listened on)* | 19999 — see below |
 | *(shared, hardcoded)* | 80 — see below |
@@ -73,9 +73,26 @@ intent — **if you need an address that is actually connected to, take one from
 
 **Port 80 is the one exception, and it is shared on purpose.** `synthesize_http_redirect`
 (`crates/fulcrum-config/src/compile.rs`) gives every auto-HTTPS site a 308 redirect site on a
-hardcoded `:80`, so seven scenarios bind it implicitly: `tests/acme/run.sh` ·
+hardcoded `:80`, so these scenarios bind it implicitly: `tests/acme/run.sh` ·
 `tests/acme/renew.sh` · `tests/serve/` · `tests/log/` · `tests/h3/` · `tests/proxyproto/` ·
-`tests/quic-relay/`. Making it configurable is open as **D29**.
+`tests/quic-relay/` · **`tests/stats/`**. Making it configurable is open as **D29**.
+
+⚠ ⚠ **`tests/stats/` was missing from that list until 2026-09-03, and its own file comment
+said the opposite** ("三个站点全部显式写端口且第一阶段全是 `http://` ⇒ 不合成 `:80` 重定向站点").
+That sentence is true of its *first* generation only: the later `gen3.Fulcrumfile` has
+`t.example:9932 { tls … }`, and `fulcrum compile` on exactly that shape emits **two** sites —
+the second being `http://t.example:80`. ⚠ Its `cleanup` still does not assert `:80` was handed
+back. ★ The list here is now correct; the scenario file and its cleanup are **not yet fixed**.
+
+⚠ ★ **A scenario is on that list the moment it has one auto-HTTPS address**, which is any
+address with a hostname and no explicit `http://` — the scheme defaults to `https` in
+`parse_address`, and `auto_http_redirect` defaults to *on*. Writing `tls <crt> <key>` does not
+take it off the list; only `http://` on every address, or a global `auto_http_redirect false`,
+does. ⇒ `tests/metrics/` has a TLS site on 9922 and stays off the list **because its three
+configs each carry `auto_http_redirect false`** — that line is load-bearing, not boilerplate.
+⚠ ⚠ The list above is maintained by hand and **nothing checks it**: a scenario that grows a
+TLS site silently becomes the next implicit binder, and the symptom lands on an innocent port
+in some *other* scenario. Re-derive it before trusting it.
 
 ⚠ ⚠ ⚠ **An occupied `:80` can take down listeners that have nothing to do with it**, and the
 mechanism is not obvious. `ListenerEndpoint::listen` takes the process-wide `ListenFds` mutex and

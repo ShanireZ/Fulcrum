@@ -4,8 +4,9 @@
 //! —— **那一份是权威**，本模块是它的实现。
 //!
 //! ★ 第 ② 步做的是**固定集**；第 ③ 步加的是**白名单头**（[`collect`]）
-//! 与 **TLS 四格**（[`TlsFields`]）。⚠ ⚠ 后者有一处登记在案的缺口（**D27**）：
-//! **h3 上四格全都取不到**，见 [`TlsFields`] 的类型文档。
+//! 与 **TLS 四格**（[`TlsFields`]）。⚠ 后者在 **h3 上只有三格**（`tls_cipher` 拿不到），
+//! 见 [`TlsFields`] 的类型文档 —— ✅ **D27 已结案**（落点 fork 改动 14），
+//! 那不是登记在案的缺口，是写进契约的一条边界。
 //!
 //! # ★ ★ 三件被有意分开的事
 //!
@@ -20,7 +21,10 @@
 //! # ⚠ ⚠ 收尾这一处**同时**喂指标（**M2 批 M**）
 //!
 //! [`Record::finish`] 先无条件喂 `fulcrum_requests_total` 与
-//! `fulcrum_request_duration_seconds`，再调 [`Record::emit`]（照旧按 `log` 早退）。
+//! `fulcrum_request_duration_seconds`，**再按 `tls` 有没有值**决定要不要喂
+//! `fulcrum_tls_requests_total`（**M2 批 M′ 任务 3**），最后调 [`Record::emit`]
+//! （照旧按 `log` 早退）。⚠ 第三族**只对 TLS 请求记账** ⇒ 它的总数比前两族小，
+//! ⛔ 「三个族总数相等」是一句会在第一条明文请求上红的话。
 //! ★ 绑在一处的理由与代价都写在 `finish` 的文档上，一句话：
 //! **两处各算一遍 `outcome` / `status` 迟早分家，而分家的表现是两个数字都言之凿凿、却对不上。**
 //! ⚠ 收尾路径上**只读一次时钟** ⇒ 直方图那一格与 `duration_ms` 是同一个读数的两种单位。
@@ -222,9 +226,18 @@ pub(crate) struct Record {
     pub site_addr: Option<Arc<str>>,
     pub upstream: Option<String>,
     pub cache: Option<String>,
-    /// TLS 那四格（**M2 批 L 第 ③ 步**）。`None` = 这条连接不是 TLS。
+    /// TLS 那四格（**M2 批 L 第 ③ 步**）。`None` = **这条连接不是 TLS**，
+    /// h1/h2/h3 同一口径 —— ⇒ 它同时是 `fulcrum_tls_requests_total` 记不记这一笔的判据。
     ///
-    /// ⚠ ⚠ **今天它在 h3 上恒为 `None`，而 h3 连接是 TLS 的** —— 见 [`TlsFields`]。
+    /// ⚠ ⚠ **h3 上它不是 `None`**：[`crate::quic::h3_session::quic_digest`] 在连接那一层
+    /// 现造一份同类型的 `Digest`（**D27 结案**，落点 fork 改动 14）⇒ 三格有值，
+    /// 只有 `cipher` 是空串，见 [`TlsFields`]。
+    ///
+    /// ★ ★ 这里曾经写着「今天它在 h3 上恒为 `None`」并引着 D27。那句话在 D27 结案的
+    /// 那一刻就成了假话，而它**一直读起来完全成立** —— 同一个文件下面 25 行的类型文档、
+    /// `lib.rs` 的 `tls_fields()` 与 `tests/log/run.sh` 第八步三处都在说反话，
+    /// 却没有任何一处**看得见**这句注释。⇒ 过期注释在本仓内原理上没有门守得住，
+    /// 唯一的守法是**改的那一笔顺手把它一起改掉**。
     pub tls: Option<TlsFields>,
     /// 白名单命中的请求头，**已经是最终形态**（日志键 + 值）。
     ///
@@ -466,6 +479,24 @@ impl Record {
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
         crate::metrics::REQUEST_DURATION_SECONDS.observe(&[site, self.outcome], secs);
+
+        // ── TLS 那一族（**M2 批 M′ 任务 3**，G122 的 TLS 半 / G127）────────────
+        //
+        // ⚠ ⚠ **明文请求一笔都不记** —— `tls` 是 `None` 就是「这条连接不是 TLS」。
+        //   ⇒ 这个族的总数**小于** `fulcrum_requests_total` 的总数，那是有意的，
+        //   ⛔ 不许写「两个族总数相等」那种判据：它会在第一条明文请求上红。
+        // ★ 取数点与上面两族**逐字同一处**（`REQUESTS_TOTAL` 那条「只能有一处」的纪律
+        //   管的是同一件事：两处各算一遍，迟早分家，而分家时两个数各自都言之凿凿）。
+        if let Some(t) = self.tls.as_ref() {
+            // ★ ★ 取不到就记 `<unknown>`（G127）。⚠ 判据是**值为空**，
+            //   ⛔ 不是「这条请求走的是 h3 吗」—— 后者是把一个今天成立的巧合钉进代码：
+            //   哪天别的传输也读不出套件，它会走到分支外面记一个空串，而那时不会有东西红。
+            // ⚠ `version` 与 `cipher` **同一条规则**，⛔ 不给 `cipher` 开特例。
+            crate::metrics::TLS_REQUESTS_TOTAL.inc(&[
+                crate::metrics::label_or_unknown(&t.version),
+                crate::metrics::label_or_unknown(&t.cipher),
+            ]);
+        }
     }
 }
 

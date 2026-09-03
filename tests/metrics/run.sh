@@ -23,6 +23,9 @@
 #        + 兜底 `respond 403`。★ 我们打不进 10.0.0.0/8 ⇒ 拿到的是 403 而不是指标
 #        （访问控制的**反向**那一半，在容器里真的造得出来的形状）。
 #   9921 站点 W —— `*.wild.example`，**一条通配地址**（G121 的折叠判据要它，判据 6）。
+#   9922 站点 T —— `a.example:9922` + `tls`（**M2 批 M′ 任务 3**，`fulcrum_tls_requests_total`）。
+#        ★ G110 让有 TLS 的端口在**同一个端口号**上自动听 UDP ⇒ h1 / h2 / h3 三条路
+#          都在这一个端口上量，不另起服务。
 #
 # ⚠ ⚠ ★ **站点 W 补的是夹具形状上的洞，不是多一条覆盖。** 另外四条地址全是**精确**
 #   字面量 ⇒ 对每一条命中站点的请求，`ctx.host` 与命中的那条地址**逐字相等**。
@@ -36,8 +39,15 @@
 #   而一致性门要求同一个站点上至少出现 `metrics` 与 `respond` 两种 `outcome`。
 #   ★ 顺带：它让「站点 B 上打**同一路径**」这句话有了确定的所指。
 #
-# ⚠ 三个站点全部写 `http://` ⇒ **不触发自动 HTTPS、不合成 `:80` 重定向站点**，
-#   本场景与那个共享端口无关。★ 但 cleanup 仍然断言 9920/9921 已经还回去
+# ⚠ ⚠ **本场景仍然不碰共享的 `:80`，而现在它需要一句显式的话才成立。**
+#   前四个站点全写 `http://` ⇒ 天然不合成重定向站点；而站点 T 写的是
+#   `a.example:9922`（没写 scheme ⇒ 按 `compile.rs` 的规则推成 `https` ⇒ `auto_https`）
+#   ——那本来**会**让 `synthesize_http_redirect` 给它合成一个 `:80` 的 308 站点，
+#   于是本格变成 AGENTS.md 那张表上第八个隐式绑 `:80` 的场景。
+#   ⇒ 三份配置的全局块都写 `auto_http_redirect false` 把它按住。
+#   ★ 那一行今天**不改变任何既有判据**（前四个站点本来就不合成）——它守的正是
+#     站点 T 这一条，⛔ 别当成可以顺手删掉的样板。
+#   ★ cleanup 照旧断言 9920/9921/9922 都已经还回去
 #   （照 `tests/quic-relay/run.sh`：判据挂在「端口还回去了没有」，不挂在「进程还在不在」）。
 
 set -euo pipefail
@@ -52,6 +62,9 @@ A_PORT=${A_PORT:-9920}
 #   是合法的两个站点。⇒ 反向判据 ① 与访问控制的反向半边在同一个监听器上量，
 #   「监听器不一样」这条解释被排除掉了。
 BC_PORT=${BC_PORT:-9921}
+# 站点 T：TLS 那一格（M2 批 M′ 任务 3）。★ 同一个端口号上同时有 TCP 与 UDP（G110）
+#   ⇒ h1 / h2 / h3 三条路共用它。
+TLS_PORT=${TLS_PORT:-9922}
 LOGFILE="$WORK/access.json"
 EXPO="$WORK/expo.py"
 # 抓取路径。★ 它同时是「站点 B 上打的同一路径」。
@@ -90,9 +103,10 @@ cleanup() {
   # 照 `tests/quic-relay/run.sh` 那段。⚠ 它守的是**上面那个 `PIDS` 收全了没有**，
   # 而判据挂在「端口还回去了没有」而不是「进程还在不在」：前者才是下一个场景真会
   # 被绊到的东西，后者要先知道该找哪个 pid —— 而一个没被登记的 pid 恰恰最找不到。
-  # ⚠ 本格不碰 `:80`（三个站点都是 `http://`，不合成重定向站点）⇒ 单子里没有它。
+  # ⚠ 本格不碰 `:80`：前四个站点都是 `http://`，而 `auto_https` 的站点 T 由全局
+  #   `auto_http_redirect false` 按住（见文件头）⇒ 单子里没有它。
   local p leaked=""
-  for p in "$A_PORT" "$BC_PORT"; do
+  for p in "$A_PORT" "$BC_PORT" "$TLS_PORT"; do
     waited=0
     while port_listening "$p" && [ "$waited" -lt 30 ]; do
       sleep 0.1
@@ -421,13 +435,14 @@ PY
 # ★ ★ 三条自证：端口没被占（否则量的是别人的服务）；访问日志此刻不存在
 #   （否则「多了几行」分不出「刚写的」与「本来就有的」）；读取端量得了东西。
 echo "=== [0/8] 基线：端口空着 · 日志文件还不存在 · exposition 读取端自证 ==="
-for p in "$A_PORT" "$BC_PORT"; do
+for p in "$A_PORT" "$BC_PORT" "$TLS_PORT"; do
   if port_listening "$p"; then
     echo "METRICS TESTS FAILED: 端口 $p 已经被占，本次结果不可采信。" >&2
     exit 1
   fi
 done
-ok "两个端口都空着"
+# ⛔ 不在这句话里写个数：那个计数一道门都没有，加一个端口时它当场过期而不会红。
+ok "本格用到的端口都空着（$A_PORT $BC_PORT $TLS_PORT）"
 if [ -e "$LOGFILE" ]; then
   echo "METRICS TESTS FAILED: $LOGFILE 已经存在，本次结果不可采信。" >&2
   exit 1
@@ -447,9 +462,29 @@ fi
 #   POST /load 换不了它 —— 必须在这里，不能等后面 [reload] 再加。
 #   ★ 它是一个独立的 Unix socket 监听，不影响这份配置上任何一条既有判据
 #   （不产生新的 `site`、不产生新的 `reverse_proxy`）。
+
+# ── 自签证书（站点 T 要，M2 批 M′ 任务 3）─────────────────────────────────
+#
+# ⚠ SAN 必须有 `a.example`：枢衡按**证书自己的 SAN** 决定这张证书装在哪些 SNI 上。
+# ★ 与 `tests/log/run.sh` 那段逐字同一套（现签，⛔ 不入库）。
+openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
+  -keyout "$WORK/tls.key" -out "$WORK/tls.crt" \
+  -subj "/CN=a.example" \
+  -addext "subjectAltName=DNS:a.example" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  >/dev/null 2>&1 || {
+  echo "METRICS TESTS FAILED: openssl 生成自签证书失败" >&2
+  exit 1
+}
+
+# ⚠ ⚠ ⚠ **站点 T 必须出现在下面**三份**配置里**（`a` / `ov` / `ov-dangling`）。
+#   `POST /load` 明确拒绝监听端口集发生变化（`admin.rs`：「监听端口集变了，本进程
+#   换不了」，回 409）⇒ 少写一份，后面那两次 reload 会 409，**而红的地方会在
+#   `fulcrum_overrides_active` 那一节**，指向一个与真正原因完全无关的方向。
 cat > "$WORK/a.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
+    auto_http_redirect false
 }
 
 http://a.example:$A_PORT, http://a2.example:$A_PORT {
@@ -482,6 +517,18 @@ http://c.example:$BC_PORT {
 http://*.wild.example:$BC_PORT {
     respond 200 "wild-ok"
 }
+
+# ★ ★ 站点 T：TLS 那一格。⚠ 有意**不写** metrics、不写 matcher ——
+#   它只负责「让请求真的走过一次 TLS」，抓取仍旧从站点 A 走明文出口。
+#   ⇒ 「抓取自己不计进 tls_requests_total」这件事因此是**结构上**成立的，不靠记性。
+a.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    log {
+        output file $LOGFILE
+        level info
+    }
+    respond 200 "t-ok"
+}
 CONF
 
 # 一份**没有任何来源匹配器**的 metrics 配置 —— 只用来证那条诊断真的会说话。
@@ -500,14 +547,14 @@ RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/a.Fulcrumfile" \
   > "$WORK/a.log" 2>&1 &
 PIDS+=($!)
 
-for p in "$A_PORT" "$BC_PORT"; do
+for p in "$A_PORT" "$BC_PORT" "$TLS_PORT"; do
   wait_port "$p" || {
     echo "METRICS TESTS FAILED: 端口 $p 起不来。日志：" >&2
     cat "$WORK"/*.log >&2
     exit 1
   }
 done
-ok "两个监听都起来了"
+ok "监听都起来了（$A_PORT $BC_PORT $TLS_PORT）"
 
 if [ -f "$LOGFILE" ] && [ "$(lines)" = "0" ]; then
   ok "访问日志装载时就开好了，此刻 0 行（一致性门的基线）"
@@ -567,7 +614,7 @@ FAMILIES_EXPECTED="fulcrum_requests_total fulcrum_request_duration_seconds
 fulcrum_cache_events_total fulcrum_cache_purged_entries_total
 fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy
 fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info
-fulcrum_overrides_active"
+fulcrum_overrides_active fulcrum_tls_requests_total"
 for f in $FAMILIES_EXPECTED; do
   if expo meta "$S1" "$f"; then
     ok "族 $f 的 HELP/TYPE 都在"
@@ -845,6 +892,169 @@ eq "抓取回 200" 200 "$CODE"
 eq "★★ outcome=metrics 那一格随抓取增长（上一次抓取被这一次看见了）" \
   1 "$(($(expo sum "$S8" fulcrum_requests_total site=a.example outcome=metrics) - Y1))"
 
+# ── fulcrum_tls_requests_total：走 TLS 的请求（M2 批 M′ 任务 3，G122 / G127）──
+#
+# ★ ★ ★ 这一族的判据**全部挂在「与访问日志那一行读出来的值对得上」上**，
+#   ⛔ 不挂在写死的套件名上：把 `TLS_AES_256_GCM_SHA384` 写进判据，等于让这道门
+#   在 BoringSSL 换一次默认套件时红，而那时红的地方指向的是一个完全正确的实现。
+#   ⇒ 每一条 TLS 请求先从日志里读出这条连接真的协商出了什么，再拿它去指标里找那条 series。
+#
+# ⚠ ⚠ **⛔ 这里没有、也不许有「这个族的总数 = requests_total 的总数」那种判据**：
+#   明文请求的 `record.tls` 是 `None` ⇒ 不计（G122 / 计划 S5）。那条判据会在第一条
+#   明文请求上红，而那条请求什么问题都没有。★ 说得出口的关系只有「小于等于」。
+echo "=== fulcrum_tls_requests_total（M2 批 M′ 任务 3，G122 的 TLS 半 / G127）==="
+
+# 一条走 TLS 的请求。$1 = 路径，其余 = 额外的 curl 参数。回 HTTP 码。
+# ⚠ `-k`：证书是现签自签的。⚠ `--resolve`：SNI 要是 `a.example`（证书的 SAN 就是它）。
+tls_req() {
+  local path=$1
+  shift
+  curl -sS -o /dev/null -w '%{http_code}' -k --max-time 5 \
+    --resolve "a.example:$TLS_PORT:$HOST" "$@" \
+    "https://a.example:$TLS_PORT$path" 2>/dev/null || echo 000
+}
+
+# 这个族此刻的总数。★ 只有一个取数处，写成函数免得三处各抄一遍。
+tls_total() { expo sum "$1" fulcrum_tls_requests_total; }
+
+# ── ★ 夹具自证：`--http3-only` 真的在走 QUIC，不是悄悄回落到 TCP ─────────────
+#
+# ⚠ ⚠ `--http3-only` 不许写成 `--http3`：后者在 QUIC 不通时**回落到 TCP**，
+#   于是下面 h3 那半会在「h3 根本没起来」时照样全绿（本仓在 tests/h3/run.sh 里
+#   白纸黑字记过这一条）。★ 对着一个**没有 UDP 监听**的端口（站点 A 是纯 HTTP）
+#   打一次，它必须失败 —— 少了这条，一个「curl 没编进 QUIC 后端」的镜像会让
+#   h3 那一整半变成空转。
+if curl -sS --http3-only --max-time 5 -o /dev/null \
+    "https://$HOST:$A_PORT/" >/dev/null 2>&1; then
+  fail "★ 对着一个没有 UDP 监听的端口 --http3-only 竟然成功了 —— 这把尺子量不了东西"
+else
+  ok "★ 空 UDP 端口上 --http3-only 如期失败 ⇒ 它真的在走 QUIC，不是悄悄回落"
+fi
+
+ST0="$WORK/st0.txt"
+CODE=$(scrape "$ST0"); eq "抓取回 200（TLS 族的基线）" 200 "$CODE"
+T0=$(tls_total "$ST0")
+R0=$(expo sum "$ST0" fulcrum_requests_total)
+
+# ── ① 明文请求**一笔都不记** ────────────────────────────────────────────────
+CODE=$(req "$BC_PORT" b.example "/p1"); eq "  明文 1（站点 B）" 200 "$CODE"
+CODE=$(req "$BC_PORT" b.example "/p2"); eq "  明文 2（站点 B）" 200 "$CODE"
+CODE=$(req "$BC_PORT" b.example "/p3"); eq "  明文 3（站点 B）" 200 "$CODE"
+sleep 0.3
+ST1="$WORK/st1.txt"
+CODE=$(scrape "$ST1"); eq "抓取回 200" 200 "$CODE"
+# ★ 先自证这三条请求真的被数到了 —— 否则下面那条「TLS 族没涨」在一个
+#   「三条请求根本没发出去」的世界里也全绿。⚠ 4 = 3 条明文 + ST0 那次抓取自己
+#   （计数在渲染之后 ⇒ 第 N 次抓取看到的是前 N−1 次的量）。
+eq "★ 夹具自证：requests_total 涨了 4（3 条明文 + ST0 那次抓取自己）" \
+  4 "$(($(expo sum "$ST1" fulcrum_requests_total) - R0))"
+eq "★★★ 而 TLS 族一笔都没涨 —— 明文请求的 record.tls 是 None（G122，⛔ 别写成两族总数相等）" \
+  0 "$(($(tls_total "$ST1") - T0))"
+
+# ── ② h1 与 h2 各一条：分开断，⛔ 不合成一条 ────────────────────────────────
+#
+# ⚠ ⚠ 合成一条（「打两次、涨 2」）的话，一个**只在 h2 上记**的实现照样全绿：
+#   两条请求走的是同一份 `{version,cipher}`，两次 +1 与一次 +2 在总数上分不开。
+#   ⇒ 一条一条打、一条一条断。
+# 打一条 TLS 请求并把它量完。$1 = 这一格的名字（也用作抓取文件名与路径）·
+# $2 = curl 的协议开关 · $3 = 期望的 `proto` 字段 · $4 = 上一份抓取正文（做差的左端）。
+# ★ 量完把这一次的抓取正文路径写进 `$LAST_SCRAPE`，给下一格当左端。
+LAST_SCRAPE=""
+tls_case() {
+  local name=$1 flag=$2 want_proto=$3 prev=$4
+  local code ver cipher here before after
+  code=$(tls_req "/t-$name" "$flag")
+  eq "  TLS 请求（$name）回 200" 200 "$code"
+  sleep 0.3
+  eq "  ★ 它真的走的是 $want_proto（否则下面量的是另一条路）" "$want_proto" "$(field proto)"
+  ver=$(field tls_version)
+  cipher=$(field tls_cipher)
+  # ★ 夹具自证：h1/h2 上套件**真的问得出来** —— 否则下面那条交叉断言会退化成
+  #   「<unknown> 那一格涨了 1」，而它在一个什么都读不出来的实现上也全绿。
+  if [ -n "$cipher" ] && [ "$cipher" != "<缺>" ] && [ "$cipher" != "<unknown>" ]; then
+    ok "  ★ 夹具自证：$name 上真的协商出了套件（$cipher），不是 <unknown>"
+  else
+    fail "  ★ $name 上 tls_cipher 读不出真值（拿到「$cipher」）—— 交叉断言会退化成空转"
+  fi
+  here="$WORK/st-$name.txt"
+  code=$(scrape "$here")
+  eq "  抓取回 200" 200 "$code"
+  eq "★★★ $name：TLS 族正好 +1" 1 "$(($(tls_total "$here") - $(tls_total "$prev")))"
+  # ★ ★ ★ 交叉对照：涨的那一笔必须落在**访问日志刚刚报出来的那一对值**上，
+  #   ⛔ 不是落在写死的套件名上，也不是「随便哪条 series 涨了」。
+  before=$(expo sum "$prev" fulcrum_tls_requests_total "version=$ver" "cipher=$cipher")
+  after=$(expo sum "$here" fulcrum_tls_requests_total "version=$ver" "cipher=$cipher")
+  eq "★★★ $name：涨的正好是 {version=$ver, cipher=$cipher} 那一条（与访问日志同一对值）" \
+    1 "$((after - before))"
+  LAST_SCRAPE="$here"
+}
+
+# ⚠ ⚠ 两格**分开打、分开断**：合成一条（「打两次、涨 2」）的话，一个**只在 h2 上记**
+#   的实现照样全绿 —— 两条请求走的是同一份 `{version,cipher}`，两次 +1 与一次 +2
+#   在总数上分不开。
+tls_case http1.1 --http1.1 "HTTP/1.1" "$ST1"
+tls_case h2 --http2 "HTTP/2.0" "$LAST_SCRAPE"
+ST2="$LAST_SCRAPE"
+
+# ── ③ h3：取不到的那一格记 `<unknown>`，⛔ 不记空串（G127）─────────────────
+CODE=$(tls_req "/t-h3" --http3-only)
+eq "  TLS 请求（h3）回 200" 200 "$CODE"
+sleep 0.3
+eq "  ★ 它真的走的是 HTTP/3.0" "HTTP/3.0" "$(field proto)"
+# RFC 9001 §4.2：QUIC 只能用 TLS 1.3。★ 这是规范，不是我们猜的。
+eq "  ★ h3 的 tls_version 是 TLSv1.3（RFC 9001 §4.2）" "TLSv1.3" "$(field tls_version)"
+# ⚠ ⚠ **两侧处置不同，这里一并钉住**：访问日志里那一格**不出现**（契约：取不到的
+#   字段不出现）；而指标里它必须是 `<unknown>`（指标没有「那一格不出现」这回事）。
+#   ★ 少了上面这半，「日志与指标是同一套处置」这句假话没有任何东西挡得住。
+eq "★★★ h3：访问日志里 tls_cipher **不出现**（取不到的字段不出现）" "<缺>" "$(field tls_cipher)"
+ST3="$WORK/st-h3.txt"
+CODE=$(scrape "$ST3"); eq "  抓取回 200" 200 "$CODE"
+eq "★★★ h3：TLS 族正好 +1" 1 "$(($(tls_total "$ST3") - $(tls_total "$ST2")))"
+UNK_BEFORE=$(expo sum "$ST2" fulcrum_tls_requests_total version=TLSv1.3 'cipher=<unknown>')
+UNK_AFTER=$(expo sum "$ST3" fulcrum_tls_requests_total version=TLSv1.3 'cipher=<unknown>')
+eq "★★★ h3：涨的正好是 {version=TLSv1.3, cipher=<unknown>} 那一条（G127）" \
+  1 "$((UNK_AFTER - UNK_BEFORE))"
+
+# ── ④ ★ ★ ★ G127 的正主：这个族里**一个空标签值都不许有** ──────────────────
+#
+# ⚠ ⚠ 在 Prometheus 数据模型里空标签值等同于「这个标签不存在」⇒ 记空串的话，
+#   「今天这一格取不到」与「明天把 cipher 整个删掉」在抓取端**分不开**；
+#   而 `cipher=""` 恰好是 PromQL 里「该标签不存在」的惯用写法。
+# ★ ★ 这一条**不看是不是 h3**：它问的是「有没有哪条 series 的哪一格是空的」——
+#   与 G127 把判据落在「值为空」上、⛔ 不落在「是不是 h3」上逐字同一个形状。
+# ⚠ 取样前先自证样本里真有东西：一个恒答空集的读法会让下面那条恒绿。
+TLS_SERIES=$(expo series "$ST3" fulcrum_tls_requests_total)
+if [ "$TLS_SERIES" -ge 2 ]; then
+  ok "★ 取样自证：这个族此刻有 $TLS_SERIES 条 series（h1/h2 那对 + h3 的 <unknown> 那条）"
+else
+  fail "★ 这个族此刻只有 $TLS_SERIES 条 series —— 下面那条空标签检查会退化成空转"
+fi
+for lbl in version cipher; do
+  if expo labelvalues "$ST3" fulcrum_tls_requests_total "$lbl" | grep -qx ''; then
+    fail "★★★ G127：$lbl 那一格出现了**空标签值** —— 抓取端读起来等同于「没有这个标签」"
+  else
+    ok "★★★ G127：$lbl 那一格没有任何空值（取不到的记 <unknown>，不记空串）"
+  fi
+done
+
+# ── ⑤ 标签键逐字，⛔ 不许多出 sni / alpn ────────────────────────────────────
+#
+# ★ 判的是**键的集合逐字相等**（`labelkeys` 打的是排序后的键名）：写成「含有
+#   version 与 cipher」的话，多出一个 `sni` 标签照样绿 —— 而那正是 G122 明令
+#   挡住的东西（`sni`/`alpn` 是**访问者给的**，与 G121 挡住 host 是同一件事）。
+eq "★★★ 这个族只带 {cipher, version} 两个标签（⛔ 不许有 sni / alpn）" \
+  "cipher,version" "$(expo labelkeys "$ST3" fulcrum_tls_requests_total)"
+
+# ── ⑥ 与 requests_total 的关系：**小于**，⛔ 不是相等 ───────────────────────
+TLS_SUM=$(tls_total "$ST3")
+REQ_SUM=$(expo sum "$ST3" fulcrum_requests_total)
+if [ "$TLS_SUM" -gt 0 ] && [ "$TLS_SUM" -lt "$REQ_SUM" ]; then
+  ok "★★★ sum(tls_requests_total)=$TLS_SUM 严格小于 sum(requests_total)=$REQ_SUM（明文请求不计，G122）"
+else
+  fail "★★★ 期望 0 < tls_requests_total($TLS_SUM) < requests_total($REQ_SUM) —— \
+明文请求被计进 TLS 族了，或者 TLS 请求一条都没被计"
+fi
+
 # ── fulcrum_overrides_active：与 GET /stats 同源、悬空的照样计入 ───────────
 #   （M2 批 N 任务 6.5，G126，裁决 R13）
 #
@@ -902,6 +1112,7 @@ OV_UP="127.0.0.1:19999"
 cat > "$WORK/ov.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
+    auto_http_redirect false
 }
 
 http://a.example:$A_PORT, http://a2.example:$A_PORT {
@@ -945,6 +1156,19 @@ http://ov.example:$BC_PORT {
         reverse_proxy $OV_UP
     }
 }
+
+# ★ 站点 T 原样带过来：「POST /load」按 (端口, 是否 TLS) 比监听器集，
+#   这一份少了它就是「端口集变了」⇒ 409（理由见第一份配置那段注释）。
+# ⚠ 这个 heredoc 不带引号（要展开端口变量）⇒ 本行里写反引号会被当成命令替换，
+#   所以这里一律用「」—— 与 tests/log/run.sh 里那条同一个陷阱。
+a.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    log {
+        output file $LOGFILE
+        level info
+    }
+    respond 200 "t-ok"
+}
 CONF
 "$BIN" compile "$WORK/ov.Fulcrumfile" > "$WORK/ov.json" 2>/dev/null || {
   echo "METRICS TESTS FAILED: compile ov.Fulcrumfile 失败" >&2
@@ -957,6 +1181,7 @@ CONF
 cat > "$WORK/ov-dangling.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
+    auto_http_redirect false
 }
 
 http://a.example:$A_PORT, http://a2.example:$A_PORT {
@@ -994,6 +1219,16 @@ http://ov.example:$BC_PORT {
     handle {
         reverse_proxy $OV_UP
     }
+}
+
+# ★ 站点 T 原样带过来（同上：少了它这一份就撞 409）。
+a.example:$TLS_PORT {
+    tls $WORK/tls.crt $WORK/tls.key
+    log {
+        output file $LOGFILE
+        level info
+    }
+    respond 200 "t-ok"
 }
 CONF
 "$BIN" compile "$WORK/ov-dangling.Fulcrumfile" > "$WORK/ov-dangling.json" 2>/dev/null || {
@@ -1090,4 +1325,4 @@ if [ "$FAILS" -ne 0 ]; then
   tail -10 "$LOGFILE" >&2 || true
   exit 1
 fi
-echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入）。"
+echo "METRICS TESTS PASSED —— Prometheus 指标真的在跑（格式合法 · 访问控制两个方向 · 没写 metrics 的站点拿不到 · 未知 Host 封顶且真的在数 · 两个族的总和对得上 · 指标与访问日志逐条对得上 · 两个「site」在同一条请求上给出不同的值 · 通配站点的两个子域名折叠成一格 · TLS 族只数 TLS 请求且 h1/h2/h3 各自与访问日志对得上、h3 那一格是 <unknown> 不是空串 · fulcrum_overrides_active 与 /stats 同源且悬空的照样计入）。"
