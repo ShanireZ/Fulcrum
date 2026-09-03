@@ -15,9 +15,9 @@ sources:
   - id: plan-10-g33
     resource: /references/plan.md
     title: PLAN.md §10 G33（路径约定）、G34（回落层 systemd 依赖）
-  - id: plan-11
+  - id: plan-10-d14
     resource: /references/plan.md
-    title: PLAN.md §11 D14（G31 需要 owner 修订）
+    title: PLAN.md §10 G37（D14 结案：Type=notify + 前台 + ExitType=cgroup，★ 不交接 MainPID）
 ---
 
 ★ **本页记的是实际跑出来的东西，属历史事实。** 结论可以被后续实验推翻，但「那几次跑出了什么」不会变。

@@ -15,9 +15,9 @@ sources:
   - id: plan-6
     resource: /references/plan.md
     title: PLAN.md §6.1 首版自研范围
-  - id: plan-11
+  - id: plan-10-d8-d11
     resource: /references/plan.md
-    title: PLAN.md §11 D8（磁盘缓存后端设计，最晚 M2）、D11（HTTP/3 库选型）
+    title: PLAN.md §10 G83 / G84（D8 结案：磁盘缓存的布局与崩溃恢复）、G103（D11 结案：HTTP/3 取 quiche）
 ---
 
 ★ 本页属**技术基线**，带真内容。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。

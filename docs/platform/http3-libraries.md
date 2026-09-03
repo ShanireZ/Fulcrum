@@ -9,9 +9,9 @@ generated:
   by: claude-code/opus-5
   at: 2026-08-25T00:00:00Z
 sources:
-  - id: plan-11
+  - id: plan-10-d11
     resource: /references/plan.md
-    title: PLAN.md §11 D11（HTTP/3 库选型）与它的两条前置
+    title: PLAN.md §10 G103（D11 结案：HTTP/3 取 quiche）与它的两条前置
   - id: plan-51
     resource: /references/plan.md
     title: PLAN.md §5.1 G6 三条硬约束（rustls 锁死 / tower 用不上 / QUIC 监听器必须参与 socket 移交）

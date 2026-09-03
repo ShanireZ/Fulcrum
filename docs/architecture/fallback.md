@@ -15,9 +15,9 @@ sources:
   - id: plan-63
     resource: /references/plan.md
     title: PLAN.md §6.3 回落层（过渡期，1.0 时归零）
-  - id: plan-11
+  - id: plan-10-d6
     resource: /references/plan.md
-    title: PLAN.md §11 D6（回落层的进程管理方式，最晚 M1）
+    title: PLAN.md §10 G34（D6 结案：回落层进程管理＝复用既有 systemd 单元，在枢衡的 unit 里声明依赖）
 ---
 
 ★ 本页属**技术基线**。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。

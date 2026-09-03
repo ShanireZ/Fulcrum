@@ -487,8 +487,9 @@ impl FulcrumApp {
         if let Some(key_auth) = self.http01.answer(&path) {
             debug!("HTTP-01 应答 {path}");
             // ⚠ 它在路由**之前**，所以没有站点、也没有站点的 `log` 配置
-            //   ⇒ 这一条记不进访问日志（与 421 同一个形状，见 §11 D26）。
-            //   ★ 仍然把 `outcome` 填对：将来 D26 拍板之后它就是现成的。
+            //   ⇒ 这一条记不进访问日志（与 421 同一个形状 —— 那是 D26，
+            //     ✅ 已由 G118 结案：给 `no_site_match` 一个计数器）。
+            //   ★ 仍然把 `outcome` 填对：它不进日志，但填对了不白填。
             session.record.outcome = "acme_http01";
             // RFC 8555 §8.3 建议 `application/octet-stream`。
             write_with_headers(

@@ -841,7 +841,7 @@ self.body_bytes_sent += write_buf.len();
 
 ★ ★ **真正的出路是架构层面的**：G13 定的分发方式是 **systemd**，而 systemd 下的现代做法是 `Type=simple` / `Type=notify` **前台运行**，由 `User=` / `Group=` 做特权丢弃、日志走 journal。那样 `conf.daemon` 恒为 `false`，`daemonize()` **整条路径都是死代码**，依赖可以直接删掉——**并且特权丢弃交给了比任何 crate 都更经得起审计的 systemd**。
 
-但这取决于「Pingora 的零停机升级在前台模式下怎么做」，那是 **M1 的设计问题**（与 D5 / D6 相邻），不是这次 fork 该顺手拍板的。登记在 `PLAN.md` §11 **D12**。
+但这取决于「Pingora 的零停机升级在前台模式下怎么做」，那是 **M1 的设计问题**（与 D5 / D6 相邻），不是这次 fork 该顺手拍板的。当初登记为 **D12** —— ⚠ 那一条已经结案，不在 `PLAN.md` §11 里了：进程模型由 **G31** 定（`Type=notify` 前台运行）并经 **G37** 修订（`ExitType=cgroup`，不交接 MainPID），而 `daemonize` 这个依赖**是被权衡后保留的**（理由见 [`supply-chain.md`](../../docs/platform/supply-chain.md)）。
 
 ★ **在那之前，这条公告是已知且已接受的**：它是 informational（失维），**没有 CVE**。
 

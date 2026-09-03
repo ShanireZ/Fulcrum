@@ -12,9 +12,9 @@ sources:
   - id: plan-10
     resource: /references/plan.md
     title: PLAN.md §10 G4（自研 DSL）、G11（配置分层）、G20（Caddyfile 式）
-  - id: plan-11
+  - id: plan-10-d3
     resource: /references/plan.md
-    title: PLAN.md §11 D3（DSL 指令集清单与错误提示规范，最晚 M1）
+    title: PLAN.md §10 G47 / G48（D3 结案：未自研的能力走隐式回落、不写 fallback 指令；结构化配置的落地格式取 JSON）
 ---
 
 ★ 本页属**技术基线**，带真内容。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。

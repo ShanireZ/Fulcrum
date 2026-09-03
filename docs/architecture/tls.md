@@ -15,9 +15,9 @@ sources:
   - id: plan-10
     resource: /references/plan.md
     title: PLAN.md §10 G6（统一 rustls）、G12（自动 HTTPS）、G15（On-Demand 准入强制）
-  - id: plan-11
+  - id: plan-10-d4
     resource: /references/plan.md
-    title: PLAN.md §11 D4（ACME 提供商、证书存储、续期与失败退避，最晚 M1）
+    title: PLAN.md §10 G53–G57（D4 结案：ACME 客户端、挑战类型、证书存储、续期与失败退避、DNS-01 的落法）
 ---
 
 ★ 本页属**技术基线**，带真内容。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。

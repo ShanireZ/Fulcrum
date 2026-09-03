@@ -747,8 +747,17 @@ done < <(env)
 #   ★ `REPO_HOST` 是上面用 `cygpath -m` 转过的那一份；**在 Linux 上它与 `REPO_UNIX` 逐字相同**。
 #   ⚠ 它与本文件开头那条「`MSYS_NO_PATHCONV=1` 一旦生效，`git rev-parse` 会失败」
 #     是**同一个根因**。
+# ★ 同一个开关下的第二道：`PLAN.md` §11 的**引用门**（`tools/plan-refs.py`）。
+#   它答的是另一个问题 —— ⛔ 不许把两道混着说：
+#     · `docs-check.py` 答「新增的文档到不到得了」（bundle 的结构）；
+#     · `plan-refs.py` 答「有没有哪一处声称某个 D 号还在 §11 待定清单里，而它已经不在了」。
+#   ⚠ 它自己写明了它**答不了**什么（不带 `§11` 字样的散文、跨行的句子、语义错），
+#     ⛔ 别把它读成「D 号引用全都有门守着」。
+#   ★ 立它的直接原因：2026-09-03 一次体检读到**十八处**这样的假话，
+#     而在它出现之前，本仓没有任何门看得见一句过期的注释。
 if [ "${DOCS_GATE:-1}" = "1" ]; then
   python3 "$REPO_HOST/tools/docs-check.py"
+  python3 "$REPO_HOST/tools/plan-refs.py"
 fi
 
 docker run --rm \
