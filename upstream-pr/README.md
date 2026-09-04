@@ -362,11 +362,17 @@ git push origin lru-0.18.2
 
 > ✅ issue [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)
 > （经 owner 逐次授权，G40）。发后核过：归一行尾后与批准的那份**逐字符相等**。
-> ⚠ **为什么不同时发 PR**：上游 CONTRIBUTING 要求非小改先开 issue；而 PR 的形状正是这份
-> issue 请他们定的；★★★ 更硬的一条 —— **我们 fork 今天的形状与 issue 提的形状不是同一个**
-> （fork 是独立的 `ConnectionCounter` 带地址参数，issue 提的是 `ConnectionFilter` 上
-> 不带地址的 `connection_closed`）⇒ **今天没有可发的补丁**。四条理由全文见
-> [`issue-6-connection-counter.md`](issue-6-connection-counter.md) §2.1。
+> ⚠ ⚠ ⚠ **发出去之后自己查出一处错，已公开更正**（owner 单独批准）：
+> [issue-comment-5536326108](https://github.com/cloudflare/pingora/issues/994#issuecomment-5536326108)。
+> `Stream` 上本来就有 `pub tracer`，且 `Stream::drop` 会调 `on_disconnected()` ——
+> **机制是通的，缺的只是监听器那侧没人赋值**。⇒ 要求因此**变小**：不要新方法，
+> 只要监听器侧能挂 `Tracer`。全文见材料开头那一节。
+>
+> ✅ **补丁已备好、⛔ 未发**：
+> [`0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch`](0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch)
+> —— 基于 `09696b5`，只改一个文件，`fmt` / `clippy -D warnings` 均 `RC=0`，
+> `git am` 回放干净且树逐字节一致，**失败集合与基线逐项相同**（多出两条通过的新测试）。
+> ⛔ 它是在**干净的上游克隆**上做的，`vendor/pingora/` 一个字节没动。验证表见材料 §2.2。
 
 对应 fork **改动 15**。依据 G122：「投不投**等 rebase 读过上游 `main` 之后再判**」。
 立论与已查清的部分：[`issue-6-connection-counter.md`](issue-6-connection-counter.md)。

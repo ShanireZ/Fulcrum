@@ -13,6 +13,45 @@
 
 ---
 
+## ⚠ ⚠ ⚠ 读下面任何一节之前先读这一节：**发出去之后自己查出一处错，已公开更正**
+
+**2026-09-04，#994 发出之后**，在备补丁时读上游代码，查出我们（我）在 issue 正文里
+写错了一句 —— 已在 #994 下发**更正评论**
+（[issue-comment-5536326108](https://github.com/cloudflare/pingora/issues/994#issuecomment-5536326108)，
+owner 单独批准）。
+
+**错的那句**：「a `Tracer` is a field on `PeerOptions` … **there is no equivalent for
+connections from downstream**」，以及开头那句「a process … **cannot** report how many
+downstream connections it currently has」。
+
+**事实**（当天实查，上游 `main` = `09696b5`）：
+
+| 事实 | 出处 |
+|---|---|
+| `Stream` 上有 `pub tracer: Option<Tracer>` | `protocols/l4/stream.rs:440` |
+| **`Stream::drop` 就在调 `on_disconnected()`** | `protocols/l4/stream.rs:706-710` |
+| 出站连接器给它赋值：`t.0.on_connected(); stream.tracer = Some(t);` | `connectors/l4.rs:221-225` |
+| `Tracer` 实现了 `Clone`（`boxed_clone`）| `upstreams/peer.rs:83` |
+| `ServerApp::process_new(self, **mut session: Stream**, …)` | `apps/mod.rs:51-56` |
+
+⇒ ★★★ **机制本来就是通的，缺的只是「监听器那侧没人给它赋值」。**
+而且因为 `process_new` 递的是 `Stream` 本体，**实现 `ServerApp` 的应用今天就能自己
+`session.tracer = Some(t)`** 拿到按连接的 disconnect 通知 ⇒ 我那句「cannot」太强了。
+
+**我错在哪 —— 这一条值得记住**：我做过的**普查是对的**（`listeners/` 与 `services/` 里
+`tracer` 零命中，逐文件查实过）；⛔ **错的是解读** —— 我把「这两个目录里没有」读成了
+「不存在对应机制」，而正确的结论是「**机制在共用的 `Stream` 类型上就有，只是只在出站那侧
+接了线**」。★ 判据没坏，是我从判据跨到结论时多走了一步。
+
+**仍然站得住的两条**（更正评论里保留的就是它们）：
+① **accept→握手 那段窗口**应用看不见（`handle_event` 只在 `Ok` 那支被调）⇒ 那些连接数不到；
+② 按监听器分格今天没有（留给 #941）。
+
+⇒ ★ **更正之后要求变得小得多**：不要新方法，只要**监听器侧能挂 `Tracer`**。
+补丁已按这个形状备好（§2.2）。
+
+---
+
 ## 0. ⚠ ⚠ 先说两件把这份材料的形状改掉的事（2026-09-03 实测）
 
 ### ① ★★★ G122 里那句「上游 `main` 已把 `prometheus` 整条删掉」，在今天的 `main` 上**不成立**
@@ -172,7 +211,44 @@ pub trait ConnectionFilter: Debug + Send + Sync {
    ⚠ ⚠ **推论要写在明处**：即便上游全盘接受，**fork 改动 15 也还得留着**（或留一个更薄的版本）
    直到 #941 落地 —— ⛔ 这份投稿不是「把 fork delta 删掉」的路径，它是给上游用户的贡献。
 
-⇒ ⏳ **下一步不是写补丁，是等 #994 有回话**（或 owner 明确要求现在就把 fork 改成那个形状）。
+### 2.2 ✅ 2026-09-04 再补：**补丁已备好**（owner 拍板「现在就备」）
+
+⚠ ⚠ **§2 与 §2.1 的理由被一件事推翻了一半**：更正评论把形状换成了「让监听器侧能挂
+`Tracer`」（见 §6）—— 那个形状**不依赖维护者先回话**，因为它复用的是上游已有的机制，
+没有新 trait、没有签名变更。⇒ 补丁可以现在就备。
+
+**[`0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch`](0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch)**
+（基于上游 `main` = `09696b5`，带 `Signed-off-by`，⛔ **未发**）。
+
+⚠ ⛔ **它是在一个干净的上游克隆上做的，`vendor/pingora/` 一个字节都没动。**
+★ 那是本目录的纪律：补丁是给上游的，不是我们 fork 的 diff 导出。
+
+**改了什么**（只有 `pingora-core/src/listeners/mod.rs` 一个文件）：
+`Listeners` 多一个可选 `Tracer` + `set_tracer()`（形状照抄它自己的 `set_pre_tls_callback`）·
+`TransportStackBuilder` / `TransportStack` 各带一格 ·
+`TransportStack::accept()` 里克隆一份、调 `on_connected()`、赋给 `stream.tracer`。
+结束那一半由**已有的** `Stream::drop` 负责 ⇒ **天生成对**。
+
+★★★ **为什么它能覆盖握手窗口**：`handshake()` 的两条支路都把那个具体的 L4 `Stream`
+继续持有（非 TLS 直接 `Box::new(self.l4)`；TLS 是 `tls_handshake(self.l4)` 包一层）
+⇒ accept 时挂上的 tracer 活过握手，握手失败/超时的连接也照样报 disconnect。
+
+**验证（全部在容器里，⛔ Rust 不在宿主机跑；且用的是那棵树自己的卷，不碰我们的）**
+
+| 门 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check` | ✅ `RC=0` |
+| `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | ✅ `RC=0` |
+| `cargo test -p pingora-core --lib` | 打补丁 **557 passed / 2 failed**；**基线 555 / 2** |
+| `cargo test --workspace --lib --bins --tests`（上游 CI 那条）| 两侧**各 123 条失败**，⭐ **逐项对比：失败的测试名完全相同**，差的只有汇总行的 `555 passed → 557 passed` |
+| `git am` 回放 | ✅ 在 `09696b5` 上干净应用，且**回放树与开发树逐字节一致**（`git diff` 为空）|
+
+⚠ 那两条基线失败是 `connectors::l4::tests::{test_conn_timeout, test_bind_to_port_range_on_connect}`；
+那 123 条里的大头是 `pingora-proxy` 的集成测试，**要 openresty**，容器里没有 ——
+⛔ 但这句话不是靠「显然无关」下的，是**回基线量出来的**。
+⚠ MSRV 那道（`cargo +1.85.0 check`）与 `cargo audit` / `cargo machete` 本地没有，留给上游 CI。
+
+⇒ ⏳ **下一步：等 #994 有回话**（补丁已就绪，发 PR 仍要 owner 单独批）。
 
 ## 3. ✅ G32/G46 要求的「先查上游做没做」——已查的部分
 
