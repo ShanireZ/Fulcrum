@@ -53,11 +53,20 @@ pub mod health;
 pub mod l4;
 /// Prometheus 指标（M2 批 M）：进程级注册表 + text exposition 的自研渲染器（G117）。
 pub mod metrics;
+/// `outcome` 闭集与只能由它构造取值的类型。★ 单独成模块是判据本身，见模块文档。
+pub mod outcome;
 pub mod process;
 mod proxyproto;
 /// HTTP/3 入口（M2 批 J）：QUIC 传输层 + `quiche::h3`。
 pub mod quic;
 pub mod tls;
+
+// ★ 重导出，保住 `crate::OUTCOME_*` / `crate::OUTCOMES` 这些既有路径（上千处引用按号走同一形状）。
+pub use outcome::{
+    OUTCOME_ACME_HTTP01, OUTCOME_ERROR, OUTCOME_FILE_SERVER, OUTCOME_METRICS,
+    OUTCOME_NO_SITE_MATCH, OUTCOME_REDIR, OUTCOME_RESPOND, OUTCOME_REVERSE_PROXY,
+};
+pub use outcome::{OUTCOMES, OutcomeName};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -186,10 +195,16 @@ impl<'a> Downstream<'a> {
     ///
     /// ⚠ `status` 与 `resp_size` **现问 `ServerSession`**，不在 `Record` 里另存一份 ——
     /// 两份迟早不一致，而不一致的那天没有任何东西会说。
-    /// ★ 没写出任何响应头时 `status` 是 **0**：那不是「未知」，是「什么都没发生」，
-    /// `outcome` 会写 `aborted`。
+    /// ★ ★ **`outcome` 从此走同一条规矩**：它是 [`FulcrumApp::serve_one`] 的**返回值**，
+    /// 不是 `Record` 上的一个字段 ⇒ 「某条返回路径忘了写它」不再是一个静默缺陷，
+    /// 而是一个编译错误（那条路径求不出 [`OutcomeName`] 就返回不了）。
+    ///
+    /// ★ 没写出任何响应头时 `status` 是 **0**：那不是「未知」，是「什么都没发生」。
+    /// ⚠ ⚠ 此时 `outcome` **仍是执行链给的那个值** —— ⛔ 不是什么「aborted」：
+    /// 那个默认值连同它的字段一起没有了。判据在 `tests/metrics/run.sh`
+    /// 「而 outcome 仍是执行链给的那个值」那一条。
     pub(crate) async fn serve(&mut self, app: &FulcrumApp) {
-        app.serve_one(self).await;
+        let outcome = app.serve_one(self).await;
         let status = self
             .session
             .response_written()
@@ -218,7 +233,7 @@ impl<'a> Downstream<'a> {
             }
             self.record.tls = tls_fields(self.session);
         }
-        self.record.finish(status, size);
+        self.record.finish(outcome, status, size);
     }
 
     /// 写下游响应头 —— **本 crate 数据面唯一的一处**。
@@ -428,7 +443,7 @@ impl HttpServerApp for FulcrumApp {
 }
 
 impl FulcrumApp {
-    pub(crate) async fn serve_one(&self, session: &mut Downstream<'_>) {
+    pub(crate) async fn serve_one(&self, session: &mut Downstream<'_>) -> OutcomeName {
         let started = SystemTime::now();
         // ★ ★ **整次请求的配置快照，只在这里取一次。**
         //   之后所有阶段用的都是 `rt` 这一份，而不是再去问 `self.rt`。
@@ -492,7 +507,6 @@ impl FulcrumApp {
             //   ⇒ 这一条记不进访问日志（与 421 同一个形状 —— 那是 D26，
             //     ✅ 已由 G118 结案：给 `no_site_match` 一个计数器）。
             //   ★ 仍然把 `outcome` 填对：它不进日志，但填对了不白填。
-            session.record.outcome = OUTCOME_ACME_HTTP01;
             // RFC 8555 §8.3 建议 `application/octet-stream`。
             write_with_headers(
                 session,
@@ -501,7 +515,7 @@ impl FulcrumApp {
                 vec![("Content-Type".into(), "application/octet-stream".into())],
             )
             .await;
-            return;
+            return OUTCOME_ACME_HTTP01;
         }
 
         // ── 2. 路由 ────────────────────────────────────────────────────────
@@ -510,7 +524,6 @@ impl FulcrumApp {
             //   `default_server` 那类行为的温床。
             let status = rt.defaults.no_site_match;
             debug!("无站点匹配：Host={host} port={}", self.port);
-            session.record.outcome = OUTCOME_NO_SITE_MATCH;
             // ── `fulcrum_no_site_match_total{host}`（G118）─────────────────
             //
             // ★ 记在**写 `outcome` 的同一处**：这两句说的是同一件事，
@@ -529,7 +542,7 @@ impl FulcrumApp {
             };
             metrics::NO_SITE_MATCH_TOTAL.inc(&[label]);
             write_simple(session, status, None, &[], &ctx, started).await;
-            return;
+            return OUTCOME_NO_SITE_MATCH;
         };
 
         // ── 访问日志：站点那一半 ──────────────────────────────────────────
@@ -541,7 +554,7 @@ impl FulcrumApp {
         session.record.site = Some(routed.site.name.clone());
         session.record.site_addr = Some(routed.site_addr.clone());
         session.record.target = routed.site.log.clone();
-        session.record.outcome = outcome_name(&routed.outcome);
+        let base = outcome_name(&routed.outcome);
 
         // 改写过的路径要带给上游。
         let effective_path = routed
@@ -562,6 +575,7 @@ impl FulcrumApp {
                     started,
                 )
                 .await;
+                base
             }
             Outcome::Redirect { to, code } => {
                 let rc = resp_ctx(*code, None);
@@ -576,6 +590,7 @@ impl FulcrumApp {
                     &mut extra,
                 );
                 write_with_headers(session, *code, None, extra).await;
+                base
             }
             // ── Prometheus 抓取端点（M2 批 M，G116）────────────────────────
             //
@@ -604,11 +619,12 @@ impl FulcrumApp {
                     &mut extra,
                 );
                 write_with_headers(session, 200, Some(metrics::render()), extra).await;
+                base
             }
             Outcome::NoRouteMatch => {
                 let status = rt.defaults.no_route_match;
                 self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
-                    .await;
+                    .await
             }
             // ── 自研静态文件（M2 批 F）─────────────────────────────────────
             //
@@ -623,11 +639,12 @@ impl FulcrumApp {
                 //   ⚠ 而**预压缩旁文件优先**：那条路在 `files` 里面判，
                 //   判中了它会把这个 encoder 丢掉（旁文件已经是压好的）。
                 let enc = encode::Encoder::new(encode::wanted(&routed), &req);
-                if let Err(status) =
-                    files::serve(session, &req, fs, &effective_path, ctx.query, enc).await
-                {
-                    self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
-                        .await;
+                match files::serve(session, &req, fs, &effective_path, ctx.query, enc).await {
+                    Ok(()) => base,
+                    Err(status) => {
+                        self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
+                            .await
+                    }
                 }
             }
             // ── 转发（可能被缓存裹住，M2 批 G）──────────────────────────────
@@ -651,9 +668,12 @@ impl FulcrumApp {
                     }
                     None => self.proxy(&rt, session, target, &routed, &view).await,
                 };
-                if let Err(status) = r {
-                    self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
-                        .await;
+                match r {
+                    Ok(_) => base,
+                    Err(status) => {
+                        self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
+                            .await
+                    }
                 }
             }
         }
@@ -677,11 +697,11 @@ impl FulcrumApp {
         routed: &Routed<'_>,
         ctx: &RequestCtx<'_>,
         started: SystemTime,
-    ) {
+    ) -> OutcomeName {
         // ★ 进到这里就意味着这一条最终是**错误页** —— 无论它原本要去哪。
-        //   ⚠ 写在函数第一行而不是每个调用点各写一次：调用点有四处，
-        //   而「第五处随时会出现」（G110 那次的原话）。
-        session.record.outcome = OUTCOME_ERROR;
+        //   ⚠ ⚠ 它是**返回值**而不是往 `Record` 上写一笔：调用点有三处，
+        //   而「第四处随时会出现」（G110 那次的原话）—— 返回值那种写法下，
+        //   新调用点**不处理这个值就编不过**，而副作用那种写法下它只是少一行。
         match rt.error_page(site) {
             Some(page) => {
                 // ★ `handle_errors` 块内 `{status}` 指的是**原始**错误码，
@@ -709,9 +729,10 @@ impl FulcrumApp {
                     ctx,
                     started,
                 )
-                .await
+                .await;
             }
         }
+        OUTCOME_ERROR
     }
 
     /// 带缓存的转发。出错时返回该回给下游的状态码。
@@ -1462,66 +1483,29 @@ fn host_of(req: &RequestHeader) -> String {
     req.uri.host().unwrap_or("").to_string()
 }
 
-/// ★ ★ 客户端 IP 与端口 = **socket 对端**。不看 `X-Forwarded-For`（客户端可伪造）。
-///
-/// ★ Unix socket 上没有 IP：返回 `None` 而不是编一个 `127.0.0.1`——
-/// `remote_ip` 匹配器在取不到 IP 时判**不命中**，那是安全的一侧。
 /// 把一个 [`Outcome`] 翻成访问日志契约里那个**闭集**的取值。
 ///
 /// ★ **穷尽 `match` 是判据**：契约写着 `outcome` 是闭集，而「闭集」要有东西守着才算数
-/// ⇒ 给 [`Outcome`] 加一种终结方式时**这里编不过**。若改成在每个分支各赋一次值，
-/// 加一种就只是少一个赋值，不会有任何报错 —— 日志里会静静出现一个 `aborted`。
-/// `fulcrum_requests_total{outcome}` 的八个取值，**一个常量一个** ——
-/// [`outcome_name`] 与三处直接赋值都用它们，⇒ [`OUTCOMES`] 与产生这些值的代码
-/// 是**同一批名字**，⛔ 不是一份抄件。
-pub const OUTCOME_RESPOND: &str = "respond";
-/// 见 [`OUTCOME_RESPOND`]。
-pub const OUTCOME_REDIR: &str = "redir";
-/// 见 [`OUTCOME_RESPOND`]。
-pub const OUTCOME_REVERSE_PROXY: &str = "reverse_proxy";
-/// 见 [`OUTCOME_RESPOND`]。
-pub const OUTCOME_FILE_SERVER: &str = "file_server";
-/// 见 [`OUTCOME_RESPOND`]。
-pub const OUTCOME_METRICS: &str = "metrics";
-/// 见 [`OUTCOME_RESPOND`]。⚠ 下面三个是**路由之前或路由失败之后直接赋**的 ——
-/// 那时根本没有 [`Outcome`] 可映射。
-pub const OUTCOME_ACME_HTTP01: &str = "acme_http01";
-/// 见 [`OUTCOME_RESPOND`]。
-pub const OUTCOME_NO_SITE_MATCH: &str = "no_site_match";
-/// 见 [`OUTCOME_RESPOND`]。
-pub const OUTCOME_ERROR: &str = "error";
-
-/// `fulcrum_requests_total{outcome}` 的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+/// ⇒ 给 [`Outcome`] 加一种终结方式时**这里编不过**。
 ///
-/// ⚠ ⚠ 它有**两个来处，缺一不可**：
-/// ① [`outcome_name`] 对 [`Outcome`] 的**穷尽** match（加一个变体就编不过）；
-/// ② 上面那三个常量 —— 直接赋的，因为赋值时还没有（或已经不会有）`Outcome`。
-///
-/// ★ 单测 `outcome 闭集与产生它的两处对得上` 把 ① 的值域与本常量对起来，
-/// 并逐个断言 ② 在集合里 ⇒ ⛔ **本常量不是一份手抄**。
-pub const OUTCOMES: &[&str] = &[
-    OUTCOME_RESPOND,
-    OUTCOME_REDIR,
-    OUTCOME_REVERSE_PROXY,
-    OUTCOME_FILE_SERVER,
-    OUTCOME_METRICS,
-    OUTCOME_ERROR,
-    OUTCOME_ACME_HTTP01,
-    OUTCOME_NO_SITE_MATCH,
-];
-
-fn outcome_name(o: &Outcome<'_>) -> &'static str {
+/// ★ ★ 返回 [`OutcomeName`] 而不是 `&'static str`，堵的是另一条路：
+/// 编译器逼你补一条臂，但**逼不了你在那条臂里写一个正当的值** ——
+/// 返回类型一收紧，`=> "foo"` 就当场是类型错误。
+fn outcome_name(o: &Outcome<'_>) -> OutcomeName {
     match o {
         Outcome::Respond { .. } => OUTCOME_RESPOND,
         Outcome::Redirect { .. } => OUTCOME_REDIR,
         Outcome::Proxy(_) => OUTCOME_REVERSE_PROXY,
         Outcome::FileServer(_) => OUTCOME_FILE_SERVER,
-        // ★ 闭集的**第 8 个值**（M2 批 M，G116）。
         Outcome::Metrics => OUTCOME_METRICS,
         Outcome::NoRouteMatch => OUTCOME_ERROR,
     }
 }
 
+/// ★ ★ 客户端 IP 与端口 = **socket 对端**。不看 `X-Forwarded-For`（客户端可伪造）。
+///
+/// ★ Unix socket 上没有 IP：返回 `None` 而不是编一个 `127.0.0.1`——
+/// `remote_ip` 匹配器在取不到 IP 时判**不命中**，那是安全的一侧。
 fn client_addr(session: &ServerSession) -> (Option<IpAddr>, u16) {
     match session.client_addr().and_then(|a| a.as_inet()) {
         Some(a) => (Some(a.ip()), a.port()),

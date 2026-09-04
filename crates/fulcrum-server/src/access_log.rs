@@ -227,7 +227,12 @@ pub(crate) struct Record {
     pub uri: String,
     pub remote_ip: Option<IpAddr>,
     pub remote_port: u16,
-    pub outcome: &'static str,
+    // ⚠ ⚠ **`outcome` 有意不在这里存一份** —— 它由 [`Record::finish`] 收尾时传进来。
+    //   ★ 与紧邻的 `status` / `resp_size` 逐字同一条理由（见 [`crate::Downstream::serve`]）：
+    //     「两份迟早不一致，而不一致的那天没有任何东西会说」。
+    //   ★ ★ 换来的是一条更硬的性质：字段没了，就没有「默认值」可言 ⇒
+    //     **「某条返回路径忘了写 outcome」从一个静默缺陷变成一个编译错误**
+    //     （`serve_one` 必须求值出一个 [`crate::OutcomeName`] 才能返回）。
     pub site: Option<String>,
     /// 请求**实际匹配到的那条地址字面量**（G121），批 M 的 `fulcrum_requests_total`
     /// 取数点用它当 `site` 标签 —— **不进 `to_json_line`**，只是个中转站。
@@ -326,10 +331,6 @@ impl Record {
             uri: String::new(),
             remote_ip: None,
             remote_port: 0,
-            // ⚠ 这个默认值只在「连路由都没走到」时才会被写出来
-            //   （读不到请求头那一类）。★ 它有意不是空串：一个空的 `outcome`
-            //   在日志里读起来像「字段丢了」，而这里的事实是「什么都没发生」。
-            outcome: "aborted",
             site: None,
             site_addr: None,
             upstream: None,
@@ -344,7 +345,13 @@ impl Record {
     ///
     /// ★ 拆成一个纯函数，是为了让判据可以直接量它 —— 端到端只能证「日志里有这么一行」，
     /// 证不了「每一个字段都按契约来」。
-    pub(crate) fn to_json_line(&self, status: u16, resp_size: usize, now: SystemTime) -> String {
+    pub(crate) fn to_json_line(
+        &self,
+        outcome: crate::OutcomeName,
+        status: u16,
+        resp_size: usize,
+        now: SystemTime,
+    ) -> String {
         let mut j = JsonLine::new();
         j.str(
             "ts",
@@ -363,7 +370,7 @@ impl Record {
             .map(|d| d.as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         j.num("duration_ms", format!("{ms:.3}"));
-        j.str("outcome", self.outcome);
+        j.str("outcome", outcome.as_str());
         j.opt_str("site", self.site.as_deref());
         j.str(
             "remote_ip",
@@ -408,7 +415,13 @@ impl Record {
     /// **同一个时钟读数**（见 [`Record::finish_at`]）。★ 自己现取一次的话，
     /// `duration_ms` 与 `fulcrum_request_duration_seconds` 就成了同一条请求上
     /// **两次不同的测量** —— 而两边的注释都会写着「它们说的是同一件事」。
-    pub(crate) fn emit(&self, status: u16, resp_size: usize, now: SystemTime) {
+    pub(crate) fn emit(
+        &self,
+        outcome: crate::OutcomeName,
+        status: u16,
+        resp_size: usize,
+        now: SystemTime,
+    ) {
         let Some(cfg) = self.target.as_ref() else {
             return;
         };
@@ -424,7 +437,7 @@ impl Record {
             );
             return;
         };
-        sink.write_line(&self.to_json_line(status, resp_size, now));
+        sink.write_line(&self.to_json_line(outcome, status, resp_size, now));
     }
 
     /// 一次请求的**收尾**：先喂指标，再记那一行（**M2 批 M**，G116–G121）。
@@ -456,8 +469,8 @@ impl Record {
     /// 而它们给不出同一个答案。那比差几微秒本身糟得多：**代码说的和它做的成了两回事**。
     ///
     /// ⚠ [`Record::emit`] 从此**只剩 [`Record::finish_at`] 一个调用方**。
-    pub(crate) fn finish(&self, status: u16, resp_size: usize) {
-        self.finish_at(status, resp_size, SystemTime::now());
+    pub(crate) fn finish(&self, outcome: crate::OutcomeName, status: u16, resp_size: usize) {
+        self.finish_at(outcome, status, resp_size, SystemTime::now());
     }
 
     /// [`Record::finish`] 的全部实现，**收尾时刻由调用方给**。
@@ -466,23 +479,34 @@ impl Record {
     /// 判据喂一个已知时刻进来，然后同时量指标那一格与日志那一行。
     /// ⚠ 不拆的话，那条判据只能去比两次真实时钟读数的差 —— 而那个差是微秒级的，
     /// **一条在理论上成立、实际上永远红不起来的断言**比没有断言更坏。
-    fn finish_at(&self, status: u16, resp_size: usize, now: SystemTime) {
-        self.meter(status, now);
-        self.emit(status, resp_size, now);
+    fn finish_at(
+        &self,
+        outcome: crate::OutcomeName,
+        status: u16,
+        resp_size: usize,
+        now: SystemTime,
+    ) {
+        self.meter(outcome, status, now);
+        self.emit(outcome, status, resp_size, now);
     }
 
     /// 把这一条喂给指标注册表。
     ///
     /// ★ 收 `now` 而不是自己取，理由与 [`Record::to_json_line`] 一样：
     /// 判据要能不靠真实时钟量它。⚠ 而且它与 [`Record::emit`] 收的是**同一个**读数。
-    fn meter(&self, status: u16, now: SystemTime) {
+    fn meter(&self, outcome: crate::OutcomeName, status: u16, now: SystemTime) {
         // ★ `site` 取**请求实际命中的那条地址字面量**（G121）；没匹配到站点时取
         //   `<none>`（R2）—— 于是 `fulcrum_requests_total` 是**真的总数**，
         //   一致性门才有东西可对。⚠ 尖括号形式在合法地址字面量里不可能出现，
         //   与 G118 的 `<other>` 是同一族写法。
         let site = self.site_addr.as_deref().unwrap_or("<none>");
         // ⚠ 标签的个数与顺序照 `metrics::FAMILIES` 的声明，对不上就地 panic。
-        crate::metrics::REQUESTS_TOTAL.inc(&[site, self.outcome, status_class(status), self.proto]);
+        crate::metrics::REQUESTS_TOTAL.inc(&[
+            site,
+            outcome.as_str(),
+            status_class(status),
+            self.proto,
+        ]);
         // ⚠ 单位是**秒**，与桶边界和名字里的 `_seconds` 同一口径。
         // ⚠ ⚠ 与 `to_json_line` 里的 `duration_ms` **同一个 `now`、同一种处置**
         //   （`duration_since` 失败即时钟回拨时按 0 记）⇒ 两处对同一件事给同一个答案。
@@ -491,7 +515,7 @@ impl Record {
             .duration_since(self.started)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
-        crate::metrics::REQUEST_DURATION_SECONDS.observe(&[site, self.outcome], secs);
+        crate::metrics::REQUEST_DURATION_SECONDS.observe(&[site, outcome.as_str()], secs);
 
         // ── TLS 那一族（**M2 批 M′ 任务 3**，G122 的 TLS 半 / G127）────────────
         //
@@ -561,7 +585,6 @@ mod tests {
         r.uri = "/x?y=1".into();
         r.remote_ip = Some("192.0.2.7".parse().unwrap());
         r.remote_port = 56324;
-        r.outcome = "reverse_proxy";
         r.site = Some("a.example".into());
         r
     }
@@ -569,7 +592,12 @@ mod tests {
     #[test]
     fn 一行是合法的扁平_json_而且字段按契约来() {
         let r = rec();
-        let s = r.to_json_line(200, 12, r.started + Duration::from_micros(1500));
+        let s = r.to_json_line(
+            crate::OUTCOME_REVERSE_PROXY,
+            200,
+            12,
+            r.started + Duration::from_micros(1500),
+        );
         assert!(s.ends_with("}\n"), "一行一条，必须以换行收尾：{s}");
         let v: serde_json::Value = serde_json::from_str(s.trim_end()).expect("必须是合法 JSON");
         let o = v.as_object().expect("顶层必须是对象");
@@ -615,7 +643,7 @@ mod tests {
     fn site_addr_不进访问日志的_json_行() {
         let mut r = rec();
         r.site_addr = Some(Arc::from("a.example"));
-        let s = r.to_json_line(200, 0, r.started);
+        let s = r.to_json_line(crate::OUTCOME_RESPOND, 200, 0, r.started);
         let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
         let o = v.as_object().unwrap();
         assert!(
@@ -629,7 +657,7 @@ mod tests {
     #[test]
     fn 取不到的字段不出现_而不是给_null() {
         let r = rec();
-        let s = r.to_json_line(200, 0, r.started);
+        let s = r.to_json_line(crate::OUTCOME_RESPOND, 200, 0, r.started);
         let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
         let o = v.as_object().unwrap();
         // ★ ★ ★ 这一条守的是契约里那句话本身。⚠ 若换成 `null`，
@@ -640,8 +668,11 @@ mod tests {
         let mut r2 = rec();
         r2.upstream = Some("10.0.0.1:8080".into());
         r2.cache = Some("HIT".into());
-        let v2: serde_json::Value =
-            serde_json::from_str(r2.to_json_line(200, 0, r2.started).trim_end()).unwrap();
+        let v2: serde_json::Value = serde_json::from_str(
+            r2.to_json_line(crate::OUTCOME_RESPOND, 200, 0, r2.started)
+                .trim_end(),
+        )
+        .unwrap();
         assert_eq!(v2["upstream"], "10.0.0.1:8080");
         assert_eq!(v2["cache"], "HIT");
     }
@@ -650,7 +681,7 @@ mod tests {
     fn level_按状态码派生_与阈值无关() {
         let r = rec();
         let lv = |st: u16| {
-            let s = r.to_json_line(st, 0, r.started);
+            let s = r.to_json_line(crate::OUTCOME_RESPOND, st, 0, r.started);
             let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
             v["level"].as_str().unwrap().to_string()
         };
@@ -680,7 +711,7 @@ mod tests {
         //     就说明那些字节没有跑到 JSON 结构外面去。
         let mut r = rec();
         r.uri = "/a\"b\nc\\d".into();
-        let s = r.to_json_line(200, 0, r.started);
+        let s = r.to_json_line(crate::OUTCOME_RESPOND, 200, 0, r.started);
         assert_eq!(
             s.matches('\n').count(),
             1,
@@ -696,17 +727,35 @@ mod tests {
         //   真正「有没有写出去」由第二十三个场景在真文件上量。
         let r = rec();
         assert!(r.target.is_none());
-        r.emit(200, 0, r.started); // 不该有任何副作用
+        r.emit(crate::OUTCOME_RESPOND, 200, 0, r.started); // 不该有任何副作用
     }
 
+    // ★ ★ **换契约留痕（⛔ 有意不删这一格）。**
+    //
+    // 旧判据叫「未成形的请求也有一个说得出口的 `outcome`」，钉的是 `Record` 上那个
+    // `outcome: "aborted"` 默认字段。⇒ 那个字段与那个默认值**今天都不存在了**：
+    // `outcome` 改成收尾时传参，于是「没被写过」这个状态在类型上表达不出来。
+    // ⚠ ⚠ 顺带纠正旧判据注释里的一句错话：它说这一格覆盖「读不到请求头那一类」——
+    // 而那一类在 `process_new_http` 里是在 `Downstream` 造出来**之前** `return None`，
+    // **根本不产生 `Record`**，既没有日志行也没有指标。
+    //
+    // ⇒ 换成钉**新**契约的这一条：日志里那一格逐字就是收尾时传进来的那个值。
     #[test]
-    fn 未成形的请求也有一个说得出口的_outcome() {
-        // ⚠ 读不到请求头那一类：什么都没发生，而字段不能是空串
-        //   （空串在日志里读起来像「字段丢了」）。
+    fn 日志里的_outcome_就是收尾时传进来的那个值() {
         let r = Record::new("HTTP/1.1");
-        let s = r.to_json_line(400, 0, r.started);
-        let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
-        assert_eq!(v["outcome"], "aborted");
+        for want in [
+            crate::OUTCOME_ACME_HTTP01,
+            crate::OUTCOME_NO_SITE_MATCH,
+            crate::OUTCOME_ERROR,
+        ] {
+            let s = r.to_json_line(want, 400, 0, r.started);
+            let v: serde_json::Value = serde_json::from_str(s.trim_end()).unwrap();
+            assert_eq!(
+                v["outcome"],
+                want.as_str(),
+                "日志那一格必须逐字是传进来的值"
+            );
+        }
     }
 
     #[test]
@@ -754,12 +803,11 @@ mod tests_batch_l3 {
         r.method = "GET".into();
         r.host = "a.example".into();
         r.uri = "/x".into();
-        r.outcome = "respond";
         r
     }
 
     fn parse(r: &Record) -> serde_json::Value {
-        let s = r.to_json_line(200, 0, r.started);
+        let s = r.to_json_line(crate::OUTCOME_RESPOND, 200, 0, r.started);
         assert_eq!(s.matches('\n').count(), 1, "整条日志只许有行尾那一个换行");
         serde_json::from_str(s.trim_end()).expect("必须是合法 JSON")
     }
@@ -911,7 +959,6 @@ mod tests_batch_m {
         r.method = "GET".into();
         r.host = "a.example".into();
         r.uri = "/x".into();
-        r.outcome = "respond";
         r.site_addr = Some(Arc::from(site_addr));
         r
     }
@@ -1007,7 +1054,7 @@ mod tests_batch_m {
         // ① 没配 `log`（`target` 是 `None`）：指标 +1，而文件一行都不多。
         let a = rec("<ut-m-nolog>");
         assert!(a.target.is_none());
-        a.finish(200, 12);
+        a.finish(crate::OUTCOME_RESPOND, 200, 12);
         assert_eq!(lines(&path), 0, "没配 `log` 的站点不许写出任何一行");
         assert_eq!(
             counter("<ut-m-nolog>", "respond", "2xx"),
@@ -1019,7 +1066,7 @@ mod tests_batch_m {
         //    ★ 这一半证明上面那个 0 不是夹具坏了。
         let mut b = rec("<ut-m-log>");
         b.target = Some(Arc::new(cfg.clone()));
-        b.finish(200, 12);
+        b.finish(crate::OUTCOME_RESPOND, 200, 12);
         assert_eq!(lines(&path), 1, "配了 `log` 就该有一行 —— 夹具是通的");
         assert_eq!(counter("<ut-m-log>", "respond", "2xx"), 1);
 
@@ -1030,7 +1077,7 @@ mod tests_batch_m {
             level: LogLevel::Error,
             ..cfg.clone()
         }));
-        c.finish(200, 12);
+        c.finish(crate::OUTCOME_RESPOND, 200, 12);
         assert_eq!(lines(&path), 1, "阈值挡住的那一条不许被写出去");
         assert_eq!(counter("<ut-m-thresh>", "respond", "2xx"), 1);
 
@@ -1043,8 +1090,8 @@ mod tests_batch_m {
         //   ⚠ 尖括号形式在合法的地址字面量里不可能出现 ⇒ 它撞不上真站点。
         let mut r = rec("<不该用到>");
         r.site_addr = None;
-        r.outcome = "no_site_match";
-        r.finish(421, 0);
+        let r_outcome = crate::OUTCOME_NO_SITE_MATCH;
+        r.finish(r_outcome, 421, 0);
         assert_eq!(counter("<none>", "no_site_match", "4xx"), 1);
     }
 
@@ -1053,7 +1100,11 @@ mod tests_batch_m {
         // 正向：已知的 250ms ⇒ `_sum` 是 0.25 秒（**秒**，不是毫秒）。
         let mut r = rec("<ut-m-dur>");
         r.started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        r.meter(200, r.started + Duration::from_millis(250));
+        r.meter(
+            crate::OUTCOME_RESPOND,
+            200,
+            r.started + Duration::from_millis(250),
+        );
         let out = crate::metrics::render();
         assert!(
             out.contains(
@@ -1068,7 +1119,7 @@ mod tests_batch_m {
         let mut b = rec("<ut-m-back>");
         b.started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let 回拨 = b.started - Duration::from_secs(5);
-        b.meter(200, 回拨);
+        b.meter(crate::OUTCOME_RESPOND, 200, 回拨);
         let out = crate::metrics::render();
         assert!(
             out.contains(
@@ -1076,8 +1127,11 @@ mod tests_batch_m {
             ),
             "{out}"
         );
-        let v: serde_json::Value =
-            serde_json::from_str(b.to_json_line(200, 0, 回拨).trim_end()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            b.to_json_line(crate::OUTCOME_RESPOND, 200, 0, 回拨)
+                .trim_end(),
+        )
+        .unwrap();
         assert_eq!(v["duration_ms"], 0.0, "日志那一格与指标必须给同一个答案");
     }
 
@@ -1087,10 +1141,10 @@ mod tests_batch_m {
         //   `proto` 取 `Record` 入口填的那个 —— 两者都不是推断出来的。
         let mut r = Record::new("HTTP/3.0");
         r.started = SystemTime::now();
-        r.outcome = "file_server";
+        let r_outcome = crate::OUTCOME_FILE_SERVER;
         r.site = Some("http://first.example:9900".into());
         r.site_addr = Some(Arc::from("<ut-m-h3>"));
-        r.finish(503, 0);
+        r.finish(r_outcome, 503, 0);
         let out = crate::metrics::render();
         assert!(
             out.contains(
@@ -1134,7 +1188,7 @@ mod tests_batch_m {
         }));
 
         let 收尾时刻 = r.started + Duration::from_millis(250);
-        r.finish_at(200, 12, 收尾时刻);
+        r.finish_at(crate::OUTCOME_RESPOND, 200, 12, 收尾时刻);
 
         let 秒 = hist_sum("<ut-m-clock>", "respond");
         let 毫秒 = last_duration_ms(&path);

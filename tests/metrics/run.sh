@@ -1537,8 +1537,11 @@ sleep 2.5
 LN2=$(lines)
 eq "★★★ G124 ①：访问日志真的多了一行（站点匹配上了 ⇒ 它记得进去）" 1 "$((LN2 - LN1B))"
 eq "★★★ G124 ①：那一行的 status 是 0 —— 一个响应头都没写出去" 0 "$(field status)"
-# ⚠ ⚠ 这一条守的是契约里那句「此时 outcome 仍是执行链给的那个值，**不是** aborted」。
-eq "★★★ 而 outcome 仍是执行链给的那个值，⛔ 不是 aborted" reverse_proxy "$(field outcome)"
+# ⚠ ⚠ 这一条守的是契约里那句「此时 outcome 仍是执行链给的那个值」。
+# ★ 它立起来时防的是 `Record` 上那个 `aborted` 默认值；那个字段今天已经删掉
+#   （outcome 改成 serve_one 的返回值）⇒ 防的东西在类型上没有了，而**判据留着**：
+#   它守的是「链给的值不被收尾那一步覆盖掉」，那件事与字段在不在无关。
+eq "★★★ 而 outcome 仍是执行链给的那个值" reverse_proxy "$(field outcome)"
 eq "★ 那一行也有 site（它属于站点 A，所以才记得进访问日志）" \
   "http://a.example:$A_PORT" "$(field site)"
 SN2="$WORK/sn2.txt"

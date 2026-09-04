@@ -63,7 +63,7 @@ sources:
 | `method` | string | 请求方法，原样 |
 | `host` | string | `Host` / `:authority`，**去掉端口** |
 | `uri` | string | **原始**请求目标（path + query），`rewrite` **之前** |
-| `status` | number | 下游看到的状态码。⚠ **一个响应头都没写出去时是 `0`** —— 那不是「未知」，是「这条连接上什么都没发生」。⚠ ⚠ 此时 `outcome` **仍是执行链给的那个值**（站点匹配上了、链跑完了，只是下游在我们写响应之前断开）—— **不是 `aborted`**：数据面在**每一条**返回路径上都把 `outcome` 写掉了，`Record` 里那个 `"aborted"` 默认值在今天的数据面上到不了。⇒ 下面那个闭集里没有 `aborted`，那是对的 |
+| `status` | number | 下游看到的状态码。⚠ **一个响应头都没写出去时是 `0`** —— 那不是「未知」，是「这条连接上什么都没发生」。⚠ ⚠ 此时 `outcome` **仍是执行链给的那个值**（站点匹配上了、链跑完了，只是下游在我们写响应之前断开）。★ ★ 从前这一条靠**人工核对过每一条返回路径**，今天由类型系统要求：`outcome` 是 `serve_one` 的**返回值**而不是 `Record` 上的字段 ⇒ 一条不产出取值的返回路径**编不过**。⇒ 闭集里没有「未设置」这一档，因为那个状态在类型上表达不出来 |
 | `resp_size` | number | 响应**体**字节数（**不含头**）。⚠ ⚠ 这一句需要 fork **第 13 处**改动才成立：上游 h1 的 `body_bytes_sent` 把序列化后的响应头也加了进去，而 **h2 与 h3 只数体** ⇒ 同一个请求走两种协议会给出两个数。★ 那处改动连同一条长在上游测试模块里的回归守卫，见 [`FORK.md`](../../vendor/pingora/FORK.md) |
 | `duration_ms` | number | 从读到请求头到响应写完，毫秒，三位小数 |
 | `outcome` | string | 闭集，见下 |
@@ -619,7 +619,7 @@ Prometheus 的 text exposition 是行式纯文本，自己写约百行。
 | 反向 ② | 50 个互不相同的未知 `Host` 之后 series 条数**不增长**，**且**`host="<other>"` 那一格正好 **+50** |
 | 一致性门 | `fulcrum_requests_total` 在站点 A 上的增量 = 访问日志新增行数 **+ 1**（那个 +1 是左端那次抓取自己）|
 | G121 的正面判据 | 同一条请求上，指标的 `site="a2.example"` 与日志的 `site="http://a.example:9920"` 给出**不同的值**；且 `site` 标签的取值是一个**闭集** = 四条地址字面量 + `<none>` |
-| `status_class="none"`（G124）| **两边一起断**：一条「发完请求立刻 RST、而上游还要 1.5s 才回话且**不带 `Content-Length`**」的请求 ⇒ ① 访问日志真的多了一行，`status` 是 **0**、`outcome` 仍是 `reverse_proxy`（⛔ 不是 `aborted`）、`site` 在；② `fulcrum_requests_total{status_class="none"}` 正好 **+1**，且那一笔落在 `site=a.example` 上（证明两边说的是**同一条请求**）。★ 对照组（同一条路、客户端正常收完）拿到 200 且 `none` 一格不涨 —— 少了它，一个 `status` 恒为 0 的实现也全绿 |
+| `status_class="none"`（G124）| **两边一起断**：一条「发完请求立刻 RST、而上游还要 1.5s 才回话且**不带 `Content-Length`**」的请求 ⇒ ① 访问日志真的多了一行，`status` 是 **0**、`outcome` 仍是 `reverse_proxy`（★ 这一条立起来时防的是一个叫 `aborted` 的默认值；那个字段已经删掉，它今天在类型上就表达不出来 —— 判据留着，因为它守的是「链给的值不被收尾覆盖」这件事本身）、`site` 在；② `fulcrum_requests_total{status_class="none"}` 正好 **+1**，且那一笔落在 `site=a.example` 上（证明两边说的是**同一条请求**）。★ 对照组（同一条路、客户端正常收完）拿到 200 且 `none` 一格不涨 —— 少了它，一个 `status` 恒为 0 的实现也全绿 |
 | 连接那两个族（G122 的连接半）| ★★★ **series 集合与本进程的监听器集合逐字相同**（从夹具派生）—— 一条断言同时验掉「建成就出样本」与「**四处都记进了同一个族**」· 五个 entrypoint **各打一条连接、各断一条**（合成一条的话，一个只在 http 上记的实现照样全绿）· ★★★ **连上 TLS 端口什么都不发** ⇒ `active` +1（唯一证明「`enter` 在握手之前」与「`run_endpoint` 里那句 `let _conn_guard` 没写成裸 `let _`」的地方）· **发垃圾字节** ⇒ `total` +1 而 `active` 回基线（Drop 守卫在非正常退出路径上真的在守）· l4_udp 那一格 `active` 从 `sessions.len()` 派生 · `active ≤ total` 逐格成立 |
 | TLS 族（G122 / G127）| 明文请求**一笔都不记**（先自证那几条明文真的被 `requests_total` 数到了）· h1 与 h2 **分开打、分开断**，每条正好 +1，且涨的那一条的 `{version,cipher}` 与**访问日志刚报出来的那一对值**逐字相同（⛔ 不写死套件名）· h3 那一条落在 `cipher="<unknown>"` 上 · 而**同一条 h3 请求的日志行里 `tls_cipher` 必须不出现**（两侧两种处置一并钉住）· ★★★ 这个族里**一个空标签值都不许有**（G127 的正主，它不看是不是 h3）· 标签键集合逐字 `{cipher, version}`（⛔ 不许有 `sni`/`alpn`）· `sum(tls) 严格小于 sum(requests)` |
 

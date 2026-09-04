@@ -2298,25 +2298,21 @@ mod tests {
             "PROTOS 里有重复"
         );
 
-        // ⑥ `outcome`：八个取值**各有一个常量**，`outcome_name` 的五条 match 臂与
-        //    三处直接赋值用的都是它们 ⇒ 同一批名字。这里钉的是集合本身自洽。
-        //    ⚠ ⚠ **已知缺口，写在明处**：`Outcome` 是别的 crate 的类型且变体带数据，
-        //    单测造不出实例 ⇒ 「新增一个变体、`outcome_name` 多一条臂，而**忘了把
-        //    新常量写进 `OUTCOMES`**」这一种**今天没有门**。★ 编译器只逼你改
-        //    `outcome_name`（那条 match 是穷尽的），逼不了你回来改这张表。
+        // ⑥ `outcome`：⛔ **这里有意只剩「集合自洽」这一条。**
+        //
+        //    ★ ★ 从前这一格还逐个断言「每个常量都在 `OUTCOMES` 里」，而那张清单
+        //    **本身也是手写的** ⇒ 它答不了「新增一个取值而两处都忘了改」。
+        //    今天那件事由**类型与宏**接管，两道，缺一不可：
+        //      ① `outcomes!` 从**同一行**生成常量与 `OUTCOMES` ⇒ 声明了却没进数组，
+        //         在语法上表达不出来（与 `chain_directives!` 的序号同一手法）；
+        //      ② `OutcomeName` 字段私有、构造点只在那个宏里 ⇒ `=> "foo"` 这种
+        //         绕开常量表的裸字面量**编不过**，`serve_one` 的每一条返回路径
+        //         也必须求值出一个 `OutcomeName` 才能返回。
+        //    ⇒ 再写一遍那张清单只是同义反复，而同义反复的判据会让人以为这一格有门。
+        //
+        //    ⚠ 宏挡不住的**只剩一件**：两行写了同一个字面量。那正是下面这一条。
         let 声明: BTreeSet<&str> = crate::OUTCOMES.iter().copied().collect();
         assert_eq!(声明.len(), crate::OUTCOMES.len(), "OUTCOMES 里有重复");
-        for v in [
-            crate::OUTCOME_RESPOND,
-            crate::OUTCOME_REDIR,
-            crate::OUTCOME_REVERSE_PROXY,
-            crate::OUTCOME_FILE_SERVER,
-            crate::OUTCOME_METRICS,
-            crate::OUTCOME_ERROR,
-            crate::OUTCOME_ACME_HTTP01,
-            crate::OUTCOME_NO_SITE_MATCH,
-        ] {
-            assert!(声明.contains(v), "常量 `{v}` 不在 OUTCOMES 里");
-        }
+        assert!(!声明.contains(""), "OUTCOMES 里有空值");
     }
 }
