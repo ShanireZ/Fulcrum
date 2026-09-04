@@ -204,6 +204,42 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 ⚠ **#941 会影响形状**：per-address 那一半若被合并，我们就只剩「连接结束」要提；
 而它今天 open、0 评论、挂了六周 —— ⛔ **别假设它会落地**，也别假设它不会。
 
+### 3.2 ✅ 第二轮：**普查**，不再是检索（owner 2026-09-04 要求「仔细检查……或已被 close 否决的」）
+
+★★★ **方法从「搜」换成「枚举」** —— 因为「我的关键词覆盖到了吗」本身是个假设，
+而今天早上已经栽过一次（`gh search issues` 一条 PR 都不返回）。⇒ 用 GraphQL 分页
+**把全部 issue 与 PR 逐条列出来**，判断留给人读标题，不留给正则。
+
+| 量到的（2026-09-04）| 数 |
+|---|---|
+| issue 总数 | **436**（178 open / 258 closed）|
+| closed 的分布 | `COMPLETED` 196 · **`NOT_PLANNED` 61** · `DUPLICATE` 1 · 无 reason 0 |
+| PR 总数 | **500**（115 open / 269 closed / **116 MERGED**）|
+
+⚠ **自证**（少了它，一个提前停下的分页器看起来和跑完一样）：枚举结果里含
+issue **#118** 与 PR **#962**（两类各一个已知存在的），且**最小 issue 号是 #1** ⇒ 走到底了。
+
+**① 「有没有被 close 否决过」—— 61 条 `NOT_PLANNED` 逐条读完：⛔ 没有一条否决我们的 ask。**
+★ 顺带一条对判断有用的观察：其中 **#582「Adjustable buffer sizes in L4 `Stream`」与
+#285「reuse port option?」后来其实都做了**（`c0845a8` per-listener L4 缓冲配置 ·
+reuse_port 现已支持）⇒ 在这个仓里 `NOT_PLANNED` 常常是「**现在不做／不按你说的做**」，
+不是「永不」。
+
+**② 宽网扫全部 936 条标题**（96 个 issue + 69 个 PR 命中，全部读过），四条新发现：
+
+| | 发现 | 对草稿的影响 |
+|---|---|---|
+| ★★★ | **#560（2025-03）与 #822（2026-02）都还 open**，要求「把 `prometheus` 在 `pingora-core` 里变成可选」；`842ddd9` 用**整个搬走**回应了它们（另有 PR #612 / #708 是更早的尝试，均已关闭）| ⇒ **上游刻意不让指标实现留在 core 里**。草稿新增一段**主动引用这段历史**，说明我们要的东西在那条线的另一侧（一个钩子、零指标概念）|
+| ★★★ | **#988（open，2026-09-01）+ PR #990 / #991（都 open）** —— torinnd 的「报告实际绑定的监听地址」。⚠ **与我们的第 1 点互补而非竞争**：他答「有哪些地址」，我们答「**这一条连接**从哪个进来」| 草稿的 Additional context 里点名，并把两者的差别写清 |
+| ★★ | **PR #751（open 自 2025-11）「Add finish_downstream_session to ProxyHttp」**（fixes #647）—— 一个**按会话**的结束钩子，在 `pingora-proxy` 层 | 点名，并说明层次与粒度不同（我们的在 core、按连接，因此也覆盖 L4 与握手没走完的连接）|
+| ★ | **PR #663「给 `Tracing` trait 加 `check_allowed`」是作者自己当天关的**（"wrong repository"）⇒ ⛔ **不是被否决** | 消除了「扩展那个 trait 曾被拒」的疑虑 |
+
+⚠ ⚠ **顺带查出一条与本目录现有口径有出入的事，登记给 owner**：`README.md` 写着
+「上游的合并方式是**批量重放**，不是合你的分支 ⇒ 『PR 被 close』在这里是成功而不是拒绝」。
+而实测 **116 个 PR 处于 `MERGED` 状态**（例如 #516「add tweak_new_upstream_tcp_connection
+hook」）—— ⇒ 两条路**都存在**，那句话作为唯一口径太强了。
+★ 我们自己的投稿一恰好走的是前者（PR #962 closed，而改动进了 `main`）。
+
 ## 4. 立论骨架（形状定了之后按它写 issue）
 
 **症状**：一个用 pingora 做入口的进程，**说不出自己有多少条连接**。
@@ -260,6 +296,15 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 3. ⚠ 顺带看到 trait 文档里那段示例的签名是**旧的**（写着 `&SocketAddr`，实际是
    `Option<&SocketAddr>`）—— 是个真的小错，但**与本 issue 无关，⛔ 不夹带**：
    夹带会稀释立论，而这正是投稿一栽过的形状。
+
+★ ★ **而第二轮查出的另一条同族的事**写进了正文，因为它**在**主题上：
+`ConnectionFilter` 在上游**有两份定义**且签名不一致 ——
+feature 开时是 `async fn should_accept(&self, _addr: Option<&SocketAddr>)`（`connection_filter.rs`），
+关时是 `fn should_accept(&self, _addr: &std::net::SocketAddr)`（`listeners/mod.rs:58`，
+而那份 stub 的文档写着 "for API compatibility"）。
+⇒ 它**直接约束我们提的改法**（加默认方法要在两处加，而两处本来就不一致）⇒ 正文里一句话点到，
+⛔ 并明说「只因为它影响这次改动才提，不是另开一份报告」。
+★ 判据是同一条：**在主题上的、约束我们提案的 → 写；off-topic 的小错 → 不夹带。**
 
 ---
 
@@ -343,6 +388,21 @@ discipline.
 implementors; changing `should_accept`'s signature is not. We would suggest defaulted
 additions, but either works — the feature is opt-in.
 
+One thing worth knowing before shaping this: the trait exists twice. The real one is in
+`listeners/connection_filter.rs` under the feature; `listeners/mod.rs` defines a stub for
+when the feature is off, described as being there "for API compatibility". Their signatures
+already differ — the stub's `should_accept` is synchronous and takes `&SocketAddr`, the real
+one is `async` and takes `Option<&SocketAddr>` — so any addition here needs a decision about
+the stub too. We mention it only because it shapes the change, not as a separate report.
+
+**On what this would add to `pingora-core`**: we are aware that core deliberately no longer
+carries metrics. #560 and #822 asked for `prometheus` to be made optional, and `842ddd9`
+answered by moving the Prometheus HTTP app out into its own `pingora-prometheus` crate,
+which now builds entirely on core's public API. What we are asking for sits on the other
+side of that same line: a hook, with no metrics dependency, no counter/gauge distinction,
+and no label vocabulary — a `&str` and a notification. The counting stays in the caller,
+exactly as `pingora-prometheus` now sits outside core.
+
 **A scope question we would rather ask than assume**: `connection_filter` is named for
 *filtering*, and observing a connection's lifetime is a different concern. If you would
 prefer these to live under a differently named feature, or on a sibling trait, we are happy
@@ -378,8 +438,16 @@ alongside the one `ConnectionFilter` already has.
 
 ## Additional context
 
-- Related: #671 (the `ConnectionFilter` trait), #118, #295, #337. #941 (open) proposes
-  attaching filters per address, which is adjacent to point 1 above.
+- Related, on the seam itself: #671 (the `ConnectionFilter` trait), #118, #295, #337.
+- Related, on listener identity — adjacent to point 1, and we do not want to duplicate it:
+  #941 (open) attaches filters per address; #988, with PR #991 reporting the addresses a
+  service actually bound and PR #990 fixing the fd-table collision it needs (both open).
+  Those answer "which addresses exist"; point 1 above answers "which of them did *this*
+  connection arrive on", inside the callback.
+- Related, on end-of-something hooks: #751 (open since 2025-11) adds
+  `finish_downstream_session` to `ProxyHttp`. That is a per-session hook in `pingora-proxy`;
+  point 2 above is a per-connection notification in `pingora-core`, so it also covers L4
+  applications and connections that never complete a handshake.
 - We maintain a fork carrying this capability and would be glad to send a PR in whatever
   shape you prefer — including one that only does point 1, if an end-of-connection hook is
   not something you want in this trait.
