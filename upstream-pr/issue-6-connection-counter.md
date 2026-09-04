@@ -61,7 +61,7 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 | | 要拍的 | 为什么不能由我代拍 |
 |---|---|---|
 | ★★★ | **投不投**（G122 那句前提已经不成立，见 §0①）| 那是 §10 的决定 |
-| ★★ | **投什么形状**：① 原样投 `ConnectionCounter`（新接缝）② 改成「给 `ConnectionFilter` 补上结束钩子与监听地址」③ 只报 issue 不带 PR | 立论完全不同，写法也完全不同 |
+| ★★ | **投什么形状**：① 原样投 `ConnectionCounter`（新接缝）② 改成「给 `ConnectionFilter` 补上结束钩子与监听地址」③ 只报 issue 不带 PR。⚠ **§3.1 把这一行的天平压向 ②**：上游 2026-08-25 刚以「#671 已经加了连接级过滤器」为由把 #118 判成 `COMPLETED` ⇒ 形状 ① 会正面撞上那句话 | 立论完全不同，写法也完全不同 |
 | ★ | **要不要顺带提 feature 默认关**：`connection_filter` 默认关 ⇒ 想用的人要显式开 feature。若我们的形状挂在它上面，这一点必须在 issue 里说清 | 涉及要不要建议上游改默认，那是口味 |
 
 ## 2. ⛔ 为什么这一轮**没有**生成补丁
@@ -90,9 +90,46 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 | 上游有没有同名接缝 | **有半个**：`ConnectionFilter`（见 §0②）；⛔ **没有**任何 `ConnectionCounter` / 连接结束钩子 |
 | 上游有没有别处在数连接 | `pingora-core/src/listeners/` 与 `services/` 里 grep `accepted_?conn` / `conn_count` / `active_conn` —— **零命中** |
 | `prometheus` 还在不在 | **在**（§0①）|
-| ⏳ **有没有人已经开过 issue / PR** | **本轮未查** —— 它要搜 GitHub 的 issue 与 PR（含 open 的），而这一步 [`README.md`](README.md) 记着「投稿三」就是在这里被推翻过一次。⛔ **发之前必须补上，不许跳过。** |
+| ✅ **有没有人已经开过 issue / PR** | **已查（2026-09-04）** —— 结果与方法在下面 §3.1。★ 它确实改写了 §1 第二行。|
 
-★ 最后一行是**有意留空而不是留白**：本轮的范围是「备材料」，而这一项的答案会直接改写 §1 第二行。
+### 3.1 ✅ G46 的那一项：查过了（2026-09-04）
+
+**方法（写下来是为了可复现，⛔ 不是流水账）**：`gh search issues` 与 `gh search prs`，
+20 个查询串 × **两条通道** → 34 条去重结果。
+
+⚠ ⚠ **两条通道是承重的，不是稳妥起见**：**`gh search issues` 一条 PR 都不返回。**
+★ 用正对照测的，⛔ 不是推断：拿 PR **#962 的原题**（`Bump lru dependency from`）去搜，
+`issues` 通道 **0 条**、`prs` 通道 **1 条**（就是它）。
+⇒ 只跑 `issues` 的一轮扫描**会答出「没有前人做过」，而它一个 PR 都没看过**，
+偏偏 G46 要的正是「含未合并的 PR」。
+★ 另一条前提也自证过：`--state` 只收 `open|closed`，**省略它才是全状态**——
+自证用 `lru`：issues 10 条中 5 条已关闭、prs 9 条中 7 条已关闭。
+
+| 命中 | 状态 | 是什么 |
+|---|---|---|
+| ★★★ [#118](https://github.com/cloudflare/pingora/issues/118) | **closed，`COMPLETED`，2026-08-25** | 「`"on connect"` phase for incoming connections」—— **逐字就是本接缝**。★★★ 维护者的结案留言是一句话：**「A connection level filter was added with #671.」** |
+| ★★ [#295](https://github.com/cloudflare/pingora/issues/295) | closed（**被 stale 机器人关的**，⛔ 不是被解决）| 「想知道此刻有多少 **active** 连接：新连接 +1、结束 −1」。维护者给的是**用户态 `Drop` 守卫**的写法，报告者最后一句是「still relevant」|
+| ★★ [#337](https://github.com/cloudflare/pingora/issues/337) | closed | 「怎么跟踪客户端 connect/disconnect（尤其 websocket）」——「`connected_to_upstream` 有，**找不到 disconnect**」|
+| ★ [#671](https://github.com/cloudflare/pingora/pull/671) | closed（改动已在上游）| `ConnectionFilter` trait 本体，即 §0② 那半个接缝 |
+| ★★ [#941](https://github.com/cloudflare/pingora/pull/941) | **open · 0 条评论 · 2026-07-26** | `add_endpoint_with_filter`：把过滤器挂到**单个监听地址**上 —— 正是「哪个监听地址」那一半 |
+| ⚠ [#897](https://github.com/cloudflare/pingora/pull/897) | open | 标题写着「resolve #295」，⛔ **看着相关其实是纯文档**（只改 `docs/user_guide/index.md`），不是竞争实现 |
+
+**这一轮改变了什么（三条，⛔ 都不由我拍）**
+
+1. ⛔ **G46 不构成否决**：没有任何 open 的 issue/PR 在做「监听器上的连接计数」本身。
+   ★ 与投稿五**不同** —— 那次桌上摆着 [#632](https://github.com/cloudflare/pingora/pull/632)
+   这样逐点相同、而且更完整的实现，所以 owner 拍了「什么都不做」。这次没有那种东西。
+2. ★★★ **但立论必须改写**：上游在 **2026-08-25**（十天前）刚把 #118 以 `COMPLETED` 关掉，
+   理由就是「#671 加了连接级过滤器」。⇒ 再开一份，等于对着维护者说「你们认为已经解决的
+   这件事其实没解决」。**那句话必须精确到 `should_accept` 给不出的那两样 ——
+   「连接结束」与「哪个监听地址」**，⛔ 泛泛说「缺一个连接级接缝」会被正当地当成噪音。
+3. ★★ **需求侧的证据变强了，而它此前不在这份材料里**：三个互不相干的使用者在两年里
+   各自要过同一样东西（#118 / #295 / #337），**三条都没拿到实现** ——
+   一条被 stale 机器人关掉、一条被答「没有 disconnect」、一条被判成已由 #671 解决。
+   ★ 这是 issue 正文里最有力的一段。
+
+⚠ **#941 会影响形状**：per-address 那一半若被合并，我们就只剩「连接结束」要提；
+而它今天 open、0 评论、挂了六周 —— ⛔ **别假设它会落地**，也别假设它不会。
 
 ## 4. 立论骨架（形状定了之后按它写 issue）
 
