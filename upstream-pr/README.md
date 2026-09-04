@@ -6,8 +6,17 @@
 
 ## 里面是三份投稿，彼此独立
 
-**投稿一 · `lru` 版本升级**（G32，2026-08-14 **已发出**）
+**投稿一 · `lru` 版本升级**（G32，2026-08-14 **已发出**，✅ **已落地**）
 
+> ✅ ✅ **改动已经在上游 `main` 里**（2026-09-04 实测，这才是本目录自己的落地判据）：
+> [`6463ad6`](https://github.com/cloudflare/pingora/commit/6463ad6)，2026-08-14，
+> author `Shanire <shanire86@gmail.com>`、committer 是维护者、`Signed-off-by` 原样保留。
+> ⇒ ★ 「我们投的东西会不会被重放进 `main`」有了**第一个正例**。
+> ⏳ 按本目录开头那条纪律（「被接受或明确拒绝之后就删掉」），**这一份材料可以清了** ——
+> ⛔ 留给 owner 决定，我没删。
+> ⚠ 而投稿二与投稿三**尚未落地**：它们的主题在 `main` 的提交里零命中
+> （带正对照：同一条检索搜得到上面那笔 lru）。
+>
 > ✅ issue [cloudflare/pingora#961](https://github.com/cloudflare/pingora/issues/961)
 > → PR [cloudflare/pingora#962](https://github.com/cloudflare/pingora/pull/962)
 >

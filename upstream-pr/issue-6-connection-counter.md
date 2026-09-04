@@ -23,6 +23,68 @@
 ★ 顺带：本仓库那条老纪律在这里第 N 次兑现 ——
 **一条待办躺着的理由，常常不是它难，而是它被绑在一个没人回头核的前提上。**
 
+#### ①a ★★★ 重判材料（owner 2026-09-04 点名要「重新看一眼」）：**那句话是一次重构被读成了删除**
+
+`pingora-prometheus` 这条路径上**只有一个提交** ——
+[`842ddd9`](https://github.com/cloudflare/pingora/commit/842ddd9)（2026-04-01）
+**"Split out pingora-prometheus into a separate crate"**。它**从来没被删过，它是那天被拆出来新建的**。
+
+那一笔的文件清单（`gh api repos/.../commits/842ddd9`）：
+
+| 动作 | 文件 |
+|---|---|
+| **removed** | `pingora-core/src/apps/prometheus_http_app.rs`（−66）|
+| modified | `pingora-core/src/services/listening.rs`（**−16**）· `pingora-core/Cargo.toml`（−2）· `apps/mod.rs`（−2）|
+| **added** | `pingora-prometheus/Cargo.toml`（+22）· `pingora-prometheus/src/lib.rs`（+131）|
+
+⇒ ★★★ **只看 `pingora-core` 的话，prometheus 确实「整条消失」了** —— 那句前提几乎必定是这么写下的。
+而在 workspace 层面它是**被搬走**：`pingora-prometheus` 是 workspace 成员，
+`pingora` 与 `pingora-proxy` 今天都依赖它，而 `pingora-core` 对它**零引用**。
+⚠ 那 −16 行还正好在 `services/listening.rs` —— **fork 改动 15 动的就是这个文件**。
+
+**⇒ 「口味未知」这个推断今天有了精确的答案，而且方向对我们有利**
+
+那次拆分把上游的口味说得很清楚：**core 只暴露公开接缝，指标实现住在一个消费它的独立 crate 里。**
+`pingora-prometheus/src/lib.rs` 整个建在 core 的公开 API 上
+（`apps::http_app::{HttpServer, ServeHttp}` · `modules::http::compression` ·
+`protocols::http::ServerSession` · `services::listening::Service`）。
+★ 而形状 ② 向 core 要的正是**一个钩子**，counter/gauge、标签、命名全留在调用方
+（草稿里那句 "Nothing in what we are describing knows about metrics" 就是这个意思）——
+**我们站在那条线的同一侧。**
+
+**另外三条不依赖 prometheus 的口味证据**（全部当天实测）：
+
+| | 证据 |
+|---|---|
+| ★★ | `ConnectionFilter`（#671）本身就是**外部贡献者**加进 core 的监听器级接缝，走 opt-in feature |
+| ★★ | `upstreams::peer::Tracing { on_connected, on_disconnected }` **已经在 core 里** ⇒ 连接生命周期钩子在 core 里是既有形态 |
+| ★★★ | **`listeners/` 2026 年一直在动，而且加的正是「接缝」与「按监听器配置」**：`600c5c0` pre-TLS 回调（04-03）· `c0845a8` per-listener L4 缓冲配置（05-05）· `79771f5` rustls 的 TlsAcceptCallbacks（06-12）· `8aeef34` 下行 TLS 握手卸载（06-30）· `f82478a` 关掉未被认领的继承 socket（07-23）|
+
+★★★ **最硬的一条：我们自己的投稿一已经落进 `main`** ——
+[`6463ad6`](https://github.com/cloudflare/pingora/commit/6463ad6)（2026-08-14），
+author `Shanire <shanire86@gmail.com>`、committer 是维护者、我们的 `Signed-off-by` 原样保留。
+⇒ 「我们投的东西会不会被重放进 main」这件事**已经有一个正例，不再是推测**。
+
+**⚠ 诚实的另一侧（⛔ 不给单边材料）**
+
+1. ⚠ 那次拆分是上游在**让 core 变小**，而我们要往 core 的一个 trait 上**加两样**。
+   ★ 反驳是：搬走的是一个 **Prometheus 专用的 HTTP app**，不是接缝 —— 那一刀切在
+   「实现」与「接缝」之间，而我们要的是接缝。但这个读法是真实存在的，⛔ 别装作没有。
+2. ⚠ ⚠ **真正的风险不是口味，是评审带宽**：#941（per-address 过滤器）open 六周、**0 条评论**；
+   #295 是被 stale 机器人关的；CONTRIBUTING 明说不承诺及时评审。
+   ★ 而**我们已发的三份里只有一份落地**：投稿二（fd 泄漏）与投稿三（aws-lc-rs）的主题
+   在 `main` 的提交里**零命中**（⚠ 带正对照：同一条检索能搜到已落地的那笔 lru）。
+   ⇒ 发出去的预期结果是「**它可能就躺着**」。那是时间成本问题，不是口味问题。
+
+**⇒ 要 owner 拍的两件**（⛔ §10 只有 owner 能改，我一个字没动）
+
+1. **那句前提本身**：它作为陈述是**假的**。三条路 ——
+   (a) 划掉那句、换成今天的证据说得出的话；
+   (b) 划掉那句，「投不投」改由别的依据来判；
+   (c) 行不动，把纠正写在别处 —— ⚠ 那会让 §10 留着一句假话，
+   **而那正是 G128 / G129 两次补记要治的毛病。**
+2. **投不投** —— 那句前提造出来的那道闸门已经不存在了。
+
 ### ② ★★★ 上游**已经有**一个位置几乎相同的接缝：`ConnectionFilter`
 
 `pingora-core/src/listeners/connection_filter.rs`（feature `connection_filter`，
