@@ -1,4 +1,10 @@
-# PR draft — 投稿六（⛔ 未发；发要 owner 按 G40 单独批）
+# PR — 投稿六（✅ **已发**）
+
+> ✅ **2026-09-04 经 owner 单独授权发出**：
+> PR [cloudflare/pingora#995](https://github.com/cloudflare/pingora/pull/995)
+> （base `main` · head `ShanireZ:listener-tracer` · 一个文件 `+135/-1` · 一个提交 `0dda18b`）。
+> ★ 标题与正文用提取器**逐字发出**，发后核过：66 行**逐行相同**。
+> ⚠ 下面这份草稿即发出去的原文，留档用。
 
 > ★ 依据本目录纪律：**先 issue、后 PR**。issue 已发＝
 > [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)，

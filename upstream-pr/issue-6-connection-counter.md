@@ -1,4 +1,4 @@
-# 投稿六（✅ **issue 已发**，⛔ PR 未发）· 监听器上的连接结束钩子
+# 投稿六（✅ **issue 与 PR 都已发**）· 监听器上的连接生命周期
 
 > ✅ **2026-09-04 经 owner 逐次授权（G40）发出**：
 > issue [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)。
@@ -248,7 +248,24 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 ⛔ 但这句话不是靠「显然无关」下的，是**回基线量出来的**。
 ⚠ MSRV 那道（`cargo +1.85.0 check`）与 `cargo audit` / `cargo machete` 本地没有，留给上游 CI。
 
-⇒ ⏳ **下一步：等 #994 有回话**（补丁已就绪，发 PR 仍要 owner 单独批）。
+### 2.3 ✅ 2026-09-04：**PR 已发** —— [cloudflare/pingora#995](https://github.com/cloudflare/pingora/pull/995)
+
+owner 单独授权后发出（两次外部写入：先把补丁推成 `ShanireZ/pingora` 的
+`listener-tracer` 分支，再 `gh pr create`）。落地核对：
+base `main` · head `ShanireZ:listener-tracer` · **一个文件 `+135/-1`** ·
+**一个提交 `0dda18b`** · 标题一致 · 正文 66 行**逐行相同**。
+正文草稿留档在 [`pr-6-listener-tracer.md`](pr-6-listener-tracer.md)。
+
+**发之前当天重做的核对**（⛔ 不引用上一轮）：#994 仍 OPEN 且**无维护者回复** ·
+上游 `main` **没动**（仍 `09696b5`）· `set_tracer` / `listener tracer` /
+`downstream tracer` / `connection tracer` 四个词**两条通道全 0**（⛔ 无人抢先）·
+`fmt` 与 `clippy -D warnings` **各 `RC=0`** · `cargo test -p pingora-core --lib`
+**557 / 2**，两条新测试 `ok`。
+
+⇒ ⏳ **下一步：等上游回话。** ⚠ CONTRIBUTING 不承诺及时评审，而 #941 挂了六周 0 评论
+⇒ ⛔ **别把它当成会很快有下文的事**。
+★ 判断是否落地看**改动有没有出现在 `main`**，⛔ 不看 PR 状态（本目录纪律；投稿一正是
+PR 被 close 而改动进了 `main`）。
 
 ## 3. ✅ G32/G46 要求的「先查上游做没做」——已查的部分
 

@@ -358,7 +358,12 @@ git push origin lru-0.18.2
 > ★ 这正是 G41/G42 当初查过的同一件事——**结论没被写进跑上游门的流程里，于是又踩了一遍**。
 > 已补进下面的「怎么用」。
 
-## ✅ 投稿六（**issue 已发 2026-09-04，⛔ PR 未发**）· 监听器上的连接结束钩子
+## ✅ 投稿六（**issue 与 PR 都已发，2026-09-04**）· 监听器上的连接生命周期
+
+> ✅ PR [cloudflare/pingora#995](https://github.com/cloudflare/pingora/pull/995)
+> （base `main` · head `ShanireZ:listener-tracer` · 一个文件 `+135/-1` · 一个提交 `0dda18b`）。
+> 正文草稿留档在 [`pr-6-listener-tracer.md`](pr-6-listener-tracer.md)，发后逐行核过。
+> ⏳ 等回话。★ 判断是否落地看**改动有没有出现在 `main`**，⛔ 不看 PR 状态。
 
 > ✅ issue [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)
 > （经 owner 逐次授权，G40）。发后核过：归一行尾后与批准的那份**逐字符相等**。
