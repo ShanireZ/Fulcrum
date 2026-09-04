@@ -308,44 +308,151 @@ feature 开时是 `async fn should_accept(&self, _addr: Option<&SocketAddr>)`（
 
 ---
 
+### 5.3 第三轮复查（owner 要求「再走一轮」，⛔ 换角度，不重复前两轮的查法）
+
+前两轮查的是「事实对不对」与「有没有前人」。这一轮换成三面：**上游有没有动 · 当维护者会
+怎么反驳 · 措辞与篇幅**。
+
+| | 查了什么 | 结果 |
+|---|---|---|
+| ✅ | 上游 `main` 有没有移动（正文钉的是 `09696b5`）| **没动**，仍是 `09696b5`（2026-08-25）⇒ 钉的那个号今天仍然准 |
+| ✅ | `connection_filter` 是不是只在 main 上（维护者会问版本）| **不是** —— 已发布的 `0.8.1` tag 上 `connection_filter.rs` 与那个 feature 都在 ⇒ 正文不需要版本告示 |
+| ✅ | 那条「两份定义签名不一致」是不是 main 上的临时状态 | **不是**，`0.8.1` 上同样如此（real 收 `Option<&SocketAddr>` 且 `async`，stub 收 `&SocketAddr` 且同步）|
+
+★★★ **这一轮真正逮到的一条（技术上要紧，前两轮都没想到）：`Drop` 不能 `await`。**
+草稿原本把结束钩子写成 `async fn connection_closed(...)` —— 而**我们自己给出的落法**
+（一个由任务持有、在 `Drop` 里调钩子的守卫）与 `async` 钩子**是矛盾的**：
+`Drop` 里没法 await，于是要么每条关闭的连接 `spawn` 一次，要么架一座阻塞桥，两者都更差。
+⇒ 已改成 `fn connection_closed(&self, listen: &str)`（同步），并在正文里把这条理由写明；
+`should_accept` 照旧 `async`。
+★ 这条是**我们自己踩过才知道的**，写进去比任何论证都有说服力。
+
+另外三处按「当维护者会怎么反驳」改了：
+
+1. 加了一段**具体的 API 草图**（三行 `impl`）—— 维护者评估的是人体工学，而先前正文只有散文；
+   ⚠ 草图明写它用的是「不破坏兼容」那个变体。
+2. 「the one we **expect to be offered** here」改成「the answer **given** on #245/#295/#337」
+   —— ⛔ 去掉替对方揣测的口气。
+3. 「one implementation detail **matters more than** the API shape」改成
+   「two things we **learned the hard way** carrying this in a fork, offered for what they are
+   worth **rather than as a prescription**」—— ⛔ 去掉教对方怎么写代码的口气。
+
+⚠ 篇幅：约 130 行。判断是**值得**——它按上游模板分节、前人证据密集，而这个仓的维护者
+带宽紧（#941 open 六周 0 评论）⇒ 一次把话说完比来回三轮便宜。
+
+### 5.4 第四轮复查（owner 又要求「再 review 一遍」）：**我们的立论会不会被架空**
+
+⛔ 前三轮查的是「事实 / 前人 / 措辞」。这一轮只问一件事：
+**上游已有或在途的东西，会不会让我们的某一点变得不必要？**
+
+★★★ **答案是会，而且是第 2 点（监听地址）。**
+
+今天的机制（当天实查）：`Listeners::set_connection_filter` 把**同一个实例**盖到每个
+endpoint 上，`add_endpoint` / `add_listener` 也是 clone 那一个 ⇒ 一个过滤器分不出监听器。
+⚠ 而 `ListenerEndpointBuilder::connection_filter` **确实**收按 endpoint 的过滤器 ——
+只是 `TransportStackBuilder` 是私有的、`TransportStack` 是 `pub(crate)`，
+⇒ **手搓的 endpoint 喂不进 `Service`**，那条路走不通。★ 这正是 **#941** 要解决的事。
+
+⇒ ★★★ **#941 一落地，「每个地址一个过滤器实例」天生就知道自己的地址，我们的第 2 点就没必要了。**
+这是维护者**一定**会提的反驳。⇒ 三处照此改：
+
+1. **两点重新排序**：不会被架空的那条（结束钩子）领头，监听地址退为第 2；
+   全部 `point 1` / `point 2` 交叉引用同步核过（`grep -n "point 1\|point 2"`）。
+2. **自己把这条说出来**：正文明写「#941 一落地，第 2 点就变得不必要，**而我们宁愿如此**」——
+   ★ 这让我们的要求**变小**，也说明我们不是想再造一套机制。
+3. **标题跟着改**：`…has no end-of-connection hook, and cannot tell listeners apart` ——
+   「cannot tell listeners apart」正是 #941 会修掉的那句话，措辞与事实对齐。
+
+⚠ 顺带补一条给「只读问题小节的人」的指针（那一条里加了「#941, open, would give this by
+construction」），免得他停在那里被误导。
+
+**同一条思路推到第 1 点：结束钩子会不会也已经有现成的？** —— 查了，**没有**：
+
+| 候选 | 实查结论 |
+|---|---|
+| `ServerApp::cleanup` / `HttpServerApp::http_cleanup`（**#118 的报告者当年就提过它**）| ⛔ **按服务，不按连接**：`cleanup` 的文档注释自己写着 "called **once after the service stops listening to its endpoints**"，调用点在 `listening.rs:319`，**在 accept 循环退出之后**。它看不见单条连接 |
+| PR #751 `finish_downstream_session` | 按**会话**、在 `pingora-proxy` 层 ⇒ 覆盖不到 L4，也覆盖不到握手没走完的连接 |
+| 枚举出的全部 500 个 PR / 436 个 issue | 宽网里带 `disconnect\|lifecycle\|hook\|callback`，165 条命中全部读过 ⇒ **只有 #751 一个候选** |
+
+⇒ ★ 第 1 点**没有被架空**，而它现在是领头的那一点 —— 形状对了。
+★ `http_cleanup` 那条已像对 `Tracer` 那样**自己先答掉**（写进 alternatives），
+因为 #118 的报告者提过它 ⇒ 维护者也可能提。
+
+**再往外一层查了 workspace 里那个陌生成员 `pingora-foundations`**（描述是
+「Foundations **telemetry** integration」）：读过它的 `lib.rs` —— 它是**遥测管道**
+（把 `foundations` 的 logging / metrics / tracing 与 `/metrics` HTTP 服务接成一个
+`BackgroundService`），⛔ **不提供任何连接级数据源** ⇒ 不架空我们。
+★★★ 反而**从另一侧强化了立论**，这句已进正文：上游已经给了「往哪儿放这个数」
+与「从哪儿吐出去」（`pingora-prometheus` + `pingora-foundations`），
+**缺的正是 core 里报出这个数的东西**。
+
+### 5.4b ✅ owner 拍板：**第 2 点整条删掉，只提结束钩子**（2026-09-04）
+
+⚠ ⚠ **本节取代 §5.4 里「两点重新排序」与那个旧标题** —— §5.4 记的是那一轮查到了什么，
+处置由 owner 改成了更狠的一刀：**不要第 2 点**。
+
+★★★ 而这一刀逼出一处**必须一起改、否则自相矛盾**的地方：钩子原本是
+`fn connection_closed(&self, listen: &str)` —— **那个 `listen` 参数本身就是第 2 点**。
+删掉第 2 点，签名就得收成 **`fn connection_closed(&self)`**。
+
+⇒ ★ 而这让故事更硬，不是更弱：
+
+| | |
+|---|---|
+| **今天**（一个实例服务所有 endpoint）| 单这一条就给出**进程级的在线连接数** —— 而今天连这个都拿不到 |
+| **#941 落地后** | 每个地址一个实例 ⇒ 按监听器分格**天生**就有，⛔ 不需要我们要任何东西 |
+
+⇒ 最终诉求＝**一条带默认实现的同步方法**，零签名变更、零新数据过边界、
+既有实现方零改动。★ 这是这份 issue 能有的最小形状。
+
+同笔收尾（否则会留下互相矛盾的句子）：
+
+1. **标题**改成 `ConnectionFilter has no end-of-connection hook, so downstream connections
+   can be counted starting but never ending` —— 自足、不再提监听器身份；
+2. 问题小节从「三件事挡在前面」收成**一件**（那条「拿不到 peer addr 就不调」降为
+   一句**明说「我们不要求你改」**的告示，免得把计数吹过头）；
+3. 兼容性那段删掉「改签名不兼容」那半句（我们不再提改签名）；
+4. alternatives 里凡是拿「学不到监听器身份」当论据的都删掉 —— 那不再是我们的论点；
+5. Additional context 把 #941 改成「**我们有意不碰**监听器身份，那正是它该来的地方」。
+
+⚠ ⚠ ★ 全部 `point 1` / `point 2` / `listen: &str` / `connection_accepted` 的残留
+**逐条 grep 核过**（⛔ 不靠通读：改写之后最容易留下的正是一句读起来通顺的旧引用）。
+
+### 5.5 发布用的正文怎么取（⛔ 不手打）
+
+`scratchpad/extract_issue_body.py`：从材料里按 `**Title**:` 与
+`## What is the problem` 两个锚点切出标题与正文，写成两个文件，并打印 sha256。
+★ **理由**：owner 批准的是材料里那份，真发出去的必须与它**逐字节相同** ——
+手打重录正是两者分家的方式。
+
+它带守卫：正文里**不许**出现我们自己的任何记号（`⛔ ★ ⚠ ⇒`、`**Title**:`、
+`正文（GitHub issue` 等），四个模板小节缺一即拒。
+⚠ ⚠ **守卫第一版漏了 `⚠`** —— 一份不全的守卫与没有守卫是同一个形状，已补。
+★ 而「守卫通过」本身不算证据：另外**直接量过**一遍提取出来的正文 ——
+四个记号各 0 次、**中文字符 0 个**。
+
+---
+
 ## 正文（GitHub issue，逐字）
 
 **Template**: `.github/ISSUE_TEMPLATE/feature_request.md`
 
-**Title**: `Listener connection accounting: ConnectionFilter has no end-of-connection hook and does not receive the listen address`
+**Title**: `ConnectionFilter has no end-of-connection hook, so downstream connections can be counted starting but never ending`
 
 ## What is the problem your feature solves, or the need it fulfills?
 
-A process that uses Pingora as its entry point cannot report how many downstream
-connections it currently has, broken down by the address each connection arrived on.
-Today a connection *starting* can very nearly be observed; a connection *ending* cannot be
-observed at all.
+A process that uses Pingora as its entry point cannot report how many downstream connections
+it currently has. A connection *starting* can be observed today; a connection *ending* cannot
+be observed at all.
 
-`ConnectionFilter::should_accept` (added by #671, behind the `connection_filter` feature)
-is called after `accept()` and before the TLS handshake, which is the right moment to
-observe a connection starting. Three things stand between that and being able to account
-for connections:
+`ConnectionFilter::should_accept` (added by #671, behind the `connection_filter` feature) is
+called after `accept()` and before the TLS handshake, which is the right moment to see a
+connection start. **Nothing is called when one ends.** `run_endpoint` spawns one task per
+connection, and that task has three exits — handshake timeout, handshake error, and
+`handle_event` returning — and none of them notifies anything. So a number built on
+`should_accept` can only ever go up.
 
-1. **The filter is not told which listener the connection arrived on.** It receives only
-   the peer address. The listener's own address is right there at the call site —
-   `ListenerEndpoint` holds `listen_addr: ServerAddress`, and `ServerAddress: AsRef<str>` —
-   but it is not passed. An entry point listening on several addresses cannot tell them
-   apart.
-
-2. **Nothing is called when a connection ends.** `run_endpoint` spawns one task per
-   connection, and that task has three exits: handshake timeout, handshake error, and
-   `handle_event` returning. None of them notifies anything, so a number built on
-   `should_accept` alone can only go up.
-
-3. **The filter is skipped entirely when the peer address is unavailable.** In
-   `ListenerEndpoint::accept()`, if the stream has no socket digest, or the digest has no
-   peer address, `should_accept` is not called at all and the connection is accepted by
-   default. For a *filter* that is a safe default. For accounting it means some
-   connections would never be counted, silently. (Interestingly `should_accept` already
-   takes `Option<&SocketAddr>`, so the trait can express "no address" — the call site
-   short-circuits before reaching it.)
-
-This capability has been asked for more than once:
+This has been asked for more than once:
 
 - #118, "on connect phase for incoming connections" — closed as completed by #671, which
   covers the accept moment only.
@@ -361,32 +468,65 @@ at on #245, #295 and #337. But a `Tracer` is a field on `PeerOptions` and counts
 *to upstreams*; there is no equivalent for connections *from* downstream. The alternatives
 section below says why that is a different question rather than a smaller one.
 
+Worth noting from the other side: `pingora-prometheus` and `pingora-foundations` already give
+a place to publish such a number and an endpoint to serve it from. What is missing is anything
+in core that reports it.
+
+One caveat we are *not* asking you to change, mentioned so a count is not oversold: in
+`ListenerEndpoint::accept()`, if the stream has no socket digest or the digest has no peer
+address, `should_accept` is not called at all and the connection is accepted by default. For a
+filter that is a safe default; it does mean a count of starts is not exhaustive.
+
 ## Describe the solution you'd like
 
 Extend the existing `ConnectionFilter` seam rather than introduce a second one. It already
 carries the plumbing (a per-endpoint field, a builder method, `Listeners::set_connection_filter`)
 and is already gated behind `connection_filter`, which is off by default.
 
-Two additions:
+**One addition**: a defaulted `fn connection_closed(&self)`, called once for each connection
+`should_accept` was consulted about, when that connection is gone. No signature changes, no
+new data crossing the boundary, and nothing for existing implementors to do.
 
-1. **Hand the listen address to the filter** — either as an argument to `should_accept`, or
-   via an additional defaulted method that receives it. `ListenerEndpoint::accept()` already
-   holds it.
+The pairing is the part worth pinning down: as noted above, `should_accept` is skipped
+entirely when there is no peer address. A close hook that fired for *every* accepted
+connection would therefore not pair with it, and the obvious `+1` / `-1` implementation would
+underflow. Firing it exactly where `should_accept` ran keeps the two in step.
 
-2. **Add an end-of-connection notification**, e.g. a defaulted
-   `async fn connection_closed(&self, ...)`.
+```rust
+#[async_trait]
+impl ConnectionFilter for MyConnectionCount {
+    async fn should_accept(&self, _addr: Option<&SocketAddr>) -> bool {
+        self.live.fetch_add(1, Relaxed);
+        true
+    }
 
-On the second point, one implementation detail matters more than the API shape: **the
-notification is best driven by a value whose lifetime is the spawned task, calling the hook
-in `Drop`, rather than by explicit calls at each exit.** The task has three exits; an
-explicit call has to be written three times, and the failure mode of missing one is silent —
-a live-connection number that never comes back down, sitting next to a total that looks
-perfectly healthy. A guard makes the notification a structural fact instead of a caller's
-discipline.
+    // new
+    fn connection_closed(&self) { self.live.fetch_sub(1, Relaxed); }
+}
+```
 
-**Backwards compatibility**: adding defaulted methods is source-compatible for existing
-implementors; changing `should_accept`'s signature is not. We would suggest defaulted
-additions, but either works — the feature is opt-in.
+**On attributing connections to a particular listener**: we are deliberately *not* asking for
+that here. Today `Listeners::set_connection_filter` installs one instance across every
+endpoint (and `add_endpoint` clones that same one), so the hook above yields a process-wide
+live count — which is more than is obtainable now. Per-listener attribution follows from #941
+by construction, since a filter instance attached to one address already knows its address.
+We would rather wait for that than ask for a second mechanism.
+
+Two things we learned the hard way carrying this in a fork, offered for what they are worth
+rather than as a prescription:
+
+- **The end hook wants to be synchronous.** The only way we found to guarantee it fires is a
+  value owned by the spawned task that calls the hook from `Drop` — and `Drop` cannot await.
+  An `async` close hook therefore forces either a `spawn` per closing connection or a
+  blocking bridge, both worse than a plain `fn`. `should_accept` can stay `async`.
+- **Drive it from that guard, not from explicit calls at each exit.** The task has three
+  exits; an explicit call has to be written three times, and the failure mode of missing one
+  is silent — a live-connection number that never comes back down, sitting next to a total
+  that looks perfectly healthy.
+
+**Backwards compatibility**: a defaulted method is source-compatible for existing
+implementors, and the feature is opt-in, so nothing changes for anyone who does not implement
+it.
 
 One thing worth knowing before shaping this: the trait exists twice. The real one is in
 `listeners/connection_filter.rs` under the feature; `listeners/mod.rs` defines a stub for
@@ -399,33 +539,36 @@ the stub too. We mention it only because it shapes the change, not as a separate
 carries metrics. #560 and #822 asked for `prometheus` to be made optional, and `842ddd9`
 answered by moving the Prometheus HTTP app out into its own `pingora-prometheus` crate,
 which now builds entirely on core's public API. What we are asking for sits on the other
-side of that same line: a hook, with no metrics dependency, no counter/gauge distinction,
-and no label vocabulary — a `&str` and a notification. The counting stays in the caller,
-exactly as `pingora-prometheus` now sits outside core.
+side of that same line: one notification, with no metrics dependency, no counter/gauge
+distinction and no label vocabulary. The counting stays in the caller, exactly as
+`pingora-prometheus` now sits outside core.
 
 **A scope question we would rather ask than assume**: `connection_filter` is named for
-*filtering*, and observing a connection's lifetime is a different concern. If you would
-prefer these to live under a differently named feature, or on a sibling trait, we are happy
-to shape a PR that way. What we would like to avoid is a second, parallel wiring path
-alongside the one `ConnectionFilter` already has.
+*filtering*, and observing when a connection ends is a different concern. If you would prefer
+it to live under a differently named feature, or on a sibling trait, we are happy to shape a
+PR that way. What we would like to avoid is a second, parallel wiring path alongside the one
+`ConnectionFilter` already has.
 
 ## Describe alternatives you've considered
 
-- **`upstreams::peer::Tracer`** — the standing answer on #245, #295 and #337, and the one we
-  expect to be offered here, so we would rather address it up front. A `Tracer` is placed in
+- **`upstreams::peer::Tracer`** — the answer given on #245, #295 and #337, so it is worth
+  addressing up front rather than after a round trip. A `Tracer` is placed in
   `PeerOptions` and its `on_connected` / `on_disconnected` fire for connections Pingora opens
   *to an upstream*, counting active plus pooled ones. That is a different population from the
   connections a listener is currently holding: a downstream connection that never opens an
   upstream connection produces no tracer events at all — one rejected by a filter, one that
   fails or times out in the TLS handshake, a request served from cache or by a local handler,
-  or any L4 application that never dials out. A tracer also carries no notion of which
-  listener a connection arrived on. Nothing in `listeners/` or `services/listening.rs`
-  references it.
+  or any L4 application that never dials out. Nothing in `listeners/` or
+  `services/listening.rs` references it.
+- **`ServerApp::cleanup` / `HttpServerApp::http_cleanup`** — suggested on #118, so worth
+  ruling out explicitly. These are per-service, not per-connection: the doc comment on
+  `cleanup` says it is "called once after the service stops listening to its endpoints", and
+  the call site in `run_endpoint` is after the accept loop has exited. They cannot see
+  individual connections at all.
 - **Counting in userland with a `Drop` guard** (also suggested on #295). It cannot cover the
   window this is about: connections that time out or fail during `io.handshake()` never reach
   the application, because `handle_event` is only called on the successful branch. For an
-  entry point those are a population you specifically want to see. A userland guard also has
-  no way to learn which listener a connection arrived on.
+  entry point those are a population you specifically want to see.
 - **Polling the operating system** (`netstat`-style, also considered on #295): it is a
   sampling answer to a question about state transitions, and attributing sockets back to a
   particular listener of a particular process is awkward at best.
@@ -439,20 +582,15 @@ alongside the one `ConnectionFilter` already has.
 ## Additional context
 
 - Related, on the seam itself: #671 (the `ConnectionFilter` trait), #118, #295, #337.
-- Related, on listener identity — adjacent to point 1, and we do not want to duplicate it:
-  #941 (open) attaches filters per address; #988, with PR #991 reporting the addresses a
-  service actually bound and PR #990 fixing the fd-table collision it needs (both open).
-  Those answer "which addresses exist"; point 1 above answers "which of them did *this*
-  connection arrive on", inside the callback.
+- Related, on listener identity, which we are deliberately leaving alone: #941 (open) attaches
+  filters per address, which is how we would expect per-listener attribution to arrive; #988,
+  with PR #991 reporting the addresses a service actually bound and PR #990 fixing the fd-table
+  collision it needs (all open).
 - Related, on end-of-something hooks: #751 (open since 2025-11) adds
   `finish_downstream_session` to `ProxyHttp`. That is a per-session hook in `pingora-proxy`;
-  point 2 above is a per-connection notification in `pingora-core`, so it also covers L4
-  applications and connections that never complete a handshake.
-- We maintain a fork carrying this capability and would be glad to send a PR in whatever
-  shape you prefer — including one that only does point 1, if an end-of-connection hook is
-  not something you want in this trait.
-- Nothing in what we are describing knows about metrics: the hook would receive the listen
-  address as a string, and everything else (counter versus gauge, label names, naming) stays
-  in the caller.
+  what is asked for above is a per-connection notification in `pingora-core`, so it also
+  covers L4 applications and connections that never complete a handshake.
+- We maintain a fork carrying this capability and would be glad to send the PR, in whatever
+  shape you prefer.
 
 **Pingora version**: `main` @ `09696b5`
