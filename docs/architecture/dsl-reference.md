@@ -467,7 +467,7 @@ warning（`handle` / `route` 那层带着也算 —— 它罩住块内每一步�
 | 指令 | 形式 | 状态 |
 |---|---|---|
 | `tls` | `tls`（自动，默认）／`tls <cert> <key>`／`tls internal`（自签）／`tls { on_demand … }` | **M1 自研** |
-| `log` | `log { output … }` — ⚠ **字段清单与格式是 D7（M2）**，M1 只给最小可用形态 | M1 部分 |
+| `log` | `log { output … }` — ✅ **字段清单与格式由 G113 + G114 定稿**（D7 结案）；权威是 [观测](/architecture/observability.md)，本节只说配置面 | M2 |
 
 ### `tls` 的子块
 

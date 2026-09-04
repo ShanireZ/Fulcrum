@@ -14,7 +14,7 @@ okf_version: "0.2"
 
 * [唯一权威与本 bundle 的定位](/governance/source-of-truth.md) - 谁说了算、架构一节为什么是例外、发现冲突怎么办
 * [决策日志](/governance/decision-log.md) - §10 的导航：哪条管哪件事、★ owner 推翻 AI 建议的那些决定
-* [待定清单](/governance/open-questions.md) - 仍然开着的那些：**D19/D20/D26（M2–M3）· D21/D23/D24/D9（M4）**
+* [待定清单](/governance/open-questions.md) - 仍然开着的那些。★ **号码有意不抄在这里**：那张表由门钉成与 `PLAN.md` 待定清单逐字相等，而**抄出来的第二份没有任何门守着** —— 这一行此前就同时错了两头（D26 已由 G118 结案却还列着、D29 开着却没列），而它自洽地躺了很多轮
 * [实施路线](/governance/roadmap.md) - M0–M4 五个里程碑与各自的退出条件；判据只有「能不能真用」
 * [工作方式](/governance/working-agreement.md) - 不可回头的硬约束、不得绕过的三条、性能声明的纪律
 

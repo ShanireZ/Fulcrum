@@ -281,11 +281,17 @@ G36 只管构建镜像的 rustc，见 [待定清单](/governance/open-questions.
 等最后一代真正退出正是为此）。⚠ 实际踩过：进程没走干净，下一个场景绑不上端口，
 而它的基线探测**照样变绿** —— 对着残留进程。
 
-## ★ ★ 产品的 musl 静态产物也跑在**容器之外**（D22）
+## ★ ★ 产品的 musl 静态产物也跑在**容器之外**（G108）
 
 [`tests/musl/product.sh`](../../tests/musl/product.sh) 自己 `docker build` 一个 **Alpine** 镜像
 把**产品本体**编成 musl 静态产物，再塞进 `FROM scratch` 里跑一次 `fulcrum validate`。
 ⇒ 它与那次 `docker run` 是两回事，与 M1 那四格同理，由 `docker-run.sh` 在最后驱动。
+
+> ★ **这一格的来历**：D22 登记的本是「把 `tests/musl/probe.sh` 挂成常设的门」，
+> 而 owner 换掉了**判据本身**（**G108**）—— 探针编的是 spike，答不了「产物是不是单静态二进制」。
+> ⇒ D22 **已结案**，探针留在门外当历史记录。
+> ⚠ ⚠ **但这一格只覆盖 x86_64**（`ARCHES="amd64"`），而 G13 承诺两个架构 ——
+> 那半边仍然开着，是 §11 的 **D24**。⛔ 别把「这一格是绿的」读成「G13 的分发口径全都有门守着」。
 
 ⚠ ⚠ **它的上下文是仓库根**（根 `Cargo.toml` 的 `[patch.crates-io]` 指着 `vendor/pingora`），
 所以仓库根有一份 [`.dockerignore`](../../.dockerignore) —— ★ 而 `.dockerignore` 是**按上下文根读的**，
