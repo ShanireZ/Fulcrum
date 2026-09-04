@@ -163,6 +163,48 @@ selftest_tree_state() {
 }
 selftest_tree_state
 
+# ── ★ ★ 「哪些不属于本树的卷可以给删除命令」的自测 ──────────────────────────
+#
+# 上面那条 label 判据只分得清**机制存在之后建的卷**，而对已存在的卷
+# `docker volume create` 是静默 no-op ⇒ 之前留下的永远补不上 label，一律落进「不明」，
+# 而「不明」那一半**只进不出**。⚠ ⚠ 2026-09-04 实测代价：11 个 target 卷、10 个无主、
+# 约 92GB，而回收提示看得见 **1** 个。⇒ 补一条**不依赖建卷那一刻记下了什么**的判据
+# （`fulcrum_vol_shape`：今天的 `fulcrum_target_vol` 造不造得出这个名字）。
+#
+# 六条，每条守一个**不同的失效形态**：
+#   ① label 说树还在 ⇒ keep。★ ★ 它必须短路在最前 —— 错了就是「劝人删掉隔壁正在编译的
+#      缓存」，而受害者那边只看到一次莫名的全量重编。⚠ 这个洞是写反证时才发现的。
+#   ② label 说树没了 ⇒ orphan（原有那条，一个字没改）。
+#   ③ 旧命名代 + 读不到 label ⇒ orphan —— 这是新买到的那 80GB。
+#   ④ ★ ★ ★ **承重**：当代形状 + 读不到 label ⇒ **仍然 keep**。新规则一旦吞掉旧规则
+#      保守的那一半，症状不是报错，是有一天它给出一条删错卷的命令。
+#   ⑤ 形状判据这一轮不可信（shape_ok=0）⇒ 新规则整条不生效，退回原来的保守行为。
+#   ⑥ ★ 形状用**真的生成出来的名字**钉住 —— 手写一个样例名去比是钉不住的：
+#      `fulcrum_target_vol` 改了形状，这一条必须当场红。
+selftest_vol_verdict() {
+  local rc=0 probe gen
+  probe=$(mktemp -d)
+  [ "$(fulcrum_vol_verdict fulcrum-target-0c672eb8e734 "$probe" 1)" = keep ] \
+    || { echo "★ label 说主人还在，却被判成可删——回收提示会去刨隔壁正在用的缓存" >&2; rc=1; }
+  [ "$(fulcrum_vol_verdict fulcrum-target-737269d62e58-c31a8c20540d "$probe/gone" 1)" = orphan ] \
+    || { echo "★ label 说主人已经不在，却没判出来——原有那条回收路丢了" >&2; rc=1; }
+  [ "$(fulcrum_vol_verdict fulcrum-target-0c672eb8e734 "" 1)" = orphan ] \
+    || { echo "★ 今天的推导造不出的旧代卷名没被判出来——那几十 GB 继续没有一行字说得出" >&2; rc=1; }
+  [ "$(fulcrum_vol_verdict fulcrum-target-737269d62e58-c31a8c20540d "" 1)" = keep ] \
+    || { echo "★ ★ 当代形状但读不到 label 的卷被判成了可删——形状规则吞掉了保守的那一半" >&2; rc=1; }
+  [ "$(fulcrum_vol_verdict fulcrum-target-0c672eb8e734 "" 0)" = keep ] \
+    || { echo "★ 形状判据已声明不可信，规则却照样生效了——那正好是它最容易删错的那一轮" >&2; rc=1; }
+  gen=$(fulcrum_target_vol "deadbeefcafe1111" "/tmp/fulcrum-selftest-tree-a")
+  [ "$(fulcrum_vol_shape "$gen")" = current ] \
+    || { echo "★ 本推导刚生成的卷名（$gen）被形状判据判成了「旧代」——照这个判法它会劝人删正在用的卷" >&2; rc=1; }
+  rmdir "$probe" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || {
+    echo "  卷处置判定自测未通过——**下面那份「可以删」的清单一律不可信**。" >&2
+    exit 1
+  }
+}
+selftest_vol_verdict
+
 # ── ★ ★ 门禁互斥的自测 ──────────────────────────────────────────────────────
 #
 # 卷分开之后还剩一种：**同一棵树上并发跑两次门禁**，两次仍然共用那一个卷。
@@ -469,6 +511,19 @@ fi
 #     主人还在、或读不到 label ⇒ 照旧只报数、不给命令。
 #   ⚠ 「读不到 label」有意归后一半：加这条规则之前留下的卷读不出主人，
 #     而「没能检查」不算「检查通过」。
+# ★ ★ 形状判据（`fulcrum_vol_shape`）**这一轮可不可信，当场自证**：拿本树自己那个
+#   真名字去问。`fulcrum_tree_tag` 在既没有 sha256sum 也没有 git 的宿主上会退到
+#   另一种标签，那时当代的名字会被判成「旧代」—— ⛔ 那正是它最容易删错的一轮。
+#   ⇒ 自证不过就把整条规则关掉（退回原来的保守行为），**并且说出来**。
+if [ "$(fulcrum_vol_shape "$TARGET_VOL")" = current ]; then
+  SHAPE_OK=1
+else
+  SHAPE_OK=0
+  echo "⚠ 本树的卷名（$TARGET_VOL）不符合当代形状 —— 这台宿主上 fulcrum_tree_tag 多半" >&2
+  echo "  退到了兜底标签。⇒ 「今天的推导造不出这个名字」这条规则本轮**整条关掉**，" >&2
+  echo "  旧命名代的卷会退回「不明」那一半（不判红，但别以为它在工作）。" >&2
+fi
+
 if [ -n "$OTHER_VOLS" ]; then
   mapfile -t OTHER_LIST <<< "$OTHER_VOLS"
   # 一趟 inspect 问完。★ 卷名在前、路径在最后一段：`IFS='|' read` 把剩下的整段都给
@@ -476,18 +531,26 @@ if [ -n "$OTHER_VOLS" ]; then
   #   进而给出一条删错卷的命令。
   OTHER_META=$(docker volume inspect --format "{{.Name}}|{{index .Labels \"$FULCRUM_TREE_LABEL\"}}" \
                  "${OTHER_LIST[@]}" 2>/dev/null || true)
-  ORPHAN_HINT=""
-  ORPHAN_N=0
-  KEEP_N=0
+  ORPHAN_VOLS=()
+  ORPHAN_WHY=()
+  KEEP_VOLS=()
   while IFS='|' read -r vol tree; do
     [ -n "$vol" ] || continue
-    if [ "$(fulcrum_tree_state "$tree")" = gone ]; then
-      ORPHAN_HINT="${ORPHAN_HINT}      docker volume rm ${vol}   # ${tree}"$'\n'
-      ORPHAN_N=$((ORPHAN_N + 1))
+    if [ "$(fulcrum_vol_verdict "$vol" "$tree" "$SHAPE_OK")" = orphan ]; then
+      ORPHAN_VOLS+=("$vol")
+      # ★ 把**凭哪条规则**判的写在命令旁边：两条规则的证据强度不同，
+      #   而人是照着这行去按删除键的。
+      if [ -n "$tree" ]; then
+        ORPHAN_WHY+=("工作树已不在：$tree")
+      else
+        ORPHAN_WHY+=("读不到 label，且今天的推导造不出这个名字")
+      fi
     else
-      KEEP_N=$((KEEP_N + 1))
+      KEEP_VOLS+=("$vol")
     fi
   done <<< "$OTHER_META"
+  ORPHAN_N=${#ORPHAN_VOLS[@]}
+  KEEP_N=${#KEEP_VOLS[@]}
   # ⚠ ⚠ **「读不到」不许变成「没这回事」。** `inspect` 整批失败时上面两个计数都是 0，
   #   于是这一段一个字都不打 —— 而它取代的是 a4cc2b5 那句**无条件**的报数，
   #   ⇒ 「另有 N 个卷不属于这棵树」这句话会安静地消失。
@@ -499,13 +562,38 @@ if [ -n "$OTHER_VOLS" ]; then
     echo "  它们一律按「还有人要」算，不进下面那份删除清单。" >&2
     KEEP_N=$((KEEP_N + UNREAD_N))
   fi
+
+  # ★ ★ **把体积说出来，不只报个数。** 2026-09-04 实测：本机 10 个无主卷共约 92GB，
+  #   而当时这里只会说「另有 N 个卷」—— 一个个数读起来无关痛痒，一串 GB 不是。
+  #   ⚠ `docker system df -v` 比 `docker volume ls` 贵得多（实测 1.4–1.9s vs 0.34s）
+  #   ⇒ 只在**真有东西要报**的时候问一次；两个桶都空就一次都不问。
+  #   ⚠ ⚠ 量不到时打「未量到」，⛔ 绝不打 0 —— 「读不到」不许变成「没这回事」。
+  VOL_SIZES=""
+  if [ "$ORPHAN_N" -gt 0 ] || [ "$KEEP_N" -gt 0 ]; then
+    VOL_SIZES=$(fulcrum_vol_sizes)
+  fi
+  vol_size_of() {
+    local want=$1 line
+    [ -n "$VOL_SIZES" ] || { printf '未量到'; return; }
+    line=$(printf '%s\n' "$VOL_SIZES" | grep -F -- "$want|" | head -1 || true)
+    printf '%s' "${line#*|}"
+    [ -n "$line" ] || printf '未量到'
+  }
+
   if [ "$ORPHAN_N" -gt 0 ]; then
-    echo "[docker-run] 另有 $ORPHAN_N 个 target 卷，它们的工作树**已经不在了**（一个约 6GB），删了碰不到任何人："
-    printf '%s' "$ORPHAN_HINT"
+    echo "[docker-run] 另有 $ORPHAN_N 个 target 卷判定为**无主**，删了碰不到任何人："
+    for i in "${!ORPHAN_VOLS[@]}"; do
+      printf '      docker volume rm %s   # %s，%s\n' \
+        "${ORPHAN_VOLS[$i]}" "$(vol_size_of "${ORPHAN_VOLS[$i]}")" "${ORPHAN_WHY[$i]}"
+    done
   fi
   if [ "$KEEP_N" -gt 0 ]; then
-    echo "[docker-run] 另有 $KEEP_N 个 target 卷**不属于这棵工作树**（别的工作树在用，或是加树标签之前留下的）。"
+    echo "[docker-run] 另有 $KEEP_N 个 target 卷**不属于这棵工作树**，且判不出是不是无主的："
+    for vol in "${KEEP_VOLS[@]}"; do
+      printf '             %s   %s\n' "$vol" "$(vol_size_of "$vol")"
+    done
     echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
+    echo "             ⚠ 但体积写在这里 —— 这一半只进不出，2026-09-04 它悄悄涨到过 92GB。"
   fi
 fi
 
