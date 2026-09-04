@@ -102,8 +102,10 @@ pingora-core 0.8.1 的 feature 全表：
 「BoringSSL 与 musl 静态链接」验过通过（见
 [musl + BoringSSL 静态链接](/verification/musl-boringssl.md)）。
 ⚠ ⚠ 后者的卡点不在 musl 也不在 BoringSSL，**在构建宿主**：`boring-sys` 的 bindgen 要
-`dlopen`，而 Alpine 上 build script 默认是静态的 ⇒ 由此新立 **D21**（构建宿主口径）——
+`dlopen`，而 Alpine 上 build script 默认是静态的 ⇒ 由此立过 **D21**（构建宿主口径）——
 **仓库现有的这张构建镜像编不出 musl 产物**（Debian 没有 `musl-g++`）。
+✅ **D21 已由 G131 结案**：口径取 **Alpine 原生 + qemu 跑 aarch64**，⛔ 决定性理由是
+另一条候选会给**供应链**新增一整套 C/C++ 交叉编译器，而不是「Alpine 更方便」。
 
 # 三条不可回头的硬约束（G6 附带）
 

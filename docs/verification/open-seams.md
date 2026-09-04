@@ -26,7 +26,7 @@ sources:
 
 | 接缝 | 已知事实 | 待验证 |
 |---|---|---|
-| **构建镜像编不出 musl 产物** | 实测：Debian trixie 只有 `musl-gcc`（C），没有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ⏳ 挂号 **D21**（构建宿主口径）。★ 不挡开工 —— 发布流水线本身还不存在 |
+| **构建镜像编不出 musl 产物** | 实测：Debian trixie 只有 `musl-gcc`（C），没有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ✅ **已由 G131 结案**（曾挂号 D21）：口径 = Alpine 原生 + qemu 跑 aarch64。⚠ qemu 那一趟的耗时**仍未量过**，它是 D24 的输入 |
 | **产物里真的链接了哪几套 TLS** | 依赖图里只有一套（`cargo tree -e all --target all` 为空） | ⏳ 挂号 **D23**。「图里有 ≠ 产物里链接了」，而这一步没有判据 |
 | **`bind()` 攥着全局 `ListenFds` 锁**（本仓 vendor 的 0.8.1 里） | `ListenerEndpoint::listen` 先 `fds_table.lock().await` 再在**持锁状态下** `bind()`，而 `bind_tcp` 重试 30 次 × 1 秒 ⇒ 一个被占端口把整把锁停住 30 秒，**所有还没拿到锁的监听器一起起不来**（2026-08-28 实测：现场报的是另一个端口起不来）| ✅ **上游 `main` 已修**（`1d9371191`，2026-03-25：`ListenFds` 换 `parking_lot::Mutex` + 按地址的异步锁）。⏳ 但上游最新 release 仍是 **0.8.1**（＝本仓 vendor 的那个）⇒ **下一次 rebase 时随之解除**。⚠ 上游修法新增 `flurry` 依赖 ⇒ 「现在就 backport」要先过供应链门，不是顺手的事 |
 | **上游 `listen_addresses()` 落地后的接线** | 上游 main 上有一条尚未发版的改动：给 `Service` 加 `listen_addresses()`，用来在换代后关掉没人认领的 fd | ⏳ rebase 上去之后，**枢衡的每一个自建 `Service` 都要显式实现它**。⚠ 它带默认实现（返回 `None` = 关掉清理）⇒ **漏实现不会有任何编译错误**，而一个服务没实现就会关掉整个进程的清理 |
@@ -39,7 +39,7 @@ sources:
 | 未被认领的继承 fd 会怎样 | ✅ 已复现并有常设判据 → [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh)，见下 |
 | 移交来的监听 fd 没有 `FD_CLOEXEC` | ✅ 由 **G38** 在 fork 里修掉（包 `OwnedFd` + `MSG_CMSG_CLOEXEC`），并已投上游（[pingora#959](https://github.com/cloudflare/pingora/issues/959) → [#960](https://github.com/cloudflare/pingora/pull/960)）。★ 上游走批量重放，**「PR 被 close」是成功不是拒绝** —— 看改动有没有进 `main` |
 | 两个入口能否共用同一份挑证书实现 | ✅ **不是被验证通过，是被取消了前提**：G104 换到 BoringSSL 之后共用的不再是 `ResolvesServerCert`，而是同一个 `select_certificate_callback` → [TLS](/architecture/tls.md) |
-| BoringSSL 与 musl 静态链接 | ✅ 已通过 → [musl + BoringSSL 静态链接](/verification/musl-boringssl.md)。⚠ 卡点不在 musl 也不在 BoringSSL，在构建宿主 —— 换来了上面 D21 那条 |
+| BoringSSL 与 musl 静态链接 | ✅ 已通过 → [musl + BoringSSL 静态链接](/verification/musl-boringssl.md)。⚠ 卡点不在 musl 也不在 BoringSSL，在构建宿主 —— 换来了上面那条构建宿主口径（曾挂号 D21，✅ 已由 G131 结案）|
 | systemd 下的零停机升级 | ✅ 由 M1 通过，★ 但推翻了 G31 的一半 → [M1 spike #1](/verification/m1-systemd.md) |
 | 升级窗口内 QUIC 连接归属 | ✅ 由 **G109** 解除：按 DCID 跨进程转交，判据 [`tests/quic-relay/run.sh`](../../tests/quic-relay/run.sh)，见下 |
 | L4 UDP 在升级窗口内的数据报分流 | ✅ 收到停机信号就不再 `recv_from`；⚠ **窗口被缩小不是被消灭** —— 在那之前两代都在收 |

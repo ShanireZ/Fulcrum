@@ -65,7 +65,8 @@ sources:
 > 里跑完真的 QUIC 握手，且 `set_select_certificate_callback` **真的被调用**、读得到 SNI
 > ⇒ **G103 不重议**。记录 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md)。
 > ⚠ ⚠ 但它换来一条新的：**仓库现有的构建镜像编不出 musl 产物**（Debian 没有 `musl-g++`），
-> 已立 **D21**。★ 这一条不挡本页描述的迁移开工。
+> 已立 **D21**，✅ **已由 G131 结案**（口径 = Alpine 原生 + qemu 跑 aarch64）。
+> ★ 这一条当初就不挡本页描述的迁移开工。
 
 > ✅ **TLS 那条脊梁已经落地并跑通**（`crates/fulcrum-tls` + `crates/fulcrum-server/tls.rs`）：
 > 按 SNI 动态挑证书、每域一目录的 PEM 存储（原子写 + `flock`）、续期判定（ARI → 1/3 → 退避）、
