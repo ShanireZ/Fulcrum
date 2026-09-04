@@ -1,4 +1,11 @@
-# 投稿六（**材料准备中，⛔ 未发**）· 监听器上的连接计数接缝
+# 投稿六（✅ **issue 已发**，⛔ PR 未发）· 监听器上的连接结束钩子
+
+> ✅ **2026-09-04 经 owner 逐次授权（G40）发出**：
+> issue [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)。
+> ★ 正文是 `scratchpad` 里那份提取产物**逐字发出**的，发后核过：
+> 归一行尾后与批准的那份**逐字符相等**（9709 == 9709），中文字 0 个。
+> ⚠ 落地口径：**只发 issue**。为什么现在不发 PR，见 §2（那一节的理由一条都没变，
+> 只是又多了一条：**我们 fork 今天的形状与本 issue 提的形状不是同一个**）。
 
 > 对应 fork **改动 15**（[`../vendor/pingora/FORK.md`](../vendor/pingora/FORK.md)）。
 > 依据 `PLAN.md` §10 **G122**：「投不投上游**等 rebase 读过上游 `main` 之后再判**」。
@@ -142,6 +149,30 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 ⇒ ★ **先把「查过了什么」钉下来（本文件），补丁等形状定了再生成** ——
 ⛔ 一份基线过期、形状可能作废的 `.patch` 摆在这里，比没有更糟：
 下一个人会以为它是可用的。
+
+### 2.1 ★★★ 2026-09-04 补：**为什么 issue 发了而 PR 没发**（owner 问过）
+
+四条理由，前两条是流程，后两条是硬事实：
+
+1. **上游 CONTRIBUTING 要求先 issue**：「Non-trivial PRs will also require a GitHub issue」——
+   给 core 的一个 trait 加方法不在它列的「错别字 / 小重构 / 文档」豁免里。
+   本目录 [`../docs/platform/upstream-pr.md`](../docs/platform/upstream-pr.md) 把这条记成
+   硬性流程第 1 条：**直接开 PR 就是违反流程**。
+2. **PR 的形状正是这份 issue 请他们定的东西**：挂 `ConnectionFilter` 还是姐妹 trait ·
+   feature 名要不要换 · 同步还是异步。⚠ 在这三条没回话之前写出来的补丁多半要作废 ——
+   本目录有先例：投稿三在发前复审被推翻、投稿五被整个撤销。
+3. ★★★ **我们 fork 今天的形状与本 issue 提的形状不是同一个。**
+   fork 改动 15 是一条**独立的** `ConnectionCounter`（`enter` / `leave`，还带监听地址参数）；
+   issue 提的是 `ConnectionFilter` 上**一条不带地址的** `fn connection_closed(&self)`。
+   ⇒ **今天没有可发的补丁**，要发就得先把 fork 改成那个形状 —— 而那动的是 G122 拍过的设计
+   与五个调用点。
+4. ★★★ **而且那样改会让我们自己丢掉 `listen` 标签。** 我们的指标契约是
+   `fulcrum_connections_active{listen,entrypoint}`（G122），而 issue 里那条钩子**有意不带地址**
+   ⇒ 在 #941 落地之前它给不出按监听器分格的数。
+   ⚠ ⚠ **推论要写在明处**：即便上游全盘接受，**fork 改动 15 也还得留着**（或留一个更薄的版本）
+   直到 #941 落地 —— ⛔ 这份投稿不是「把 fork delta 删掉」的路径，它是给上游用户的贡献。
+
+⇒ ⏳ **下一步不是写补丁，是等 #994 有回话**（或 owner 明确要求现在就把 fork 改成那个形状）。
 
 ## 3. ✅ G32/G46 要求的「先查上游做没做」——已查的部分
 

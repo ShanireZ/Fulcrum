@@ -358,7 +358,15 @@ git push origin lru-0.18.2
 > ★ 这正是 G41/G42 当初查过的同一件事——**结论没被写进跑上游门的流程里，于是又踩了一遍**。
 > 已补进下面的「怎么用」。
 
-## ⏳ 投稿六（**材料准备中，⛔ 未发**）· 监听器上的连接计数接缝
+## ✅ 投稿六（**issue 已发 2026-09-04，⛔ PR 未发**）· 监听器上的连接结束钩子
+
+> ✅ issue [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)
+> （经 owner 逐次授权，G40）。发后核过：归一行尾后与批准的那份**逐字符相等**。
+> ⚠ **为什么不同时发 PR**：上游 CONTRIBUTING 要求非小改先开 issue；而 PR 的形状正是这份
+> issue 请他们定的；★★★ 更硬的一条 —— **我们 fork 今天的形状与 issue 提的形状不是同一个**
+> （fork 是独立的 `ConnectionCounter` 带地址参数，issue 提的是 `ConnectionFilter` 上
+> 不带地址的 `connection_closed`）⇒ **今天没有可发的补丁**。四条理由全文见
+> [`issue-6-connection-counter.md`](issue-6-connection-counter.md) §2.1。
 
 对应 fork **改动 15**。依据 G122：「投不投**等 rebase 读过上游 `main` 之后再判**」。
 立论与已查清的部分：[`issue-6-connection-counter.md`](issue-6-connection-counter.md)。
