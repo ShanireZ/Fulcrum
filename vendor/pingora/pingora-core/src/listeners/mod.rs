@@ -608,12 +608,12 @@ mod test {
 
     /// ★ 枢衡改动 15 的回归守卫（手法照改动 13：**长在上游自己的测试模块里**）。
     ///
-    /// ⚠ ⚠ **它只覆盖 [`ConnGuard`] 本身，不覆盖 `run_endpoint` 里的那个调用点。**
-    /// 具体说：把 `services/listening.rs` 里那句 `let _conn_guard = conn_guard;`
-    /// 写成裸 `let _ = conn_guard;`（当场 drop）**这一条抓不住** ——
-    /// 抓它的是枢衡自己那侧的端到端判据（`tests/metrics/run.sh` 里
-    /// 「连上 TLS 端口什么都不发 ⇒ active +1」那一条）。
-    /// ★ 写在这里，是免得下一个人以为这条测试覆盖了整条路。
+    /// ⚠ **它只覆盖 [`ConnGuard`] 本身，到不了 `run_endpoint` 里那个调用点** ——
+    /// 那一段由下面 [`枢衡改动15_守卫必须被移进任务且绑了名字`] 守（2026-09-04 补）。
+    /// ⛔ **两条别合并**：这一条验**行为**（构造即 enter、drop 即 leave），
+    /// 那一条验**接线**（那个值真的被移进了任务）—— 合并之后哪一半坏了都分不出来。
+    /// ★ 端到端那一层仍然有它自己的判据（`tests/metrics/run.sh` 里
+    /// 「连上 TLS 端口什么都不发 ⇒ active +1」），三层各守一段。
     #[test]
     fn 枢衡改动15_连接守卫在_drop_时减一() {
         use std::sync::atomic::{AtomicUsize as 计数, Ordering as 序};
@@ -645,6 +645,94 @@ mod test {
             *c.最后地址.lock().unwrap(),
             "127.0.0.1:1",
             "递过去的是监听地址原样"
+        );
+    }
+
+    /// ★ ★ ★ 枢衡改动 15 的**第二道**守卫：`run_endpoint` 里那个守卫必须真的被
+    /// **移进** spawn 出去的任务，并且绑在一个**有名字**的变量上（2026-09-04 补）。
+    ///
+    /// ⚠ ⚠ 它守的是一个**编译器不会说、门禁也不会红**的失效，而且有两种形态：
+    ///
+    /// 1. `let _conn_guard = conn_guard;` 写成裸 `let _ = conn_guard;` ⇒ **当场 drop**；
+    /// 2. 把那一行**整个删掉** ⇒ 那个值就不再被移进 `async move` 块，
+    ///    于是在 accept 循环这一轮末尾就 drop 了 —— 后果与第 1 种**一模一样**。
+    ///
+    /// 两种的现场都是 **gauge 恒为 0 而 counter 照涨**：正文格式合法、series 都在，
+    /// 只有一个数字永远是 0。⇒ 这正是「一道只见过绿的门」最爱藏的地方。
+    #[test]
+    fn 枢衡改动15_守卫必须被移进任务且绑了名字() {
+        // 把空白全去掉再判：`rustfmt` 换行与缩进变化不会误伤，
+        // 而两种形态在归一之后仍然是**不同**的字符串。
+        fn 归一(s: &str) -> String {
+            s.chars().filter(|c| !c.is_whitespace()).collect()
+        }
+        // ★ ★ ★ 判「有没有做某件事」之前**必须先剥掉整行注释**。
+        //   ⚠ ⚠ 这不是洁癖：`listening.rs` 里那句**警告**本身就写着
+        //   「⛔ 写成裸 `let _ = conn_guard;` 会当场 drop」——**本门第一次跑就红在它上面**，
+        //   判据把那句警告当成了坏代码。
+        //   ⚠ **只剥整行**（`^\s*//`）：行内 `//` 未必是注释（`http://`、字符串里的 `//`），
+        //   一刀切会把真代码剪掉 —— 那是另一个方向的假绿（判据看不见真做了的事）。
+        //   ⚠ 已知边界：**行尾注释剥不掉**。真要藏一句坏形态在行尾注释里能骗过它，
+        //   而本文件不写行尾注释，且那需要有人刻意去做 —— 写在明处，不假装它全能。
+        fn 去整行注释(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        // 一份源码里那个守卫接得对不对。★ 正向与反向**走同一个函数**，
+        // 否则「反向能红」证明不了「正向判得动」。
+        fn 接得对(src: &str) -> bool {
+            let s = 归一(&去整行注释(src));
+            s.contains("ConnGuard::new(")
+                && s.contains("let_conn_guard=conn_guard;")
+                && !s.contains("let_=conn_guard")
+        }
+
+        // ★ 剥离器自己的两条自证（剥得掉整行 ∧ 剥不掉行内的 `//`）。
+        assert_eq!(
+            去整行注释("  // 整行注释\nlet a = 1;"),
+            "let a = 1;",
+            "整行注释没被剥掉 ⇒ 下面那条正向判据会被注释里的警告误伤"
+        );
+        assert!(
+            去整行注释("let u = \"http://x\";").contains("http://x"),
+            "把行内的 `//` 也当注释剪掉了 ⇒ 判据会看不见真代码"
+        );
+
+        // ★ ★ **反向那一半，与正向同一次运行**（照 `tests/m0/unclaimed.sh` 的先例）。
+        //   ⛔ 少了它，一个恒回 `true` 的判据在下面那条正向上是绿的。
+        //   ⚠ 这几份夹具里出现的坏形态**不会误伤正向**：正向读的是
+        //     `services/listening.rs`，⛔ **别把正向改成读本文件**。
+        assert!(
+            接得对("let conn_guard = ConnGuard::new(c, a);\nlet _conn_guard = conn_guard;"),
+            "判据把正确的接法判成错的 ⇒ 它守不住任何东西"
+        );
+        assert!(
+            !接得对("let conn_guard = ConnGuard::new(c, a);\nlet _ = conn_guard;"),
+            "形态 1（裸 `let _ =`，当场 drop）没被认出来"
+        );
+        assert!(
+            !接得对("let conn_guard = ConnGuard::new(c, a);\n// 那一行被删了"),
+            "形态 2（守卫压根没被移进任务）没被认出来"
+        );
+        // ★ ★ ★ 第四份夹具＝**本门第一次跑时那个 bug 的回归测试**：
+        //   接法正确、而**注释里提到了坏形态**的源码必须被判为**对的**。
+        //   ⚠ 少了它，有人「顺手简化」掉 `去整行注释` 之后不会有任何东西红 ——
+        //   而那时这道门会对着一份完全正确的 `listening.rs` 判红。
+        assert!(
+            接得对(
+                "// ⛔ 写成裸 `let _ = conn_guard;` 会当场 drop\n\
+                 let conn_guard = ConnGuard::new(c, a);\nlet _conn_guard = conn_guard;"
+            ),
+            "注释里提到坏形态的正确源码被判成了错的 ⇒ `去整行注释` 没在起作用"
+        );
+
+        // 正向：真的那份源码。
+        assert!(
+            接得对(include_str!("../services/listening.rs")),
+            "`services/listening.rs` 里那个连接守卫没被移进任务、或没绑名字 ⇒ \
+             active 会恒为 0 而 total 照涨，且不会有任何东西报错"
         );
     }
 
