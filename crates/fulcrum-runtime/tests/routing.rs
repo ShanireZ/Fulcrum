@@ -1122,6 +1122,97 @@ fn 结构化层写进一个越界权重是构建期错误() {
     );
 }
 
+/// 把一份编得过的配置里那条 `reverse_proxy` 的 `id` 换成 `id`，再建图。
+///
+/// ★ 改的是**编译之后**那份结构化配置 —— 编译期那道门已经跑完了，
+/// 于是下面几条量的确实是运行时图自己那道。
+fn build_errors_with_id(id: Option<&str>) -> Vec<String> {
+    let o = compile_str("t.Fulcrumfile", "a.com {\n  reverse_proxy 10.0.0.1:1\n}\n");
+    let mut cfg = o.config.expect("夹具应当能编译");
+    let mut patched = false;
+    for s in &mut cfg.sites {
+        for st in &mut s.chain {
+            if let fulcrum_config::model::StepBody::ReverseProxy { id: slot, .. } = &mut st.body {
+                *slot = id.map(str::to_string);
+                patched = true;
+            }
+        }
+    }
+    assert!(patched, "夹具里应当有一条 reverse_proxy");
+    match Runtime::build(&cfg) {
+        Ok(_) => Vec::new(),
+        Err(e) => e.iter().map(|x| x.to_string()).collect(),
+    }
+}
+
+/// ⚠ `id` 的取值域在 DSL 那边由 `FUL-DSL-0043` 挡，而一份**在进程里手搓**的
+/// 结构化配置那一道**一次都不经过**（G11）。
+///
+/// ★ ★ 这一格的失效形态是**装得上**：`id "<none>"` 会在 `/stats` 与覆盖层的键里
+/// **冒充**本仓的兜底记号（`<other>` / `<none>` / `<unknown>` / `<undeclared>`
+/// 全靠尖括号在真值里不可能出现），而没有任何东西报错。
+/// ⛔ 别把它读成「基数风险」：`id` 一个字都不进指标（G126）。
+#[test]
+fn 结构化层写进一个不合法的_id_是构建期错误() {
+    // ⚠ 六种形态各一条，⛔ 不合并：它们各自对应一个**不同的**失效现场，
+    //   而一条「只判其中一种」的实现在合并写法下照样绿。
+    for (什么, 值) in [
+        ("空格", "a b".to_string()),
+        ("尖括号（冒充兜底记号）", "<none>".to_string()),
+        // ★ 带**真换行**的那一格只能在这一层问：DSL 的引号串不能跨行，词法层先回
+        //   `FUL-DSL-0003` ⇒ 它压根到不了 `proxy_id`，只有手搓的 JSON 递得进来。
+        ("真换行", "a\nb".to_string()),
+        ("中文", "网页池".to_string()),
+        ("65 个字符（上限 64）", "a".repeat(65)),
+        // ⚠ 空串在**这一层**走同一条：运行时侧没有诊断码之分。DSL 那条路上它有
+        //   自己的 `FUL-DSL-0042` 与自己那段解释，而那段解释是给**写配置的人**的。
+        ("空串", String::new()),
+    ] {
+        let e = build_errors_with_id(Some(&值));
+        assert!(!e.is_empty(), "`id` 里的{什么}应当在构建期被拒");
+        // ★ 报文要把那个值**原样点出来**，否则运维手上只有「有个 id 不合法」。
+        //   ⚠ 断言的是 `{:?}` 那个形态：带换行的值必须被转义，⛔ 不许让一个换行
+        //   把装载错误那一行在人眼里断成两行（那正是收紧的理由之二）。
+        assert!(
+            e.iter().any(|x| x.contains(&format!("{值:?}"))),
+            "装载错误没点名那个不合法的 id（{什么}）：{e:?}"
+        );
+    }
+}
+
+#[test]
+fn 不合法的_id_的装载错误说得出合法的样子长什么样() {
+    // ★ 一条只说「不合法」的报文会让人一次次去试 —— 判据要求它**把值域说出来**。
+    //   ⚠ 断言的是「说出来了」，⛔ 不是那句话的逐字文本：它只有一份
+    //   （`model::proxy_id_shape`），逐字断言会把同一句话钉在两处。
+    let e = build_errors_with_id(Some("<none>")).join("\n");
+    assert!(e.contains("64"), "没说长度上限：{e}");
+    assert!(e.contains("A-Za-z0-9_.-"), "没说清允许哪些字符：{e}");
+}
+
+#[test]
+fn 合法的_id_在结构化层照旧装得上() {
+    // ★ ★ 反向那一半。⚠ 少了它，一个把**所有** `id` 都拒掉的实现在上面两条上全绿 ——
+    //   而它会让 `id` 这个功能整个变成死的。
+    for 名 in ["pool_web", "web-1", "a.b_c", "A", &"z".repeat(64)] {
+        assert!(
+            build_errors_with_id(Some(名)).is_empty(),
+            "`id {名}` 该照旧装得上"
+        );
+    }
+}
+
+#[test]
+fn 没写_id_的配置照旧装得上() {
+    // ⚠ ⚠ `None` **不是**「不合法的 id」，它是「这条没写 id」—— 而没写才是绝大多数
+    //   配置的样子（`id` 选填，G125）。★ 一个把 `None` 也送进取值域检查的实现会让
+    //   **全仓的配置**装不上；这一条在这里，是为了让红的那一行直接指着它。
+    assert!(
+        build_errors_with_id(None).is_empty(),
+        "没写 `id` 的配置必须装得上"
+    );
+}
+
 #[test]
 fn 坏的_cidr_在构建期报错() {
     let e = build_errors("a.com {\n  @m remote_ip 10.0.0.0/99\n  respond @m 200\n}\n");

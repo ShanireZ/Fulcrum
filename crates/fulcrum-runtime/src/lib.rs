@@ -2821,6 +2821,29 @@ fn build_step(
             tls_insecure_skip_verify,
             ..
         } => {
+            // ★ ★ **`id` 的取值域在这里再查一遍**（G11：结构化层是公开入口）：
+            //   DSL 那边 `FUL-DSL-0043` 挡过一次，而一份**在进程里手搓**的
+            //   `StructuredConfig`（`POST /load` 收的 JSON）那一道**一次都不跑**。
+            //   ⚠ ⚠ 这一格的失效形态是**装得上**：`id "<none>"` 会在 `/stats` 与
+            //   覆盖层的键里**冒充**本仓的兜底记号（`<other>` / `<none>` / `<unknown>` /
+            //   `<undeclared>` 全靠尖括号在真值里不可能出现），而没有任何东西报错。
+            //   ⛔ 不在这里再写一遍那个字符集：判据与「合法的长什么样」那句话
+            //   各只有一份（`is_valid_proxy_id` / `proxy_id_shape`）。
+            //   ⚠ `None` 是「这条没写 id」，**不是**不合法 —— `id` 选填（G125）。
+            //   ★ 判在最前面且**不 `return None`**：与 `weight` 那条一样一次报全，
+            //   否则「lb_policy 也写错了」会把这一条吞掉。
+            if let Some(name) = id
+                && !fulcrum_config::model::is_valid_proxy_id(name)
+            {
+                errors.push(BuildError::new(
+                    at,
+                    format!(
+                        // ⚠ `{:?}`：带换行的 id 会把这一行装载错误在人眼里断成两行。
+                        "`reverse_proxy` 的 `id` {name:?} 不在取值域里——{}",
+                        fulcrum_config::model::proxy_id_shape()
+                    ),
+                ));
+            }
             let policy = match LbPolicy::parse(lb_policy) {
                 Some(p) => p,
                 None => {
