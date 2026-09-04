@@ -262,6 +262,21 @@ base `main` · head `ShanireZ:listener-tracer` · **一个文件 `+135/-1`** ·
 `fmt` 与 `clippy -D warnings` **各 `RC=0`** · `cargo test -p pingora-core --lib`
 **557 / 2**，两条新测试 `ok`。
 
+**✅ 上游 CI 四项全绿**（2026-09-04，`gh pr checks` 与后台监视两次一致）：
+
+| job | 结果 |
+|---|---|
+| `pingora (1.85.0)` | **pass** 3m39s |
+| `pingora (1.97.1)` | **pass** 10m58s |
+| `pingora (nightly)` | **pass** 8m7s |
+| `semgrep-oss` | **pass** 33s |
+
+★★★ **它正好补上了本地验证的两处缺口**：
+① `1.85.0` 那道是 **MSRV**（`cargo +1.85.0 check`），本地镜像里没有那个工具链；
+② `1.97.1` 那道跑的是**带 openresty 的完整套件** —— 本地那 99 条 `pingora-proxy` 集成失败
+是**环境**造成的，上游跑绿了就此坐实。
+⇒ ⛔ 「留给上游 CI」那句话不再是欠账，它已经兑现。
+
 ⇒ ⏳ **下一步：等上游回话。** ⚠ CONTRIBUTING 不承诺及时评审，而 #941 挂了六周 0 评论
 ⇒ ⛔ **别把它当成会很快有下文的事**。
 ★ 判断是否落地看**改动有没有出现在 `main`**，⛔ 不看 PR 状态（本目录纪律；投稿一正是

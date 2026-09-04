@@ -363,6 +363,10 @@ git push origin lru-0.18.2
 > ✅ PR [cloudflare/pingora#995](https://github.com/cloudflare/pingora/pull/995)
 > （base `main` · head `ShanireZ:listener-tracer` · 一个文件 `+135/-1` · 一个提交 `0dda18b`）。
 > 正文草稿留档在 [`pr-6-listener-tracer.md`](pr-6-listener-tracer.md)，发后逐行核过。
+>
+> ✅ **上游 CI 四项全绿**：`pingora (1.85.0)` 3m39s · `(1.97.1)` 10m58s · `(nightly)` 8m7s ·
+> `semgrep-oss` 33s。★★★ 它补上了本地验证的两处缺口 —— **MSRV** 那道本地没有工具链，
+> 而 `1.97.1` 跑的是**带 openresty 的完整套件**（本地那 99 条集成失败是环境造成的，就此坐实）。
 > ⏳ 等回话。★ 判断是否落地看**改动有没有出现在 `main`**，⛔ 不看 PR 状态。
 
 > ✅ issue [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)
