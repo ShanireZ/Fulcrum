@@ -6,6 +6,7 @@
 # 一次只开一个 `<X>_ONLY=1` 只跑那一格；`<X>_TESTS=0` 跳过那一格：
 #
 #   BUILD · LINT · UNIT · VENDOR             构建 · fmt+clippy+shellcheck · 自研 crate 测试 · fork 回归网
+#   COMPILE                                  只编译（含全部测试目标）、一条测试都不跑 —— pre-push 门用的那一格
 #   SERVE · L4 · FILES · CACHE · CACHEDISK   数据面 · L4 面 · 静态文件 · 缓存 · 缓存磁盘后端
 #   ENCODE · H3 · PP · LOG                   压缩 · HTTP/3 · PROXY protocol（HTTP 面）· 访问日志
 #   METRICS · RELAY                          Prometheus 指标 · QUIC 跨进程转交
@@ -102,6 +103,7 @@ selftest_only_mode() {
   printf 'MUSL_ONLY=1\n'      | only_mode_in || { echo "★ only_mode_in 认不出 MUSL_ONLY=1" >&2; rc=1; }
   printf 'METRICS_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 METRICS_ONLY=1" >&2; rc=1; }
   printf 'STATS_ONLY=1\n'     | only_mode_in || { echo "★ only_mode_in 认不出 STATS_ONLY=1" >&2; rc=1; }
+  printf 'COMPILE_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 COMPILE_ONLY=1" >&2; rc=1; }
   [ "$rc" -eq 0 ] || {
     echo "  *_ONLY 判据自测未通过——**本次跑不跑 M1 场景的结论一律不可信**。" >&2
     exit 1
@@ -583,6 +585,20 @@ if [ "${VENDOR_ONLY:-0}" = "1" ]; then
   CMD='bash tests/vendor/run.sh'
 elif [ "${UNIT_ONLY:-0}" = "1" ]; then
   CMD='bash tests/unit/run.sh'
+elif [ "${COMPILE_ONLY:-0}" = "1" ]; then
+  # ★ 只**编译**（含全部测试目标），⛔ 一条测试都不跑 —— `tests/ci/pre-push.sh` 用的就是这一格。
+  #   它答的是「这棵树编得过吗」，而那正是 2026-09-04 那次**被推出去**的缺陷问的话：
+  #   测试里引用一个还没定义的常量，三处 `E0599`，整个 test crate 编译不过。
+  #
+  # ⚠ ⚠ **`--all-targets` 是承重的**：那个缺陷就在**测试目标**里，而 `BUILD_ONLY` 那条
+  #   `cargo build --release` 压根不编测试目标 ⇒ 它逮不住 —— 两格不是同一件事。
+  #
+  # ★ **有意不跑测试**：本机常年 20+ 会话并发，按空载余量设的超时会周期性假红，
+  #   而一道假红过几次的 pre-push 门会被 `--no-verify` 永久绕过。只编译不会因负载红。
+  #   ⚠ 代价写在明处：**它不拦「编得过但测试红」** —— 那一格归完整门禁。
+  #
+  # ⚠ `spikes/musl-boringssl` 在根 workspace 之外（同 `cargo fmt` 那条的理由），本格够不到它。
+  CMD='cargo test --no-run --workspace --all-targets'
 elif [ "${SERVE_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/serve/run.sh"
 elif [ "${L4_ONLY:-0}" = "1" ]; then

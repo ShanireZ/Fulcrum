@@ -21,7 +21,8 @@ sources:
 
 ```bash
 bash tests/m0/docker-run.sh                  # 构建 + 下面全部场景
-BUILD_ONLY=1     bash tests/m0/docker-run.sh # 只构建
+BUILD_ONLY=1     bash tests/m0/docker-run.sh # 只构建（⛔ 不含测试目标）
+COMPILE_ONLY=1   bash tests/m0/docker-run.sh # 只编译，含**全部测试目标**，一条测试都不跑
 LINT_ONLY=1      bash tests/m0/docker-run.sh # 只跑 fmt + clippy + shellcheck
 LINT=0           bash tests/m0/docker-run.sh # 跳过 lint
 UNIT_ONLY=1      bash tests/m0/docker-run.sh # 只跑枢衡自己那几个 crate 的测试
@@ -83,6 +84,36 @@ M1_KEEP=1        bash tests/m1/systemd-run.sh # 失败后保留容器，进去�
 ⛔ **这里有意不写那批有几处** —— 一个写在散文里的计数没有任何门守着，
 而本页开头那张场景清单已经为同一件事漂过好几次。
 ⚠ 它的两条判据性质不同 —— ① 完全机械、永不误报；② 是句式判据，**天生有漏网**。
+
+## ★ ★ `pre-push` 门：编译不过的树不许离开这台机器
+
+**起因（2026-09-04 实付代价）**：`9c0634f` 是一次**手工保盘提交** —— 测试里引用一个还没
+定义的常量，三处 `E0599`，整个 test crate 编译不过，**而它已经被推上去了**。
+⚠ ⚠ 它躲过了每一个便宜的读数：`git log` 干净、`git status` 干净、两道文档门全绿、
+`origin/main..main` 是 0 —— **全都说「一切正常」**。⇒ 唯一判得动它的是**真去编一次**。
+
+- **是 `pre-push` 不是 `pre-commit`**：那种半成品提交本来就是要的（防数据丢失），
+  拦它等于拦掉它的全部价值。要拦的是**离开这台机器**那一步。
+- **只编译，⛔ 一条测试都不跑**：本机常年 20+ 会话并发，按空载余量设的超时会周期性假红，
+  而一道假红过几次的 hook 会被 `--no-verify` 永久绕过 —— 那时它连编译都不看了。
+  ⚠ 代价写在明处：**它不拦「编得过但测试红」**，那一格归完整门禁。
+- **走 `COMPILE_ONLY` 那一格**，⛔ 不自己拼 `docker run` —— 构建镜像、`target` 卷名、
+  那把「同一棵树只许跑一次」的锁、行尾字节探针、两道宿主机侧的门，全部只有一份推导。
+- ⚠ ⚠ **盲区**：它量的是**工作树**，不是被推的那几笔。工作树干净时两者等同（`9c0634f`
+  那次正是），脏树时脚本会**明说自己量的是什么**，⛔ 不假装它守住了被推的状态。
+
+⚠ **`.git/hooks/` 不在版本控制里** ⇒ 换机器、重新 clone 都会**静默地没有这道门**。装一次：
+
+```bash
+printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/ci/pre-push.sh" "$@"\n' > .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+```
+
+⛔ 脚本**不提供自己的绕过开关**（一个随手能设的开关会把门变成建议，与「不留逐行豁免记号」
+同一条纪律）；真要绕过只有 `git push --no-verify`，那是一次显式的、看得见的动作。
+★ 2026-09-04 实测：**坏树被拦住且本地裸仓收到 0 个 ref**（一个字节都没出去）· 好树放行 ·
+只有删除时跳过且一次 docker 都不起 · 脏树时那句「本次量的是工作树」逐字出现。
+反证做法（注入写在字节副本上、`sha256` 核还原、⛔ 不用 `git checkout`）见
+[`tests/ci/pre-push.sh`](../../tests/ci/pre-push.sh) 的文件头。
 
 ## 场景清单
 
