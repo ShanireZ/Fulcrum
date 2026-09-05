@@ -60,6 +60,9 @@ D7 / D8 / D11 与 L4 的依赖关系不同；三条的最终结论分别记录�
 
 与 Caddy、HAProxy、Nginx **三家同机同用例对拍**，不挑软柿子。详见 [性能验收标准](/verification/performance-bar.md)。
 
+脚本、环境快照与判定口径在 [`bench/`](../../bench/README.md)（第一刀，G132 / G139）。
+⛔ **它今天一个性能数字都没给过，而且是结构性地不给** —— 合格的对拍宿主还不存在。
+
 ## M4 · 发布
 
 文档、`deb`/`rpm` 包、DSL 参考、`nginx.conf` 与 `Caddyfile` 迁移指南、安全披露流程。

@@ -1,0 +1,108 @@
+# 对拍镜像（M3 第一刀，G132）：枢衡与三家竞品**同处一室**。
+#
+# ★ ★ **为什么是一个镜像而不是四个容器**：§8 的方法学第一句是「同一台机、同一组用例、
+#   同一负载生成器」，而 §9 的缓解项明写着基准环境要固化**内核参数与 CPU 亲和**。
+#   四个容器各自一套 netns 与 cgroup ⇒ 「同一台机」要靠编排来保证，而 CPU 亲和
+#   跨容器设起来既麻烦又难自证。⇒ 四家 + 负载生成器全在一个容器里，
+#   彼此之间只隔一个 loopback，`taskset` 一条命令就能把它们钉到不同的核上。
+#
+# ★ **一个字都不动 `Dockerfile.build`。** 两条理由：① 主构建镜像每次门禁都要在，
+#   给它挂三个 web server 等于给每一趟门禁增加拉取与体积；② **G36** 把构建镜像的
+#   升级口径定成「M3 对拍期间冻结」—— 把竞品挂上去就等于让那条冻结令连带管住它们，
+#   而竞品版本恰恰是对拍**要**跟着上游走的东西。
+#
+# ⛔ **这个镜像不编译任何 Rust。** 枢衡的二进制由主构建镜像产出，本镜像只是**跑**它
+#   （两者同为 Debian trixie 系 glibc，见下面那条基础镜像的选择理由）。
+#
+# ── 全部按 digest / sha256 钉死（owner 拍板）──────────────────────────────────
+#
+# ★ 理由与 `Dockerfile.build` 里 pebble / oha 那两段逐字相同：浮动 tag 意味着
+#   **今天绿的那一趟和明天绿的那一趟用的不是同一个被测对象**，而对拍的全部价值
+#   建立在「换的只有被测的那一家」上。
+# ⚠ ⚠ **升级这些 digest 时必须同时改 `bench/README.md` 里的版本表** —— 那张表是
+#   对外交付物的一部分，抄件不同步在本仓 2026-09-05 当天栽过一次（G134 提交信息）。
+#   ⇒ `tests/bench/run.sh` 有一道门把本文件里的版本号与那张表逐条对上。
+
+# nginx 1.29.1（Debian bookworm 官方镜像）
+FROM nginx:1.29-bookworm@sha256:8adbdcb969e2676478ee2c7ad333956f0c8e0e4c5a7463f4611d7a2e7a7ff5dc AS nginx_src
+# HAProxy 3.2.3（Debian bookworm 官方镜像）
+FROM haproxy:3.2-bookworm@sha256:baecd003ae5c2376e58d04a5b2ffc7d82d30e9bebe2869f76222b819f719dee3 AS haproxy_src
+# Caddy 2.10.2（Alpine 官方镜像；★ caddy 是**静态** Go 二进制，`ldd` 报
+# 「Not a valid dynamic program」⇒ 从 Alpine 里搬到 Debian 上没有任何 ABI 问题）
+FROM caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d AS caddy_src
+
+# ★ ★ 基础镜像必须与 `Dockerfile.build` **同一个 Debian 代号（trixie）**：
+#   枢衡的二进制在那张镜像里编出来，动态链接 glibc ⇒ 换一个更老的运行时就跑不起来。
+#   ⚠ 这一条不是猜的，`tests/bench/run.sh` 第 0 步真的跑一次 `fulcrum --version`。
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+
+# ⚠ ⚠ **nginx 与 haproxy 是从 bookworm 搬到 trixie 上的动态可执行文件**，需要的
+#   SONAME 在两个代号里同名（`libssl.so.3` / `libpcre2-8.so.0` / `liblua5.4.so.0`），
+#   但 **Debian 的包名不同**：bookworm 是 `libssl3`，trixie 因 64 位 time_t 过渡
+#   改叫 **`libssl3t64`**。⛔ 照抄 bookworm 的包名会得到一个「Unable to locate package」，
+#   那个报错**不会**提到 time_t，排查方向会整个跑偏。
+# ★ `procps` / `iproute2` 是环境快照要用的（`/proc` 之外还要问 NIC 与队列）。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      libssl3t64 \
+      libpcre2-8-0 \
+      liblua5.4-0 \
+      zlib1g \
+      libcrypt1 \
+      ca-certificates \
+      curl \
+      procps \
+      iproute2 \
+      util-linux \
+      jq \
+      python3; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=nginx_src   /usr/sbin/nginx          /usr/sbin/nginx
+COPY --from=haproxy_src /usr/local/sbin/haproxy  /usr/local/sbin/haproxy
+COPY --from=caddy_src   /usr/bin/caddy           /usr/bin/caddy
+
+# nginx 要这几个目录才肯起来（官方镜像里它们由包安装建出来，只搬二进制搬不到）。
+RUN set -eux; \
+    mkdir -p /var/log/nginx /var/cache/nginx /usr/share/nginx/html /etc/nginx; \
+    nginx -v; \
+    haproxy -v | head -1; \
+    caddy version
+
+# ── oha：负载生成器 ────────────────────────────────────────────────────────
+#
+# ★ ★ **必须与 `Dockerfile.build` 里那一份是同一个版本**：§8 的口径是
+#   「同一个负载生成器」，而 `tests/stress/run.sh` 用的是构建镜像里那一份。
+#   两张镜像各钉一个版本，会让「压力那一格看到的」与「对拍看到的」悄悄分家。
+#   ⇒ `tests/bench/run.sh` 有一道门把两张 Dockerfile 里的 `OHA_VERSION` 与
+#     两个 sha256 逐字对上；⛔ 单独升一边会红。
+# ★ 按 sha256 钉死而不是按 tag，理由同上。
+ARG OHA_VERSION=v1.15.0
+ARG OHA_SHA256_AMD64=86ab7fa2c1df23b3bbc53b73561ffa44a7a38ca08f0e10351df9522a5c4c3c61
+ARG OHA_SHA256_ARM64=72d5bf4575cede9f9277f93f097b904f893b0f0cd4d92f0869439b05e1403731
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) want="$OHA_SHA256_AMD64" ;; \
+      arm64) want="$OHA_SHA256_ARM64" ;; \
+      *) echo "oha 没有 $arch 的发布物 —— 这个镜像跑不了对拍" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/oha \
+      "https://github.com/hatoo/oha/releases/download/${OHA_VERSION}/oha-linux-${arch}"; \
+    echo "${want}  /usr/local/bin/oha" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/oha; \
+    oha --version
+
+# ★ 与 `Dockerfile.build` 的 `/etc/fulcrum-toolchain` 同一手法：把「这张镜像里到底
+#   装了什么」写成镜像自己的一部分，环境快照直接读它 —— ⛔ 不靠谁记得去数。
+RUN set -eux; \
+    { \
+      echo "nginx    $(nginx -v 2>&1 | sed 's|.*/||')"; \
+      echo "haproxy  $(haproxy -v 2>&1 | head -1 | awk '{print $3}')"; \
+      echo "caddy    $(caddy version | awk '{print $1}')"; \
+      echo "oha      $(oha --version | awk '{print $2}')"; \
+    } > /etc/fulcrum-bench-subjects; \
+    cat /etc/fulcrum-bench-subjects
+
+WORKDIR /w

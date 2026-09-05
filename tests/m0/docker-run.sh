@@ -12,11 +12,14 @@
 #   METRICS · RELAY                          Prometheus 指标 · QUIC 跨进程转交
 #   ACME · RENEW · SMOKE · STRESS · MUSL     签发 · 续期 · 冒烟 · 压力 · musl 静态产物
 #   UNCLAIMED                                未被认领的继承 fd
+#   BENCH                                    对拍流水线与判据（M3 第一刀，⛔ 不出性能数字）
 #
-#   LINT=0 跳过 lint；M1_TESTS=0 跳过 M1 的 systemd 场景。
+#   LINT=0 跳过 lint；M1_TESTS=0 跳过 M1 的 systemd 场景；BENCH_TESTS=0 跳过对拍那一格。
 #
 # ★ M1 的 systemd 场景跑在**另一个容器**里（systemd 当 PID 1），由本脚本在最后调用
 #   tests/m1/systemd-run.sh 驱动；单独跑用 `bash tests/m1/systemd-run.sh`。
+# ★ 对拍那一格跑在**第三张镜像**里（三家竞品同处一室），同样由本脚本在最后调用
+#   tests/bench/run.sh 驱动；单独跑用 `bash tests/bench/run.sh`。
 #
 #   DOCKER_USER="$(id -u):$(id -g)"  bash tests/m0/docker-run.sh
 #     ★ Linux 宿主机／CI 上用，免得容器以 root 在挂进去的工作树里留下 root 属主的产物。
@@ -104,6 +107,7 @@ selftest_only_mode() {
   printf 'METRICS_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 METRICS_ONLY=1" >&2; rc=1; }
   printf 'STATS_ONLY=1\n'     | only_mode_in || { echo "★ only_mode_in 认不出 STATS_ONLY=1" >&2; rc=1; }
   printf 'COMPILE_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 COMPILE_ONLY=1" >&2; rc=1; }
+  printf 'BENCH_ONLY=1\n'     | only_mode_in || { echo "★ only_mode_in 认不出 BENCH_ONLY=1" >&2; rc=1; }
   [ "$rc" -eq 0 ] || {
     echo "  *_ONLY 判据自测未通过——**本次跑不跑 M1 场景的结论一律不可信**。" >&2
     exit 1
@@ -846,6 +850,15 @@ elif [ "${SMOKE_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/smoke/self-check.sh"
 elif [ "${STRESS_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/stress/run.sh"
+elif [ "${BENCH_ONLY:-0}" = "1" ]; then
+  # ★ ★ **有意什么都不追加** —— `CMD` 保持默认（`cargo build --release`）。
+  #   对拍那一格跑在**另一张镜像**里（`docker/Dockerfile.bench`，装着三家竞品），
+  #   挂不进下面那次 `docker run`；它由本文件末尾那段宿主机侧的分支调起，
+  #   而它要的正是这次构建产出的 `target/release/fulcrum`。
+  # ⚠ ⛔ 别把它写成 `CMD="$CMD && bash tests/bench/run.sh"`：那会让它在
+  #   `fulcrum-build` 镜像里跑，而那张镜像里没有 caddy / haproxy / nginx ——
+  #   症状是三家「起不来」，而真正的原因是跑错了镜像。
+  :
 elif [ "${BUILD_ONLY:-0}" != "1" ]; then
   # ── 顺序的三条原则 ────────────────────────────────────────────────────
   #   ① 粒度细、跑得快的在前（lint → 单测 → fork 回归网），红了指得最准；
@@ -1030,4 +1043,25 @@ fi
 if [ "${M1_TESTS:-1}" = "1" ] && ! env | only_mode_in; then
   # M1_SKIP_BUILD=1：产物刚刚才在上面构建过，不必再走一遍。
   M1_SKIP_BUILD=1 bash "$REPO_UNIX/tests/m1/systemd-run.sh"
+fi
+
+# ── 对拍那一格（M3 第一刀，G132）────────────────────────────────────────────
+#
+# ★ 它跑在**第三张镜像**里（`docker/Dockerfile.bench`：枢衡 + Caddy + HAProxy +
+#   nginx + oha 同处一室），所以和 musl、M1 一样挂不进上面那次 `docker run`。
+#   它要上面那次构建产出的 `target/release/fulcrum`，⇒ 排在它之后。
+#
+# ⛔ **它不产出、也不许产出任何性能数字**（G132）。它判的是三件事：钉死的版本与
+#   `bench/README.md` 那张表对得上 · 两张镜像里的 oha 是同一个 · 那条流水线跑得通
+#   **而判据两个方向都判得动**。⇒ 它绿不等于对拍达标，那是 M3 退出条件的事。
+#
+# ★ ★ 挂进常设门禁的理由与 musl 那一格逐字相同：**一个「要另外记得跑」的场景，
+#   与不存在的场景没有区别** —— 而这一格守着的恰恰是「合格宿主那天跑一遍就能出数」
+#   这句承诺，它一旦悄悄烂掉，要到那天才发现。
+#
+# ⚠ `BENCH_ONLY=1` 时上面那次 `docker run` 只做构建（见 `*_ONLY` 那串 elif），
+#   所以这里不能用 `! env | only_mode_in` 一刀切 —— 那样 `BENCH_ONLY` 会把自己跳过。
+if [ "${BENCH_TESTS:-1}" = "1" ] &&
+  { [ "${BENCH_ONLY:-0}" = "1" ] || ! env | only_mode_in; }; then
+  bash "$REPO_UNIX/tests/bench/run.sh"
 fi

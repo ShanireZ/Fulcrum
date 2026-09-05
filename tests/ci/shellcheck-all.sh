@@ -25,11 +25,21 @@
 #   **不列举，改问一句结构性的问题**（「这棵树下有哪些 `.sh`」），**并且每次运行都自证**。
 #   ⇒ 下一个人加场景时不需要记得改这里；而「问句本身瞎了」有判据看着。
 #
-# 用法：
-#   bash tests/ci/shellcheck-all.sh          # 扫 <仓库根>/tests
-#   bash tests/ci/shellcheck-all.sh <目录>   # 扫别的树（做反证时用）
+# ★ ★ ★ **2026-09-05：加了第二棵树 `bench/`，并加了一道「有没有第三棵树」的普查。**
+#   起因是 M3 第一刀新建了顶层 `bench/`，里面五个 `.sh` —— 而本文件当时只扫 `tests`
+#   ⇒ **一整个目录的 shell 从出生起就没被静态看过**，与它当初要修的那个缺陷
+#   （手写清单漏掉 `tests/quic-relay/`）**是同一个形状，只是换了一层**。
+#   ⚠ ⚠ 只把 `bench` 加进清单是不够的：那还是一张清单，下一个顶层目录照样会漏。
+#   ⇒ 照 §3.1 那条教训办 —— **普查那一步的筛子必须比门禁的宽**：
+#     门禁扫 `$ROOTS`，而 `selftest_no_orphans` 用一个**更宽**的筛子（全仓，
+#     只排除 target/vendor/.git）去问「有没有 `.sh` 落在 `$ROOTS` 之外」，有就红。
+#   ★ 于是「加了新目录忘了改这里」从**静默漏扫**变成**当场红**。
 #
-# 退出码：0 = 全过；非 0 = 静态检查有话说，或枚举器自测没过。
+# 用法：
+#   bash tests/ci/shellcheck-all.sh          # 扫 <仓库根>/tests 与 <仓库根>/bench，并跑普查
+#   bash tests/ci/shellcheck-all.sh <目录>   # 只扫指定的那棵树（做反证时用），⛔ 不跑普查
+#
+# 退出码：0 = 全过；非 0 = 静态检查有话说，或枚举器自测 / 普查没过。
 set -euo pipefail
 
 # ★ `LC_ALL=C.UTF-8` 不是可选项，而且要设在**这里**而不是调用方：本仓库的脚本注释是中文，
@@ -43,7 +53,14 @@ export LC_ALL=C.UTF-8
 #   而 `/w/tests/…` 只在容器里成立。
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
-ROOT=${1:-tests}
+# ★ 给了参数就只扫那一棵（反证用）；没给就扫仓库自己那两棵，并跑普查。
+if [ "$#" -ge 1 ]; then
+  ROOTS=("$1")
+  ORPHAN_CHECK=0
+else
+  ROOTS=(tests bench)
+  ORPHAN_CHECK=1
+fi
 
 # ── 枚举器：结构性判据 ──────────────────────────────────────────────────────
 #
@@ -92,15 +109,81 @@ selftest_sh_files() {
 }
 selftest_sh_files
 
-if [ ! -d "$ROOT" ]; then
-  echo "★ 要扫的树不在：$ROOT" >&2
-  exit 1
+# ── 普查：有没有 `.sh` 落在 `$ROOTS` 之外 ───────────────────────────────────
+#
+# ★ ★ ★ **这个筛子必须比门禁的宽**，否则它只会把门禁的盲区原样复述一遍，
+#   还看起来像做过一次独立普查（本仓 2026-09-05 §3.1 那条教训的原话）。
+#   ⇒ 它问的是「**这个仓库拥有的** `.sh` 有没有落在根之外」。
+#
+# ★ ★ 用 `git ls-files` 而不是 `find`，**这是判据本身而不是实现口味**：
+#   `find` 扫的是**工作树** ⇒ `handoff/`（gitignored、本地的、按 G115 不入库）里
+#   随手放一个 `.sh` 就会误报，而它给出的修法（「把那个顶层目录加进 ROOTS」）
+#   对 `handoff/` 恰恰是**错的建议**。换个问法之后，`target/`、`.git/` 以及
+#   一切 gitignored 的东西自动落在判据之外，排除表从三项缩成一项。
+# ⚠ 剩下那一项是 `vendor/`：它**是**被跟踪的，但它是 fork 进来的上游代码，
+#   不归本仓的 lint 管（今天它下面一个 `.sh` 都没有 ⇒ 这条排除是为将来写的）。
+#   ⛔ 别再往这张表里加东西 —— 每加一项就是一次消音。
+# ⚠ ⚠ ★ **`--cached --others --exclude-standard` 三个都是承重的。**
+#   光 `--cached` 只看**已跟踪**的 ⇒ 一个刚写出来、还没 `git add` 的脚本会整个溜过去，
+#   而那恰恰是本场那五个 `bench/*.sh` 当时的状态 —— 判据在最该说话的那一刻沉默。
+#   加上 `--others --exclude-standard` 之后它问的是「**已经在仓库里、或正在进仓库的**」，
+#   而被 `.gitignore` 挡掉的（`handoff/`、`target/`）仍然落在判据之外。
+orphan_sh_files() {
+  git ls-files -z --cached --others --exclude-standard -- '*.sh'
+}
+
+selftest_no_orphans() {
+  local f rel root hit orphans="" n=0 owned=0
+
+  # ★ ★ 「没能检查」不算「检查通过」：问不出来就红，⛔ 不静默跳过。
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "★ 普查跑不了：这里不是 git 工作树，或者没有 git——**「没能检查」不算「检查通过」**。" >&2
+    return 1
+  fi
+
+  while IFS= read -r -d '' f; do
+    rel=$f
+    case "$rel" in vendor/*) continue ;; esac
+    owned=$((owned + 1))
+    hit=0
+    for root in "${ROOTS[@]}"; do
+      case "$rel" in "$root"/*) hit=1; break ;; esac
+    done
+    [ "$hit" = 1 ] || { orphans="$orphans  $rel"$'\n'; n=$((n + 1)); }
+  done < <(orphan_sh_files)
+
+  # ★ ★ **「一个都没数到」是红，不是「普查通过」** —— 与下面那条
+  #   「扫空了」同一条纪律：一个恒返回空的普查，对每一棵树都说「没问题」。
+  if [ "$owned" -eq 0 ]; then
+    echo "★ 普查一个被跟踪的 .sh 都没数到 —— 这不是「没问题」，是**普查本身瞎了**。" >&2
+    return 1
+  fi
+
+  if [ "$n" = 0 ]; then
+    echo "[shellcheck] 普查：本仓的 $owned 个 .sh 全在 $ROOTS_LABEL 之内"
+    return 0
+  fi
+  echo "★ 有 $n 个 .sh 落在被扫的树（$ROOTS_LABEL）之外 —— **它们从来没被静态检查看过**：" >&2
+  printf '%s' "$orphans" >&2
+  echo "  修法：把它所在的顶层目录加进本文件的 ROOTS，⛔ 别把它加进排除表。" >&2
+  return 1
+}
+
+ROOTS_LABEL="${ROOTS[*]}"
+if [ "$ORPHAN_CHECK" = 1 ]; then
+  selftest_no_orphans
 fi
 
 FILES=()
-while IFS= read -r -d '' f; do
-  FILES+=("$f")
-done < <(sh_files_under "$ROOT")
+for ROOT in "${ROOTS[@]}"; do
+  if [ ! -d "$ROOT" ]; then
+    echo "★ 要扫的树不在：$ROOT" >&2
+    exit 1
+  fi
+  while IFS= read -r -d '' f; do
+    FILES+=("$f")
+  done < <(sh_files_under "$ROOT")
+done
 
 # ★ ★ **「一个都没找到」是红，不是「扫完了没问题」。**
 #   这是推导式清单唯一的失效方式，所以它要有自己的一句话。
@@ -109,7 +192,7 @@ done < <(sh_files_under "$ROOT")
 #   （不带 `-r` 时 shellcheck 拿到零个文件会报 `No files specified.` 退出 3，是红的；
 #    但那条报错说的是它自己的用法，不是「这棵树里没有脚本」。）
 if [ "${#FILES[@]}" -eq 0 ]; then
-  echo "★ $ROOT 下一个 .sh 都没找到 —— 这不是「扫完了」，是**扫空了**。" >&2
+  echo "★ $ROOTS_LABEL 下一个 .sh 都没找到 —— 这不是「扫完了」，是**扫空了**。" >&2
   exit 1
 fi
 

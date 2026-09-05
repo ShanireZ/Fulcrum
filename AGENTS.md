@@ -120,9 +120,15 @@ confident-looking wrong output rather than an error.
 3. **Do not edit a shell script while the gate is running.** The tree is bind-mounted live and
    `bash` reads a script by byte offset; an edit makes it resume mid-line and abort the whole run.
    (Editing Rust or Markdown mid-run is fine.)
-Traps 1 and 2 are gates: `tests/ci/shellcheck-all.sh` runs `shellcheck` over every
-`tests/**/*.sh` — the file set is **derived** with `find`, never listed, and its enumerator
-self-tests against a fixture tree (two levels deep, a path with a space) on every run — and
+Traps 1 and 2 are gates: `tests/ci/shellcheck-all.sh` runs `shellcheck` over every `.sh` under
+`tests/` **and `bench/`** — the file set is **derived** with `find`, never listed, and its
+enumerator self-tests against a fixture tree (two levels deep, a path with a space) on every run.
+⚠ ★ "Derived" only ever meant *within the roots it is given*: a new **top-level** directory used
+to escape it entirely (measured — `bench/` arrived with five unscanned scripts). A second,
+**wider** probe now asks `git ls-files --cached --others --exclude-standard` for every `.sh` the
+repo owns (tracked *or* newly written but not ignored, minus `vendor/`) and fails if one lives
+outside the roots — so adding a root is a red gate rather than a silent gap, while a throwaway
+script under gitignored `handoff/` is correctly none of its business. And
 `docker-run.sh` self-tests its byte probes against known-CRLF, known-LF and known-binary fixtures
 on every run.
 

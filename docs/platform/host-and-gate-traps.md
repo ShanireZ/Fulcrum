@@ -29,15 +29,28 @@ Narrow it with one `*_ONLY=1`:
 | `STATS_ONLY` | `GET /stats` — the optional fields and the degenerate states, not "can it be scraped" |
 | `ACME_ONLY` / `RENEW_ONLY` | ACME against pebble (a real local CA) · renewal |
 | `SMOKE_ONLY` / `STRESS_ONLY` / `MUSL_ONLY` / `UNCLAIMED_ONLY` | smoke self-check · sustained load · musl static artifact · unclaimed inherited fd |
+| `BENCH_ONLY` | the M3 comparison harness: pinned-version gates, then the whole pipeline plus its criteria, in a third image. ⛔ **It produces no performance numbers** (G132) and green here does not mean M3 passes |
 
 Most flags have a matching `<NAME>_TESTS=0` that skips that scenario instead (`LINT=0` for lint).
-The systemd scenarios run in a **separate container** (systemd as PID 1) and are invoked last;
-`M1_TESTS=0` skips them, `bash tests/m1/systemd-run.sh` runs them alone.
+Two scenarios run in a **container of their own** and are invoked last: the systemd ones
+(systemd as PID 1; `M1_TESTS=0`, or `bash tests/m1/systemd-run.sh` alone) and the M3 comparison
+(three rival servers in one image; `BENCH_TESTS=0`, or `bash tests/bench/run.sh` alone).
 
 ⚠ `docker-run.sh` self-tests its `*_ONLY` dispatch on every run — adding a scenario means adding
-a row to that self-test and the `<NAME>_ONLY` / `<NAME>_TESTS` pair. The shellcheck scan is **no
-longer on that list**: it is derived from the tree (`tests/ci/shellcheck-all.sh`), so a new
-directory is covered without anyone remembering.
+a row to that self-test and the `<NAME>_ONLY` / `<NAME>_TESTS` pair.
+
+⚠ ★ **The shellcheck scan is derived, but "derived" was never as wide as it read.** It is
+derived *within the roots it is given* (`tests/ci/shellcheck-all.sh`), so a new directory **under
+those roots** is covered without anyone remembering — and a new **top-level** directory was not.
+Measured 2026-09-05: the new top-level `bench/` shipped five `.sh` files that no static check had
+ever seen, which is the same shape as the hand-written directory list this scanner replaced, one
+level up. ⇒ It now also runs a **wider** probe asserting nothing lives outside the roots, so that
+mistake is **red rather than silent**. ★ The probe asks `git ls-files --cached --others
+--exclude-standard` rather than walking the tree with `find`, and all three flags carry weight:
+`--cached` alone misses a script that has been written but not yet `git add`ed — which is exactly
+what those five files were at the moment the check mattered most — while `--others
+--exclude-standard` keeps a scratch script under gitignored `handoff/` out of scope, where it
+belongs. Only `vendor/` is excluded by hand, because it is upstream's code, not ours.
 
 ## Port allocation
 
@@ -61,8 +74,19 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/quic-relay/` | 9910–9911 |
 | `tests/metrics/` | 9920–9926 (9923 and 9926 are python upstreams, not Fulcrum listeners) |
 | `tests/stats/` | 9930–9932 (range 9930–9935 reserved) |
+| `bench/` (M3) | 9940–9943 (range 9940–9949 reserved) — ⚠ **different container, own netns**, see below |
 | *(registered, never listened on)* | 19999 — see below |
 | *(shared, hardcoded)* | 80 — see below |
+
+**The `bench/` row is registered even though it cannot collide today.** The M3 comparison runs in
+its own container (`docker/Dockerfile.bench`, started by `tests/bench/run.sh`), so its four
+listeners live in a network namespace no other scenario shares. It is on the list anyway because
+*"it does not collide today"* is not a property anything holds it to — the day someone gives that
+container `--net=host`, the collision appears and nothing says so. ⚠ ★ The first draft of that
+scenario took **9700–9703**, which `tests/h3/` already owns. The claim "9700–9703 is free" came
+from a hand-rolled `grep` whose character class was `[A-Z_]+` — **it cannot match the digit in
+`${H3_PORT:-9700}`**, so it silently omitted a whole row while looking complete. ⇒ Read this
+table; do not re-derive it with a one-off scanner.
 
 **19999 is registered precisely because nothing ever listens on it.** `tests/serve/run.sh` and
 `tests/metrics/run.sh` both use `127.0.0.1:19999` as a `reverse_proxy` address whose only job is

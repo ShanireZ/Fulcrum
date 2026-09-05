@@ -1,0 +1,20 @@
+# Caddy · 静态吞吐这一类的被测配置（M3 第一刀）。
+# ⚠ 占位符由 bench/case/static-throughput.sh 替换。
+#
+# ★ `auto_https off` 是**口径**不是省事：这一类跑明文 HTTP/1.1，
+#   而 Caddy 默认会去申请证书并把 :80 变成跳转 —— 那会让它量的东西
+#   与另外三家不是同一件事（顺带还会撞上门禁里那个共享的 :80）。
+# ★ Caddy 的并行度由 GOMAXPROCS 定，编排脚本用环境变量给，⛔ 不在这里写。
+
+{
+    admin off
+    auto_https off
+    log {
+        output discard
+    }
+}
+
+:__PORT__ {
+    root * __WWW_ROOT__
+    file_server
+}

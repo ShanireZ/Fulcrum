@@ -1,0 +1,12 @@
+# 枢衡 · 静态吞吐这一类的被测配置（M3 第一刀）。
+#
+# ★ 四家的配置**逐条对齐**，对齐口径写在 bench/README.md「四家怎么摆平」一节：
+#   同一个 payload · 同一个 worker 数 · 访问日志一律关 · 明文 HTTP/1.1 · keep-alive 开。
+# ⚠ 占位符由 bench/case/static-throughput.sh 替换（__WWW_ROOT__ / __PORT__）。
+# ⛔ 别在这里加任何「调优」—— 本轮的交付物是方法学，四家都跑各自的**朴素**配置；
+#   谁该怎么调优是拿到合格宿主之后、有数字可比时才谈得上的事。
+:__PORT__ {
+    file_server {
+        root __WWW_ROOT__
+    }
+}
