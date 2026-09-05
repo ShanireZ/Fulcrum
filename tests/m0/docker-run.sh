@@ -146,19 +146,31 @@ selftest_target_vol
 # 卷按树分开之后多出来一笔磁盘账：工作树是会消失的（`.claude/worktrees/` 下那些用完就删），
 # 它们的卷不会。⇒ 新建时把树路径写进 label，回收提示据此把**主人已经不在**的那些单列出来。
 #
-# 三条，一条一个方向，缺一条都会让回收提示变成一句危险的话：
+# 四条，一条一个方向，缺一条都会让回收提示变成一句危险的话：
 #   ① 树还在 ⇒ `live`。错成 `gone` 的话，提示会劝人删掉**隔壁正在用的**那个卷 ——
 #      而受害者那边只看到一次莫名的全量重编，没有一行字指向这里。
 #   ② 树没了 ⇒ `gone`。错成 `live` 的话，这条回收路等于不存在，磁盘继续无声地涨。
 #   ③ 没有 label ⇒ `unknown`，**不是** `gone`。「没能检查」不算「检查通过」：
 #      加这条规则之前留下的卷、以及手工建的卷（supply-chain.md 里那条 supply-audit
 #      命令就手工挂着一个），都不能因为「读不到主人」就被当成无主的。
+#   ④ ★ ★ ★ **本 shell 看不懂的路径写法 ⇒ `unknown`**。label 是**建卷那台 shell**
+#      的写法，而回收提示可能在另一台 shell 里跑。实测同一个卷同一份判据：
+#      WSL 里 `live`、Git Bash 里 `gone` —— 因为 `/mnt/d/…` 在 Git Bash 里就是不存在。
+#      ⚠ 这一条与 ① 是同一个失效形态的两个入口，而 ① 那条自测**抓不到它**：
+#        它的探针是当前 shell 自己 `mktemp -d` 出来的，形式上永远是本 shell 看得懂的。
 selftest_tree_state() {
   local rc=0 probe
   probe=$(mktemp -d)
   [ "$(fulcrum_tree_state "$probe")"        = live ]    || { echo "★ 存在的工作树被判成了「不在」——回收提示会去劝人删隔壁正在用的卷" >&2; rc=1; }
   [ "$(fulcrum_tree_state "$probe/gone")"   = gone ]    || { echo "★ 已经不存在的工作树没被判出来——那条回收路等于不存在" >&2; rc=1; }
   [ "$(fulcrum_tree_state "")"              = unknown ] || { echo "★ 空 label（读不到主人）被判成了别的——不明与无主必须分开" >&2; rc=1; }
+  if command -v cygpath >/dev/null 2>&1; then
+    [ "$(fulcrum_tree_state /mnt/d/WorkSpace/Fulcrum)" = unknown ] \
+      || { echo "★ ★ Git Bash 把 WSL 写法的 label 判成了「不在」——回收提示会去劝人删活着的缓存" >&2; rc=1; }
+  else
+    [ "$(fulcrum_tree_state D:/WorkSpace/Fulcrum)" = unknown ] \
+      || { echo "★ ★ WSL 把 Windows 写法的 label 判成了「不在」——回收提示会去劝人删活着的缓存" >&2; rc=1; }
+  fi
   rmdir "$probe"
   [ "$rc" -eq 0 ] || {
     echo "  卷归属判定自测未通过——**「哪些卷可以删」这个结论一律不可信**。" >&2
@@ -166,6 +178,54 @@ selftest_tree_state() {
   }
 }
 selftest_tree_state
+
+# ── ★ ★ ★ 「同一棵树只该有一个标签」的自测 ──────────────────────────────────
+#
+# Docker Desktop 把 WSL 侧的 bind 源暂存到 `<暂存根>/<发行版>/<sha256(源路径)>`，
+# **且那个暂存挂载不随容器退出释放**（实测 `docker kill` 后仍在）。⇒ 一旦某一轮的
+# `pwd` 落在暂存路径上，标签就换一个，而它的 sha256 又正好是下一层暂存目录的名字 ——
+# 每跑一轮生一个新卷（约 8.7GB），**缓存从此永不命中**。
+# ⚠ ⚠ 2026-09-05 这台宿主上量到过一条四节的链：37 分钟里长出 4 个卷、约 34.7GB，
+#   而门每一轮都是绿的 —— 失效形态里没有任何一行错误，只是慢，且磁盘无声地涨。
+#   ⛔ 换台机器读到这里别把这个数当成你面前这台的读数，自己数一遍。
+#
+# 四条：
+#   ① 暂存路径反查得回真实源（承重的那条）。
+#   ② ★ 真实源与它的暂存路径**必须算出同一个标签** —— 链正是从这里断掉的。
+#   ③ 反查不出来 ⇒ **原样返回，不猜**。猜错就是把两棵树并成一个卷。
+#   ④ 普通路径不受影响。
+#
+# ⚠ 夹具用**虚构**的盘符/发行版/哈希，断言的是「暂存 → 真实源」这层**关系**：
+#   抄本机真值的判据换台机器就是一份自洽的假绿。夹具与现实是否同形，
+#   靠的是它照着真实 `mountinfo` 的字段顺序写（`$3` 设备号 `$4` 子路径 `$5` 挂载点）。
+selftest_tree_unstage() {
+  local rc=0 fix saved h staged real
+  fix=$(mktemp)
+  h=1111111122222222333333334444444455555555666666667777777788888888
+  staged="$FULCRUM_STAGING_ROOT/Distro-1.0/$h"
+  real=/mnt/q/Projects/Widget
+  {
+    printf '101 100 0:99 / /mnt/q rw,noatime - 9p Q: rw\n'
+    printf '202 100 0:99 /Projects/Widget %s rw,noatime shared:7 - 9p Q: rw\n' "$staged"
+  } > "$fix"
+  saved=$FULCRUM_MOUNTINFO
+  FULCRUM_MOUNTINFO=$fix
+  [ "$(fulcrum_tree_unstage "$staged")" = "$real" ] \
+    || { echo "★ 暂存路径没被反查回真实源——标签会逐轮变，每轮多一个约 8.7GB 的卷" >&2; rc=1; }
+  [ "$(fulcrum_tree_tag "$real")" = "$(fulcrum_tree_tag "$staged")" ] \
+    || { echo "★ ★ 真实源与其暂存路径算出了两个标签——那条链还会继续长" >&2; rc=1; }
+  [ "$(fulcrum_tree_unstage "$FULCRUM_STAGING_ROOT/Distro-1.0/nosuchmount")" = "$FULCRUM_STAGING_ROOT/Distro-1.0/nosuchmount" ] \
+    || { echo "★ 反查不出来时没有原样返回——猜错就是把两棵树并进同一个卷" >&2; rc=1; }
+  [ "$(fulcrum_tree_unstage /tmp/fulcrum-selftest-plain)" = /tmp/fulcrum-selftest-plain ] \
+    || { echo "★ 普通路径被反查逻辑改写了" >&2; rc=1; }
+  FULCRUM_MOUNTINFO=$saved
+  rm -f "$fix"
+  [ "$rc" -eq 0 ] || {
+    echo "  树标签自测未通过——**这一轮的 target 卷可能是新生的空卷，缓存不命中**。" >&2
+    exit 1
+  }
+}
+selftest_tree_unstage
 
 # ── ★ ★ 「哪些不属于本树的卷可以给删除命令」的自测 ──────────────────────────
 #

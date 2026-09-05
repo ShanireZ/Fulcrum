@@ -31,11 +31,88 @@
 # ★ 归一单独拆出来，因为**它有第二个用户**：卷上那个记「属于哪棵树」的 label
 #   （见下面 `fulcrum_target_vol_create`）。两处各归一各的话，label 里的路径与
 #   卷名里的哈希会指向同一棵树的两种写法，而症状是回收提示把一棵活着的树报成「已经不在」。
-fulcrum_tree_norm() {
+# ★ ★ ★ **同一棵树在这台宿主上有不止一个路径。** Docker Desktop 把 WSL 侧的 bind 源
+#   暂存到 `<暂存根>/<发行版>/<sha256(源路径)>` 再挂进容器，而**那个暂存挂载不随容器退出释放**
+#   （实测：`docker kill` 之后目录与挂载都还在；这台宿主上一度堆着 58 个指向同一棵树的）。
+#   ⇒ 一旦某一轮的 `pwd` 落在暂存路径上，`fulcrum_tree_tag` 就会算出一个新标签，
+#     而它的 sha256 又正好是**下一层**暂存目录的名字 —— 于是每跑一轮生一个新卷，
+#     一个约 8.7GB，且**缓存从此永不命中（每轮全量重编）**。
+#   ⚠ ⚠ 失效形态里没有任何一行错误：门照跑、照绿，只是慢，且磁盘无声地涨。
+#   ⇒ 归一的第一件事是**把暂存路径反查回真实源**，链就形成不了。
+#
+# ★ 反查读 `mountinfo`：暂存那一行给出「设备号 + 该挂载在源文件系统里的子路径」，
+#   同设备号里 `root` 为 `/` 的那一行给出该文件系统挂在哪 —— 两者拼起来就是真实源。
+# ⛔ **查不到就原样返回，绝不猜**：猜错的代价是把两棵树并成一个卷，
+#   而那正是本文件开头那条「门给出别人家的读数、两边都不红」。
+FULCRUM_STAGING_ROOT=${FULCRUM_STAGING_ROOT:-/mnt/wsl/docker-desktop-bind-mounts}
+FULCRUM_MOUNTINFO=${FULCRUM_MOUNTINFO:-/proc/self/mountinfo}
+
+fulcrum_mountinfo_real() {
+  awk -v mp="$1" '
+    $5 == mp   { dev = $3; root = $4 }
+    $4 == "/"  { base[$3] = $5 }
+    END {
+      if (dev == "" || !(dev in base)) exit 1
+      b = base[dev]
+      if (root == "/") { print b;      exit 0 }
+      if (b == "/")    { print root;   exit 0 }
+      print b root
+    }
+  ' "$FULCRUM_MOUNTINFO" 2>/dev/null
+}
+
+# `$1` = 可能是暂存路径的路径。返回真实源；不是暂存路径、或反查不出，一律原样返回。
+#
+# ⚠ ⛔ **段数不能用 `case` 的 `*` 去数** —— bash 的 `*` 连 `/` 一起吃，
+#   `"$根"/*/*` 会把 `根/a/b/c/d` 也认下来。这里改用参数展开逐段剥。
+fulcrum_tree_unstage() {
+  local path=${1:-} sub distro tail hash rest real
+  case "$path" in
+    "$FULCRUM_STAGING_ROOT"/*) ;;
+    *) printf '%s' "$path"; return 0 ;;
+  esac
+  sub=${path#"$FULCRUM_STAGING_ROOT"/}
+  case "$sub" in */*) ;; *) printf '%s' "$path"; return 0 ;; esac
+  distro=${sub%%/*}
+  tail=${sub#*/}
+  hash=${tail%%/*}
+  rest=${tail#"$hash"}
+  real=$(fulcrum_mountinfo_real "$FULCRUM_STAGING_ROOT/$distro/$hash") || real=
+  [ -n "$real" ] || { printf '%s' "$path"; return 0; }
+  printf '%s%s' "$real" "$rest"
+}
+
+# 本 shell **看不看得懂**这种路径写法（0 = 看不懂）。
+#
+# ★ ★ 它有两个用户，而两处用的是同一个判断，这是有意的：
+#   ① 归一：看不懂的写法**不许送进 `cygpath`** —— 实测 `cygpath -m /mnt/q/x`
+#      会返回 `C:/Program Files/Git/mnt/q/x`，一个哪儿都不存在的路径，
+#      而它照样能算出一个像模像样的标签。
+#   ② 判活：看不懂的写法只能答 `unknown`，⛔ **绝不能答 `gone`**（见 `fulcrum_tree_state`）。
+fulcrum_tree_foreign() {
+  local path=${1:-}
   if command -v cygpath >/dev/null 2>&1; then
-    cygpath -m "$1"
+    # Git Bash：WSL 的 `/mnt/<盘符>/…` 与暂存根下的一切都不是本 shell 的写法
+    case "$path" in
+      /mnt/[a-z]|/mnt/[a-z]/*) return 0 ;;
+      "$FULCRUM_STAGING_ROOT"|"$FULCRUM_STAGING_ROOT"/*) return 0 ;;
+    esac
   else
-    printf '%s' "$1"
+    # WSL / Linux：`X:/…` 这种 Windows 写法不是本 shell 的写法
+    case "$path" in [A-Za-z]:*) return 0 ;; esac
+  fi
+  return 1
+}
+
+fulcrum_tree_norm() {
+  local path
+  path="$(fulcrum_tree_unstage "${1:-}")"
+  if fulcrum_tree_foreign "$path"; then
+    printf '%s' "$path"
+  elif command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$path"
+  else
+    printf '%s' "$path"
   fi
 }
 
@@ -89,11 +166,27 @@ fulcrum_target_vol_create() {
 #
 # ★ `unknown` 与 `gone` **必须分开**：前者是「没能检查」，后者是「检查过了，没有」。
 #   混成一个的话，加这条规则之前留下的卷会被当成无主的报出去。
+# ★ ★ ★ **`[ -d ]` 只回答「本 shell 找不找得到这个字符串」，不回答「那棵树在不在」。**
+#   label 是**建卷那一台 shell** 的写法，而回收提示可能在另一台 shell 里跑：
+#   实测同一个卷、同一份判据，WSL 里判 `live`，Git Bash 里判 `gone` ——
+#   因为 `/mnt/d/WorkSpace/Fulcrum` 在 Git Bash 里就是不存在。
+#   ⚠ ⚠ 判成 `gone` 的后果正是本函数上面那条自测点名要防的：**回收提示会给出
+#     一条删掉活着的缓存的命令**，而受害者那边只看到一次莫名的全量重编。
+#   ⇒ 看不懂的写法一律 `unknown`。⛔ 少回收一个卷只是占盘，删错一个是别人半小时。
+#
+# ★ 先反查暂存路径：暂存挂载还在时它解得回真实树，判得准；解不回来就落 `unknown`，
+#   ⛔ **不拿「那个暂存目录还在不在」当「那棵树在不在」** —— 它答的是另一个问题，
+#   而且答案随 Docker Desktop 有没有重启过而变（实测暂存挂载不随容器退出释放）。
 fulcrum_tree_state() {
-  local tree=${1:-}
-  if [ -z "$tree" ]; then
+  local tree=${1:-} real
+  [ -n "$tree" ] || { printf 'unknown'; return 0; }
+  real="$(fulcrum_tree_unstage "$tree")"
+  case "$real" in
+    "$FULCRUM_STAGING_ROOT"/*) printf 'unknown'; return 0 ;;   # 反查不出，别猜
+  esac
+  if fulcrum_tree_foreign "$real"; then
     printf 'unknown'
-  elif [ -d "$tree" ]; then
+  elif [ -d "$real" ]; then
     printf 'live'
   else
     printf 'gone'
