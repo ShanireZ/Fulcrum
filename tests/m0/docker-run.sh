@@ -153,24 +153,36 @@ selftest_target_vol
 #   ③ 没有 label ⇒ `unknown`，**不是** `gone`。「没能检查」不算「检查通过」：
 #      加这条规则之前留下的卷、以及手工建的卷（supply-chain.md 里那条 supply-audit
 #      命令就手工挂着一个），都不能因为「读不到主人」就被当成无主的。
-#   ④ ★ ★ ★ **本 shell 看不懂的路径写法 ⇒ `unknown`**。label 是**建卷那台 shell**
-#      的写法，而回收提示可能在另一台 shell 里跑。实测同一个卷同一份判据：
-#      WSL 里 `live`、Git Bash 里 `gone` —— 因为 `/mnt/d/…` 在 Git Bash 里就是不存在。
-#      ⚠ 这一条与 ① 是同一个失效形态的两个入口，而 ① 那条自测**抓不到它**：
+#   ④ ★ ★ ★ **另一台 shell 写法的 label，判得动而且判得对。** label 是**建卷那台
+#      shell** 的写法，而回收提示可能在另一台 shell 里跑：`/mnt/d/…` 在 Git Bash 里
+#      就是不存在，`D:/…` 在 WSL 里也一样。⇒ 判活前先经 `fulcrum_tree_local`
+#      译成本 shell 够得到的写法。这一条钉的是**互译真的在工作**：
+#      拿另一台 shell 写法的**不存在**的树，必须答 `gone` —— 答 `unknown` 说明
+#      互译退化了（那时回收路在这一侧等于不存在），答 `live` 则更糟。
+#      ⚠ 与 ① 是同一个失效形态的两个入口，而 ① 那条自测**抓不到它**：
 #        它的探针是当前 shell 自己 `mktemp -d` 出来的，形式上永远是本 shell 看得懂的。
+#   ⑤ ★ **规范形往返**：真实存在的目录经 `fulcrum_tree_norm` 之后仍判得出 `live`。
+#      ⚠ 少了它，把 ④ 做成「一律 gone」也能过 —— 而那正好是①要防的那件事。
+#   ⑥ ★ 够不到的写法 ⇒ `unknown`。Git Bash 里 WSL 原生路径（不在 `/mnt/<盘符>/` 下）
+#      会被 cygpath 映到 MSYS 安装根底下，那个路径不存在 ⇒ 不拦就会答 `gone`。
 selftest_tree_state() {
-  local rc=0 probe
+  local rc=0 probe canon
   probe=$(mktemp -d)
   [ "$(fulcrum_tree_state "$probe")"        = live ]    || { echo "★ 存在的工作树被判成了「不在」——回收提示会去劝人删隔壁正在用的卷" >&2; rc=1; }
   [ "$(fulcrum_tree_state "$probe/gone")"   = gone ]    || { echo "★ 已经不存在的工作树没被判出来——那条回收路等于不存在" >&2; rc=1; }
   [ "$(fulcrum_tree_state "")"              = unknown ] || { echo "★ 空 label（读不到主人）被判成了别的——不明与无主必须分开" >&2; rc=1; }
   if command -v cygpath >/dev/null 2>&1; then
-    [ "$(fulcrum_tree_state /mnt/d/WorkSpace/Fulcrum)" = unknown ] \
-      || { echo "★ ★ Git Bash 把 WSL 写法的 label 判成了「不在」——回收提示会去劝人删活着的缓存" >&2; rc=1; }
+    [ "$(fulcrum_tree_state /mnt/q/NoSuchTree)" = gone ] \
+      || { echo "★ ★ Git Bash 判不动 WSL 写法的 label——回收路在这一侧等于不存在" >&2; rc=1; }
+    [ "$(fulcrum_tree_state /nosuchroot/tree)" = unknown ] \
+      || { echo "★ Git Bash 够不到的 POSIX 写法没答 unknown——被 cygpath 映到 MSYS 根底下会假装成「不在」" >&2; rc=1; }
   else
-    [ "$(fulcrum_tree_state D:/WorkSpace/Fulcrum)" = unknown ] \
-      || { echo "★ ★ WSL 把 Windows 写法的 label 判成了「不在」——回收提示会去劝人删活着的缓存" >&2; rc=1; }
+    [ "$(fulcrum_tree_state Q:/NoSuchTree)" = gone ] \
+      || { echo "★ ★ WSL 判不动 Windows 写法的 label——回收路在这一侧等于不存在" >&2; rc=1; }
   fi
+  canon=$(fulcrum_tree_norm "$probe")
+  [ "$(fulcrum_tree_state "$canon")" = live ] \
+    || { echo "★ ★ 规范形($canon)往返之后认不出这棵树还在——④ 那条会退化成「一律 gone」" >&2; rc=1; }
   rmdir "$probe"
   [ "$rc" -eq 0 ] || {
     echo "  卷归属判定自测未通过——**「哪些卷可以删」这个结论一律不可信**。" >&2
@@ -226,6 +238,42 @@ selftest_tree_unstage() {
   }
 }
 selftest_tree_unstage
+
+# ── ★ ★ 「同一棵树在两个 shell 下只有一个标签」的自测 ───────────────────────
+#
+# 同一棵树在 WSL 与 Git Bash 里是两种写法（`/mnt/d/W/F` 与 `/d/W/F`）⇒ 标签若是
+# 写法的哈希，一棵树就拿两个卷，满载各 8–10GB。⛔ 它**不是**「门给出别人家读数」
+# 那一条（那条要求两棵**不同**的树共用一个卷）：这里读数是对的，只是双份占盘。
+# ⇒ 规范形取 Windows 盘符式 `X:/…`（大写盘符）。
+#
+# 三条：
+#   ① 本 shell 的本地写法归到规范形。⚠ 两个 shell 各断言各的，**合起来**才是
+#      「两边归到同一个字符串」—— 一个进程里看不到另一边，这是本条的固有局限。
+#   ② ★ ★ 反向映射译得回本 shell 够得到的写法。**承重**：少了它，label 全变成
+#      Windows 写法之后 **WSL 那一侧的回收路整条死掉**（判什么都是 unknown），
+#      而症状只是「磁盘怎么还在涨」，没有一行字会说出原因。
+#   ③ 盘符大小写归一 —— `/mnt/q` 与 `/mnt/Q` 是同一个盘，必须同一个标签。
+selftest_tree_canon() {
+  local rc=0
+  if command -v cygpath >/dev/null 2>&1; then
+    [ "$(fulcrum_tree_norm /q/Projects/Widget)" = "Q:/Projects/Widget" ] \
+      || { echo "★ Git Bash 的本地写法没归到规范形（实得 $(fulcrum_tree_norm /q/Projects/Widget)）" >&2; rc=1; }
+    [ "$(fulcrum_tree_local Q:/Projects/Widget)" = "Q:/Projects/Widget" ] \
+      || { echo "★ 规范形在 Git Bash 里没译成够得到的写法" >&2; rc=1; }
+  else
+    [ "$(fulcrum_tree_norm /mnt/q/Projects/Widget)" = "Q:/Projects/Widget" ] \
+      || { echo "★ WSL 的本地写法没归到规范形（实得 $(fulcrum_tree_norm /mnt/q/Projects/Widget)）——同一棵树会拿两个卷" >&2; rc=1; }
+    [ "$(fulcrum_tree_local Q:/Projects/Widget)" = "/mnt/q/Projects/Widget" ] \
+      || { echo "★ ★ 规范形在 WSL 里译不回去——这一侧的回收路会整条死掉" >&2; rc=1; }
+  fi
+  [ "$(fulcrum_tree_tag /mnt/q/W)" = "$(fulcrum_tree_tag /mnt/Q/W)" ] \
+    || { echo "★ 盘符大小写没归一——同一个盘上的同一棵树拿到两个标签" >&2; rc=1; }
+  [ "$rc" -eq 0 ] || {
+    echo "  规范形自测未通过——**同一棵树可能在两个 shell 下各占一个 target 卷**。" >&2
+    exit 1
+  }
+}
+selftest_tree_canon
 
 # ── ★ ★ 「哪些不属于本树的卷可以给删除命令」的自测 ──────────────────────────
 #

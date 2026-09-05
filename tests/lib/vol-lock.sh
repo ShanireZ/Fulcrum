@@ -47,6 +47,15 @@
 FULCRUM_STAGING_ROOT=${FULCRUM_STAGING_ROOT:-/mnt/wsl/docker-desktop-bind-mounts}
 FULCRUM_MOUNTINFO=${FULCRUM_MOUNTINFO:-/proc/self/mountinfo}
 
+# MSYS（Git Bash）的安装根，Windows 写法。`fulcrum_tree_local` 用它认出
+# 「被 cygpath 映到安装根底下」的那一类外来 POSIX 路径。⚠ 取不到就留空，
+# 那一条判断随之整条跳过（宁可少拦，不可把每个路径都拦成不明）。
+FULCRUM_MSYS_ROOT=""
+if command -v cygpath >/dev/null 2>&1; then
+  FULCRUM_MSYS_ROOT=$(cygpath -m / 2>/dev/null || true)
+  FULCRUM_MSYS_ROOT=${FULCRUM_MSYS_ROOT%/}
+fi
+
 fulcrum_mountinfo_real() {
   awk -v mp="$1" '
     $5 == mp   { dev = $3; root = $4 }
@@ -82,38 +91,72 @@ fulcrum_tree_unstage() {
   printf '%s%s' "$real" "$rest"
 }
 
-# 本 shell **看不看得懂**这种路径写法（0 = 看不懂）。
+# ── 规范形：一棵树在这台机器上只许有一个标签 ────────────────────────────────
 #
-# ★ ★ 它有两个用户，而两处用的是同一个判断，这是有意的：
-#   ① 归一：看不懂的写法**不许送进 `cygpath`** —— 实测 `cygpath -m /mnt/q/x`
-#      会返回 `C:/Program Files/Git/mnt/q/x`，一个哪儿都不存在的路径，
-#      而它照样能算出一个像模像样的标签。
-#   ② 判活：看不懂的写法只能答 `unknown`，⛔ **绝不能答 `gone`**（见 `fulcrum_tree_state`）。
-fulcrum_tree_foreign() {
-  local path=${1:-}
+# ★ ★ ★ **同一棵树在 WSL 与 Git Bash 里是两种写法**（`/mnt/d/W/F` 与 `/d/W/F`），
+#   而标签是写法的哈希 ⇒ 同一棵树在两个 shell 下拿到**两个卷**。
+#   ⚠ 这一条不像上面那条会越滚越多，但它是常驻的：一棵树两份缓存，满载各 8–10GB。
+#   ⛔ 它**不是**本文件顶部那条「门给出别人家读数」——那条要求两棵**不同**的树共用
+#     一个卷，这里是反过来（一棵树两个卷）：浪费，但读数是对的。
+#
+# ⇒ 规范形取 **Windows 盘符式 `X:/…`（大写盘符）**。两条理由：
+#   ① Git Bash 的 `cygpath -m` 本来就产出这一形，改动面最小；
+#   ② 换过来那一刻，**已经暖着的那个卷正好是它**，冷编代价接近零（2026-09-05 实测）。
+#
+# ⚠ ⚠ 规范形是给**标签与 label** 用的，判活不能直接拿它去 `[ -d ]` ——
+#   WSL 吃不下 `D:/…`。⇒ 必须配一个反向的 `fulcrum_tree_local`，
+#   否则 label 全变成 Windows 写法之后，**WSL 那边的回收路会整条死掉**（判什么都是 unknown）。
+fulcrum_tree_canon() {
+  local p=${1:-} d letter rest
+  case "$p" in
+    # 反查不出的暂存路径：原样留着，让调用方按「不明」处理
+    "$FULCRUM_STAGING_ROOT"|"$FULCRUM_STAGING_ROOT"/*) printf '%s' "$p"; return 0 ;;
+    /mnt/[A-Za-z]|/mnt/[A-Za-z]/*)
+      d=${p#/mnt/}
+      letter=${d%%/*}
+      rest=${d#"$letter"}
+      printf '%s:%s' "$(printf '%s' "$letter" | tr '[:lower:]' '[:upper:]')" "${rest:-/}"
+      return 0 ;;
+  esac
   if command -v cygpath >/dev/null 2>&1; then
-    # Git Bash：WSL 的 `/mnt/<盘符>/…` 与暂存根下的一切都不是本 shell 的写法
-    case "$path" in
-      /mnt/[a-z]|/mnt/[a-z]/*) return 0 ;;
-      "$FULCRUM_STAGING_ROOT"|"$FULCRUM_STAGING_ROOT"/*) return 0 ;;
-    esac
+    cygpath -m "$p"
   else
-    # WSL / Linux：`X:/…` 这种 Windows 写法不是本 shell 的写法
-    case "$path" in [A-Za-z]:*) return 0 ;; esac
+    printf '%s' "$p"
   fi
-  return 1
+}
+
+# 规范形 → **本 shell 拿得去 `[ -d ]` 的写法**。够不到就打空串，⛔ 不猜。
+#
+# ★ 「够不到」用空串表达，而不是再来一个布尔判断：调用方只有一个分支要写
+#   （空 ⇒ unknown），而「没能检查」与「检查过了，没有」由此天然分开。
+#
+# ⚠ 残余风险，说在明处：Git Bash 里一个 **WSL 原生**（不在 `/mnt/<盘符>/` 下，
+#   例如 `/home/u/tree`）的 label，`cygpath` 会把它映到 MSYS 安装根底下 ——
+#   那个路径不存在，于是判 `gone`。这里靠「映到 MSYS 根底下 ⇒ 够不到」把它拦成 unknown。
+#   ⛔ 别把这条读成「所有 POSIX 路径都拦」：Git Bash 自己的 `/tmp/x` 映到
+#     Windows 的临时目录（**不在** MSYS 根底下，实测），它照样判得动。
+fulcrum_tree_local() {
+  local p letter rest
+  p="$(fulcrum_tree_canon "${1:-}")"
+  if command -v cygpath >/dev/null 2>&1; then
+    if [ -n "$FULCRUM_MSYS_ROOT" ]; then
+      case "$p" in "$FULCRUM_MSYS_ROOT"/*) printf ''; return 0 ;; esac
+    fi
+    printf '%s' "$p"
+    return 0
+  fi
+  case "$p" in
+    [A-Za-z]:|[A-Za-z]:/*)
+      letter=$(printf '%s' "${p%%:*}" | tr '[:upper:]' '[:lower:]')
+      rest=${p#*:}
+      printf '/mnt/%s%s' "$letter" "${rest:-/}" ;;
+    /*) printf '%s' "$p" ;;
+    *)  printf '' ;;
+  esac
 }
 
 fulcrum_tree_norm() {
-  local path
-  path="$(fulcrum_tree_unstage "${1:-}")"
-  if fulcrum_tree_foreign "$path"; then
-    printf '%s' "$path"
-  elif command -v cygpath >/dev/null 2>&1; then
-    cygpath -m "$path"
-  else
-    printf '%s' "$path"
-  fi
+  fulcrum_tree_canon "$(fulcrum_tree_unstage "${1:-}")"
 }
 
 fulcrum_tree_tag() {
@@ -178,15 +221,16 @@ fulcrum_target_vol_create() {
 #   ⛔ **不拿「那个暂存目录还在不在」当「那棵树在不在」** —— 它答的是另一个问题，
 #   而且答案随 Docker Desktop 有没有重启过而变（实测暂存挂载不随容器退出释放）。
 fulcrum_tree_state() {
-  local tree=${1:-} real
+  local tree=${1:-} real here
   [ -n "$tree" ] || { printf 'unknown'; return 0; }
   real="$(fulcrum_tree_unstage "$tree")"
   case "$real" in
     "$FULCRUM_STAGING_ROOT"/*) printf 'unknown'; return 0 ;;   # 反查不出，别猜
   esac
-  if fulcrum_tree_foreign "$real"; then
-    printf 'unknown'
-  elif [ -d "$real" ]; then
+  here="$(fulcrum_tree_local "$real")"
+  if [ -z "$here" ]; then
+    printf 'unknown'          # 本 shell 够不到这种写法 ——「没能检查」不算「检查通过」
+  elif [ -d "$here" ]; then
     printf 'live'
   else
     printf 'gone'
