@@ -209,6 +209,73 @@ selftest_vol_verdict() {
 }
 selftest_vol_verdict
 
+# ── ★ ★ ★ 「本门管不着的那些卷」的自测 ────────────────────────────────────
+#
+# 这个桶 2026-09-05 加上，起因是**三族卷逃出了扫描集，而三族全部是人工发现的**
+# （成因、白名单纪律、以及为什么「放宽 filter」治不了，都在 `vol-lock.sh` 那一段）。
+#
+# ⚠ ⚠ 它天生难自证：在一台已经清干净的机器上它**永远打不出一行**，而
+# 「桶是空的」与「这段代码根本没跑」长得一模一样 —— 这正是 2026-09-04 那次不得不
+# 造四个探针卷的原因。⇒ 下面全部用**合成输入**，两个方向各跑一遍，
+# ⛔ 不依赖这台宿主上此刻恰好有什么卷。
+#
+# 九条，每条守一个不同的失效形态：
+#   ① 别人家的卷 ⇒ `foreign`。错了就是每趟刷一堆噪音，而**一道刷噪音的门很快就没人看**。
+#   ② docker 的匿名卷 ⇒ `anonymous`。同上。
+#   ③ ★ ★ ★ **承重**：既不像本仓、又不在白名单里的 ⇒ `unattributed`。这条错了本桶
+#      等于不存在 —— 而它正是为这一格加出来的。用**真的逃逸过**的那个名字钉。
+#   ④⑤ ★ ★ 白名单不许吞掉 `fulcrum*`：`fulcrum-musl-alpine-target` 与
+#      `fulcrum-upstream-target` 这两族真的逃逸过，必须报得出来。
+#   ⑥ ★ 匿名判据钉在**长度**上：63 位十六进制不是 docker 的匿名卷，是有人起的名字。
+#   ⑦ ★ 白名单是**前缀**不是子串 —— 子串语义正是本轮要修的那个缺陷，
+#      ⛔ 不许在修它的代码里把它重新引进来。
+#   ⑧ ★ ★ 集合层：管辖内的先摘掉、管不着的报出来，**且顺序与原样输出一致**。
+#      判据函数对了而循环里一个 `continue` 放错位置，症状同样是「一行都不打」。
+#   ⑨ ★ ★ 空桶不误报：全机卷全在管辖内时，必须一个字都不打（与 ⑧ 一红一绿两个方向）。
+selftest_unattributed_vols() {
+  local rc=0 all scope out
+  local anon64=0ed04ad35290be14708aa36d1d8b9330b535ac1ed868fd6a136f1d0c061f3cb8
+  [ "$(fulcrum_vol_attribution wentian_pgdata)" = foreign ] \
+    || { echo "★ 别人家的卷没被认出来——本桶会每趟刷噪音，而刷噪音的门很快就没人看了" >&2; rc=1; }
+  [ "$(fulcrum_vol_attribution "$anon64")" = anonymous ] \
+    || { echo "★ docker 的匿名卷没被认出来——同上" >&2; rc=1; }
+  [ "$(fulcrum_vol_attribution pingora-up994-target)" = unattributed ] \
+    || { echo "★ ★ ★ 逃出扫描集的卷没被报出来——本桶等于不存在，而它正是为这一格加的" >&2; rc=1; }
+  [ "$(fulcrum_vol_attribution fulcrum-musl-alpine-target)" = unattributed ] \
+    || { echo "★ ★ 白名单吞掉了 fulcrum* ——那正好是本仓自己逃逸过的那一族" >&2; rc=1; }
+  [ "$(fulcrum_vol_attribution fulcrum-upstream-target)" = unattributed ] \
+    || { echo "★ ★ 白名单吞掉了 fulcrum* ——投稿六那棵克隆的卷就是这个形状" >&2; rc=1; }
+  [ "$(fulcrum_vol_attribution "${anon64%?}")" != anonymous ] \
+    || { echo "★ 63 位十六进制被当成了 docker 的匿名卷——匿名判据一放宽就会静默吞掉人起的名字" >&2; rc=1; }
+  [ "$(fulcrum_vol_attribution x-wentian-y)" = unattributed ] \
+    || { echo "★ 白名单按子串匹配了——子串语义正是本轮要修的那个缺陷，⛔ 不许再引进来" >&2; rc=1; }
+
+  # ⑧ 集合层：一份合成的「全机卷」，其中两个在管辖内、两个有主、两个管不着。
+  all="fulcrum-cargo
+fulcrum-target-aaaaaaaaaaaa-bbbbbbbbbbbb
+wentian_pgdata
+$anon64
+pingora-up994-target
+fulcrum-musl-alpine-target"
+  scope="fulcrum-cargo
+fulcrum-target-aaaaaaaaaaaa-bbbbbbbbbbbb"
+  out=$(fulcrum_unattributed_vols "$all" "$scope")
+  [ "$out" = "pingora-up994-target
+fulcrum-musl-alpine-target" ] \
+    || { echo "★ ★ 管不着的那两个没被原样报出来（实得：${out:-<空>}）——集合层错了，判据对也没用" >&2; rc=1; }
+
+  # ⑨ 反方向：全机卷全在管辖内 ⇒ 一个字都不打。
+  out=$(fulcrum_unattributed_vols "$scope" "$scope")
+  [ -z "$out" ] \
+    || { echo "★ ★ 管辖内的卷被报成了「管不着」（实得：$out）——空桶必须不误报" >&2; rc=1; }
+
+  [ "$rc" -eq 0 ] || {
+    echo "  「本门管不着的卷」自测未通过——**下面那份清单一律不可信**。" >&2
+    exit 1
+  }
+}
+selftest_unattributed_vols
+
 # ── ★ ★ 门禁互斥的自测 ──────────────────────────────────────────────────────
 #
 # 卷分开之后还剩一种：**同一棵树上并发跑两次门禁**，两次仍然共用那一个卷。
@@ -576,13 +643,11 @@ if [ -n "$OTHER_VOLS" ]; then
   if [ "$ORPHAN_N" -gt 0 ] || [ "$KEEP_N" -gt 0 ]; then
     VOL_SIZES=$(fulcrum_vol_sizes)
   fi
-  vol_size_of() {
-    local want=$1 line
-    [ -n "$VOL_SIZES" ] || { printf '未量到'; return; }
-    line=$(printf '%s\n' "$VOL_SIZES" | grep -F -- "$want|" | head -1 || true)
-    printf '%s' "${line#*|}"
-    [ -n "$line" ] || printf '未量到'
-  }
+  # ★ 实现搬进了 `vol-lock.sh`（`fulcrum_vol_size_of`），因为下面第三个桶也要用它 ——
+  #   两处各写一遍的失效形态不是报错，是有一天两边对「没量到」给出不同的说法。
+  #   ⚠ 顺带修掉一处：原来的 `grep -F -- "$want|"` 是**子串**匹配，
+  #   `x-fulcrum-cargo|…` 那一行会被 `fulcrum-cargo` 认领 ⇒ 一个卷报上另一个卷的体积。
+  vol_size_of() { fulcrum_vol_size_of "$VOL_SIZES" "$1"; }
 
   if [ "$ORPHAN_N" -gt 0 ]; then
     echo "[docker-run] 另有 $ORPHAN_N 个 target 卷判定为**无主**，删了碰不到任何人："
@@ -599,6 +664,38 @@ if [ -n "$OTHER_VOLS" ]; then
     echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
     echo "             ⚠ 但体积写在这里 —— 这一半只进不出，2026-09-04 它悄悄涨到过 92GB。"
   fi
+fi
+
+# ── ★ ★ ★ 第三个桶：本门**管不着**的卷（只报，⛔ 不给删除命令）──────────────
+#
+# 上面两个桶都只在**扫描集内**说话，而扫描集是个**子串**筛子；三族卷从它下面漏过去过，
+# 而**三族全部是人工发现的**，门禁一次都没帮上忙（成因、白名单纪律、以及为什么
+# 「放宽 filter」治不了第三族，都在 `vol-lock.sh` 的 `FULCRUM_FOREIGN_VOL_PREFIXES` 那一段）。
+# ⇒ 这里改成**无 filter** 地列一遍全机卷，减掉本门管辖内的、以及说得出属主的，剩下的报出来。
+#
+# ⚠ ⚠ **只报名字与体积，⛔ 一律不给删除命令。** 本门对它们的属主一无所知 ——
+#   给命令等于拿一句「我不知道这是谁的」去劝人删，那比不报更坏。
+# ★ 噪音账（2026-09-05 在 `ShanirePCX` 上实测，⛔ 换台机器自己数）：全机 19 个卷，
+#   减去管辖内 2 个、别人家 11 个、docker 匿名 6 个 ⇒ 稳态下这个桶是空的，**一行都不打**；
+#   真出现一个 `pingora-up994-target` 才打一行。
+# ⚠ 那个贵的量具沿用上面同一条纪律：`fulcrum_vol_sizes`（`docker system df -v`，
+#   开发机 A 上实测 1.4–1.9s）**只在真有东西要报时问一次**，桶空就一次都不问。
+ALL_MACHINE_VOLS=$(docker volume ls -q || true)
+# 本门管辖内 = 本树活卷 + 有意共享的 registry 卷 + 扫描集里的全部（上面两个桶已经处置过）。
+GATE_SCOPE=$(printf '%s\n%s\n%s\n' "$TARGET_VOL" fulcrum-cargo "$ALL_VOLS")
+UNATTRIBUTED=$(fulcrum_unattributed_vols "$ALL_MACHINE_VOLS" "$GATE_SCOPE")
+if [ -n "$UNATTRIBUTED" ]; then
+  UNATTR_N=$(printf '%s\n' "$UNATTRIBUTED" | wc -l)
+  UNATTR_SIZES=$(fulcrum_vol_sizes)
+  echo "[docker-run] 另有 $UNATTR_N 个卷，本门**管不着、也说不出属于谁**："
+  while read -r vol; do
+    [ -n "$vol" ] || continue
+    printf '             %s   %s\n' "$vol" "$(fulcrum_vol_size_of "$UNATTR_SIZES" "$vol")"
+  done <<< "$UNATTRIBUTED"
+  echo "             ⛔ 有意不给删除命令：本门不知道它们的属主。判据只能是人工的三条 ——"
+  echo "                「仓库里零引用 + 没有任何容器引用 + 找不到那棵检出」（09-04/05 三次都是这么判的）。"
+  echo "             ★ 若查实是别的项目的，把前缀加进 tests/lib/vol-lock.sh 的"
+  echo "                FULCRUM_FOREIGN_VOL_PREFIXES —— ⛔ 只放别人家的，别拿它消音（纪律写在那份清单头上）。"
 fi
 
 # ★ ★ ★ 这里的花括号**不是风格，是判据本身**（实测的一次假绿）。

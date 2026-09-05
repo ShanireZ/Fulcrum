@@ -183,6 +183,97 @@ fulcrum_vol_sizes() {
 {{end}}' 2>/dev/null || true
 }
 
+# 从 `fulcrum_vol_sizes` 的输出里取一个卷的体积。`$1` = 那份文本（可为空）；`$2` = 卷名。
+#
+# ★ 单独成函数是因为它有**两个**调用点（回收提示的第二、第三个桶各一个），
+#   而本文件顶部那条「为什么是一个文件而不是三份表达式」讲的正是这件事：
+#   各写一遍的失效形态不是报错，是有一天两边对「没量到」给出不同的说法。
+# ⚠ 量不到时打「未量到」，⛔ 绝不打 0 ——「读不到」不许变成「没这回事」。
+# ★ 逐字段比**全等**，不是子串：`grep -F "$want|"` 那种写法会让 `x-fulcrum-cargo|…`
+#   这一行被 `fulcrum-cargo` 认领，于是一个卷被报上另一个卷的体积。
+fulcrum_vol_size_of() {
+  local blob=${1:-} want=${2:-} n s
+  if [ -n "$blob" ]; then
+    while IFS='|' read -r n s; do
+      if [ "$n" = "$want" ]; then printf '%s' "$s"; return 0; fi
+    done <<< "$blob"
+  fi
+  printf '未量到'
+  return 0
+}
+
+# ── 第三条判据：这台宿主上还有哪些卷，本门**既管不着、又说不出属于谁** ──────
+#
+# ★ ★ ★ **为什么需要第三个桶。** 上面两条判据都只在**扫描集内**说话，而扫描集是
+#   `docker volume ls -q --filter name=fulcrum-target` —— 一个**子串**筛子。
+#   2026-09-04 / 09-05 两天里逃出这个筛子的卷有三族，**三族全部是人工发现的**，
+#   门禁一次都没帮上忙：
+#     · `fulcrum-upstream-target`（投稿六那棵上游克隆临时建的）—— 不含 `fulcrum-target` 子串
+#     · `fulcrum-musl-{probe,alpine}-{target,cargo}` ×4（musl 探针那场）—— 同上
+#     · `pingora-up994-target` 10.51GB —— **连 `fulcrum` 都不含**，无 filter 列一遍才看见
+#   ⇒ 共同成因**不是「筛子太窄」**：筛子按**名字**判，而要找的东西是「本仓的活造出来的」，
+#     名字只是属主的代理。⛔ 因此「放宽到 `name=fulcrum-`」治不了第三族 ——
+#     那条 2026-09-04 摆出来的候选，2026-09-05 被第三族证伪了。
+#
+# ★ ★ ★ 于是判据换个问法：**属主判不了，能判的只有「报得多宽」。**
+#   本判据不删任何东西、不给任何删除命令，它只回答一句：
+#   「这台宿主上有哪些卷，本门既管不着、又说不出属于谁」。
+#   ⚠ ⚠ 它的失效方向是**噪音**（白名单过期 ⇒ 多报一行），不是**沉默**（漏报一个卷）——
+#     这是选它、而不是继续放宽 filter 的**全部理由**。
+#
+# 别的项目在这台宿主上的卷，**按前缀**匹配，逐条注明属主。
+#
+# ⚠ ⚠ 这份白名单本身就是一个新筛子 ⇒ 它有变成**消音手段**的风险。三条纪律：
+#   ① 只放**别的项目**的卷，逐条写出属主；⛔ 不许为了让某一行别再出现而往里加。
+#   ② 前缀**锚在开头**，⛔ 不是子串 —— 子串正是本条要修的那个缺陷本身。
+#   ③ 下面的自测钉住：白名单不许吞掉任何 `fulcrum` 开头的名字。
+#   ★ ★ 诚实说出它守不住什么：**它拦不住有人把一个真正属于本仓、名字里却没有 `fulcrum`
+#     的卷（`pingora-up994-target` 就是这个形状）写进白名单。** 那一格没有门，只有纪律。
+# ⚠ 这份清单是**某一台开发机上**的读数，换台机器多半要加/减 —— 加不上没关系，
+#   后果只是多报几行（安全方向）。⛔ 别为了让它「干净」而删掉本机用不到的条目。
+FULCRUM_FOREIGN_VOL_PREFIXES='betai-      betai 教学平台
+betapass    BetaPass 身份中枢
+nxtstrict-  Plumbline 的 nxtstrict 探针
+plumbline-  Plumbline
+wentian     WenTian'
+
+# `$1` = 卷名。三选一：`anonymous` / `foreign` / `unattributed`。
+#
+# ⛔ 它**不**回答「是不是本仓的」—— 那件事只有调用方说得准（只有调用方知道
+#   `TARGET_VOL` 与扫描集），所以本仓自己的卷由调用方按精确名字先摘掉。
+fulcrum_vol_attribution() {
+  local name=${1:-} prefix
+  # docker 自己建的匿名卷：名字恰好 64 位十六进制。
+  # ⚠ 长度写死是**有意**的：63 位或 65 位都不是 docker 的匿名卷，而是有人起的名字。
+  #   放宽成「一串十六进制」会把那些静默吞掉，而吞掉的方向正是本判据要防的沉默。
+  if [[ "$name" =~ ^[0-9a-f]{64}$ ]]; then printf 'anonymous'; return 0; fi
+  while read -r prefix _; do
+    [ -n "$prefix" ] || continue
+    case "$name" in
+      "$prefix"*) printf 'foreign'; return 0 ;;
+    esac
+  done <<< "$FULCRUM_FOREIGN_VOL_PREFIXES"
+  printf 'unattributed'
+  return 0
+}
+
+# `$1` = 全机卷名（一行一个，`docker volume ls -q` 的原样输出）
+# `$2` = 本门管辖内的卷名（一行一个：本树活卷、有意共享的 cargo 卷、扫描集里的全部）
+# 输出：本门管不着、又说不出属主的那些，一行一个（可能一行都没有）。
+#
+# ★ ★ 把这一段做成函数、而不是写在 `docker-run.sh` 的循环里，是为了让它**能被自测**：
+#   判据函数对了、而循环里一个 `continue` 放错位置，症状同样是「一行都不打」——
+#   与桶真的是空的长得一模一样。⇒ 两个方向都由 `selftest_unattributed_vols` 钉住。
+fulcrum_unattributed_vols() {
+  local all=${1:-} scope=${2:-} v
+  while read -r v; do
+    [ -n "$v" ] || continue
+    if printf '%s\n' "$scope" | grep -qxF -- "$v"; then continue; fi
+    if [ "$(fulcrum_vol_attribution "$v")" = unattributed ]; then printf '%s\n' "$v"; fi
+  done <<< "$all"
+  return 0
+}
+
 # ── 门禁互斥 ────────────────────────────────────────────────────────────────
 #
 # ★ ★ ★ **卷分开了还不够**：同一棵树上并发跑两次门禁，两次仍然共用那一个卷，
