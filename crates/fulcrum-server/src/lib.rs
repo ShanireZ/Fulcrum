@@ -1848,17 +1848,10 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
 
     // ★ **缓存实例只建一次，全部监听端口共用一份**：每端口一份的话，同一条 URL
     //   在 :80 与 :443 上会各存一份，而容量上限也会变成配置值的 N 倍。
-    // ⚠ 多个站点各写各的 `capacity` 时取**最大**：取最小会让写了大容量的站点
-    //   悄悄拿不到空间，而那件事没有任何东西会说。装载日志打出生效值。
-    // ★ `disk` 走另一条路 —— 多个 `cache` 写不同目录是**编译期错误**
-    //   （`FUL-DSL-0035`）。两者处置不同是因为代价不同：容量取大一点不伤谁，
-    //   而目录取一个会让另一个站点的缓存整个落在别处。
-    let cache_capacity = rt
-        .cache_settings()
-        .iter()
-        .map(|(_, c)| c.capacity_bytes)
-        .max()
-        .unwrap_or(fulcrum_config::directive::CACHE_DEFAULT_CAPACITY_BYTES);
+    // ★ ★ 「各块取最大值」那条推导在 [`cache::effective_capacity`] 里，**只有一处** ——
+    //   `POST /load` 换配置之后要算同一个值（D19），两处各写一遍的失效形态是
+    //   「启动时算出来的容量与 load 之后算出来的不是同一个数」，而两处各自都自洽。
+    let cache_capacity = cache::effective_capacity(&rt.cache_settings());
     let cache_dir = rt
         .cache_settings()
         .iter()

@@ -40,6 +40,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// meta 文件的格式版本。
 ///
@@ -173,7 +174,10 @@ struct RebuildState {
 #[derive(Debug)]
 pub struct DiskStore {
     root: PathBuf,
-    capacity: u64,
+    /// ★ 原子而不是普通字段 —— 与 [`super::store::MemStore`] 同一条理由（D19）。
+    /// ⚠ ⚠ **两个后端必须一起改**：它们对 `capacity` 的三个读点形状逐字相同，
+    /// 只改一个的话症状是「换成磁盘后端就不生效」，那是最难查的那种形状。
+    capacity: AtomicU64,
     index: Mutex<DiskIndex>,
     /// meta 的「读—改—写」互斥。
     ///
@@ -205,7 +209,7 @@ impl DiskStore {
         let index = load_index(root);
         Ok(DiskStore {
             root: root.to_path_buf(),
-            capacity,
+            capacity: AtomicU64::new(capacity),
             index: Mutex::new(index),
             meta_lock: Mutex::new(()),
             rebuild: Mutex::new(RebuildState::default()),
@@ -217,7 +221,17 @@ impl DiskStore {
     }
 
     pub fn capacity(&self) -> u64 {
-        self.capacity
+        self.capacity.load(Ordering::Relaxed)
+    }
+
+    /// 换一个容量上限（`POST /load` 走这里，D19）。
+    ///
+    /// ★ ★ **同样有意不当场淘汰**，而磁盘这边的理由更硬一层：当场收紧要**删文件**，
+    /// 那会把 `POST /load` 的耗时挂到盘上去。⇒ 下一次 `put` 的淘汰循环收紧它。
+    /// ⚠ 代价与内存后端逐字相同，判据见本文件测试 `容量在线改得动_磁盘后端同样`
+    /// 与 `store.rs` 的 `调小容量是惰性的_下一次写入才把占用压回去`。
+    pub fn set_capacity(&self, capacity: u64) {
+        self.capacity.store(capacity, Ordering::Relaxed);
     }
 
     /// 当前占用与条目数。
@@ -434,8 +448,10 @@ impl DiskStore {
     /// ⇒ 把这一次 fsync 花在真正要命的那一边，不给 meta 再花一次。
     pub fn put(&self, primary: &str, secondary: String, entry: Entry) {
         let size = entry.footprint();
+        // ★ 容量在这一次 put 里只读一次（与 `MemStore` 同一条理由，D19）。
+        let capacity = self.capacity();
         // ⚠ 一条比整个容量还大的条目**不存**（与 `MemStore` 同一条理由）。
-        if size > self.capacity {
+        if size > capacity {
             return;
         }
         let body_len = entry.body.len() as u64;
@@ -486,7 +502,7 @@ impl DiskStore {
             let slot = DiskIndex::slot(primary, &secondary);
             g.remove(&slot);
             let mut out = Vec::new();
-            while g.used + size > self.capacity && !g.lru.is_empty() {
+            while g.used + size > capacity && !g.lru.is_empty() {
                 let victim = g.lru.remove(0);
                 if let Some(sz) = g.sizes.remove(&victim) {
                     g.used = g.used.saturating_sub(sz);
@@ -822,6 +838,29 @@ mod tests {
 
     fn open(d: &TempDir, cap: u64) -> DiskStore {
         DiskStore::open(&d.0, cap).expect("打不开磁盘缓存")
+    }
+
+    // ── D19：磁盘后端的容量同样改得动 ──────────────────────────────────────
+    //
+    // ⚠ ⚠ **它必须与 `MemStore` 那两条配成对**：两个后端对 `capacity` 的三个读点
+    //   （getter · 大条目守卫 · 淘汰循环）形状**逐字相同**，⇒ 只测一个的话，
+    //   另一个漏改了照样全绿，而症状是「换了磁盘后端就不生效」这种最难查的形状。
+    #[test]
+    fn 容量在线改得动_磁盘后端同样() {
+        let d = TempDir::new("setcap");
+        let s = DiskStore::open(&d.0, 10).unwrap();
+        s.put("k", String::new(), entry(&[0u8; 100], vec![]));
+        assert!(
+            matches!(s.get("k", none), Lookup::Miss),
+            "前提：10 字节容量下 100 字节的条目不该存"
+        );
+        s.set_capacity(4096);
+        assert_eq!(s.capacity(), 4096);
+        s.put("k", String::new(), entry(&[0u8; 100], vec![]));
+        assert!(
+            matches!(s.get("k", none), Lookup::Hit(_)),
+            "容量改大之后该存得下 —— 说明磁盘那边的守卫读的也是新值"
+        );
     }
 
     #[test]

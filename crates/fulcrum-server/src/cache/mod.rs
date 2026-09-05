@@ -46,6 +46,33 @@ pub fn files_httpdate(s: &str) -> Option<i64> {
     crate::files::httpdate::parse(s)
 }
 
+/// 这份配置下**整个进程**的缓存容量上限。
+///
+/// ## ★ ★ ★ 为什么是一个函数而不是两处各写一遍
+///
+/// 它有**两个**调用点：启动时 `serve()` 建后端，以及 `POST /load` 换配置之后
+/// （D19）。⚠ 两处各写一遍的失效形态不是报错 —— 是有一天一处改了另一处没改，
+/// 于是**启动时算出来的容量与 load 之后算出来的不是同一个数**，而两处各自都自洽。
+/// ★ 本仓 2026-09-05 当天刚栽过一次同形状的（一个分解式抄了三处，中间项全错而
+/// 和恰好还对）⇒ 这一次从一开始就只留一处。
+///
+/// ## ⚠ 多个块写不同容量时取**最大**
+///
+/// 取最小会让写了大容量的站点悄悄拿不到空间，而那件事没有任何东西会说。
+/// ★ `disk` 走另一条路 —— 多个 `cache` 写不同目录是**编译期错误**（`FUL-DSL-0035`）。
+/// 两者处置不同是因为代价不同：容量取大一点不伤谁，而目录取一个会让另一个站点的
+/// 缓存整个落在别处。
+///
+/// ⚠ 一个 `cache` 块都没有时返回**默认容量**而不是 0：返回 0 的话缓存会变成
+/// 「什么都存不下」，而那不会报错，只会静静地不再命中。
+pub fn effective_capacity(settings: &[(&str, &fulcrum_runtime::CacheRt)]) -> u64 {
+    settings
+        .iter()
+        .map(|(_, c)| c.capacity_bytes)
+        .max()
+        .unwrap_or(fulcrum_config::directive::CACHE_DEFAULT_CAPACITY_BYTES)
+}
+
 /// 后端：内存（批 G）或磁盘（批 H），**全进程只有一个**。
 ///
 /// ## ★ ★ ★ 为什么是一个 enum，而不是 `Box<dyn Store>`
@@ -91,6 +118,32 @@ impl Backend {
                 );
                 Backend::Off
             }
+        }
+    }
+
+    /// 这个后端此刻的容量上限。`None` = 后端关着（没有容量可言）。
+    ///
+    /// ★ 返回 `Option` 而不是拿 0 顶替：0 与「关掉了」是两件事，而把它们合成一个数
+    /// 之后，管理面回话会打出「生效容量 0B」—— 一句读起来完全成立、却指向
+    /// 完全错误方向的话。
+    pub fn capacity(&self) -> Option<u64> {
+        match self {
+            Backend::Mem(s) => Some(s.capacity()),
+            Backend::Disk(s) => Some(s.capacity()),
+            Backend::Off => None,
+        }
+    }
+
+    /// 换一个容量上限（`POST /load` 走这里，D19）。
+    ///
+    /// ⚠ `Off` 那一档是**空操作**，⛔ 不是 panic：一次 `POST /load` 把管理面打死，
+    /// 比容量没改过去坏得多。★ 它也不需要报错 —— 后端关着这件事，
+    /// 装载日志已经用一行 `error` 说过了，这里再说一遍只会稀释那句话。
+    pub fn set_capacity(&self, capacity: u64) {
+        match self {
+            Backend::Mem(s) => s.set_capacity(capacity),
+            Backend::Disk(s) => s.set_capacity(capacity),
+            Backend::Off => {}
         }
     }
 
@@ -470,6 +523,53 @@ mod tests {
         ));
         std::fs::create_dir(&p).expect("临时目录撞名了 —— 那说明命名不够唯一");
         p
+    }
+
+    fn rt_cache(capacity_bytes: u64) -> fulcrum_runtime::CacheRt {
+        fulcrum_runtime::CacheRt {
+            ttl_ms: None,
+            max_size_bytes: 1024,
+            capacity_bytes,
+            disk_dir: None,
+        }
+    }
+
+    // ── D19：「各块取最大值」这条推导只许存在一处 ──────────────────────────
+    //
+    // ★ ★ ★ 它原本内联在 `serve()` 里。`POST /load` 现在也要算同一个值，
+    //   ⇒ 在那边再写一遍就是**一个值抄在两处**：上游一改两处一起过期而彼此自洽，
+    //   本仓 2026-09-05 当天刚栽过一次同形状的（噪音账那个分解式抄了三处）。
+    //   ⇒ 提成 [`effective_capacity`]，两处都调它，本条钉住它。
+    #[test]
+    fn 生效容量取各块最大值_没有块时取默认() {
+        let a = rt_cache(1_000);
+        let b = rt_cache(9_000);
+        let c = rt_cache(5_000);
+        assert_eq!(
+            effective_capacity(&[("s1", &a), ("s2", &b), ("s3", &c)]),
+            9_000,
+            "多个块写不同容量时取**最大** —— 取最小会让写了大容量的站点悄悄拿不到空间"
+        );
+        // ⚠ 承重的另一半：一个块都没有时**不是 0**，是默认值 ——
+        //   返回 0 的话缓存会变成「什么都存不下」，而那不会报错，只会静静地不再命中。
+        assert_eq!(
+            effective_capacity(&[]),
+            fulcrum_config::directive::CACHE_DEFAULT_CAPACITY_BYTES,
+            "没有 cache 块时该取默认容量"
+        );
+    }
+
+    // ⚠ `Backend::Off` 那一档（配了 `disk` 而目录用不了）也要吃得下 `set_capacity`：
+    //   它没有容量可言，但**不许 panic** —— 一次 `POST /load` 打死管理面，
+    //   比容量没改过去坏得多。
+    #[test]
+    fn 关掉的后端也吃得下改容量_且不_panic() {
+        let off = Backend::Off;
+        off.set_capacity(4096);
+        let mem = Backend::open(None, 1024);
+        mem.set_capacity(4096);
+        assert_eq!(mem.capacity(), Some(4096));
+        assert_eq!(off.capacity(), None, "关掉的后端没有容量可言");
     }
 
     #[test]

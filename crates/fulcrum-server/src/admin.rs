@@ -538,8 +538,43 @@ impl AdminApp {
             }
         };
 
+        // ── D19：缓存容量跟着换，并**把生效值说出来** ──────────────────────
+        //
+        // ★ ★ ★ 缺陷原本的形状：`ttl` / `max_size` 每请求现读 `CacheRt`、改了立刻生效，
+        //   而 `capacity` 在**启动时**被抄进了后端的一个字段 ⇒ 一次 `POST /load`
+        //   回 200、`plan` 显示新值，**实际仍是旧容量，而没有任何东西会说**。
+        //   ⚠ 两条子指令写在同一个 `cache { … }` 块里，配置文件上看不出任何区别。
+        //
+        // ⚠ 它必须在 `swap` **之后**：要按**新**运行时算容量。
+        // ★ 推导只有一处（`cache::effective_capacity`），与 `serve()` 建后端时用的是
+        //   同一个函数 —— 抄一遍的话，「启动时算出来的」与「load 之后算出来的」
+        //   会有一天不是同一个数，而两处各自都自洽。
+        let cache_report = match &self.cache {
+            Some(c) => {
+                let want = crate::cache::effective_capacity(&self.rt.current().cache_settings());
+                c.store.set_capacity(want);
+                match c.store.capacity() {
+                    // ★ ★ 报的是**问后端要回来的那个数**，⛔ 不是刚才那个 `want` ——
+                    //   回显自己刚写进去的值，对「写进去了没有」这件事零判别力。
+                    Some(now) => format!(
+                        "缓存容量：生效 {now}B（各 `cache` 块取最大值）。\
+                         ⚠ 调小是**惰性**的：到下一次写入之前，占用仍可能高于新上限。\n"
+                    ),
+                    None => "缓存容量：后端关着（配了 `disk` 而那个目录用不了），\
+                             容量无从谈起 —— 启动日志里那行 error 说了为什么。\n"
+                        .to_string(),
+                }
+            }
+            // ⚠ 没有缓存后端时**一个字都不说**：一句「本进程没有缓存」会在每一次
+            //   load 的回话里重复出现，而它与这次 load 做了什么毫无关系。
+            None => String::new(),
+        };
+
         info!("全量 load 生效：{sites} 个站点（G8：原子换整份）");
-        (200, format!("已生效：{sites} 个站点\n{overrides_report}"))
+        (
+            200,
+            format!("已生效：{sites} 个站点\n{overrides_report}{cache_report}"),
+        )
     }
 
     /// 强制续期（G74）。
@@ -1177,6 +1212,69 @@ mod tests {
         let body = fulcrum_config::secret::reveal(|| serde_json::to_vec(&cfg).unwrap());
         let (code, out) = a.load(&body, Some("overrides=clear"));
         assert_eq!(code, 200, "带真凭据的载荷被拒了：{out}");
+    }
+
+    // ── D19：`POST /load` 改了 `capacity` 要真的生效，并把生效值说出来 ───────
+    //
+    // ★ ★ ★ 这条是整个 D19 的**承重判据**：上面两个 store 的测试只证明了
+    //   「容量改得动」，⚠ 而缺陷在于**没有人去改它** —— `load` 换的是 `self.rt`，
+    //   后端从不重建 ⇒ 只补 `set_capacity` 而忘了在 `load` 里调，那两条照样全绿。
+    //
+    // ★ 回话那半（候选 ③）不是锦上添花：实测 `capacity` **今天没有任何运行时出口**
+    //   —— 启动日志说一次「生效容量」，之后 metrics 里没有、API 里也没有。
+    //   ⇒ 光改成在线生效，运维仍然无从核对它到底生效了没。
+    #[test]
+    fn load_改了_capacity_后端容量跟着变_且回话说出生效值() {
+        let (a, cache) = app_with_cache(vec![(8080, false)], 1024);
+        assert_eq!(cache.store.capacity(), Some(1024), "前提：起始容量 1024");
+
+        let dsl = "http://a.com:8080 {\n  reverse_proxy 127.0.0.1:9\n  \
+                   cache {\n    capacity 4096\n  }\n}\n";
+        let (code, body) = a.load(&json_of(dsl), Some("overrides=clear"));
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(
+            cache.store.capacity(),
+            Some(4096),
+            "★ 承重：load 之后后端容量该跟着配置走 —— 这一格红就是 D19 本身"
+        );
+        assert!(
+            body.contains("4096"),
+            "回话要说出生效容量（候选 ③），实得：{body}"
+        );
+    }
+
+    // ⚠ 反方向：**没改容量的 load 不许把话说反**。
+    //   只测「改了会变」的话，一个把容量无条件重置成默认值的实现照样绿。
+    #[test]
+    fn load_没改_capacity_时容量不动() {
+        let (a, cache) = app_with_cache(vec![(8080, false)], 4096);
+        let dsl = "http://a.com:8080 {\n  reverse_proxy 127.0.0.1:9\n  \
+                   cache {\n    capacity 4096\n  }\n}\n";
+        let (code, body) = a.load(&json_of(dsl), Some("overrides=clear"));
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(cache.store.capacity(), Some(4096), "没改就不该动");
+    }
+
+    fn app_with_cache(
+        ports: Vec<(u16, bool)>,
+        capacity: u64,
+    ) -> (AdminApp, Arc<crate::cache::CacheHandle>) {
+        let cfg =
+            fulcrum_config::compile_str("t.Fulcrumfile", "http://a.com:8080 {\n  respond 200\n}\n")
+                .config
+                .unwrap();
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let cache = crate::cache::CacheHandle::new(crate::cache::Backend::open(None, capacity));
+        (
+            AdminApp::new(
+                SharedRuntime::new(rt),
+                ports,
+                None,
+                Some(cache.clone()),
+                None,
+            ),
+            cache,
+        )
     }
 
     fn app(ports: Vec<(u16, bool)>) -> AdminApp {

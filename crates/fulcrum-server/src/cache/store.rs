@@ -11,6 +11,7 @@
 use super::cc::ResponseCc;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 一条缓存条目。
 #[derive(Debug, Clone)]
@@ -50,7 +51,10 @@ impl Entry {
 #[derive(Debug)]
 pub struct MemStore {
     inner: Mutex<Inner>,
-    capacity: u64,
+    /// ★ ★ **原子而不是普通字段，因为 `POST /load` 要改得动它**（D19）。
+    ///   ⚠ 它有意**不在** `Inner` 的锁里：读它的两处都在 `put` 的热路径上，
+    ///   而把它挪进锁会让每一次 `capacity()`（装载日志、管理面回话）都去抢那把锁。
+    capacity: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -87,12 +91,27 @@ impl MemStore {
     pub fn new(capacity: u64) -> MemStore {
         MemStore {
             inner: Mutex::new(Inner::default()),
-            capacity,
+            capacity: AtomicU64::new(capacity),
         }
     }
 
     pub fn capacity(&self) -> u64 {
-        self.capacity
+        self.capacity.load(Ordering::Relaxed)
+    }
+
+    /// 换一个容量上限（`POST /load` 走这里，D19）。
+    ///
+    /// ★ ★ ★ **有意不当场淘汰** —— owner 2026-09-05 拍板：`POST /load` 是接管流量
+    /// 时的关键路径，在那里拿缓存锁扫一遍 LRU 会把一个 O(1) 的动作变成随缓存大小
+    /// 线性增长，与 G84「启动不扫盘」是同一条纪律。
+    /// ⚠ **代价写在明处**：调小之后到下一次写入之前，占用仍可能高于新上限；
+    /// 下一次 `put` 的淘汰循环会把它收紧。判据见本文件测试
+    /// `调小容量是惰性的_下一次写入才把占用压回去`。
+    ///
+    /// ⚠ `Relaxed` 够用：这里没有「靠它来发布别的数据」的语义，
+    /// 读侧要的只是「早晚会看到新值」，而 `load` 与 `put` 之间没有其它顺序依赖。
+    pub fn set_capacity(&self, capacity: u64) {
+        self.capacity.store(capacity, Ordering::Relaxed);
     }
 
     /// 当前占用与条目数（给日志与判据用）。
@@ -145,15 +164,19 @@ impl MemStore {
     /// 存一条。次级键由调用方按响应的 `Vary` 算好。
     pub fn put(&self, primary: &str, secondary: String, entry: Entry) {
         let size = entry.footprint();
+        // ★ 容量**在这一次 put 里只读一次**：它是原子的、可能被 `POST /load` 改
+        //   （D19），而守卫与淘汰循环用两个不同的值会让「刚存下又被立刻挤掉」
+        //   这种只在换配置那一瞬出现的行为变得无法复现。
+        let capacity = self.capacity();
         // ⚠ 一条比整个容量还大的条目**不存** —— 存了会把别的全挤掉，
         //   然后它自己也马上被挤掉。★ 这不是理论情况：`max_size` 配大于
         //   `capacity` 时就会撞上，而两条都是用户写的数。
-        if size > self.capacity {
+        if size > capacity {
             return;
         }
         let mut g = self.lock();
         g.remove_one(primary, &secondary);
-        while g.used + size > self.capacity {
+        while g.used + size > capacity {
             if !g.evict_one() {
                 break;
             }
@@ -322,6 +345,67 @@ mod tests {
         }
         // 整族不在 ⇒ Miss
         assert!(matches!(s.get("other", none), Lookup::Miss));
+    }
+
+    // ── D19：容量改得动（owner 2026-09-05 拍板 ①+③）────────────────────────
+    //
+    // ★ ★ 缺陷的形状是「两条子指令行为不同，而配置文件上看不出来」：`ttl` / `max_size`
+    //   每请求现读、改了立刻生效，而 `capacity` 在启动时被抄进了后端的一个字段
+    //   ⇒ 一次 `POST /load` 回 200、`plan` 显示新值，**实际仍是旧容量，没有任何东西会说**。
+    #[test]
+    fn 容量在线改得动_大条目守卫用的是新值() {
+        let s = MemStore::new(10);
+        s.put("k", String::new(), entry(&[0u8; 100], vec![]));
+        assert!(
+            matches!(s.get("k", none), Lookup::Miss),
+            "10 字节容量下 100 字节的条目本就不该存 —— 这是本条测试的前提，不是结论"
+        );
+        s.set_capacity(1024);
+        assert_eq!(s.capacity(), 1024);
+        s.put("k", String::new(), entry(&[0u8; 100], vec![]));
+        assert!(
+            matches!(s.get("k", none), Lookup::Hit(_)),
+            "容量改大之后同一条目该存得下 —— 说明大条目守卫读的是新值"
+        );
+    }
+
+    // ★ ★ ★ **调小容量是惰性的** —— owner 2026-09-05 拍板的语义，本条就是它的判据。
+    //
+    //   ⚠ `set_capacity` **有意不扫 LRU**：`POST /load` 是接管流量时的关键路径，
+    //   在那里拿缓存锁扫一遍 LRU 会把一个 O(1) 的动作变成随缓存大小线性 ——
+    //   与 G84「启动不扫盘」同一条纪律。
+    //   ⇒ 代价写在明处：**调小之后到下一次写入之前，占用仍可能高于新上限**。
+    //   ★ 这条测试两半都验：`set` 当场不动（⚠ 承重，写成「立刻压回去」就把语义搞反了）·
+    //     下一次 `put` 把它收紧。
+    #[test]
+    fn 调小容量是惰性的_下一次写入才把占用压回去() {
+        let s = MemStore::new(1024);
+        s.put("a", String::new(), entry(&[0u8; 200], vec![]));
+        let (used_before, n_before) = s.stats();
+        assert_eq!(
+            (used_before, n_before),
+            (200, 1),
+            "前提：一条 200 字节的条目在里面"
+        );
+
+        s.set_capacity(100);
+        assert_eq!(
+            s.stats(),
+            (200, 1),
+            "★ 承重：set_capacity 当场**不**淘汰 —— 它扫 LRU 的话这条会红，而那正是要挡的"
+        );
+
+        // 下一次写入把它收紧：新条目 50 字节 ⇒ 淘汰循环把旧的 200 挤掉。
+        s.put("b", String::new(), entry(&[0u8; 50], vec![]));
+        let (used_final, _) = s.stats();
+        assert!(
+            used_final <= 100,
+            "下一次写入之后占用该回到新上限内，实得 {used_final}"
+        );
+        assert!(
+            matches!(s.get("a", none), Lookup::Miss),
+            "旧条目该被挤掉 —— 说明淘汰循环读的也是新值"
+        );
     }
 
     #[test]
