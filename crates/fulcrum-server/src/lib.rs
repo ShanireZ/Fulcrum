@@ -1873,8 +1873,26 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     // ★ 造 `ServerConf` 的活儿在 `process::build_server_conf` 里，因为**它有门**：
     //   `serve()` 返回 `!`、还要绑端口，单测碰不了它，而「排空窗口不许留 None」
     //   这类判据恰恰最需要门。见 process.rs 顶部那张四条缺口表。
-    let conf = process::build_server_conf(cfg, &opts);
+    // ★ 探测一次、往下传（G140）。⛔ 别在每个 service 那里各问一次系统：
+    //   那样一趟里可能得到不同的答案（cgroup 配额是会变的），
+    //   而「同一趟里两个 service 按不同的核数算」没有任何东西会说。
+    let cpus = process::detected_cpus();
+    let threads_l7 = process::threads_for(process::ThreadRole::L7, &cfg.global, cpus);
+    let threads_l4 = process::threads_for(process::ThreadRole::L4, &cfg.global, cpus);
+
+    let conf = process::build_server_conf(cfg, &opts, cpus);
     let shutdown_budget = process::shutdown_budget_secs(&conf);
+
+    // ★ ★ **把这一趟真的用了几个线程打进启动日志**（D19 / G135 刚教过的那条：
+    //   一个没有运行时出口的旋钮，设了也无从核对它到底生效了没）。
+    //   ⚠ 管理面那一格由 `conf.threads` 承载，⇒ 从 `conf` 上读回来，
+    //   ⛔ 不是把刚算出来的那个值再回显一遍 —— 回显自己刚写进去的值，
+    //   对「它有没有真的落到 `ServerConf` 上」零判别力。
+    info!(
+        "线程模型（G35）：L7 每个 service {threads_l7} · L4 每个 service {threads_l4} · \
+         管理面与后台 {}（探测到 {cpus} 个可用核）。⚠ 线程不跨 service 共享 ⇒ 总数 ≈ Σ(各 service)",
+        conf.threads
+    );
 
     let opt = Opt {
         upgrade: opts.upgrade,
@@ -2100,6 +2118,10 @@ acme-tls/1";
             info!("监听 {bind}（HTTP）");
             svc.add_tcp(&bind);
         }
+        // ★ L7 数据面的线程数（G35 / G140）。⚠ 这是**逐 service** 的覆盖，
+        //   `Service::threads()` 返回 `Some` 时 pingora 就不看全局 `conf.threads` 了。
+        //   ⇒ 这一行是 `threads_l7` 在 h1/h2 那条路上唯一的落点。
+        svc.threads = Some(threads_l7);
         server.add_service(svc);
 
         // ── ★ ★ ★ HTTP/3 入口（**M2 批 J**，G110）───────────────────────────
@@ -2110,7 +2132,7 @@ acme-tls/1";
         // ⚠ **跟在 `add_service(svc)` 之后加**，于是启动日志里同一端口的 h1/h2 与 h3
         //   两行是挨着的 —— 「443 上到底开没开 h3」是运维第一个会问的问题。
         if is_tls {
-            server.add_service(quic::listener::QuicListenerService::new(
+            let mut q = quic::listener::QuicListenerService::new(
                 bind.clone(),
                 opts.upgrade,
                 plan.resolver.clone(),
@@ -2120,7 +2142,11 @@ acme-tls/1";
                 //   ⚠ 那是一条推导，所以 `run_dir_of` 有自己的判据 —— 见它的文档。
                 quic::listener::run_dir_of(&opts.upgrade_sock),
                 conn_reg.clone(),
-            ));
+            );
+            // ★ h3 与 h1/h2 **同一个角色**（G140 ③，owner 拍板）：它就是数据面入口，
+            //   与 h1/h2 服务同一批流量、走同一条执行链。
+            q.threads = Some(threads_l7);
+            server.add_service(q);
         }
     }
 
@@ -2174,22 +2200,26 @@ acme-tls/1";
             //   共用一个 `Service` 只会让两套语义在同一个 `match` 里互相打架。
             match l.proto {
                 fulcrum_runtime::L4Proto::Tcp => {
-                    server.add_service(l4::TcpProxyService::new(
+                    let mut s = l4::TcpProxyService::new(
                         shared.clone(),
                         &l.listen,
                         bind,
                         opts.upgrade,
                         conn_reg.clone(),
-                    ));
+                    );
+                    s.threads = Some(threads_l4);
+                    server.add_service(s);
                 }
                 fulcrum_runtime::L4Proto::Udp => {
-                    server.add_service(l4::UdpProxyService::new(
+                    let mut s = l4::UdpProxyService::new(
                         shared.clone(),
                         &l.listen,
                         bind,
                         opts.upgrade,
                         conn_reg.clone(),
-                    ));
+                    );
+                    s.threads = Some(threads_l4);
+                    server.add_service(s);
                 }
             }
         }

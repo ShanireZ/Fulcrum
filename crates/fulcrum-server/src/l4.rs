@@ -56,6 +56,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 一个 `l4 tcp` 监听器对应的服务。
 pub struct TcpProxyService {
+    /// 这个 service 用几个线程（**G35 / G140**）。`None` = 跟全局 `conf.threads`。
+    ///
+    /// ★ 与 pingora `ListeningService.threads` 同名同义 —— 自建 service 也参与
+    /// 同一套角色分配，⛔ 不许在这里另立一套。由 `serve()` 在建好之后设。
+    pub threads: Option<usize>,
     /// ★ 拿的是**共享**运行时，不是启动时那一份：`POST /load` 换配置之后，
     /// 下一条连接就该按新的上游走。⚠ 监听地址本身换不了（启动时绑定），
     /// 管理面为此把 L4 端口纳入了「端口集变了就 409」的判据。
@@ -87,6 +92,8 @@ impl TcpProxyService {
         //   而不是「有连接了才出现」。
         let conn = conn_reg.bind(crate::conn_stats::Entrypoint::L4Tcp, &bind);
         Self {
+            // ★ 缺省 `None` = 跟全局；由 `serve()` 按角色设（G140）。
+            threads: None,
             shared,
             listen: listen.to_string(),
             fd_key: format!("fulcrum-l4-tcp:{bind}"),
@@ -790,6 +797,13 @@ impl Service for TcpProxyService {
         }
     }
 
+    /// 这个 service 用几个线程（**G35 / G140**）。⚠ 返回 `Some` 时 pingora
+    /// **不再看**全局 `conf.threads` —— 见 `server/mod.rs` 的
+    /// `service.threads().unwrap_or(conf.threads)`。
+    fn threads(&self) -> Option<usize> {
+        self.threads
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -934,6 +948,11 @@ pub struct LiveSession {
 
 /// 一个 `l4 udp` 监听器对应的服务。
 pub struct UdpProxyService {
+    /// 这个 service 用几个线程（**G35 / G140**）。`None` = 跟全局 `conf.threads`。
+    ///
+    /// ★ 与 pingora `ListeningService.threads` 同名同义 —— 自建 service 也参与
+    /// 同一套角色分配，⛔ 不许在这里另立一套。由 `serve()` 在建好之后设。
+    pub threads: Option<usize>,
     shared: Arc<SharedRuntime>,
     listen: String,
     bind: String,
@@ -955,6 +974,8 @@ impl UdpProxyService {
     ) -> Self {
         let conn = conn_reg.bind(crate::conn_stats::Entrypoint::L4Udp, &bind);
         Self {
+            // ★ 缺省 `None` = 跟全局；由 `serve()` 按角色设（G140）。
+            threads: None,
             shared,
             listen: listen.to_string(),
             fd_key: format!("fulcrum-l4-udp:{bind}"),
@@ -1224,6 +1245,13 @@ impl Service for UdpProxyService {
                 }
             }
         }
+    }
+
+    /// 这个 service 用几个线程（**G35 / G140**）。⚠ 返回 `Some` 时 pingora
+    /// **不再看**全局 `conf.threads` —— 见 `server/mod.rs` 的
+    /// `service.threads().unwrap_or(conf.threads)`。
+    fn threads(&self) -> Option<usize> {
+        self.threads
     }
 
     fn name(&self) -> &str {

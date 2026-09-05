@@ -41,6 +41,99 @@ use tokio::sync::broadcast::error::RecvError;
 /// 要改用别的值，在 DSL 里写 `grace_period`。
 pub const DEFAULT_GRACE_PERIOD_SECS: u64 = 30;
 
+// ── 线程模型（G35 结案 · G140 落地）────────────────────────────────────────
+//
+// ★ ★ ★ **最要紧的一条机制事实：线程不跨 service 共享。** pingora `ServerConf` 的注释
+//   原话是 "The threads are not shared across services" —— 每个 service 各起一套
+//   runtime ⇒ **总线程数 ≈ Σ(各 service 的 threads)**。枢衡注定有 4+ 个 service，
+//   ⇒ **把一个笼统的全局 `threads` 设成核数会直接超订**（4 核 × 4 service = 16 个 worker）。
+//   这正是 DSL 面按角色分三格、⛔ 而没有一个全局 `threads` 的全部理由。
+//   推导见 `docs/architecture/process-model.md` 的「线程模型」一节。
+//
+// ⚠ ★ **初值不是结论。** `process-model.md` 明写判据在 M3 的对拍数据里，
+//   而那些数今天还不存在（合格宿主不存在，G132）。⛔ 别把下面三个常量读成
+//   「量过之后定下来的」—— 它们是 G35 拍的**起步值**。
+
+/// L4 面（TCP/UDP 透传）每个 service 的缺省线程数（**G35**）。
+///
+/// ★ 取 2 而不是核数：L4 那条路径是**字节搬运**，没有 HTTP 解析、没有路由匹配，
+/// 单位工作量小得多；而它每多一个线程就是一整套 runtime（见上面那条机制事实）。
+pub const DEFAULT_L4_THREADS: usize = 2;
+
+/// 管理面与后台任务的缺省线程数（**G35**）。
+///
+/// ★ ★ 它同时是 pingora `ServerConf.threads` 的取值 ⇒ **一切没有被逐 service 覆盖的
+/// 东西都跟着它**（后台服务就是这一类：`background_service()` 不设 `threads`，
+/// `Service::threads()` 返回 `None` 并回落到全局值）。⇒ 它是「其余一切」那一格。
+pub const DEFAULT_ADMIN_THREADS: usize = 1;
+
+/// service 的角色（**G35 / G140**）。
+///
+/// ⚠ 只有三个，⛔ **h3 不单列**：它就是数据面入口，与 h1/h2 服务同一批流量、
+/// 走同一条执行链（`tests/h3/run.sh` 里那条「h3 与 h1 跑同一条执行链」的判据），
+/// ⇒ 归 [`ThreadRole::L7`]（G140 ③，owner 拍板）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadRole {
+    /// L7 数据面：h1/h2 监听器、**h3 监听器**。
+    L7,
+    /// L4 面：TCP 透传、UDP 透传。
+    L4,
+    /// 管理面 socket，以及一切没被逐 service 覆盖的东西（后台任务）。
+    AdminAndBackground,
+}
+
+/// 角色缺省。**这是那些数字唯一的一处**。
+///
+/// ⛔ 不许在 `Global::default()` 或别处再写一份：缺省值住两处，就会有一天两处分家
+/// 而彼此都自洽 —— 本仓 2026-09-05 当天刚栽过一次同形状的（G135 的分解式抄了三处）。
+///
+/// ★ `cpus` 由调用方传进来（[`detected_cpus`]），**不在这里去问系统**：
+/// 判据要能在两个方向上被喂合成输入，而「这台机器有几个核」是判不了两次的。
+pub fn default_threads(role: ThreadRole, cpus: usize) -> usize {
+    match role {
+        // ⚠ 夹在值域里：`cpus` 是探测来的，而配置那条路的合法值域是
+        //   `[MIN_THREADS, MAX_THREADS]` —— 两条路给出的数不该落在不同的值域里。
+        //   （一台 2048 核的机器上，不夹就会得到一个配置面**写不出来**的值。）
+        ThreadRole::L7 => cpus.clamp(
+            fulcrum_config::model::MIN_THREADS,
+            fulcrum_config::model::MAX_THREADS,
+        ),
+        ThreadRole::L4 => DEFAULT_L4_THREADS,
+        ThreadRole::AdminAndBackground => DEFAULT_ADMIN_THREADS,
+    }
+}
+
+/// 探测可用并行度。
+///
+/// ★ 用 `std::thread::available_parallelism()`，⛔ 不引第三方 crate：它是 std，
+/// 且在 Linux 上**认 cgroup 配额** —— 容器里给了 2 核就报 2，而不是宿主机的核数。
+///
+/// ⚠ 探测失败时回落到 1 **并打一行 warn**：这一格没有「宁可多」的安全侧 ——
+/// 超订会让所有 service 一起变慢，而回落到 1 至少与今天的行为相同。
+/// ⛔ 但不许静默：一个悄悄退成 1 的数据面，与「配置生效了」在启动日志里长得一样。
+pub fn detected_cpus() -> usize {
+    match std::thread::available_parallelism() {
+        Ok(n) => n.get(),
+        Err(e) => {
+            warn!(
+                "问不出可用并行度（{e}）——L7 的线程数回落到 1。\
+                 要指定就在全局块里写 `threads_l7 <n>`"
+            );
+            1
+        }
+    }
+}
+
+/// 某个角色**这一趟真正用几个线程**：配置里写了就用配置的，没写就用角色缺省。
+pub fn threads_for(role: ThreadRole, g: &fulcrum_config::model::Global, cpus: usize) -> usize {
+    let configured = match role {
+        ThreadRole::L7 => g.threads_l7,
+        ThreadRole::L4 => g.threads_l4,
+        ThreadRole::AdminAndBackground => g.threads_admin,
+    };
+    configured.unwrap_or_else(|| default_threads(role, cpus))
+}
+
 /// 排空之后、等各 runtime 退出的最后一段（秒）。
 ///
 /// ★ 这个数**与 pingora 的默认值相同**（5），所以显式接上它不改变任何行为。
@@ -75,8 +168,16 @@ const PINGORA_DEFAULT_GRACEFUL_SECS: u64 = 5;
 pub fn build_server_conf(
     cfg: &fulcrum_config::StructuredConfig,
     opts: &crate::ServeOptions,
+    cpus: usize,
 ) -> ServerConf {
     ServerConf {
+        // ★ ★ 全局 `threads` = **管理面与后台**那个角色（G35 / G140）。
+        //   pingora 拿它当**回落值**：`Service::threads()` 返回 `None` 的 service
+        //   （后台任务全是这一类）都跟着它 ⇒ 它是「其余一切」那一格，
+        //   ⛔ 不是「所有 service 的线程数」。L7 与 L4 各自逐 service 覆盖它。
+        // ⚠ ⚠ 这里**绝不能**填核数：线程不跨 service 共享 ⇒ 那会让每一个
+        //   没被覆盖的 service 都起一整套核数大小的 runtime。
+        threads: threads_for(ThreadRole::AdminAndBackground, &cfg.global, cpus),
         pid_file: opts.pid_file.clone(),
         upgrade_sock: opts.upgrade_sock.clone(),
         // 全局选项里的 `grace_period` 映到 Pingora 的排空窗口；没写就用我们自己的默认值。
@@ -346,13 +447,130 @@ mod tests {
         }
     }
 
+    // ── 线程模型（G35 结案 · G140 落地）────────────────────────────────────
+    //
+    // ★ 全部喂**合成的** `cpus`，⛔ 不去问这台机器有几个核：一条读宿主状态的判据
+    //   在同一台机器上只能被观察到一种结果，而两个方向都要能验。
+
+    fn cfg_with_threads(
+        l7: Option<usize>,
+        l4: Option<usize>,
+        admin: Option<usize>,
+    ) -> fulcrum_config::StructuredConfig {
+        use fulcrum_config::model::{Defaults, Global, StructuredConfig};
+        StructuredConfig {
+            schema_version: fulcrum_config::model::SCHEMA_VERSION,
+            global: Global {
+                threads_l7: l7,
+                threads_l4: l4,
+                threads_admin: admin,
+                ..Default::default()
+            },
+            defaults: Defaults::default(),
+            sites: Vec::new(),
+            l4: None,
+        }
+    }
+
+    /// 不写配置时，三个角色各拿到**自己的**缺省（G35 的初值）。
+    ///
+    /// ★ ★ 三个角色的期望值**互不相同**是判据本身：一个把三个角色接串的实现
+    /// （比如三条臂都读 `threads_l7`）在三个期望值相同时照样全绿。
+    #[test]
+    fn 不写配置时三个角色各拿各的缺省() {
+        let g = &cfg_with_threads(None, None, None).global;
+        assert_eq!(threads_for(ThreadRole::L7, g, 12), 12, "L7 缺省该是核数");
+        assert_eq!(
+            threads_for(ThreadRole::L4, g, 12),
+            DEFAULT_L4_THREADS,
+            "L4 缺省该是 {DEFAULT_L4_THREADS}，⛔ 不是核数"
+        );
+        assert_eq!(
+            threads_for(ThreadRole::AdminAndBackground, g, 12),
+            DEFAULT_ADMIN_THREADS,
+            "管理面与后台缺省该是 {DEFAULT_ADMIN_THREADS}"
+        );
+    }
+
+    /// 写了配置就按配置走，且**三格不串**。
+    #[test]
+    fn 配置里的线程数各覆盖各的角色() {
+        let g = &cfg_with_threads(Some(16), Some(3), Some(2)).global;
+        assert_eq!(threads_for(ThreadRole::L7, g, 12), 16);
+        assert_eq!(threads_for(ThreadRole::L4, g, 12), 3);
+        assert_eq!(threads_for(ThreadRole::AdminAndBackground, g, 12), 2);
+    }
+
+    /// ⚠ 只写其中一格时，**另外两格仍然走缺省** —— 覆盖是逐格的，不是全有或全无。
+    #[test]
+    fn 只写一格时另外两格照旧走缺省() {
+        let g = &cfg_with_threads(Some(16), None, None).global;
+        assert_eq!(threads_for(ThreadRole::L7, g, 12), 16);
+        assert_eq!(threads_for(ThreadRole::L4, g, 12), DEFAULT_L4_THREADS);
+        assert_eq!(
+            threads_for(ThreadRole::AdminAndBackground, g, 12),
+            DEFAULT_ADMIN_THREADS
+        );
+    }
+
+    /// L7 的缺省被夹在**配置面的合法值域**里。
+    ///
+    /// ★ ★ 判据的理由：`cpus` 是探测来的，而配置那条路只允许 `[MIN, MAX]`。
+    /// 不夹的话，一台 2048 核的机器上会得到一个**配置面根本写不出来**的值 ——
+    /// 而那种「两条路的值域不一样」正是本仓反复抓到的那一族。
+    #[test]
+    fn l7的缺省被夹在配置面的值域里() {
+        use fulcrum_config::model::{MAX_THREADS, MIN_THREADS};
+        let g = &cfg_with_threads(None, None, None).global;
+        assert_eq!(
+            threads_for(ThreadRole::L7, g, 100_000),
+            MAX_THREADS,
+            "上界没夹"
+        );
+        // ⚠ `detected_cpus()` 不会返回 0，但判据不该依赖那个前提。
+        assert_eq!(threads_for(ThreadRole::L7, g, 0), MIN_THREADS, "下界没夹");
+    }
+
+    /// ★ ★ ★ **全局 `ServerConf.threads` 必须是「管理面与后台」那一格，⛔ 不是核数。**
+    ///
+    /// 这一条是整个线程模型里最容易写错、且错了**完全没有症状**的一格：
+    /// pingora 的线程**不跨 service 共享**，`conf.threads` 是所有
+    /// `Service::threads() == None` 的 service 的回落值（后台任务全是这一类）。
+    /// ⇒ 把核数填在这里，等于让每一个后台任务都起一整套核数大小的 runtime，
+    /// 而服务照常工作、日志里一个字都不会提。
+    #[test]
+    fn 全局threads是管理面那一格而不是核数() {
+        let conf = build_server_conf(
+            &cfg_with_threads(None, None, None),
+            &ServeOptions::default(),
+            64,
+        );
+        assert_eq!(
+            conf.threads, DEFAULT_ADMIN_THREADS,
+            "全局 threads 该是管理面/后台那一格（{DEFAULT_ADMIN_THREADS}），\
+             ⛔ 不是探测到的核数（64）"
+        );
+
+        // 反方向：写了 `threads_admin` 时它要真的落到全局那一格上
+        //（后台任务是靠它生效的，没有第二条路）。
+        let conf = build_server_conf(
+            &cfg_with_threads(Some(16), Some(3), Some(4)),
+            &ServeOptions::default(),
+            64,
+        );
+        assert_eq!(
+            conf.threads, 4,
+            "threads_admin 没落到 ServerConf.threads 上"
+        );
+    }
+
     /// ★ ★ 这一条是本批的核心判据之一：**没写 `grace_period` 时排空窗口不许是 `None`。**
     ///
     /// `None` 会让 pingora 用它的 `EXIT_TIMEOUT = 300`，而那正是实测里
     /// `systemctl stop` 被 SIGKILL 的根因。反证：把 `Some(...)` 改回 `None`，这条红。
     #[test]
     fn 没配_grace_period_时用产品自己的默认值而不是上游的_300_秒() {
-        let conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default());
+        let conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default(), 8);
         assert_eq!(
             conf.grace_period_seconds,
             Some(DEFAULT_GRACE_PERIOD_SECS),
@@ -367,7 +585,7 @@ mod tests {
     /// 配了就必须听配置的——否则上一条那个默认值会变成一个改不掉的硬编码。
     #[test]
     fn 配了_grace_period_就按配置来() {
-        let conf = build_server_conf(&cfg_with_grace(Some(7_000)), &ServeOptions::default());
+        let conf = build_server_conf(&cfg_with_grace(Some(7_000)), &ServeOptions::default(), 8);
         assert_eq!(conf.grace_period_seconds, Some(7));
     }
 
@@ -378,7 +596,7 @@ mod tests {
     /// 而运维要按这个和去写 `TimeoutStopSec`。
     #[test]
     fn 优雅停机的最后一段也要显式给值() {
-        let conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default());
+        let conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default(), 8);
         assert_eq!(
             conf.graceful_shutdown_timeout_seconds,
             Some(GRACEFUL_SHUTDOWN_TIMEOUT_SECS)
@@ -392,13 +610,13 @@ mod tests {
     /// 去设 `TimeoutStopSec`。
     #[test]
     fn 停机预算是两段之和且跟着配置走() {
-        let default_conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default());
+        let default_conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default(), 8);
         assert_eq!(
             shutdown_budget_secs(&default_conf),
             DEFAULT_GRACE_PERIOD_SECS + GRACEFUL_SHUTDOWN_TIMEOUT_SECS
         );
 
-        let long = build_server_conf(&cfg_with_grace(Some(120_000)), &ServeOptions::default());
+        let long = build_server_conf(&cfg_with_grace(Some(120_000)), &ServeOptions::default(), 8);
         assert_eq!(
             shutdown_budget_secs(&long),
             120 + GRACEFUL_SHUTDOWN_TIMEOUT_SECS
@@ -429,7 +647,7 @@ mod tests {
         );
 
         // 而产品造出来的那一份必须**明显更小**——两个方向合起来才说明这把尺子在工作。
-        let ours = build_server_conf(&cfg_with_grace(None), &ServeOptions::default());
+        let ours = build_server_conf(&cfg_with_grace(None), &ServeOptions::default(), 8);
         assert!(shutdown_budget_secs(&ours) < shutdown_budget_secs(&bare));
     }
 
@@ -441,7 +659,7 @@ mod tests {
     /// 这种失效没有任何症状，所以它必须是一道门而不是一句注释。
     #[test]
     fn daemon_恒为_false() {
-        let conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default());
+        let conf = build_server_conf(&cfg_with_grace(None), &ServeOptions::default(), 8);
         assert!(
             !conf.daemon,
             "daemon=true 会 fork 掉换代触发器所在的线程，systemctl reload 将安静地失效"
@@ -459,7 +677,7 @@ mod tests {
             upgrade_sock: "/run/x/up.sock".to_string(),
             ..Default::default()
         };
-        let conf = build_server_conf(&cfg_with_grace(None), &opts);
+        let conf = build_server_conf(&cfg_with_grace(None), &opts, 8);
         assert_eq!(conf.pid_file, "/run/x/y.pid");
         assert_eq!(conf.upgrade_sock, "/run/x/up.sock");
     }

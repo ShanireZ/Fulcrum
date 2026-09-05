@@ -34,7 +34,14 @@ LATE_PORT=${LATE_PORT:-9105}
 #   SICK 是「探测路径坏、业务好」——只有**主动**健康检查看得见；
 #   BAD  是「业务就是坏的，探测路径无所谓」——只有**被动**熔断看得见。
 BAD_PORT=${BAD_PORT:-9106}
-# ★ 9107 现在是空的（回落层删除后退场），端口表已跟着改。
+# 线程模型那一节（G140）自己的三个端口。★ 三个实例**同时只起一个**，
+# 但端口仍各占一格：复用同一个端口时，上一个还没完全放开就会让下一个「起不来」，
+# 而症状落在一个与线程数毫无关系的地方。
+THREADS_PORT_A=${THREADS_PORT_A:-9107}
+THREADS_PORT_B=${THREADS_PORT_B:-9108}
+THREADS_PORT_C=${THREADS_PORT_C:-9109}
+# ⚠ 9107 曾经是空的（回落层删除后退场），**2026-09-05 被上面那一组收走了**（G140）。
+#   端口表（docs/platform/host-and-gate-traps.md）已跟着从 9100–9106 扩到 9100–9109。
 # ★ 管理面走 Unix socket（G14），所以它**不占端口**，也不进上面那张端口表。
 ADMIN_SOCK="$WORK/admin.sock"
 
@@ -42,6 +49,9 @@ FAILS=0
 PIDS=()
 
 fail() { echo "  ✗ $*" >&2; FAILS=$((FAILS + 1)); }
+# 既不算过也不算不过的一行现场记录。★ 用它把「这条判据本趟分辨不出来」说出口，
+# ⛔ 别静默跳过 —— 一条被跳过的判据与一条通过的判据在输出上长得一模一样。
+note() { echo "  · $*"; }
 ok() { echo "  ✓ $*"; }
 
 cleanup() {
@@ -80,6 +90,18 @@ wait_port() {
   local port=$1 tries=0
   while [ "$tries" -lt 100 ]; do
     if port_listening "$port"; then return 0; fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# 等一个端口**放开**。★ 线程模型那一节要连起三个实例，
+# 上一个还攥着端口时下一个会「起不来」，而症状落在一个与线程数无关的地方。
+wait_port_gone() {
+  local port=$1 tries=0
+  while [ "$tries" -lt 100 ]; do
+    if ! port_listening "$port"; then return 0; fi
     sleep 0.1
     tries=$((tries + 1))
   done
@@ -1708,6 +1730,96 @@ if [ "$SELFLOOP_N" = "1" ]; then
   ok "★ 自环警告恰好一条（夹具里就一处自环）"
 else
   fail "自环警告有 $SELFLOOP_N 条，夹具里只有一处自环：$SELFLOOP_LINES"
+fi
+
+# ── 线程模型：那个旋钮真的落到进程上了吗（G35 结案 · G140 落地）────────────
+#
+# ★ ★ ★ **这一节存在的全部理由**：`serve()` 里那三行 `s.threads = Some(...)`
+#   在此之前**没有任何判据执行过** —— 单测够不到 `serve()`（它返回 `!`、还要绑端口），
+#   而 `process.rs` 那几条纯函数测试只证明`算出来的数对`，⛔ 不证明`它被用上了`。
+#   一条从未被执行过的路径，`它生效了`就是一句没有判据的断言。
+#
+# ★ 判据挂在**进程真的有几个 OS 线程**上（`/proc/<pid>/status` 的 `Threads:`），
+#   ⛔ 不挂在启动日志那一行上：日志打的是**刚算出来的那个数**，
+#   对`它有没有真的传给 pingora`零判别力（同 G135 那条`回显自己刚写进去的值`）。
+#
+# ⚠ 2026-09-05 实测（12 核）：`Threads` = **4 + threads_l7**，严格线性 ——
+#   `threads_l7 1`→5 · `8`→12 · `16`→20 · 不写（12 核）→16。
+#   下面三条界都是按这组实测数定的，⛔ 不是猜的。
+echo "=== [4/4] 线程模型（G140）==="
+
+threads_of() {
+  # 起一个只带一行全局配置的最小实例，量它的 OS 线程数，收掉，打印那个数。
+  local label=$1 line=$2 port=$3
+  {
+    echo "{"
+    [ -n "$line" ] && echo "  $line"
+    echo "}"
+    echo "http://127.0.0.1:$port {"
+    echo "  respond 200"
+    echo "}"
+  } > "$WORK/$label.Fulcrumfile"
+
+  RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/$label.Fulcrumfile" \
+    --bind-host "$HOST" \
+    --pid-file "$WORK/$label.pid" \
+    --upgrade-sock "$WORK/$label.sock" \
+    > "$WORK/$label.log" 2>&1 &
+  local pid=$!
+  if ! wait_port "$port"; then
+    echo "0"
+    return
+  fi
+  # ⚠ 让 runtime 把 worker 都拉起来再量：tokio 的 worker 是建 runtime 时就 spawn 的，
+  #   但`端口在听`比那一步早一点点。
+  sleep 1
+  awk '/^Threads:/ {print $2}' "/proc/$pid/status" 2>/dev/null || echo "0"
+  kill -INT "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  wait_port_gone "$port" 2>/dev/null || true
+}
+
+T_ONE=$(threads_of threads_one "threads_l7 1" "$THREADS_PORT_A")
+T_EIGHT=$(threads_of threads_eight "threads_l7 8" "$THREADS_PORT_B")
+T_DEFAULT=$(threads_of threads_default "" "$THREADS_PORT_C")
+NPROC=$(nproc 2>/dev/null || echo 0)
+note "实测线程数：threads_l7=1 → $T_ONE · threads_l7=8 → $T_EIGHT · 不写 → $T_DEFAULT（nproc=$NPROC）"
+
+# ★ `读不出来`判红，⛔ 不当成通过 —— 三个数里任何一个是 0 都说明量具没工作。
+if [ "$T_ONE" -gt 0 ] && [ "$T_EIGHT" -gt 0 ] && [ "$T_DEFAULT" -gt 0 ]; then
+  ok "三个实例的线程数都量到了"
+else
+  fail "线程数没量到（$T_ONE / $T_EIGHT / $T_DEFAULT）——「没能检查」不算「检查通过」"
+fi
+
+# ① 旋钮真的会动它。★ 实测差值恰好是 7，界取 6 留一格余量
+#   （⛔ 不写死 7：tokio 的阻塞池可能临时多出一条，而那与本条判据无关）。
+if [ "$((T_EIGHT - T_ONE))" -ge 6 ]; then
+  ok "★ 「threads_l7」 从 1 调到 8，线程数多了 $((T_EIGHT - T_ONE)) 条 ⇒ 那个旋钮真的落到进程上了"
+else
+  fail "「threads_l7」 从 1 调到 8 只多了 $((T_EIGHT - T_ONE)) 条线程 —— 那三行 s.threads 多半没接上"
+fi
+
+# ② 反方向的界：`threads_l7 1` 那一趟必须**真的少**。
+#   ⚠ 没有这一条，一个`无论配什么都起一百条线程`的实现在 ① 上照样过不了 ——
+#   但一个`无论配什么都按核数起`的实现会让 ① 的差值恰好是 0，而 ② 才说得出它错在哪。
+if [ "$T_ONE" -le 8 ]; then
+  ok "「threads_l7 1」 那一趟只有 $T_ONE 条线程 ⇒ 它没有偷偷按核数起"
+else
+  fail "「threads_l7 1」 却起了 $T_ONE 条线程 —— 配置多半根本没被读"
+fi
+
+# ③ ★ ★ **不写时的缺省真的是核数**（G140 ②：owner 拍板让 G35 的初值这次真的生效）。
+#   ⚠ 判成差值而不是绝对值：那 4 条固定线程（管理面 + 后台）与本条无关。
+#   ⚠ 核太少时这条判据没有分辨力，跳过并说出来 —— ⛔ 不静默跳过。
+if [ "$NPROC" -ge 4 ]; then
+  if [ "$((T_DEFAULT - T_ONE))" -ge "$((NPROC - 2))" ]; then
+    ok "★ 不写 「threads_l7」 时比写 1 多了 $((T_DEFAULT - T_ONE)) 条（nproc=$NPROC）⇒ 角色缺省真的是核数"
+  else
+    fail "不写 「threads_l7」 时只比写 1 多了 $((T_DEFAULT - T_ONE)) 条（nproc=$NPROC）—— L7 的角色缺省多半没生效"
+  fi
+else
+  note "nproc=$NPROC < 4，「缺省取核数」这条判据在这台机器上分辨不出来，本趟跳过"
 fi
 
 echo

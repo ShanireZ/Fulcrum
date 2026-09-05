@@ -79,6 +79,24 @@ api.example.com {
 | `default_sni` | `default_sni <域名>` | 客户端**不带** SNI 时当作它报了这个名字。⚠ 它**不**给「报了、而我们没有那张证书」的 SNI 兜底 —— 那种连接照旧被拒绝握手（Caddy 把后者另立为 `fallback_sni`，枢衡没有）|
 | `auto_http_redirect` | `auto_http_redirect <true\|false>` | 自动把 HTTP 跳到 HTTPS（G12）。★ **不写就是 `true`**，见 §二 |
 | `grace_period` | `grace_period <时长>` | 优雅停机的排空窗口。★ 不写＝ **30s**，见[部署](/platform/deploy.md) |
+| `threads_l7` | `threads_l7 <正整数>` | L7 数据面（h1/h2 与 **h3**）**每个** service 的线程数。不写＝ **CPU 核数** |
+| `threads_l4` | `threads_l4 <正整数>` | L4 面（TCP/UDP 透传）**每个** service 的线程数。不写＝ **2** |
+| `threads_admin` | `threads_admin <正整数>` | 管理面与**后台任务**的线程数。不写＝ **1** |
+
+> ⚠ ⚠ ★ **三格分开、⛔ 没有一个笼统的 `threads`，这是机制决定的不是口味**：pingora 的
+> 线程**不跨 service 共享**（每个 service 各起一套 runtime）⇒ **总线程数 ≈ Σ(各 service)**。
+> 一个全局值设成核数会直接超订 —— 4 核 × 4 service = 16 个 worker 线程。
+> 推导与初值见[进程模型](/architecture/process-model.md)的「线程模型」一节。
+>
+> ★ 取值域 `[1, 1024]`；`0`、负数、带单位、不是数字都是**装载期错误**（`FUL-DSL-0046`）。
+> ⚠ `0` 尤其不能放过：pingora 拿它去建 tokio runtime 会**启动时 panic**，
+> 而那个报错一个字都不提配置。
+>
+> ★ ★ **`threads_admin` 同时是「其余一切」那一格**：它就是 pingora `ServerConf.threads`，
+> 而那是所有没被逐 service 覆盖的东西（后台任务全是这一类）的回落值。
+>
+> ⏳ **这三个初值不是结论。** 判据在 M3 的对拍数据里（[性能验收标准](/verification/performance-bar.md)），
+> 而那些数今天还不存在。
 | `proxy_protocol_from` | `proxy_protocol_from <网段…>` | ★ ★ **信任这些来源发来的 PROXY 头**，管 **HTTP 面全部监听端口**（M2 批 D）。不写＝**谁都不信**。见下 |
 
 ★ **凭据不在这里，也不在 DSL 的任何地方**（G59）：DNS 供应商的 token 只从

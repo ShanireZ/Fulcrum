@@ -266,6 +266,11 @@ impl Cx<'_> {
                 "grace_period" => {
                     g.grace_period_ms = node.args.first().and_then(|a| parse_duration_ms(&a.value))
                 }
+                // ★ 三格共用同一条解析与同一条诊断（G140）。⛔ 不许抄三遍：
+                //   抄三遍的失效形态是「改了值域忘了改其中一格」，而三格各自都自洽。
+                "threads_l7" => g.threads_l7 = self.thread_count(node),
+                "threads_l4" => g.threads_l4 = self.thread_count(node),
+                "threads_admin" => g.threads_admin = self.thread_count(node),
                 "auto_http_redirect" => {
                     // ★ 不写值就是「开」（`auto_http_redirect` 单写一行 = on），
                     //   与 `on_demand` 那条同形。
@@ -1173,6 +1178,45 @@ impl Cx<'_> {
     ///
     /// ⚠ 三条各自 `return`，所以一行 `weight` 只报一条 —— 但**每一行都会被看**，
     /// 「一次报全」（G51）说的是那件事。
+    /// `threads_l7` / `threads_l4` / `threads_admin` 的取值（**G140**）。
+    ///
+    /// 值域 `[MIN_THREADS, MAX_THREADS]`；不合法就报 [`DiagCode::BAD_THREADS`] 并返回
+    /// `None`。⚠ 返回 `None` 的语义是**回落到角色缺省** —— 与「没写这一行」逐字相同，
+    /// 而那正是这条诊断必须存在的理由：没有它，`threads_l7 八` 会静默地变成「没写」。
+    ///
+    /// ⛔ **不许退回 `first.parse().ok()`**：那条路在 `passive_fail` 上真出过事（G136），
+    /// 症状是「配置照过、装载照过，而旋钮一步都不做」。
+    fn thread_count(&mut self, node: &Node) -> Option<usize> {
+        // `check_sub_args` 已经保证正好一个参数。
+        let arg = node.args.first()?;
+        match arg.value.parse::<usize>() {
+            Ok(n) if (MIN_THREADS..=MAX_THREADS).contains(&n) => Some(n),
+            _ => {
+                self.diags.push(
+                    Diagnostic::error(
+                        DiagCode::BAD_THREADS,
+                        arg.span,
+                        format!(
+                            "`{}` 要一个 {MIN_THREADS}–{MAX_THREADS} 的整数，`{}` 不是",
+                            node.name, arg.value
+                        ),
+                    )
+                    .label("线程数是不带单位的正整数，如 `8`")
+                    .help(
+                        "★ `0` 也不合法：pingora 拿这个数去建 tokio runtime，\
+                         `0` 会在**启动时 panic**，而那个报错一个字都不提配置",
+                    )
+                    .note(
+                        "★ 不写这一行 = 用角色缺省（L7 = CPU 核数、L4 = 2、管理面与后台 = 1）。\
+                         ⚠ 线程不跨 service 共享 ⇒ 总线程数 ≈ Σ(各 service)，\
+                         所以这里有意分三格而没有一个笼统的全局值",
+                    ),
+                );
+                None
+            }
+        }
+    }
+
     fn upstream_weight(
         &mut self,
         sub: &Node,

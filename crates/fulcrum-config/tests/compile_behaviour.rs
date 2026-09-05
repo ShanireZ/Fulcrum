@@ -687,6 +687,12 @@ fn 全局选项全部有人接() {
             "proxy_protocol_from" => ("proxy_protocol_from 10.0.0.0/8 192.168.0.0/16", |g| {
                 g.proxy_protocol_from == ["10.0.0.0/8", "192.168.0.0/16"]
             }),
+            // ★ ★ 三格（G140）判据各取**不同的值**，⛔ 不许三条都写 `8`：
+            //   一个把三格接串了的实现（`threads_l4` 写进 `threads_l7`）在三条同值时
+            //   照样全过 —— 而接串正是这类「三个长得一样的字段」最典型的写法错误。
+            "threads_l7" => ("threads_l7 8", |g| g.threads_l7 == Some(8)),
+            "threads_l4" => ("threads_l4 3", |g| g.threads_l4 == Some(3)),
+            "threads_admin" => ("threads_admin 2", |g| g.threads_admin == Some(2)),
             other => panic!(
                 "全局选项 `{other}` 是新加的，而这条测试没有它的判据。\
                  先在这里写明「它该落到 Global 的哪个字段」，再去 compile.rs 接它。"
@@ -1733,6 +1739,87 @@ fn passive_fail_的值不合法是装载期错误() {
             "`passive_fail {bad}` 该报 BAD_PASSIVE_FAIL，实际：{cs:?}"
         );
     }
+}
+
+// ── G140：线程数三格 ────────────────────────────────────────────────────────
+
+/// 一份只带一条全局线程指令的最小配置。
+fn with_global(line: &str) -> String {
+    format!("{{\n  {line}\n}}\nhttp://a.com {{\n  respond 200\n}}\n")
+}
+
+/// 三格的取值域各自都判得动（**G140**）。
+///
+/// ★ ★ 三个键各跑一遍，⛔ 不许只跑 `threads_l7`：三格在 compile.rs 里是**三条独立的臂**，
+/// 只测一条时，一条忘了接判据的实现照样全绿（那条会静默变成「没写」）。
+#[test]
+fn threads_三格的值不合法都是装载期错误() {
+    for key in ["threads_l7", "threads_l4", "threads_admin"] {
+        // ⚠ `0` 单列一条理由：pingora 拿它建 tokio runtime 会**启动时 panic**，
+        //   而那个报错一个字都不提配置。
+        // ⚠ `八` 那条是这族诊断真正的价值所在（同 G136）：写成 `.parse().ok()` 时
+        //   它会**静默**变成 `None`，而 `None` 的语义恰好是「回落到角色缺省」。
+        for bad in ["0", "八", "-1", "8s", "1025"] {
+            let cs = codes(&with_global(&format!("{key} {bad}")));
+            assert!(
+                cs.contains(&DiagCode::BAD_THREADS),
+                "`{key} {bad}` 该报 BAD_THREADS，实际：{cs:?}"
+            );
+        }
+
+        // ⚠ **一个值都不写是参数个数错，⛔ 不是 BAD_THREADS。**
+        //   这一条不是凑数：`thread_count` 在这条路上**根本不会被调用**
+        //   （`check_sub_args` 先拦住了）⇒ 把它写进上面那个循环，
+        //   就是在要求一条永远走不到的代码路径去报一条它报不出来的诊断。
+        //   ★ 而它仍然必须是**装载期错误** —— 一行 `threads_l7` 静默地什么都不做，
+        //   与「写了个数」在配置里长得一模一样。
+        let cs = codes(&with_global(key));
+        assert!(
+            cs.contains(&DiagCode::BAD_ARITY),
+            "`{key}` 不带值该报 BAD_ARITY，实际：{cs:?}"
+        );
+    }
+}
+
+/// 反方向：合法值照过，且**落到它自己那一格**（**G140**）。
+///
+/// ★ ★ ★ 三格取**三个不同的值**是判据本身：三格接串（`threads_l4` 写进 `threads_l7`）
+/// 是这类「三个同型字段」最典型的写法错误，而三条同值时它照样全绿。
+#[test]
+fn threads_三格的合法值各落各的格() {
+    let cfg = ok(
+        "{\n  threads_l7 16\n  threads_l4 3\n  threads_admin 2\n}\nhttp://a.com {\n  respond 200\n}\n",
+    );
+    assert_eq!(cfg.global.threads_l7, Some(16), "threads_l7 没落对");
+    assert_eq!(cfg.global.threads_l4, Some(3), "threads_l4 没落对");
+    assert_eq!(cfg.global.threads_admin, Some(2), "threads_admin 没落对");
+}
+
+/// 边界值照过（**G140**）：`1` 与 `1024` 都在值域内。
+#[test]
+fn threads_的边界值照过() {
+    for good in ["1", "1024"] {
+        let cfg = ok(&with_global(&format!("threads_l7 {good}")));
+        assert_eq!(
+            cfg.global.threads_l7,
+            Some(good.parse().unwrap()),
+            "`threads_l7 {good}` 该照过并落到产物里"
+        );
+    }
+}
+
+/// ⚠ **不写就是 `None`，而 `None` 的语义是「用角色缺省」**（**G140**）。
+///
+/// ★ ★ 这一条守的是「缺省值只住一处」：`None` 在这里，具体数字在
+/// `fulcrum_server::process::ThreadRole` 那一处。⛔ 若哪天有人在 `Global::default()`
+/// 里把它改成 `Some(1)`，缺省就住了两处，而两处迟早分家 ——
+/// 本仓 2026-09-05 当天刚栽过一次同形状的（G135 的分解式抄了三处）。
+#[test]
+fn 不写线程数就是_none_而不是某个具体数字() {
+    let cfg = ok("http://a.com {\n  respond 200\n}\n");
+    assert_eq!(cfg.global.threads_l7, None);
+    assert_eq!(cfg.global.threads_l4, None);
+    assert_eq!(cfg.global.threads_admin, None);
 }
 
 /// 反方向：合法值不许被那条取值域判据顺手拦掉。

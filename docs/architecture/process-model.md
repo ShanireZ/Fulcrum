@@ -147,6 +147,19 @@ sources:
 
 - **`work_stealing = true`（Steal）**，per-core 推到 **M3 用对拍数据定**。M0 实测 Steal 下自建服务全绿，是目前唯一有证据的配置。
 - **线程数按 service 角色定默认，全部可被配置覆盖**。初值：L7 反代 = CPU 核数、L4 = 2、管理面/后台 = 1。★ **初值不是结论**，判据在 M3 的对拍数据里。
+  ✅ **已落地（G140，2026-09-05）** —— 在此之前这条决定**只写在这一页上，代码里一处都没有**：
+  `ServerConf` 走 `..Default::default()`（`threads: 1`），DSL 与 CLI 都没有旋钮，
+  ⇒ **L7 热路径在线上一直只有 1 个线程**。那不是谁做的决定，是这条决定没被实现（D33）。
+  落法：DSL 全局块三个键 `threads_l7` / `threads_l4` / `threads_admin`（[DSL 参考](/architecture/dsl-reference.md) §一）·
+  角色缺省只住一处（`fulcrum_server::process::default_threads`）·
+  `threads_admin` 同时是 `ServerConf.threads` ⇒ 后台任务跟着它 ·
+  L7 / L4 各自逐 service 覆盖（`Service::threads()`）。
+  ★ h3 **与 h1/h2 同一个角色**（G140 ③）：它就是数据面入口，与 h1/h2 服务同一批流量、走同一条执行链。
+  ⚠ ⚠ **升级一次就会变行为**：L7 那一格从 1 变成 CPU 核数，资源占用与延迟分布都会变。
+  ★ ★ 判据挂在**进程真的有几个 OS 线程**上（`tests/serve/run.sh` 的 [4/4] 一节），
+  ⛔ 不挂在启动日志那一行 —— 日志打的是刚算出来的数，对「它有没有真的传给 pingora」零判别力。
+  2026-09-05 实测（12 核）：`Threads` = **4 + `threads_l7`**，严格线性
+  （`1`→5 · `8`→12 · `16`→20 · 不写→16）；撤掉那一行接线之后三个读数**一起塌成 5**，两条断言同时红。
 - **QUIC 的线程分配不在本轮**，~~随 [D11](/governance/open-questions.md) 在 M2 选库时一并定~~ ⇒ ⚠ ★ **D11 已已结案（取 `quiche`），而线程分配这一条并没有跟着定** —— quiche 是 **sans-IO**，事件循环整个由我们自己写 ⇒ 它现在是**实施批次自己的设计题**，不再挂在 D11 上。
 
 # ★ 一条已被 M0 证实的运行时性质

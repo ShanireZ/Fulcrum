@@ -467,6 +467,16 @@ pub const GLOBAL_OPTIONS: &[SubSpec] = &[
     //   而不是数据面里一条看不见的特判。理由见 compile.rs 里那段。
     sub("auto_http_redirect", 1, 1, ArgType::Bool),
     sub("grace_period", 1, 1, ArgType::Duration),
+    // ★ ★ 线程数按**角色**分三格（G35 结案、G140 落地），⛔ **有意没有一个笼统的
+    //   全局 `threads`**：pingora 的线程不跨 service 共享（每个 service 各起一套
+    //   runtime）⇒ 总线程数 ≈ Σ(各 service)，一个全局值设成核数会直接超订。
+    //   推导与初值在 docs/architecture/process-model.md 的「线程模型」一节。
+    // ⚠ 用 `ArgType::Word` 而不是某个「整数」类型：本表今天没有整数型（`weight`
+    //   与 `passive_fail` 都走 Word + compile.rs 里一条专门的诊断），
+    //   ⇒ 照既有形状走，值域判在 compile.rs，诊断是 FUL-DSL-0046。
+    sub("threads_l7", 1, 1, ArgType::Word),
+    sub("threads_l4", 1, 1, ArgType::Word),
+    sub("threads_admin", 1, 1, ArgType::Word),
     // ★ ★ 回落后端在哪（§6.3 / G34）。**枢衡不拉起、不监管、不读它们的配置**，
     //   所以它只需要知道一个地址。⚠ 这是「边界显式」那条约束（回落层第 2 条）的落法：
     //   哪些请求走回落必须在配置里看得见，而**看得见的第一步是这一跳写在配置里**。

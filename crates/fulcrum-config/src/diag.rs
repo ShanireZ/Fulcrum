@@ -358,6 +358,19 @@ impl DiagCode {
     /// ⚠ 但**必须说出来** —— 与 [`METRICS_UNGUARDED`](Self::METRICS_UNGUARDED) 同一条纪律：
     /// 一条配置若与「正在生效」长得一模一样，那么沉默就是让人以为它生效了。
     pub const PASSIVE_WITHOUT_THRESHOLD: DiagCode = DiagCode(45);
+    /// `threads_l7` / `threads_l4` / `threads_admin` 的值不在 `[1, 1024]` 里 ——
+    /// 含 `0`、负数、带单位、不是数字（**M3**，G140）。
+    ///
+    /// ★ ★ **`0` 不合法这一条比 `weight 0` 更硬**：pingora 拿这个数去建 tokio runtime，
+    /// `0` 会在**启动时 panic**。⇒ 不在这里拦住，症状是「改了一个数字，服务起不来」，
+    /// 而报错出自 tokio 深处、**一个字都不提配置**。
+    ///
+    /// ⚠ ⚠ **和 [`BAD_PASSIVE_FAIL`](Self::BAD_PASSIVE_FAIL) 一样，真正的价值在
+    /// 「不是数字」那一半**：若这里写成 `first.parse().ok()`，`threads_l7 八` 会**静默**
+    /// 变成 `None`，而 `None` 的语义恰好是**回落到角色缺省** ⇒ 一个手滑的值让整条旋钮
+    /// 悄悄失效，配置照过、装载照过、启动日志里那个数看起来也很正常。
+    /// ★ 这是本仓反复抓到的那一族，⛔ 别在这里退回 `.ok()`。
+    pub const BAD_THREADS: DiagCode = DiagCode(46);
 
     pub fn as_str(&self) -> String {
         format!("FUL-DSL-{:04}", self.0)

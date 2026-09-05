@@ -251,6 +251,11 @@ struct LiveConn {
 
 /// QUIC/h3 的监听服务。
 pub struct QuicListenerService {
+    /// 这个 service 用几个线程（**G35 / G140**）。`None` = 跟全局 `conf.threads`。
+    ///
+    /// ★ 与 pingora `ListeningService.threads` 同名同义 —— 自建 service 也参与
+    /// 同一套角色分配，⛔ 不许在这里另立一套。由 `serve()` 在建好之后设。
+    pub threads: Option<usize>,
     bind: String,
     fd_key: String,
     name: String,
@@ -287,6 +292,8 @@ impl QuicListenerService {
         // ★ `bind()` 顺手声明这一格 ⇒ 从第一秒起就有一条 `0` 的样本。
         let conn = conn_reg.bind(crate::conn_stats::Entrypoint::Quic, &bind);
         QuicListenerService {
+            // ★ 缺省 `None` = 跟全局；由 `serve()` 按角色设（G140）。
+            threads: None,
             fd_key: format!("fulcrum-quic:{bind}"),
             name: format!("fulcrum-quic-{bind}"),
             bind,
@@ -401,6 +408,13 @@ impl Service for QuicListenerService {
             Some(self.conn.clone()),
         )
         .await;
+    }
+
+    /// 这个 service 用几个线程（**G35 / G140**）。⚠ 返回 `Some` 时 pingora
+    /// **不再看**全局 `conf.threads` —— 见 `server/mod.rs` 的
+    /// `service.threads().unwrap_or(conf.threads)`。
+    fn threads(&self) -> Option<usize> {
+        self.threads
     }
 
     fn name(&self) -> &str {

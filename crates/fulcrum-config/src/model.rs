@@ -73,6 +73,28 @@ pub struct Global {
     pub admin: Option<String>,
     pub default_sni: Option<String>,
     pub grace_period_ms: Option<u64>,
+    /// 数据面（L7 反代 / 静态文件 / 缓存 / **h3**）每个 service 的线程数（**G35 / G140**）。
+    ///
+    /// `None` = 用角色缺省（见 `fulcrum_server::process::ThreadRole`）。
+    ///
+    /// ⚠ ⚠ ★ **线程不跨 service 共享** —— pingora 的 `ServerConf` 原话是
+    /// "The threads are not shared across services"，每个 service 各起一套 runtime
+    /// ⇒ **总线程数 ≈ Σ(各 service)**。这正是本仓**没有**一个笼统的全局 `threads`
+    /// 而按角色分三格的理由：把一个全局值设成核数会直接超订
+    /// （4 核 × 4 service = 16 个 worker 线程）。见 `docs/architecture/process-model.md`。
+    ///
+    /// ★ h3 有意与 h1/h2 **同一个角色**（G140 ③）：它就是数据面入口，
+    /// 与 h1/h2 服务同一批流量、走同一条执行链。
+    pub threads_l7: Option<usize>,
+    /// L4 面（TCP/UDP 透传）每个 service 的线程数（**G35 / G140**）。`None` = 角色缺省。
+    pub threads_l4: Option<usize>,
+    /// 管理面与后台任务的线程数（**G35 / G140**）。`None` = 角色缺省。
+    ///
+    /// ★ ★ 它同时是 pingora `ServerConf.threads` 的取值 ⇒ **任何没有被逐 service
+    /// 覆盖的东西都跟着它走**（后台服务就是这一类：`background_service()` 不设
+    /// `threads`，于是 `Service::threads()` 返回 `None` 并回落到全局值）。
+    /// ⇒ 它是「其余一切」那一格，⛔ 不只是 admin socket 那一个 service。
+    pub threads_admin: Option<usize>,
     /// 自动把 HTTP 重定向到 HTTPS（G12 的后半句）。**默认 true**。
     ///
     /// ⚠ ⚠ `#[serde(default = "yes")]` 不是可有可无的：结构化配置是**公开入口**（G11），
@@ -134,6 +156,13 @@ impl Default for Global {
             admin: None,
             default_sni: None,
             grace_period_ms: None,
+            // ★ 三个都是 `None` = 「用角色缺省」，⛔ 不是「1」：
+            //   把缺省值写死在这里，它就住了两处（这里一份、算角色缺省那里一份），
+            //   而两份迟早分家 —— 本仓 2026-09-05 当天刚栽过一次同形状的（G135 的
+            //   `effective_capacity` 抄了三处）。⇒ 缺省只存在于 `ThreadRole` 那一处。
+            threads_l7: None,
+            threads_l4: None,
+            threads_admin: None,
             auto_http_redirect: true,
             // ★ 默认**空**：不信任任何人发来的 PROXY 头。
             //   ⚠ 这与 `auto_http_redirect` 那条相反 —— 那条的默认是 `true`
@@ -468,6 +497,20 @@ pub const MIN_UPSTREAM_WEIGHT: u32 = 1;
 ///
 /// ★ 它与管理面 `set_weight` 的值域**是同一对常量**，不是两处各写一个 65535。
 pub const MAX_UPSTREAM_WEIGHT: u32 = 65_535;
+
+/// 线程数值域的下界（**G140**）。
+///
+/// ★ ★ **`0` 有意不合法，理由与 [`MIN_UPSTREAM_WEIGHT`] 同源但更硬**：pingora 拿这个数
+/// 去建 tokio runtime，`0` 会**在启动时 panic** —— ⇒ 这里不拦，症状就是「改了一个数字，
+/// 服务起不来，而报错出自 tokio 深处、一个字都不提配置」。
+pub const MIN_THREADS: usize = 1;
+
+/// 线程数值域的上界（**G140**）。
+///
+/// ★ 它不是一条性能建议，是一道**手滑防线**：`threads_l7 1000000` 会让 pingora 真的去
+/// 建那么多线程。⚠ ⛔ **别把这个数读成「推荐上限」** —— 合适的取值要等 M3 的对拍数据
+/// （`docs/architecture/process-model.md` 明写「初值不是结论」）。
+pub const MAX_THREADS: usize = 1024;
 
 /// `passive_fail` 值域的下界（**G136**）。
 ///

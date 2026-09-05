@@ -2,9 +2,18 @@
 #
 # ★ 四家的配置**逐条对齐**，对齐口径写在 bench/README.md「四家怎么摆平」一节：
 #   同一个 payload · 同一个 worker 数 · 访问日志一律关 · 明文 HTTP/1.1 · keep-alive 开。
-# ⚠ 占位符由 bench/case/static-throughput.sh 替换（__WWW_ROOT__ / __PORT__）。
+# ⚠ 占位符由 bench/case/static-throughput.sh 替换。
 # ⛔ 别在这里加任何「调优」—— 本轮的交付物是方法学，四家都跑各自的**朴素**配置；
 #   谁该怎么调优是拿到合格宿主之后、有数字可比时才谈得上的事。
+{
+    # ★ ★ L7 数据面的 worker 数（G140）。它与另外三家的 worker 旋钮吃**同一个**
+    #   `BENCH_WORKERS` ⇒ 「四家 worker 数一致」这条对齐口径在这里落实。
+    # ⚠ ⚠ 这一行在 2026-09-05 之前**写不出来** —— 枢衡当时没有线程数旋钮
+    #   （走 pingora `ServerConf::default()` 的 `threads: 1`），⇒ 四家唯一可对齐的值只有 1。
+    #   那是 D33，已由 G140 结案。★ 第一刀正是靠「跑通一遍」把它暴露出来的。
+    threads_l7 __WORKERS__
+}
+
 :__PORT__ {
     file_server {
         root __WWW_ROOT__
