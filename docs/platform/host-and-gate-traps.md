@@ -17,7 +17,7 @@ Narrow it with one `*_ONLY=1`:
 | flag | scenario |
 |---|---|
 | `BUILD_ONLY` / `LINT_ONLY` | build only · `fmt` + `clippy -D warnings` + `shellcheck` only |
-| `COMPILE_ONLY` | compile only, **all targets**, zero tests run — what the `pre-push` hook uses. ⚠ `BUILD_ONLY` is not the same thing: `cargo build --release` never compiles test targets |
+| `COMPILE_ONLY` | `shellcheck` + compile, **all targets**, zero tests run — what the `pre-push` hook uses. ⚠ `BUILD_ONLY` is not the same thing: `cargo build --release` never compiles test targets |
 | `UNIT_ONLY` | Fulcrum's own crate tests |
 | `VENDOR_ONLY` | the fork regression net (**first gate after a rebase**) |
 | `SERVE_ONLY` | data plane end-to-end, real traffic |

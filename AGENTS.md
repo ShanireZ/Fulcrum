@@ -80,8 +80,8 @@ run.** Flip the condition, break the input, or delete the fix — and watch it f
 back. If a gate cannot be made to fail, it is not a gate. Prefer gates carrying their own reverse
 test (`tests/m0/unclaimed.sh` asserts false at step 0 and true at step 2, so one run does both).
 
-★ **A `pre-push` hook compiles the tree (all targets, no tests) before anything leaves this
-machine.** ⚠ `.git/hooks/` is not version-controlled — a fresh clone silently has **no** gate.
+★ **A `pre-push` hook runs `shellcheck` and compiles the tree (all targets, no tests) before
+anything leaves this machine.** ⚠ `.git/hooks/` is not version-controlled — a fresh clone silently has **no** gate.
 Install line, what it deliberately does not catch, and its blind spot: [docs/platform/build-and-test.md](docs/platform/build-and-test.md).
 
 ⚠ ★ **A cross-crate injection is not fully reported by one compile** — cargo stops at the first

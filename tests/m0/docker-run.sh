@@ -6,7 +6,7 @@
 # 一次只开一个 `<X>_ONLY=1` 只跑那一格；`<X>_TESTS=0` 跳过那一格：
 #
 #   BUILD · LINT · UNIT · VENDOR             构建 · fmt+clippy+shellcheck · 自研 crate 测试 · fork 回归网
-#   COMPILE                                  只编译（含全部测试目标）、一条测试都不跑 —— pre-push 门用的那一格
+#   COMPILE                                  shellcheck + 编译（含全部测试目标）、一条测试都不跑 —— pre-push 门用的那一格
 #   SERVE · L4 · FILES · CACHE · CACHEDISK   数据面 · L4 面 · 静态文件 · 缓存 · 缓存磁盘后端
 #   ENCODE · H3 · PP · LOG                   压缩 · HTTP/3 · PROXY protocol（HTTP 面）· 访问日志
 #   METRICS · RELAY                          Prometheus 指标 · QUIC 跨进程转交
@@ -675,9 +675,11 @@ fi
 #
 # ⚠ ⚠ **只报名字与体积，⛔ 一律不给删除命令。** 本门对它们的属主一无所知 ——
 #   给命令等于拿一句「我不知道这是谁的」去劝人删，那比不报更坏。
-# ★ 噪音账（2026-09-05 在 `ShanirePCX` 上实测，⛔ 换台机器自己数）：全机 19 个卷，
-#   减去管辖内 2 个、别人家 11 个、docker 匿名 6 个 ⇒ 稳态下这个桶是空的，**一行都不打**；
-#   真出现一个 `pingora-up994-target` 才打一行。
+# ★ 噪音账：稳态下这个桶是空的，**一行都不打**；真出现一个 `pingora-up994-target` 才打一行。
+#   ⚠ ⚠ **具体读数有意不写在这里** —— 它逐机而异，抄在代码注释里就是一份会过期又没人核的值。
+#   唯一一处在 `docs/platform/build-and-test.md`「噪音账」那一行。
+#   ★ 这不是洁癖：本条第一版把它抄了**三处**，而三处的数是错的（别人家/匿名写成 11/6，
+#     实际 10/7）—— **和恰好仍是 0**，于是它自洽、没有任何门看得见。
 # ⚠ 那个贵的量具沿用上面同一条纪律：`fulcrum_vol_sizes`（`docker system df -v`，
 #   开发机 A 上实测 1.4–1.9s）**只在真有东西要报时问一次**，桶空就一次都不问。
 ALL_MACHINE_VOLS=$(docker volume ls -q || true)
@@ -775,19 +777,39 @@ if [ "${VENDOR_ONLY:-0}" = "1" ]; then
 elif [ "${UNIT_ONLY:-0}" = "1" ]; then
   CMD='bash tests/unit/run.sh'
 elif [ "${COMPILE_ONLY:-0}" = "1" ]; then
-  # ★ 只**编译**（含全部测试目标），⛔ 一条测试都不跑 —— `tests/ci/pre-push.sh` 用的就是这一格。
-  #   它答的是「这棵树编得过吗」，而那正是 2026-09-04 那次**被推出去**的缺陷问的话：
+  # ★ **`shellcheck` + 编译（含全部测试目标）**，⛔ 一条测试都不跑 ——
+  #   `tests/ci/pre-push.sh` 用的就是这一格，⇒ 改这里就是在改那道门的承诺。
+  #   它答的是「这棵树**静态**上站得住吗」，而那正是 2026-09-04 那次**被推出去**的缺陷问的话：
   #   测试里引用一个还没定义的常量，三处 `E0599`，整个 test crate 编译不过。
   #
   # ⚠ ⚠ **`--all-targets` 是承重的**：那个缺陷就在**测试目标**里，而 `BUILD_ONLY` 那条
   #   `cargo build --release` 压根不编测试目标 ⇒ 它逮不住 —— 两格不是同一件事。
   #
+  # ★ ★ ★ **`shellcheck` 是 2026-09-05 加进来的（owner 拍板），起因是一次实测**：
+  #   那天改了 `vol-lock.sh` 与 `docker-run.sh` 两个 `.sh`，跑了**四趟** `COMPILE_ONLY`
+  #   全绿 —— 而这一格当时**不含 `LINT_CMD`**（它是 `CMD='…'` 直接替换，不是 `CMD="$CMD && …"`
+  #   追加）⇒ **那四个绿对那次改动没有任何判别力**，直到单独补跑了一次 shellcheck 才知道。
+  #   ⚠ 推论更要紧：`pre-push` 门走的正是这一格 ⇒ **一次纯 shell 的改动此前可以完整穿过它**。
+  #   ★ 一个字符之差决定 lint 那一整格在不在：读 `*_ONLY` 这串 `elif` 时先看
+  #     它是 `CMD="$CMD && …"` 还是 `CMD='…'`。
+  #
+  # ⚠ **只挂 `shellcheck`，⛔ 不挂 `fmt` / `clippy`**，这是权衡不是遗漏：
+  #   `clippy` 要先把依赖编出来（含 BoringSSL），那会把这道门从秒级拖成分钟级，
+  #   而**门变慢正是它被 `--no-verify` 绕过的起点**。`shellcheck` 只读源码、
+  #   在本已起着的同一个容器里跑，⇒ 边际成本是这一格里最便宜的那一档。
+  #   ⚠ 代价写在明处：**这一格仍然不拦 `fmt` 差异与 clippy 告警**，那两格归完整门禁。
+  #
   # ★ **有意不跑测试**：本机常年 20+ 会话并发，按空载余量设的超时会周期性假红，
-  #   而一道假红过几次的 pre-push 门会被 `--no-verify` 永久绕过。只编译不会因负载红。
+  #   而一道假红过几次的 pre-push 门会被 `--no-verify` 永久绕过。
+  #   ⇒ 这一格里两件事**都不会因机器负载而红**（编译不会，`shellcheck` 也不会）。
   #   ⚠ 代价写在明处：**它不拦「编得过但测试红」** —— 那一格归完整门禁。
   #
   # ⚠ `spikes/musl-boringssl` 在根 workspace 之外（同 `cargo fmt` 那条的理由），本格够不到它。
-  CMD='cargo test --no-run --workspace --all-targets'
+  #
+  # ★ ★ `shellcheck` 放在**前面**：它几秒就出结果，而编译要十几秒起 ⇒ shell 写错时立刻说。
+  # ⚠ ⚠ 那对花括号**不是风格**：见本文件下方那段「`&&` 与 `||` 同优先级左结合」的实测假绿。
+  #   本格今天没有 `||`，但把回落绑死在链上是这里的既定纪律，⛔ 别顺手拆掉。
+  CMD='{ bash tests/ci/shellcheck-all.sh && cargo test --no-run --workspace --all-targets; }'
 elif [ "${SERVE_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/serve/run.sh"
 elif [ "${L4_ONLY:-0}" = "1" ]; then
