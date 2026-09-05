@@ -646,7 +646,8 @@ fulcrum_cache_events_total fulcrum_cache_purged_entries_total
 fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy
 fulcrum_cert_expiry_seconds fulcrum_acme_issue_total fulcrum_build_info
 fulcrum_overrides_active fulcrum_tls_requests_total
-fulcrum_connections_total fulcrum_connections_active"
+fulcrum_connections_total fulcrum_connections_active
+fulcrum_upstream_passive_open"
 for f in $FAMILIES_EXPECTED; do
   if expo meta "$S1" "$f"; then
     ok "族 $f 的 HELP/TYPE 都在"

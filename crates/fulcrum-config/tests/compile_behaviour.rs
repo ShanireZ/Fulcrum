@@ -575,9 +575,17 @@ fn reverse_proxy子指令全部有人接() {
                 "passive_fail 3",
                 |b| matches!(b, StepBody::ReverseProxy { passive, .. } if passive.fail_threshold == Some(3)),
             ),
+            // ★ G136：判据写 **9s** 而不是缺省的 10s —— 缺省值现在是**具体数字**
+            //   （不再是 `None`），所以写 10s 的话「落到了」与「被丢掉了」完全同形。
             "passive_window" => (
                 "passive_window 9s",
-                |b| matches!(b, StepBody::ReverseProxy { passive, .. } if passive.window_ms == Some(9_000)),
+                |b| matches!(b, StepBody::ReverseProxy { passive, .. } if passive.window_ms == 9_000),
+            ),
+            // ★ G136 新增。判据写 **45s**：既躲开自己的缺省 30s，也躲开 `window` 的缺省 10s
+            //   —— 否则「两个旋钮接反了」这种缺陷在产物上看不出来。
+            "passive_cooldown" => (
+                "passive_cooldown 45s",
+                |b| matches!(b, StepBody::ReverseProxy { passive, .. } if passive.cooldown_ms == 45_000),
             ),
             "header_up" => (
                 "header_up X-A 1",
@@ -1689,5 +1697,117 @@ fn 空的_id_仍然报它自己那条而不是被取值域顶掉() {
     assert!(
         !cs.contains(&DiagCode::BAD_PROXY_ID),
         "空串不该同时报两条：{cs:?}"
+    );
+}
+
+// ── G136：被动熔断的配置面 ─────────────────────────────────────────────────
+
+/// 一段只有 `reverse_proxy` 的最小站点，块里塞给定的几行。
+fn rp(lines: &str) -> String {
+    format!("http://a.com {{\n  reverse_proxy 127.0.0.1:1 {{\n{lines}\n  }}\n}}\n")
+}
+
+/// 这条 `reverse_proxy` 编出来的 `passive`。
+fn passive_of(src: &str) -> fulcrum_config::model::Passive {
+    match &ok(src).sites[0].chain[0].body {
+        StepBody::ReverseProxy { passive, .. } => passive.clone(),
+        other => panic!("第一步不是 reverse_proxy：{other:?}"),
+    }
+}
+
+/// ⚠ ⚠ **`passive_fail` 的值不合法 ⇒ 装载期错误**（G136）。
+///
+/// ★ ★ **承重的是「不是数字」那一半，不是 `0`。** 在 G136 之前那一行是
+/// `first.parse().ok()` —— `passive_fail 五` 会**静默**变成 `None`，而 `None` 的语义
+/// 恰好是**整个特性关掉**：一个手滑的值让熔断悄悄消失，配置照过、装载照过，
+/// 而没有任何一行字提到它。⇒ 这条判据要是没了，那个缺陷不会有任何症状。
+///
+/// ★ `0` 那一半与 [`DiagCode::BAD_WEIGHT`] 同源：「不做被动熔断」只有一种表达方式
+/// （不写 `passive_fail`），两条路做同一件事迟早分家。
+#[test]
+fn passive_fail_的值不合法是装载期错误() {
+    for bad in ["0", "五", "-1", "3s", "70000"] {
+        let cs = codes(&rp(&format!("    passive_fail {bad}")));
+        assert!(
+            cs.contains(&DiagCode::BAD_PASSIVE_FAIL),
+            "`passive_fail {bad}` 该报 BAD_PASSIVE_FAIL，实际：{cs:?}"
+        );
+    }
+}
+
+/// 反方向：合法值不许被那条取值域判据顺手拦掉。
+#[test]
+fn passive_fail_的合法值照过() {
+    for good in ["1", "3", "65535"] {
+        let p = passive_of(&rp(&format!("    passive_fail {good}")));
+        assert_eq!(
+            p.fail_threshold,
+            Some(good.parse().unwrap()),
+            "`passive_fail {good}` 该照过并落到产物里"
+        );
+    }
+}
+
+/// ⚠ **不写 `passive_fail` ⇒ 整条 `reverse_proxy` 不做被动熔断**（G136）。
+///
+/// ★ ★ 这是「**既有配置行为一个字不变**」的判据 —— G136 选「缺省关闭」而不是
+/// nginx 那种「缺省开」，全部理由就在这一条上。它要是变成 `Some(_)`，
+/// 每一份现存配置都会在某次升级后开始悄悄摘上游，而症状是「偶尔 502」。
+#[test]
+fn 不写_passive_fail_就是完全关闭() {
+    let p = passive_of(&rp("    lb_policy least_conn"));
+    assert_eq!(
+        p.fail_threshold, None,
+        "没写 passive_fail 却不是 None —— 被动熔断被默认打开了"
+    );
+}
+
+/// 缺省值在**配置层**就落实成具体数字（G136），⛔ 不留给运行时 `unwrap_or`。
+///
+/// ⚠ 判据写死 `10_000` / `30_000` 而不是「不是 0」：缺省值住两处的失效形态是
+/// 两处分家，而分家那天两边各自都自洽 —— 那正是要靠这条钉死的东西。
+#[test]
+fn 只写_passive_fail_时两个旋钮取缺省() {
+    let p = passive_of(&rp("    passive_fail 3"));
+    assert_eq!(p.window_ms, 10_000, "window 缺省该是 10s");
+    assert_eq!(p.cooldown_ms, 30_000, "cooldown 缺省该是 30s");
+}
+
+/// 写了旋钮却没写 `passive_fail` ⇒ **说出来，但不判红**（G136）。
+///
+/// ★ 那两行此刻一个都不生效，而它与「正在生效」在配置里长得一模一样
+/// ⇒ 沉默就是让人以为它生效了（与 [`DiagCode::METRICS_UNGUARDED`] 同一条纪律）。
+#[test]
+fn 只写旋钮没写_passive_fail_要出警告且从来不是错误() {
+    for knob in ["passive_window 5s", "passive_cooldown 5s"] {
+        let src = rp(&format!("    {knob}"));
+        let o = compile_str("test.Fulcrumfile", &src);
+        let cs: Vec<DiagCode> = o.diagnostics.items().iter().map(|d| d.code).collect();
+        assert!(
+            cs.contains(&DiagCode::PASSIVE_WITHOUT_THRESHOLD),
+            "`{knob}` 单独写该出警告，实际：{cs:?}"
+        );
+        // ★ ★ 反方向，与 `有裸奔警告` 那条同一手法：它**从来不是** error ——
+        //   一条把配置拒掉的门会把「先把旋钮调好、待会儿再开」这种正当的分步操作挡掉。
+        assert!(
+            !o.diagnostics.has_errors(),
+            "`{knob}` 不该判红：\n{}",
+            o.render_diagnostics()
+        );
+    }
+}
+
+/// 反方向：写了 `passive_fail` 之后，旋钮就是生效的 ⇒ ⛔ 不许再报那条警告。
+///
+/// ⚠ 少了这一条，一个「无论如何都报警告」的实现照样全绿 —— 而那种警告
+/// 会在每一份正确配置上刷屏，刷到没人再看它。
+#[test]
+fn 写了_passive_fail_之后旋钮不再报警告() {
+    let cs = codes(&rp(
+        "    passive_fail 3\n    passive_window 5s\n    passive_cooldown 20s",
+    ));
+    assert!(
+        !cs.contains(&DiagCode::PASSIVE_WITHOUT_THRESHOLD),
+        "旋钮已经生效了还报「不生效」：{cs:?}"
     );
 }

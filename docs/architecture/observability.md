@@ -271,6 +271,7 @@ metrics.example:9443 {
 | `fulcrum_no_site_match_total` | counter | 事件点 | `host` | 见下（G118）|
 | `fulcrum_upstream_inflight` | gauge | 活体 | `upstream` | 配置定 |
 | `fulcrum_upstream_healthy` | gauge | 活体 | `upstream` | 配置定 |
+| `fulcrum_upstream_passive_open` | gauge | 活体 | `upstream` | 配置定 |
 | `fulcrum_cert_expiry_seconds` | gauge | 活体 | `domain` | 配置定 —— ⚠ **前提是 `on_demand` 未接线**，接线那一批要回来重算这一行（见下）|
 | `fulcrum_acme_issue_total` | counter | 活体 | `result` | `ok`/`fail`/`deferred` |
 | `fulcrum_build_info` | gauge | 活体 | `version` | 1 —— ⚠ 而它的**值**也恒为 1（标记 gauge，两个 1 不是一回事）|
@@ -569,7 +570,10 @@ UDP 上没有连接。那一格从 L4 UDP 的会话表 `sessions.len()` **派生
 ## 上游那两个族**按地址归并**
 
 同一个上游地址被多处引用时：`fulcrum_upstream_inflight` **求和**（它是计数，
-聚合只有这一种说得通的做法）· `fulcrum_upstream_healthy` 取**合取**（全都健康才是 1）。
+聚合只有这一种说得通的做法）· `fulcrum_upstream_healthy` 取**合取**（全都健康才是 1）·
+`fulcrum_upstream_passive_open` 取**析取**（任一处熔断就是 1）。
+★ ★ 后两条方向相反而**纪律相同**：都往「说得出故障」那一侧倒 —— `healthy` 的 1 是「好」，
+`passive_open` 的 1 是「坏」。⚠ 写反的表现是一条没配 `passive_fail` 的引用把一次真实的熔断盖掉。
 
 ★ ★ **取合取而不是析取**，是因为混配时一个没配 `health_uri` 的对象**恒为 1** ——
 析取会让它**把真实故障盖掉**，而盖掉之后那条 series 读起来完全正常。

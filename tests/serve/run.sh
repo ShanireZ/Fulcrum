@@ -29,7 +29,12 @@ TLS_PORT=${TLS_PORT:-9103}
 #   而本文件已经为「一条只认得一种写法的替换」栽过一次。
 SICK_PORT=${SICK_PORT:-9104}
 LATE_PORT=${LATE_PORT:-9105}
-# ★ 9106 / 9107 现在是空的（回落层删除后两个端口退场），AGENTS.md 的端口表已跟着改。
+# ★ ★ G136（被动熔断）用的上游：**业务路径就回 500**。
+#   ⚠ 它与 SICK_PORT 恰好相反，而这个对照就是两个特性的分界：
+#   SICK 是「探测路径坏、业务好」——只有**主动**健康检查看得见；
+#   BAD  是「业务就是坏的，探测路径无所谓」——只有**被动**熔断看得见。
+BAD_PORT=${BAD_PORT:-9106}
+# ★ 9107 现在是空的（回落层删除后退场），端口表已跟着改。
 # ★ 管理面走 Unix socket（G14），所以它**不占端口**，也不进上面那张端口表。
 ADMIN_SOCK="$WORK/admin.sock"
 
@@ -86,13 +91,13 @@ wait_port() {
 # ★ ★ 这一步不是形式。本仓库栽过一次：一个「基线探针」对着**上一个场景遗留的进程**
 #   报了绿。端口没清干净时，后面每一条断言测的都是别人的服务。
 echo "=== [0/4] 基线：端口未被占用 ==="
-for p in "$PROXY_PORT" "$UP_PORT" "$NAMED_PORT" "$TLS_PORT" "$SICK_PORT" "$LATE_PORT"; do
+for p in "$PROXY_PORT" "$UP_PORT" "$NAMED_PORT" "$TLS_PORT" "$SICK_PORT" "$LATE_PORT" "$BAD_PORT"; do
   if port_listening "$p"; then
     echo "SERVE TESTS FAILED: 端口 $p 已经被占用了 —— 先清掉再跑，否则下面测的是别人的服务。" >&2
     exit 1
   fi
 done
-ok "$PROXY_PORT / $UP_PORT / $NAMED_PORT / $TLS_PORT / $SICK_PORT / $LATE_PORT 都是空的"
+ok "$PROXY_PORT / $UP_PORT / $NAMED_PORT / $TLS_PORT / $SICK_PORT / $LATE_PORT / $BAD_PORT 都是空的"
 
 [ -x "$BIN" ] || {
   echo "SERVE TESTS FAILED: 找不到 $BIN（先跑 cargo build --release）" >&2
@@ -130,6 +135,18 @@ cat > "$WORK/sick.Fulcrumfile" <<'CONF'
 }
 CONF
 sed -i "s/:SICK_PORT/:$SICK_PORT/" "$WORK/sick.Fulcrumfile"
+
+# ★ ★ ★ G136 的「坏」上游：**业务路径就回 500**，进程活得好好的。
+#
+#   ⚠ 它是被动熔断这一节唯一的夹具，而它的价值在于**主动健康检查对它无能为力**：
+#   一个只探 `/health` 的实现会认为它健康（这里连 `health_uri` 都没配），
+#   而真实流量每一次都拿到 500。⇒ PLAN 给 `passive_fail` 的立身理由就是这一格。
+cat > "$WORK/bad.Fulcrumfile" <<'CONF'
+:BAD_PORT {
+    respond 500 "bad upstream"
+}
+CONF
+sed -i "s/:BAD_PORT/:$BAD_PORT/" "$WORK/bad.Fulcrumfile"
 
 # 「迟到」的上游：这份配置先写好，但**进程要到本场景中途才起**。
 # ★ ★ 一条值得继承的取值方法（缓存那一格用的也是它）：
@@ -240,6 +257,37 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
             health_timeout 1s
         }
     }
+    # ── ★ ★ ★ G136：被动熔断。**两条路指着同一对上游，只差一行 `passive_fail`。**
+    #
+    #   ⚠ ⚠ 这个对照本身就是反证，而且是**一趟里同时验真假两侧**那一种
+    #   （与 `tests/m0/unclaimed.sh` 同一手法）：
+    #   两条 `handle` 各有自己的 `ProxyTarget` ⇒ 各有自己的一组 `Upstream` 与熔断状态，
+    #   于是「打 10 个请求拿到几个 500」这一个读数在两条路上必须给出**不同**的答案。
+    #   ⛔ 少了 `/nopf`，一个「熔断根本没生效、只是恰好后面几个请求轮到好上游」的实现
+    #   照样能让 `/pf` 那一侧看起来对。
+    #   ★ 坏上游写在**前面**：轮询游标从 0 起，于是第 1 个请求就落在它身上。
+    handle /pf/* {
+        reverse_proxy 127.0.0.1:BAD_PORT 127.0.0.1:UP_PORT {
+            id pf
+            passive_fail 2
+            # ⚠ ⚠ 两个旋钮**显式写死 60s**，⛔ 不吃缺省（10s / 30s）：
+            #   本机并发实测比空载慢 3.75 倍，而缺省窗口只有 10s ——
+            #   若窗口在两次失败之间过期，计数会重来、这条判据就**周期性假红**。
+            #   ★ 一道假红过几次的门会被人忽略，那比它不存在更坏。
+            passive_window 60s
+            passive_cooldown 60s
+        }
+    }
+    handle /nopf/* {
+        # ★ ★ `tracing` 是**这份夹具里仅存的未接线能力**（G60：预留指令，不产生行为）。
+        #   ⚠ 它在这里的唯一用途是给下面那条「未接线公告」断言当锚点 ——
+        #   G136 把 `passive_fail` 接线之后，原来的锚点当场失效并**红给我看了**，
+        #   那是它在正常工作。⛔ 别因为「这行看起来没用」就删掉它。
+        tracing
+        reverse_proxy 127.0.0.1:BAD_PORT 127.0.0.1:UP_PORT {
+            id nopf
+        }
+    }
     # ★ ★ ★ **自环：一个装在容器里的 `reverse_proxy` 指回本进程自己的监听口。**
     #   ⚠ 有意**嵌在 `handle` arm 里**：`crates/fulcrum-runtime/tests/fallback.rs`
     #   那条单测用的是**扁平**站点（`:9999 { reverse_proxy 127.0.0.1:9999 }`），
@@ -282,7 +330,7 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
 
 # ⚠ `UP_PORT` 在两种前缀下都出现（`127.0.0.1:` 与 `localhost:`），两边都要替。
 #   ★ **一条只认得一种写法的替换，在另一种写法上等于没有替换。**
-sed -i "s/:PROXY_PORT/:$PROXY_PORT/; s/:UP_PORT/:$UP_PORT/g; s/:NAMED_PORT/:$NAMED_PORT/; s/:TLS_PORT/:$TLS_PORT/; s/:SICK_PORT/:$SICK_PORT/g; s/:LATE_PORT/:$LATE_PORT/g" \
+sed -i "s/:PROXY_PORT/:$PROXY_PORT/; s/:UP_PORT/:$UP_PORT/g; s/:NAMED_PORT/:$NAMED_PORT/; s/:TLS_PORT/:$TLS_PORT/; s/:SICK_PORT/:$SICK_PORT/g; s/:LATE_PORT/:$LATE_PORT/g; s/:BAD_PORT/:$BAD_PORT/g" \
   "$WORK/proxy.Fulcrumfile"
 # ★ 自研 file_server 的根 —— 内容在这里现造（M2 批 F）。
 #   ⚠ 必须是**绝对路径**（G91），`$WORK` 本来就是。
@@ -331,17 +379,18 @@ start() {
 }
 start upstream "$WORK/upstream.Fulcrumfile"
 start sick "$WORK/sick.Fulcrumfile"
+start bad "$WORK/bad.Fulcrumfile"
 # ⚠ `late` **故意不起** —— 它要到 [2c/4] 那一节才上场。
 start proxy "$WORK/proxy.Fulcrumfile"
 
-for p in "$UP_PORT" "$SICK_PORT" "$PROXY_PORT" "$NAMED_PORT" "$TLS_PORT"; do
+for p in "$UP_PORT" "$SICK_PORT" "$BAD_PORT" "$PROXY_PORT" "$NAMED_PORT" "$TLS_PORT"; do
   wait_port "$p" || {
     echo "SERVE TESTS FAILED: 端口 $p 起不来。日志：" >&2
     cat "$WORK"/*.log >&2
     exit 1
   }
 done
-ok "六个监听都起来了（迟到那个还没起，那是有意的）"
+ok "七个监听都起来了（迟到那个还没起，那是有意的）"
 # ★ ★ 一条「靠某个前提成立」的判据，要**把那个前提也测一遍** ——
 #   否则前提悄悄不成立的那天，判据仍然是绿的。
 
@@ -758,6 +807,71 @@ fi
 #    但 `/rw/` 那条没有）—— 一个「对所有上游都探一遍」的实现会去打
 #    一个用户从没说过的路径，而那在很多后端上是 404 ⇒ 全部被判死。
 expect_status "没配 health_uri 的路由照常转发" 200 "$(probe "$BASE/rw/anything")"
+
+# ── [2d/4] ★ ★ ★ 被动熔断（passive_fail，G136）────────────────────────────
+#
+# ⚠ ⚠ **这一节是 `passive_fail` 在真实请求路径上唯一的判据。**
+#   单测只证明了状态机与筛子对，⛔ 证明不了「服务层真的会去落账」——
+#   而落账那三处全在 `proxy_with` 里，是一条**只有真流量才走得到**的路。
+#   ★ 那正是本仓反复抓到的形状：一条从没被执行过的路径不会自己报错。
+#
+# ★ ★ 判据是**两条路的差值**，⛔ 不是任何一条的绝对值：
+#   `/pf` 与 `/nopf` 指着**同一对上游**（坏的在前、好的在后），只差一行 `passive_fail`。
+#   两条各有自己的 `ProxyTarget` ⇒ 各有自己的熔断状态，于是同一个读数
+#   （「10 个请求里几个 500」）在两条路上必须给出不同的答案。
+echo "=== [2d/4] 被动熔断（passive_fail）==="
+
+# 1) 对照组：没配 `passive_fail` ⇒ 轮询照常把一半请求送给坏上游。
+#    ⚠ 这一条是**反证**：它要是也只中 2 个，说明「差值」根本不来自被动熔断，
+#      而来自别的什么（比如坏上游其实没在回 500）。
+NOPF_500=$(burst_status "$BASE/nopf/x" 500 10)
+if [ "$NOPF_500" = "5" ]; then
+  ok "没配 passive_fail ⇒ 10 个请求里 5 个落到坏上游（轮询原样）"
+else
+  fail "对照组期望 5 个 500，实得 $NOPF_500 —— 坏上游没在回 500？还是轮询不是交替？"
+fi
+
+# 2) ★ ★ ★ 承重：配了 `passive_fail 2` ⇒ **只赔掉阈值那么多个请求**，之后全绿。
+#    ★ 这个数字本身就是这个特性的全部价值：枢衡**不换上游重试**，
+#      所以每一个打到坏上游的请求都是用户可见的错。
+#      「2」说明熔断在第 2 次失败之后真的把它摘出了调度。
+PF_500=$(burst_status "$BASE/pf/x" 500 10)
+if [ "$PF_500" = "2" ]; then
+  ok "★ ★ ★ 配了 passive_fail 2 ⇒ 10 个请求只赔掉 2 个，坏上游被摘出调度"
+else
+  fail "期望恰好 2 个 500（阈值），实得 $PF_500"
+  grep -iF 'passive_fail' "$WORK/proxy.log" | tail -5 >&2 || true
+fi
+
+# 3) ★ 两条路必须**真的不同** —— 把差值本身写成一条断言。
+#    ⚠ 少了它，一个「两边都只中 2 个」的巧合（比如坏上游中途死了）会让上面两条
+#      各自看起来都对，而它们其实在描述同一件与熔断无关的事。
+if [ "$NOPF_500" != "$PF_500" ]; then
+  ok "★ 同一对上游，只差一行 passive_fail ⇒ 读数不同（$NOPF_500 vs $PF_500）"
+else
+  fail "两条路读数相同（都是 $NOPF_500）—— 那一行 passive_fail 没起任何作用"
+fi
+
+# 4) 日志要说清楚**谁**被熔断了。
+#    ⚠ 与健康检查那条同一理由：只看状态码的话，运维分不出「上游挂了」
+#      「被健康检查摘了」「被被动熔断摘了」——三种的处置完全不同。
+if grep -F '被动熔断' "$WORK/proxy.log" | grep -qF "$BAD_PORT"; then
+  ok "日志点名了被熔断的那个上游"
+else
+  fail "日志里没有「被动熔断 … $BAD_PORT」那一行"
+  grep -iF 'passive' "$WORK/proxy.log" | head -5 >&2 || true
+fi
+
+# 5) ⚠ 反方向：**没配 passive_fail 的那条路一个字都不许变**。
+#    ★ 它守的是 G136 那条「不写就是完全关闭」——一个「顺手对所有 reverse_proxy
+#      都开一遍」的实现会让这条也只中 2 个，而上面第 1 条已经会红；
+#      这里再单独确认它此刻**仍然**把请求送给坏上游（熔断没有外溢到别的目标）。
+NOPF_AGAIN=$(burst_status "$BASE/nopf/x" 500 4)
+if [ "$NOPF_AGAIN" = "2" ]; then
+  ok "★ 熔断不外溢：没配的那条路仍然照常轮询（4 个里 2 个 500）"
+else
+  fail "没配 passive_fail 的那条路读数变了（4 个里 $NOPF_AGAIN 个 500）—— 熔断外溢到别的 ProxyTarget 了？"
+fi
 
 # ── [3/4] 管理面：全量原子 load（G8）与访问控制（G14）──────────────────────
 #
@@ -1518,16 +1632,20 @@ UNWIRED_LINES=$(grep -F '这一批还没接线' "$WORK/proxy.log" || true)
 if [ -n "$UNWIRED_LINES" ]; then
   ok "装载日志有未接线能力的公告"
 else
-  fail "装载日志里一条未接线公告都没有（而夹具里写了 passive_fail）"
+  fail "装载日志里一条未接线公告都没有（而夹具里写了 tracing）"
 fi
-if printf '%s' "$UNWIRED_LINES" | grep -qF 'passive_fail'; then
-  ok "公告点名了 passive_fail（它确实还没接线）"
+# ⚠ ⚠ **锚点在 G136 又换了一次**（这是第三次：批 10 `dns_refresh`、批 11 `health_uri`、
+#   本次 `passive_fail`），三次都是当场红给我看的。⇒ 现在锚在 `tracing` 上，
+#   而夹具里那一行 `tracing` 就是为它写的。
+if printf '%s' "$UNWIRED_LINES" | grep -qF 'tracing'; then
+  ok "公告点名了 tracing（它确实还没接线）"
 else
-  fail "公告里没有 passive_fail：$UNWIRED_LINES"
+  fail "公告里没有 tracing：$UNWIRED_LINES"
 fi
 # ★ ★ 反向：这几条**已经接线**了，公告里再出现就是假警告。
 STALE=""
-for cap in health_uri dns_refresh admin acme; do
+# ★ G136：`passive_fail` 进这张「已接线」清单 —— 它此后再出现在公告里就是假警告。
+for cap in health_uri dns_refresh admin acme passive_fail; do
   if printf '%s' "$UNWIRED_LINES" | grep -qF "$cap"; then
     STALE="$STALE $cap"
   fi

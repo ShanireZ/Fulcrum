@@ -65,10 +65,10 @@ pub const UNWIRED: &[(&str, &str)] = &[
         "握手期按 SNI 现签（G15）—— 欠 `ask` 端点、并发闸门与失败缓存",
     ),
     ("tracing", "预留指令，M1 不产生行为（G60）"),
-    (
-        "passive_fail",
-        "被动熔断不在 M1 清单上（G17 里它与健康检查是两件事）；等 M2 排期",
-    ),
+    // ★ ★ **`passive_fail` 在 G136 销号**：筛子第四条（`Upstream::passive_ok`）真的挡得住，
+    //   落账在 `fulcrum-server` 的收尾处。⚠ 与它一起删掉的还有 `dsl-reference.md`
+    //   那句未接线清单里的 `passive_fail`，以及下面 `used.insert("passive_fail")` 那一格 ——
+    //   `tests/unwired_contract.rs` 两个方向都钉着，少改一处就红。
     // ★ ★ **`weight` 在 M2 批 N 任务 2 销号**：四种 `lb_policy` 全部按累积权重挑
     //   （[`weighted_slot`] / [`less_loaded`]），于是它不再是「DSL 认得、运行时不做」。
     //   ⚠ 与它一起删掉的还有文档那句未接线清单里的 `weight`（`tests/unwired_contract.rs`
@@ -103,6 +103,72 @@ impl LbPolicy {
 /// ⇒ 一个解析不了的域名上游会让那个站点**每个请求 panic 一次**。
 /// 解析由 [`resolve_upstreams`] 在启动时、全量 load 时与后台任务里做（后者即 `dns_refresh`）；
 /// 解析不出来的上游 [`ProxyTarget::pick`] 跳过，全都跳过就回干净的 502。
+/// 进程启动那一刻。★ ★ 被动熔断的所有时间判断都从这里起算。
+///
+/// ⚠ ⚠ **⛔ 不用系统时钟（`SystemTime` / `UNIX_EPOCH`）**：运维校一次时间、或者一次 NTP
+/// 跳变，就会让一个熔断中的上游**永久卡在熔断里**（`open_until` 被推到很远的未来），
+/// 或者反过来**瞬间全部解除**。两种都不报错、都没有症状指向时钟。
+/// ⇒ 用单调时钟，它对系统时间的改动免疫。
+static PASSIVE_EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+/// 从进程启动起算的毫秒数，**恒 ≥ 1**。★ 只在被动熔断这一族用。
+///
+/// ⚠ ⚠ ⚠ **那个 `+ 1` 是判据本身，不是凑数。**
+/// [`PassiveState::open_until_ms`] 拿 **`0` 当「没在熔断」的哨兵**，而进程刚起来时
+/// `elapsed()` 真的会返回 **0 毫秒** ⇒ 若此刻发生一次冷却为 0 的熔断，
+/// `open_until` 正好落在哨兵上，**熔断当场被读成「没熔断」**。
+/// ★ 这不是推理：写这一族时它当场被 `tests/passive.rs` 那两条并发/半开判据逮住了
+/// （`assertion failed: u.passive_open()`）。
+/// ⇒ 让时间戳恒 ≥ 1，`0` 就**只可能**是哨兵。
+fn passive_now_ms() -> u64 {
+    (PASSIVE_EPOCH.elapsed().as_millis() as u64).saturating_add(1)
+}
+
+/// 被动熔断的**策略**（每条 `reverse_proxy` 一份，G136）。
+///
+/// ★ 它在 [`ProxyTarget`] 上而状态在 [`Upstream`] 上，因为这两件事的粒度不同：
+/// 阈值是**这条 `reverse_proxy` 的配置**，而失败计数是**每个上游各自的**。
+#[derive(Debug, Clone, Copy)]
+pub struct PassivePolicy {
+    /// 窗口内失败几次就熔断。
+    pub threshold: u32,
+    /// 数失败的窗口。
+    pub window_ms: u64,
+    /// 熔断后歇多久，然后放**一个**半开探针。
+    pub cooldown_ms: u64,
+}
+
+/// 一个上游的被动熔断**状态**（G136）。
+///
+/// ★ ★ **它与 [`Upstream::healthy`] 各占一格、互不覆盖**，这是 G136 的承重决策：
+/// 主动健康检查探的是一条专门的 `health_uri`，而被动熔断看的是**真实流量**。
+/// 让主动探测成功去清掉被动熔断，等于在「`/health` 回 200 而真实业务在 500」
+/// 这个**唯一让被动熔断存在的场景**上把它关掉。
+///
+/// ⚠ 全部用原子量、⛔ 不上锁：它读在 [`ProxyTarget::pick_index_by`] 这条热路径上。
+#[derive(Debug, Default)]
+pub struct PassiveState {
+    /// 当前窗口内的失败数。
+    fails: std::sync::atomic::AtomicU32,
+    /// 当前窗口的起点（`passive_now_ms`）。
+    window_start_ms: std::sync::atomic::AtomicU64,
+    /// 熔断到什么时候为止。**`0` = 没在熔断**。
+    ///
+    /// ★ ★ ★ **半开的「恰好放一个」就落在这一个原子量上**：冷却期满之后，
+    /// 第一个把它从 `until` CAS 成 `now + cooldown` 的请求当探针，其余读到新值照旧被挡。
+    /// ⛔ 换成「到期就全放」的话，一个仍然坏着的上游每个冷却周期要收走 `threshold` 个
+    /// 用户可见的 5xx —— 本仓**不换上游重试**，那些全是真错。
+    ///
+    /// ⚠ ⚠ **为什么不另设一个 `probe_taken` 布尔：那会死锁。** 令牌是在**筛选**时抢的，
+    /// 而被筛进来的上游未必被 `lb_policy` 选中 ⇒ 没被选中的那个令牌**再也没人还**，
+    /// 该上游从此永久出局，且没有任何症状指向这里。
+    /// ★ 对 `open_until` 本身 CAS 就没有这个形状：探针资格丢了也只是**多等一个冷却周期**。
+    /// ⚠ 代价写在明处：同一瞬间有多个上游同时到期时，它们会各消耗一次探针资格，
+    /// 而只有一个真的收到请求 —— 后果是那几个多等一轮，⛔ 不是卡死。
+    open_until_ms: std::sync::atomic::AtomicU64,
+}
+
 #[derive(Debug)]
 pub struct Upstream {
     /// **归一化之后**的 `host:port`（[`normalize_upstream`]：`backend` → `backend:80`）。
@@ -144,6 +210,12 @@ pub struct Upstream {
     /// ⚠ 代价：**刚启动的那一个探测周期内 `health_uri` 等于没有**。
     /// ★ 没配 `health_uri` 的目标永不被探测，这一格恒为 `true`。
     healthy: std::sync::atomic::AtomicBool,
+    /// 被动熔断的状态（**G136**）。★ 与上面 `healthy` **各占一格、互不覆盖** ——
+    /// 理由见 [`PassiveState`]：让主动探测清掉被动熔断，等于在唯一需要它的场景上关掉它。
+    ///
+    /// ⚠ 没配 `passive_fail` 时这一格**一次都不会被写**（[`Upstream::passive_ok`] 第一行
+    /// 就按策略是不是 `None` 短路）⇒ 既有配置的行为一个字都不变。
+    passive: PassiveState,
     /// **临时覆盖层里属于这个上游的那一格**（**M2 批 N 任务 3**，G18 / 裁决 R7）。
     ///
     /// ★ ★ ★ 它**就是**登记处 [`OverrideLayer`] 里按
@@ -166,6 +238,94 @@ pub struct Upstream {
 }
 
 impl Upstream {
+    /// 被动熔断这一格放不放行 —— [`ProxyTarget::pick_index_by`] 筛子的**第四条**（G136）。
+    ///
+    /// ⚠ ⚠ **它有副作用，而且只在恰好一种状态下有**：冷却期满时，抢到探针资格的那一次
+    /// 调用会把 `open_until` 重新上满。⇒ [`ProxyTarget::pick_index_by`] 因此**不再是**
+    /// 一个纯函数。这一条写在这里，是因为读筛子那一行的人看不见它。
+    pub fn passive_ok(&self, policy: Option<&PassivePolicy>) -> bool {
+        // ★ 没配 `passive_fail` ⇒ 恒放行，且下面一个原子量都不碰（G136：不写就是关闭）。
+        let Some(p) = policy else {
+            return true;
+        };
+        let until = self.passive.open_until_ms.load(Ordering::Acquire);
+        if until == 0 {
+            return true; // 闭合
+        }
+        let now = passive_now_ms();
+        if now < until {
+            return false; // 熔断中
+        }
+        // 冷却期满：谁 CAS 成功谁当探针，其余读到新值继续被挡。
+        self.passive
+            .open_until_ms
+            .compare_exchange(
+                until,
+                now.saturating_add(p.cooldown_ms),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// 这个上游此刻是不是被被动熔断摘着（`/stats` 与指标用）。
+    pub fn passive_open(&self) -> bool {
+        self.passive.open_until_ms.load(Ordering::Relaxed) != 0
+    }
+
+    /// 当前窗口内已记了几次失败（`/stats` 用）。
+    pub fn passive_fails(&self) -> u32 {
+        self.passive.fails.load(Ordering::Relaxed)
+    }
+
+    /// 记一次**成功**。返回 `true` = 它刚从熔断里回来（调用方据此打一行日志）。
+    pub fn record_passive_success(&self, policy: Option<&PassivePolicy>) -> bool {
+        if policy.is_none() {
+            return false;
+        }
+        self.passive.fails.store(0, Ordering::Relaxed);
+        self.passive.open_until_ms.swap(0, Ordering::AcqRel) != 0
+    }
+
+    /// 记一次**失败**。返回 `true` = 这一次把它熔断了（调用方据此打一行日志）。
+    ///
+    /// ⚠ 计数是**近似**的：并发失败之间没有互斥，同一瞬间的两次失败可能都读到同一个
+    /// 窗口起点。⛔ 有意不为它加锁 —— 这条路在数据面收尾处，而「阈值 5 实际在 4 或 6 触发」
+    /// 对熔断这件事无害，一把锁对吞吐有害。★ 说出来，不假装它是精确的。
+    pub fn record_passive_failure(&self, policy: Option<&PassivePolicy>) -> bool {
+        let Some(p) = policy else {
+            return false;
+        };
+        let now = passive_now_ms();
+        // 已经在熔断里（含刚被 `passive_ok` 放出去的那个探针）⇒ 重新上满冷却。
+        if self.passive.open_until_ms.load(Ordering::Acquire) != 0 {
+            self.passive
+                .open_until_ms
+                .store(now.saturating_add(p.cooldown_ms), Ordering::Release);
+            return false; // ⚠ 不是「这一次熔断的」——它本来就断着
+        }
+        // ★ `fails == 0` 就是「当前没有窗口」。⛔ 不拿 `window_start == 0` 当判据：
+        //   进程启动后第一毫秒内它是一个合法的窗口起点。
+        let start = self.passive.window_start_ms.load(Ordering::Relaxed);
+        let n = if self.passive.fails.load(Ordering::Relaxed) == 0
+            || now.saturating_sub(start) > p.window_ms
+        {
+            self.passive.window_start_ms.store(now, Ordering::Relaxed);
+            self.passive.fails.store(1, Ordering::Relaxed);
+            1
+        } else {
+            self.passive.fails.fetch_add(1, Ordering::Relaxed) + 1
+        };
+        if n >= p.threshold {
+            self.passive.fails.store(0, Ordering::Relaxed);
+            self.passive
+                .open_until_ms
+                .store(now.saturating_add(p.cooldown_ms), Ordering::Release);
+            return true;
+        }
+        false
+    }
+
     pub fn inflight(&self) -> usize {
         self.inflight.load(Ordering::Relaxed)
     }
@@ -293,6 +453,10 @@ pub struct ProxyTarget {
     pub tls_insecure_skip_verify: bool,
     /// 主动健康检查。`None` = 没配 `health_uri`，这一组上游永远不被探测。
     pub health: Option<HealthPolicy>,
+    /// 被动熔断策略（**G136**）。**`None` = 这条 `reverse_proxy` 不做被动熔断。**
+    ///
+    /// ★ 它与 `health` 有意是两个 `Option`：两套判定各说各的，⛔ 互不覆盖。
+    pub passive: Option<PassivePolicy>,
     /// 上一次探测这一组上游的时刻。`None` = 还没探过。
     ///
     /// ★ 它存在**目标**上而不是全局，是为了让每条 `reverse_proxy` 各自的
@@ -465,9 +629,12 @@ impl ProxyTarget {
 
     /// 选一个上游。返回 `None` = **一个可用的都没有**，调用方回 502。
     ///
-    /// 筛子有两条：地址解析得出来，**且**主动健康检查没把它判死（见 [`HealthPolicy`]）。
-    /// ⚠ **不含**被动熔断（`passive_fail`，还在 [`UNWIRED`] 里）：一个探测路径回 200、
-    /// 而真实业务在 500 的上游，这里照样会选中它。
+    /// 筛子有四条，见 [`pick_index_by`](Self::pick_index_by)：地址解析得出来 ·
+    /// 主动健康检查没判死（[`HealthPolicy`]）· 运维没在覆盖层摘掉 ·
+    /// **被动熔断没摘掉**（[`PassivePolicy`]，G136）。
+    ///
+    /// ⚠ ⚠ 第四条让本函数**不再是纯函数**：冷却期满时它会抢一次半开探针资格
+    /// （见 [`Upstream::passive_ok`]）。⛔ 别把它当成一个可以随便多调几次的查询。
     pub fn pick(&self, req: &RequestCtx<'_>) -> Option<&Upstream> {
         self.pick_by(req.remote_ip)
     }
@@ -494,10 +661,16 @@ impl ProxyTarget {
         //   ⚠ 顺序反过来（先挑再看能不能用）会让一个用不了的上游把请求吞掉——
         //   而它在轮询里占着一格，症状是「N 个上游里每 N 个请求坏一个」。
         //
-        //   三条：① 域名解析得出来（批 10）；② 健康检查没判死（批 11）；
-        //        ③ ★ 运维没在临时覆盖层里把它摘掉（**批 N 任务 3**，G18 / 裁决 R7）。
+        //   四条：① 域名解析得出来（批 10）；② 健康检查没判死（批 11）；
+        //        ③ ★ 运维没在临时覆盖层里把它摘掉（**批 N 任务 3**，G18 / 裁决 R7）；
+        //        ④ ★ ★ 被动熔断没把它摘掉（**G136**）。
         //   ★ 没配 `health_uri` 时 `is_healthy()` 恒 true，所以第二条对它是空操作；
-        //     没设过覆盖时 `is_disabled()` 恒 false，第三条同理。
+        //     没设过覆盖时 `is_disabled()` 恒 false，第三条同理；
+        //     没配 `passive_fail` 时 `passive_ok()` 恒 true，第四条同理。
+        //   ⚠ ⚠ **第四条有副作用，而前三条没有**：冷却期满时它会抢一次半开探针资格
+        //     （见 `Upstream::passive_ok`）⇒ **本函数因此不是纯函数**。
+        //     ★ 它放在**最后**：`&&` 短路 ⇒ 一个解析不出地址、或已被主动检查判死、
+        //     或被运维摘掉的上游，不会白白消耗掉自己的探针资格。
         //   ⚠ ⚠ 第三条**必须在这里**、与前两条同一个筛子上：`disable` 要让那个上游
         //     **连它的权重一起出局**（下面那段注释说的就是这件事）。挂在别处的话，
         //     「按 6:2:2 分而那个 6 被摘了」会让 60% 的请求落空。
@@ -505,7 +678,12 @@ impl ProxyTarget {
             .upstreams
             .iter()
             .enumerate()
-            .filter(|(_, u)| !u.dial_candidates().is_empty() && u.is_healthy() && !u.is_disabled())
+            .filter(|(_, u)| {
+                !u.dial_candidates().is_empty()
+                    && u.is_healthy()
+                    && !u.is_disabled()
+                    && u.passive_ok(self.passive.as_ref())
+            })
             .map(|(i, _)| i)
             .collect();
         // ⚠ 一个都不剩就返回 None —— 调用方会回 `defaults.all_upstreams_down`（502）。
@@ -2388,11 +2566,11 @@ impl Runtime {
                     StepBody::Tracing => {
                         used.insert("tracing");
                     }
-                    StepBody::ReverseProxy { passive, .. } => {
+                    StepBody::ReverseProxy { .. } => {
                         // ★ 批 11：`health_uri` 接上了，这一条删掉。
-                        if passive.fail_threshold.is_some() {
-                            used.insert("passive_fail");
-                        }
+                        // ★ ★ G136：`passive_fail` 也接上了 ⇒ 这一格连同 `UNWIRED` 里那一行
+                        //   一起删掉。⚠ 留着就是一条**假警告**，而假警告会训练人忽略整张表
+                        //   （`dns_refresh` / `encode` / `health_uri` / `weight` 都是这么翻的方向）。
                         // ★ ★ 批 N 任务 2：`weight` **接线了**（四种 `lb_policy` 全部按累积
                         //   权重挑）⇒ 这里原先那一格连同 `UNWIRED` 里那一行一起删掉。
                         //   ⚠ 留着就是一条假警告，而假警告会训练人忽略整张表
@@ -2815,6 +2993,7 @@ fn build_step(
             upstreams,
             lb_policy,
             health,
+            passive,
             header_up,
             header_down,
             transport,
@@ -2903,6 +3082,9 @@ fn build_step(
                             inflight: AtomicUsize::new(0),
                             // ★ 初值健康。理由见 `Upstream::healthy` 上那张表。
                             healthy: std::sync::atomic::AtomicBool::new(true),
+                            // ★ G136：初值闭合（`open_until = 0`）。没配 `passive_fail`
+                            //   的话这一格一次都不会被写。
+                            passive: PassiveState::default(),
                             // ⚠ ⚠ **这里放的是一格私有的占位格子**，真正那一格由
                             //   `Runtime::attach_overrides` 在图建完之后按键挂上来 ——
                             //   本函数拿不到站点名（它只在 `Runtime::build` 的循环里）。
@@ -2952,6 +3134,13 @@ fn build_step(
                 tls: transport == "https",
                 tls_insecure_skip_verify: *tls_insecure_skip_verify,
                 health,
+                // ★ ★ G136：`fail_threshold` 是 `None` ⇒ 整条策略是 `None`（不写就是关闭）。
+                //   ⚠ 窗口与冷却在**配置层**就已经落实成具体数字，这里⛔ 不再写一份缺省。
+                passive: passive.fail_threshold.map(|threshold| PassivePolicy {
+                    threshold,
+                    window_ms: passive.window_ms,
+                    cooldown_ms: passive.cooldown_ms,
+                }),
                 last_probe: std::sync::Mutex::new(None),
                 cursor: AtomicUsize::new(0),
                 seed: RandomState::new().hash_one("fulcrum-lb"),
@@ -3116,6 +3305,11 @@ fn build_l4_target(
                     resolved: std::sync::RwLock::new(literal),
                     inflight: AtomicUsize::new(0),
                     healthy: std::sync::atomic::AtomicBool::new(true),
+                    // ★ ★ G136：L4 这一格**恒为初值**。`l4` 块里没有 `passive_fail` 的位置
+                    //   ⇒ 那条路上 `ProxyTarget::passive` 恒为 `None`，`passive_ok()` 恒 true。
+                    //   ⚠ 但 L4 **共享同一个筛子**：站点那条路把某个上游熔断了，
+                    //   那是另一个 `ProxyTarget`、另一组 `Upstream` —— 两边不共用对象。
+                    passive: PassiveState::default(),
                     // ★ ★ **L4 这一格是最终值，永远不会被挂上别的**（批 N 任务 3，S6）：
                     //   `attach_overrides` 只走 `sites` 那条路，而 L4 的上游没有站点 ——
                     //   按裁决 R6 的键根本寻址不到它们。⇒ 这条路上 `is_disabled()` 恒 false、
@@ -3137,6 +3331,10 @@ fn build_l4_target(
         //     由 `tests/l4.rs` 一条判据钉着。
         id: String::new(),
         upstreams: ups,
+        // ★ ★ G136：**L4 那条路上恒为 `None`** —— `l4` 块里没有 `passive_fail` 的位置。
+        //   ⚠ 给一个用户写不出来的旋钮留一格默认值，与给它留接口是两回事
+        //   （与上面 `weight` 恒为 1 那条同一理由）。
+        passive: None,
         // ★ M2 只给轮询：DSL 的 `l4` 块里**没有 `lb_policy` 的位置**（dsl-reference §4.5），
         //   而给一个用户写不出来的旋钮留接口，等于假装它可配。
         policy: LbPolicy::RoundRobin,

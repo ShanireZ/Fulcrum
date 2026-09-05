@@ -897,6 +897,30 @@ impl FulcrumApp {
     /// 一个「带缓存的转发」与一个「不带缓存的转发」若是两份代码，
     /// 它们对 `header_up` / `rewrite` / 候选地址回退的处理迟早会分家，
     /// ⚠ 而现场表现是「配了缓存之后某个头就没了」。
+    /// 把一次上游结果记进被动熔断，并在**状态翻面**时各打一行（**G136**）。
+    ///
+    /// ★ ★ **只有这一份推导**：三个落账点（连不上 / 读不到响应头 / 上游真的回了 5xx）
+    /// 全走它。⚠ 各写一遍的失效形态是「某一条路上的失败不算数」——
+    /// 而那条路恰好是最常见的那条时，整个特性就等于不存在，且没有任何症状。
+    ///
+    /// ⚠ ⚠ **只在翻面时打日志，⛔ 不是每次失败一行**：一个正在故障的上游每秒会产生
+    /// 成百上千次失败，逐次打日志会把现场淹掉 —— 而现场正是那时候最需要读的东西。
+    fn record_passive(target: &ProxyTarget, up: &fulcrum_runtime::Upstream, ok: bool) {
+        if ok {
+            if up.record_passive_success(target.passive.as_ref()) {
+                info!(
+                    "上游 {} 恢复：半开探针成功，重新进调度（passive_fail）",
+                    up.addr
+                );
+            }
+        } else if up.record_passive_failure(target.passive.as_ref()) {
+            warn!(
+                "上游 {} 被动熔断：窗口内失败达到阈值，暂时摘出调度（passive_fail）",
+                up.addr
+            );
+        }
+    }
+
     async fn proxy_with(
         &self,
         rt: &Runtime,
@@ -964,6 +988,12 @@ impl FulcrumApp {
                 }
                 Err(e) => last_err = Some(format!("{dial}：{e}")),
             }
+        }
+        // ★ G136 落账点①：**一个候选地址都没连上** —— 这是被动熔断要数的第一类失败。
+        //   ⚠ 它记的是「连不上」这件事本身，⛔ 不是下面那个合成出来的 502：
+        //   枢衡自己合成的 5xx 一律不落账（否则一次全站故障会把每个上游再熔一遍）。
+        if got.is_none() {
+            Self::record_passive(target, up, false);
         }
         let (Some((mut upstream, reused)), Some(peer)) = (got, used_peer) else {
             error!(
@@ -1038,16 +1068,29 @@ impl FulcrumApp {
         }
 
         // ── 响应头 ────────────────────────────────────────────────────────
+        // ★ G136 落账点②：连上了、但**拿不回一个响应头**（超时、对端半路关了、协议错）。
+        //   ⚠ 它与①分开是有意的：①说的是「拨不通」，②说的是「拨通了但它不干活」，
+        //   而后者恰恰是主动健康检查最容易漏掉的一类。
         if let Err(e) = upstream.read_response_header().await {
             error!("读上游响应头失败：{e}");
+            Self::record_passive(target, up, false);
             return Err(rt.defaults.all_upstreams_down);
         }
         let Some(uresp) = upstream.response_header() else {
             error!("上游没给响应头");
+            Self::record_passive(target, up, false);
             return Err(rt.defaults.all_upstreams_down);
         };
         let mut dresp = uresp.clone();
         let status = dresp.status.as_u16();
+
+        // ★ ★ ★ G136 落账点③：**上游真的发回来的**状态码。这一条是这个特性的立身之本 ——
+        //   一个 `/health` 回 200 而真实业务在 500 的上游，主动健康检查看不出来，只有它看得见。
+        //   ⚠ ⚠ 判据是 `>= 500`，而这里拿到的是**上游发回来的那一个**（`uresp`），
+        //   ⛔ 不是枢衡合成的那些（`all_upstreams_down` / `no_route_match` / 错误页）——
+        //   那些根本不经过这一行。★ 这一点是「不自我强化」那条设计的**执行者**：
+        //   合成的 5xx 若也落账，一次全站故障会把每个上游轮流再熔一遍。
+        Self::record_passive(target, up, status < 500);
 
         // ── ★ ★ 重验证命中：304 ⇒ **只更新元数据，不动 body**（G83 那条理由的内存版）
         //

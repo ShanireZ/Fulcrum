@@ -1002,10 +1002,11 @@ impl Cx<'_> {
         let mut lb_policy = "round_robin".to_string();
         let mut health = HealthCheck::default();
         let mut dns_refresh_ms = 30_000u64;
-        let mut passive = Passive {
-            fail_threshold: None,
-            window_ms: None,
-        };
+        let mut passive = Passive::default();
+        // ★ G136：`passive_window` / `passive_cooldown` 写了没有 —— ⛔ 不能拿「值 != 缺省」当判据：
+        //   `passive_window 10s` 是合法写法，而它与「没写过」在产物上完全同形
+        //   （与 `weight` 那处 `weighted` 集合同一条理由）。
+        let mut passive_knob: Option<(&'static str, Span)> = None;
         let mut header_up: Vec<HeaderOp> = Vec::new();
         let mut header_down: Vec<HeaderOp> = Vec::new();
         let mut transport = "http".to_string();
@@ -1051,8 +1052,45 @@ impl Cx<'_> {
                     "dns_refresh" => {
                         dns_refresh_ms = parse_duration_ms(&first).unwrap_or(dns_refresh_ms)
                     }
-                    "passive_fail" => passive.fail_threshold = first.parse().ok(),
-                    "passive_window" => passive.window_ms = parse_duration_ms(&first),
+                    // ★ ★ G136：取值域在这里判，⛔ 不回落成默认值。
+                    //   ⚠ ⚠ 原文是 `first.parse().ok()` —— `passive_fail 五` 静默变 `None`，
+                    //   而 `None` 的语义恰好是**整个特性关掉**：一个手滑的值让熔断悄悄消失。
+                    "passive_fail" => match first.parse::<u32>() {
+                        Ok(v) if (MIN_PASSIVE_FAIL..=MAX_PASSIVE_FAIL).contains(&v) => {
+                            passive.fail_threshold = Some(v)
+                        }
+                        _ => {
+                            let span = sub.args.first().map(|a| a.span).unwrap_or(sub.name_span);
+                            self.diags.push(
+                                Diagnostic::error(
+                                    DiagCode::BAD_PASSIVE_FAIL,
+                                    span,
+                                    format!(
+                                        "`passive_fail` 要一个 {MIN_PASSIVE_FAIL}–{MAX_PASSIVE_FAIL} 的整数，`{first}` 不是"
+                                    ),
+                                )
+                                .help(
+                                    "要关掉被动熔断就**整行删掉** ——                                      `passive_fail 0` 不是关闭的写法（那会是第二条路，两条路迟早分家）",
+                                ),
+                            );
+                        }
+                    },
+                    "passive_window" => {
+                        passive.window_ms = parse_duration_ms(&first).unwrap_or(passive.window_ms);
+                        passive_knob.get_or_insert((
+                            "passive_window",
+                            sub.args.first().map(|a| a.span).unwrap_or(sub.name_span),
+                        ));
+                    }
+                    // ★ G136 新增：熔断后歇多久再放一个半开探针。
+                    "passive_cooldown" => {
+                        passive.cooldown_ms =
+                            parse_duration_ms(&first).unwrap_or(passive.cooldown_ms);
+                        passive_knob.get_or_insert((
+                            "passive_cooldown",
+                            sub.args.first().map(|a| a.span).unwrap_or(sub.name_span),
+                        ));
+                    }
                     "header_up" => {
                         if let Some(op) = self.header_op(&sub.args, ctx) {
                             header_up.push(op);
@@ -1089,6 +1127,24 @@ impl Cx<'_> {
                     _ => {}
                 }
             }
+        }
+
+        // ★ ★ G136：旋钮写了、而 `passive_fail` 没写 ⇒ 那两行**一个都不生效**。
+        //   ⚠ 必须说出来：它与「正在生效」在配置里长得一模一样，沉默就是让人以为它生效了
+        //   （与 `METRICS_UNGUARDED` 同一条纪律）。★ 但**从来不是** error ——
+        //   判红会把「先把旋钮调好、待会儿再开」这种正当的分步操作一起挡掉。
+        if let (None, Some((knob, span))) = (passive.fail_threshold, passive_knob) {
+            self.diags.push(
+                Diagnostic::warning(
+                    DiagCode::PASSIVE_WITHOUT_THRESHOLD,
+                    span,
+                    format!("`{knob}` 此刻一步都不做：这条 `reverse_proxy` 没写 `passive_fail`"),
+                )
+                .label("不写 `passive_fail` 就完全不做被动熔断，这个旋钮没有消费者")
+                .help(
+                    "要开启就补一行 `passive_fail <次数>`；只是想先调好参数的话，这条警告可以留着",
+                ),
+            );
         }
 
         StepBody::ReverseProxy {

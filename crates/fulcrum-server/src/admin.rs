@@ -124,6 +124,16 @@ struct UpstreamStat {
     addr: String,
     inflight: usize,
     healthy: bool,
+    /// 被动熔断此刻把它摘着吗（**G136**）。
+    ///
+    /// ★ ★ 它与 `healthy` **各占一格**，因为那是两套互不覆盖的判定 ——
+    /// ⚠ 少了这一格，运维会看到一个 `healthy: true` 的上游收不到流量，
+    /// 而 `/stats` 里没有任何一个字段说得出为什么。
+    passive_open: bool,
+    /// 当前窗口内已经记了几次失败（**G136**）。
+    ///
+    /// ★ 它让「快熔断了」这件事在熔断**之前**就看得见。
+    passive_fails: u32,
 }
 
 /// 覆盖层清单的一项（G18「永远可见」）。★ 三格键**原样**列出，不加工——
@@ -910,6 +920,8 @@ impl AdminApp {
                     addr: up.addr.clone(),
                     inflight: up.inflight(),
                     healthy: up.is_healthy(),
+                    passive_open: up.passive_open(),
+                    passive_fails: up.passive_fails(),
                 });
             }
         }

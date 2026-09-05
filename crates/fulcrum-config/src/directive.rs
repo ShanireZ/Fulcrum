@@ -276,8 +276,15 @@ pub const REVERSE_PROXY_SUBS: &[SubSpec] = &[
     sub("health_status", 1, 1, ArgType::StatusPattern),
     // ★ 这一条直接消灭 nginx OSS 那个经典事故源：上游域名只在启动时解析一次。
     sub("dns_refresh", 1, 1, ArgType::Duration),
+    // ⚠ `passive_fail` 的 `arg_type` 是 `Word` 而不是某种「整数」：`check_sub_args` 只做
+    //   粗粒度的形状检查，取值域（`[1, 65535]`，含「不是数字」）在 `compile.rs` 里判，
+    //   报 `FUL-DSL-0044`。★ 与 `weight` 那一条同一处置。
     sub("passive_fail", 1, 1, ArgType::Word),
     sub("passive_window", 1, 1, ArgType::Duration),
+    // ★ ★ G136 新增：熔断之后歇多久再放**一个**半开探针。
+    //   ⚠ 它与 `passive_window` 有意是两个旋钮，⛔ 不是 nginx `fail_timeout` 那样一格两用 ——
+    //   窗口问「失败要多密才算一个模式」，冷却问「给上游多久缓过来」。
+    sub("passive_cooldown", 1, 1, ArgType::Duration),
     // ★ ★ **M2 批 N**：`weight <上游地址> <正整数>`，可写多行，没写的上游权重是 1。
     //   ⚠ 取「地址 + 值」而不是 Caddy 那种位置式（`lb_policy weighted_round_robin 3 1`）：
     //   位置式一改地址的书写顺序就**静默换了权重**，而配置里一个字都看不出问题。

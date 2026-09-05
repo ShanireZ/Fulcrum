@@ -25,7 +25,6 @@ const EXPECTED: &[&str] = &[
     "tls_internal",
     "on_demand",
     "tracing",
-    "passive_fail",
     // ★ ★ **`weight` 在 M2 批 N 任务 2 销号**：它在任务 1 里进来（DSL 与结构化模型），
     //   在任务 2 里离开（四种 `lb_policy` 全部按累积权重挑）。⚠ 两头都由这张表挡着。
     // ★ ★ **能力做完就销号**（`encode` / `log` / `l4` / `proxy_protocol_from` 都是这么离开的）。
@@ -86,7 +85,6 @@ fn 文档里那句未接线清单与_unwired_对得上() {
             "encode" => "`encode`",
             "log" => "`log`",
             "tracing" => "`tracing`",
-            "passive_fail" => "`passive_*`",
             // ⚠ ⚠ 对照词必须正好是**一个反引号词**：下面第 ② 半按反引号词扫文档，
             //   写成「全局的 `proxy_protocol_from`」的话，② 会从文档里抠出裸的那个、
             //   在 `expected` 里找不到，于是**红在一个与事实相反的理由上**。
@@ -460,19 +458,17 @@ fn 只报本次配置真的用到的那几条() {
         Vec::<&str>::new()
     );
 
-    // ★ ★ 批 11：`health_uri` 也接线了，只剩被动熔断这一条。
-    //   ⚠ 这两条以前是绑在一起报的（`UNWIRED` 里 `passive_fail` 的理由甚至写着
-    //   「随健康检查一起做」）—— 而它们其实是两件事：主动检查打的是一个
-    //   专门的探测路径，被动熔断看的是**真实流量**的失败率。
-    let got = unwired_for(
-        "http://a.com {\n  reverse_proxy x:1 {\n    health_uri /h\n    passive_fail 3\n  }\n}\n",
-    );
-    assert_eq!(got, vec!["passive_fail"]);
-
-    // ★ 反向那一半：只写健康检查、不写被动熔断 ⇒ **一条都不该报**。
-    //   ⚠ 少了它，一个「见到任何 health_* 就报 passive_fail」的实现照样绿。
+    // ★ ★ ★ **G136 把这一条也翻了方向**（第五次，与 `dns_refresh` / `encode` /
+    //   `health_uri` / `weight` 同款）：批 11 之后这里断言「只剩 `passive_fail` 一条」，
+    //   而 G136 接线之后 —— **`reverse_proxy` 块里已经没有任何未接线的子指令了**。
+    //   ⚠ 留着旧期望的话，这道门会把一件已经做完的事继续报成没做。
+    //   ★ 这一条有意**保留成「一条都不报」**而不是换个样本：它守的正是
+    //   「`reverse_proxy` 那一整块已经全部接线」这个事实，而那是一句会过期的话 ——
+    //   哪天再加一条未接线的子指令，它必须当场红。
     assert_eq!(
-        unwired_for("http://a.com {\n  reverse_proxy x:1 {\n    health_uri /h\n  }\n}\n"),
+        unwired_for(
+            "http://a.com {\n  reverse_proxy x:1 {\n    health_uri /h\n    passive_fail 3\n    passive_window 5s\n  }\n}\n"
+        ),
         Vec::<&str>::new()
     );
 
@@ -546,11 +542,14 @@ fn 只报本次配置真的用到的那几条() {
     // ⚠ ⚠ 这里原本用的是 `log`，而 **M2 批 L 第 ② 步把它接线了** ——
     //   于是这条夹具在当天红了，**而它红得对**：
     //   一条「写了它、而运行时什么都不做」的判据，在那件事不再成立时必须红。
-    //   ★ 换成一条**今天仍然没接线**的（`passive_fail`），而不是把断言改成空 ——
+    //   ★ 换成一条**今天仍然没接线**的，而不是把断言改成空 ——
     //   改成空的话，这条判据就再也不检查「站点内的未接线能力会被报出来」了。
+    //   ⚠ ⚠ **G136 之后这里换了第二次**：上一版用的是 `passive_fail`，
+    //   而它在 G136 接线了 —— 这条夹具当天红了，**且红得对**。
+    //   ⇒ 现在用 `tls internal`（仍在 `UNWIRED` 里），嵌套还更深一层（站点 > tls > internal）。
     assert_eq!(
-        unwired_for("http://a.com {\n  reverse_proxy 10.0.0.1:80 {\n    passive_fail 3\n  }\n}\n"),
-        vec!["passive_fail"]
+        unwired_for("a.com {\n  tls internal\n  reverse_proxy 10.0.0.1:80\n}\n"),
+        vec!["tls_internal"]
     );
 }
 
@@ -578,9 +577,13 @@ fn 容器里面的也要被看见() {
 #[test]
 fn 顺序跟着_unwired_的声明顺序走而不是随机() {
     // 报告的顺序要稳定，否则装载日志每次都不一样，diff 起来全是噪音。
-    let got = unwired_for(
-        "a.com {\n  tracing\n  encode gzip\n  log {\n    level info\n  }\n  reverse_proxy x:1 {\n    passive_fail 3\n  }\n}\n",
-    );
+    // ⚠ 这份夹具要**同时命中两条以上**未接线的，否则「顺序」这件事无从谈起。
+    //   ★ G136 之后 `passive_fail` 不再是候选 ⇒ 换成 `tls internal` + `tracing`，
+    //   它们在 `UNWIRED` 里的声明顺序是「tls_internal 在前、tracing 在后」，
+    //   而这份配置**有意把 `tracing` 写在前面** —— 判据要的是输出跟着声明顺序走，
+    //   ⛔ 不是跟着书写顺序走。
+    let got =
+        unwired_for("a.com {\n  tracing\n  tls internal\n  encode gzip\n  reverse_proxy x:1\n}\n");
     let order: Vec<usize> = got
         .iter()
         .map(|k| UNWIRED.iter().position(|(u, _)| u == k).unwrap())

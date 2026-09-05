@@ -469,6 +469,19 @@ pub const MIN_UPSTREAM_WEIGHT: u32 = 1;
 /// ★ 它与管理面 `set_weight` 的值域**是同一对常量**，不是两处各写一个 65535。
 pub const MAX_UPSTREAM_WEIGHT: u32 = 65_535;
 
+/// `passive_fail` 值域的下界（**G136**）。
+///
+/// ★ ★ **`0` 有意不合法，理由与 [`MIN_UPSTREAM_WEIGHT`] 逐字同源**：
+/// 「这条 `reverse_proxy` 不做被动熔断」**只有一种表达方式** —— 不写 `passive_fail`。
+pub const MIN_PASSIVE_FAIL: u32 = 1;
+
+/// `passive_fail` 值域的上界（**G136**）。
+///
+/// ⚠ 上界的价值**不在于挡住一个荒谬的大数**（阈值 65535 只是永远熔不断，不危险），
+/// 而在于让「不是一个整数」这一类手滑走同一条诊断 —— 那一类才是真正危险的：
+/// 在 G136 之前它静默变成 `None`，而 `None` 的语义恰好是**整个特性关掉**。
+pub const MAX_PASSIVE_FAIL: u32 = 65_535;
+
 /// `reverse_proxy { id … }` 的长度上限（owner 拍板，R6 那三条小项之三）。
 pub const MAX_PROXY_ID_LEN: usize = 64;
 
@@ -664,8 +677,39 @@ impl Default for HealthCheck {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Passive {
+    /// 窗口内失败几次就熔断。**`None` = 这条 `reverse_proxy` 完全不做被动熔断**（G136）。
+    ///
+    /// ★ ★ 它是 `Option` 而下面两格不是，因为这两件事**性质不同**：`None` 在这里是
+    /// **语义**（关掉），⛔ 不是「没写所以取缺省」。⇒ 既有配置一个字不改、行为一个字不变。
+    /// ★ 同一条先例在 `health_uri`：不写它就完全不探测，其余 `health_*` 有缺省也不会
+    /// 让探测发生。
     pub fail_threshold: Option<u32>,
-    pub window_ms: Option<u64>,
+    /// 数失败的窗口，缺省 **10s**（G136）。
+    ///
+    /// ★ ★ **缺省值在这一层就落实成具体数字，⛔ 不留 `Option` 让运行时 `unwrap_or`**：
+    /// 那样缺省值会住在两处，而两处迟早分家、分家那天没有任何东西会说。
+    /// ⇒ 与隔壁 [`HealthCheck::interval_ms`] 同一形状；`plan` / `compile` 的产物
+    /// （G11/G48 的公开契约）因此说得出**真正生效**的值。
+    pub window_ms: u64,
+    /// 熔断之后歇多久，然后放**一个**半开探针，缺省 **30s**（G136）。
+    ///
+    /// ★ 它与 [`window_ms`](Self::window_ms) 有意是两个旋钮，⛔ 不是 nginx `fail_timeout`
+    /// 那样一格两用：两者问的不是同一个问题 —— 窗口问「失败要多密才算一个模式」，
+    /// 冷却问「给上游多久缓过来」，而一个真坏了的上游很少在 10s 内自愈。
+    /// ★ 拉长冷却的代价被半开钉死在「每周期 1 个探针」，不会因为拉长而变贵。
+    pub cooldown_ms: u64,
+}
+
+impl Default for Passive {
+    /// ⚠ ⚠ **缺省是「关闭」** —— `fail_threshold: None`。
+    /// 下面两格的数字只有在 `passive_fail` 写了之后才有意义。
+    fn default() -> Self {
+        Self {
+            fail_threshold: None,
+            window_ms: 10_000,
+            cooldown_ms: 30_000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -818,10 +862,7 @@ mod tests {
             lb_policy: "round_robin".into(),
             health: HealthCheck::default(),
             dns_refresh_ms: 30_000,
-            passive: Passive {
-                fail_threshold: None,
-                window_ms: None,
-            },
+            passive: Passive::default(),
             header_up: Vec::new(),
             header_down: Vec::new(),
             transport: "http".into(),
@@ -836,7 +877,7 @@ mod tests {
         r#""lb_policy":"round_robin","#,
         r#""health":{"uri":null,"interval_ms":10000,"timeout_ms":3000,"status":"2xx"},"#,
         r#""dns_refresh_ms":30000,"#,
-        r#""passive":{"fail_threshold":null,"window_ms":null},"#,
+        r#""passive":{"fail_threshold":null,"window_ms":10000,"cooldown_ms":30000},"#,
         r#""header_up":[],"header_down":[],"transport":"http","#,
         r#""tls_insecure_skip_verify":false,"proxy_protocol":null}"#,
     );

@@ -336,6 +336,28 @@ impl DiagCode {
     /// 不经过 `fulcrum compile` ⇒ 这条诊断在那条路上**一次都不会跑**，
     /// 由 `fulcrum_runtime` 建图时用**同一个** `is_valid_proxy_id` 再拦一遍。
     pub const BAD_PROXY_ID: DiagCode = DiagCode(43);
+    /// `passive_fail` 的值不是 **`[1, 65535]`** 里的整数 —— 含 `0`、负数、带单位、不是数字
+    /// （**M2**，G136）。
+    ///
+    /// ★ ★ **`0` 不合法是有意的，理由与 [`BAD_WEIGHT`](Self::BAD_WEIGHT) 逐字同源**：
+    /// 「这条 `reverse_proxy` 不做被动熔断」**只有一种表达方式** —— **不写 `passive_fail`**。
+    /// 让 `passive_fail 0` 也表示关闭，就是两条路做同一件事，而两条路迟早分家。
+    ///
+    /// ⚠ ⚠ **这条诊断的真正价值在「不是数字」那一半，而不是 `0`。**
+    /// 在它之前，`compile.rs` 那一行是 `first.parse().ok()` —— `passive_fail 五` 会**静默**
+    /// 变成 `None`，而 `None` 的语义恰好是**整个特性关掉** ⇒ 一个手滑的值让熔断悄悄消失，
+    /// 配置照过、装载照过、没有任何一行字提到它。★ 这正是本仓反复抓到的那一族。
+    pub const BAD_PASSIVE_FAIL: DiagCode = DiagCode(44);
+    /// 写了 `passive_window` / `passive_cooldown`，却**没写 `passive_fail`**（**M2**，G136）。
+    ///
+    /// 那两个旋钮此刻**一个都不生效**：不写 `passive_fail` 就完全不熔断（G136），
+    /// 于是这两行是一段**读起来完全成立、而运行时一步都不做**的配置。
+    ///
+    /// ★ warning 而不是 error，两条理由：① 它不危险，只是没用；
+    /// ② 把它判红会让「先把旋钮调好、待会儿再开」这种正当的分步操作装不上。
+    /// ⚠ 但**必须说出来** —— 与 [`METRICS_UNGUARDED`](Self::METRICS_UNGUARDED) 同一条纪律：
+    /// 一条配置若与「正在生效」长得一模一样，那么沉默就是让人以为它生效了。
+    pub const PASSIVE_WITHOUT_THRESHOLD: DiagCode = DiagCode(45);
 
     pub fn as_str(&self) -> String {
         format!("FUL-DSL-{:04}", self.0)

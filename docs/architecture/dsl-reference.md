@@ -26,7 +26,7 @@ sources:
 > 而它真正被执行这件事由 `crates/fulcrum-runtime/tests/routing.rs` 与
 > `tests/serve/run.sh`（真流量）钉住。
 > ⚠ **仍有几条只是「解析得过」**：`tls internal`、`on_demand`、
-> `tracing`、`passive_*`——
+> `tracing`——
 > 它们由 `fulcrum_runtime::UNWIRED` 逐条登记、装载时打出来，并有契约测试钉住那份清单。
 > **别把「文档里写了」当成「运行时会做」。**
 > ✅ ★ **`proxy_protocol_from` （M2 批 L 第 ① 步）从这句话里删掉**：
@@ -343,7 +343,7 @@ warning（`handle` / `route` 那层带着也算 —— 它罩住块内每一步�
 | `health_interval` / `health_timeout` | 默认 `10s` / `3s`，**打点下界 500ms**。★ 每条 `reverse_proxy` 各自的 `health_interval` 真的算数（**不像 `dns_refresh` 那样全库取最小值** —— 探测是打在别人服务上的流量）。⚠ `health_timeout` 罩的是**整趟**（连接 + 写 + 读）| M1 |
 | `health_status` | 认为健康的状态码，默认 `2xx`。★ 认不出的写法是**装载期错误**，不回落成默认 | M1 |
 | `dns_refresh` | ★ 上游域名**定期重解析**（G17）。默认 `30s`，**下界 5s**。**这条直接消灭 nginx OSS 那个经典事故源**。✅ **已接线**（批 10，G76）。⚠ 打点节奏取**全库最小值**、每轮刷全部上游——配了 `60s` 的那条可能被更频繁地刷到（更频繁不是更稀疏，对正确性无影响） | M1 |
-| `passive_fail` / `passive_window` | 被动熔断阈值与窗口（G17）。⚠ ⚠ **只到配置层为止**：DSL 认得它，而**运行时一步都不做** —— 它在 `fulcrum_runtime::UNWIRED` 里登记着，装载时会打出来。★ 主动健康检查（`health_uri`）是**另一件事**：那个打的是一个专门的探测路径，被动熔断看的是**真实流量**的失败率 | M1 |
+| `passive_fail` / `passive_window` / `passive_cooldown` | **被动熔断**（G17，接线与冷却那一格是 **G136**）。`passive_fail <次数>` = 窗口内失败几次就把这个上游摘出调度；`passive_window` 缺省 **10s** = 数失败的窗口；`passive_cooldown` 缺省 **30s** = 摘掉之后歇多久。<br>⚠ ⚠ **不写 `passive_fail` 就完全不熔断** —— 与 `health_uri` 同一条先例，另外两个旋钮有缺省也不会让熔断发生（只写它们会得到一条 `FUL-DSL-0045` 警告）。⛔ `passive_fail 0` 不是关闭的写法，是 `FUL-DSL-0044`：关闭只有「不写」这一种表达。<br>★ 算失败的有两类：**连不上/超时**，以及**上游真的回了 5xx**。⛔ 枢衡自己合成的 5xx（`all_upstreams_down` 那条 502）**不算** —— 否则一次全站故障会把每个上游再熔一遍，自我强化。<br>★ ★ 恢复走**真半开**：冷却期满后**恰好放一个**请求过去探路，成功就完全恢复、失败就重新熔断并重置冷却。⚠ 枢衡**不换上游重试**，所以打到坏上游的每一个请求都是用户可见的错 —— 半开把「上游一直不好」的代价钉在**每周期 1 个**，而「到期全量放回」那种做法每周期要付 `passive_fail` 个。<br>★ 它与主动健康检查（`health_uri`）**各占一格、互不覆盖**：那个打的是一个专门的探测路径，被动熔断看的是**真实流量**。⇒ 一个 `/health` 回 200 而真实业务在 500 的上游，只有它看得见。⚠ 代价：一个上游可能「主动检查说健康、被动熔断说不可用」，`/stats` 的 `passive_open` 与指标 `fulcrum_upstream_passive_open` 分别说得出来。 | M2 |
 | `header_up` / `header_down` | 改发往上游 / 回给客户端的头 | M1 |
 | `transport` | `http`（默认）／`https` | M1 |
 | `tls_insecure_skip_verify` | 上游用 https 时跳过证书校验。⚠ 只给自签的内网上游用 | M1 |

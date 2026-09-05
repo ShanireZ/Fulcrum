@@ -47,7 +47,7 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | scenario | ports |
 |---|---|
 | `tests/m0/` | 8081 · 9000 |
-| `tests/serve/` | 9100–9105 |
+| `tests/serve/` | 9100–9106 |
 | `tests/stress/` · `tests/smoke/` | 9200–9201 · 9210–9212 |
 | `tests/l4/` | 9300–9317 |
 | `tests/files/` | 9400–9401 |

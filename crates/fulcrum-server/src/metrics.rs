@@ -58,7 +58,7 @@
 //!
 //! | 族 | 问谁 |
 //! |---|---|
-//! | `fulcrum_upstream_inflight` · `fulcrum_upstream_healthy` | 当前 `Runtime` 快照里的每个 `Upstream`，**按地址归并**：在途数求和、健康位取合取 |
+//! | `fulcrum_upstream_inflight` · `fulcrum_upstream_healthy` · `fulcrum_upstream_passive_open` | 当前 `Runtime` 快照里的每个 `Upstream`，**按地址归并**：在途数求和、健康位取**合取**、被动熔断位取**析取**（两者方向相反而纪律相同：都往「说得出故障」那一侧倒）|
 //! | `fulcrum_cert_expiry_seconds` | `SniResolver::expiries()`（R5：值是 `notAfter` 的**绝对 Unix 秒**）|
 //! | `fulcrum_acme_issue_total` | `AcmeManager::issue_counts()` |
 //! | `fulcrum_build_info` | 这个二进制自己（`CARGO_PKG_VERSION`），不需要任何活体源 |
@@ -189,7 +189,7 @@ const BUCKETS: &[f64] = &[
 /// ⚠ 下面那几个 `pub const` 句柄按**下标**指进来 —— 重排这张表就会让某个句柄换个族，
 /// 而那种错**在输出里看起来完全正常**（数字照涨，只是涨在另一条 series 上）。
 /// ⇒ 单测 `族句柄指的就是它名字上那个族` 把每个句柄的名字逐个钉住。
-const FAMILIES: [Family; 14] = [
+const FAMILIES: [Family; 15] = [
     Family {
         name: "fulcrum_requests_total",
         kind: Kind::Counter,
@@ -313,6 +313,18 @@ const FAMILIES: [Family; 14] = [
             Domain::Closed(crate::conn_stats::ENTRYPOINTS),
         ],
     },
+    // ★ ★ **G136 有意追加在末尾**：上面那串 `const X: &Family = &FAMILIES[i]` 按**下标**取，
+    //   插在中间会让它们**整体错位**，而错位之后每一条指标都还渲染得出来 ——
+    //   只是名字与数对不上，且没有任何东西会报错。
+    //   （`FAMILIES` 的名字断言那几条测试守着这件事，但别指望它兜底：先别插。）
+    Family {
+        name: "fulcrum_upstream_passive_open",
+        kind: Kind::Gauge,
+        source: Source::Live,
+        help: "上游地址此刻是否被被动熔断摘出调度，1 为已摘；同一地址被多处引用时任一处熔断即为 1；没配 passive_fail 的恒为 0。",
+        labels: &["upstream"],
+        domains: &[Domain::Config],
+    },
 ];
 
 /// 请求总数。
@@ -378,6 +390,8 @@ const BUILD_INFO: &Family = &FAMILIES[8];
 /// 搬进指标 —— 两份实现同一件事，而「是哪几项」本来就该去 `/stats` 看。
 /// ⇒ 这个族**无标签、基数恒为 1**。
 const OVERRIDES_ACTIVE: &Family = &FAMILIES[9];
+/// ★ G136。⚠ 下标是 `FAMILIES.len() - 1` —— 它追加在末尾，理由见那一条上面的注释。
+const UPSTREAM_PASSIVE_OPEN: &Family = &FAMILIES[FAMILIES.len() - 1];
 
 /// 被 `POST /purge` 清掉的缓存**条目**数（**M2 批 M′ 任务 2**，G123 / D31 结案）。
 ///
@@ -618,17 +632,29 @@ fn snapshot(src: &LiveSources) -> Registry {
         //   **根本没在探测**的对象把一次真实的故障盖掉。⇒ 悲观那一侧是安全的那一侧。
         //
         // ★ 归并之后「留第一份还是留最后一份」这个问题不再存在 —— 它本来就不该存在。
-        let mut by_addr: BTreeMap<&str, (u64, bool)> = BTreeMap::new();
+        let mut by_addr: BTreeMap<&str, (u64, bool, bool)> = BTreeMap::new();
         for t in snap.all_proxy_targets() {
             for up in &t.upstreams {
-                let e = by_addr.entry(up.addr.as_str()).or_insert((0, true));
+                let e = by_addr.entry(up.addr.as_str()).or_insert((0, true, false));
                 e.0 += up.inflight() as u64;
                 e.1 &= up.is_healthy();
+                // ★ ★ G136：归并取**析取**，与上面 `healthy` 的合取方向相反 —— 而两者
+                //   其实是**同一条纪律**：往「说得出故障」那一侧倒。
+                //   `healthy` 的 1 是「好」，所以合取（有一处坏就报坏）；
+                //   `passive_open` 的 1 是「坏」，所以析取（有一处熔断就报熔断）。
+                //   ⚠ 写成合取的话，一条没配 `passive_fail` 的引用（恒 false）
+                //   会把另一条真实的熔断**盖掉**，而那正是这个指标唯一要说的事。
+                e.2 |= up.passive_open();
             }
         }
-        for (addr, (inflight, healthy)) in by_addr {
+        for (addr, (inflight, healthy, passive_open)) in by_addr {
             r.set(UPSTREAM_INFLIGHT, &[addr], inflight as f64);
             r.set(UPSTREAM_HEALTHY, &[addr], if healthy { 1.0 } else { 0.0 });
+            r.set(
+                UPSTREAM_PASSIVE_OPEN,
+                &[addr],
+                if passive_open { 1.0 } else { 0.0 },
+            );
         }
 
         // ── fulcrum_overrides_active：取数口是 SharedRuntime::override_entries_of ──
@@ -1165,6 +1191,11 @@ mod tests {
         assert_eq!(CONNECTIONS_ACTIVE.name, "fulcrum_connections_active");
         assert_eq!(CONNECTIONS_ACTIVE.kind, Kind::Gauge);
         assert_eq!(CONNECTIONS_ACTIVE.labels, &["listen", "entrypoint"]);
+        // ★ G136。⚠ 它的句柄取的是 `FAMILIES.len() - 1` 而不是一个写死的下标 ——
+        //   下一个人往末尾再追加一条时，这条断言会当场红并指着这里。
+        assert_eq!(UPSTREAM_PASSIVE_OPEN.name, "fulcrum_upstream_passive_open");
+        assert_eq!(UPSTREAM_PASSIVE_OPEN.kind, Kind::Gauge);
+        assert_eq!(UPSTREAM_PASSIVE_OPEN.labels, &["upstream"]);
 
         // ★ ★ 每个族的**来处**也逐个钉住：`source` 写错不会让任何一条内容断言变红 ——
         //   活体族被标成 `Event` 的表现是它**永远没有样本**，而那与「没接上活体源」
@@ -1188,6 +1219,7 @@ mod tests {
                 //   先例是上面的 `fulcrum_acme_issue_total`。
                 "fulcrum_connections_total",
                 "fulcrum_connections_active",
+                "fulcrum_upstream_passive_open",
             ]
         );
 
