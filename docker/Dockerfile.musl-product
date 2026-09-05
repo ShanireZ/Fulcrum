@@ -71,6 +71,12 @@ RUN { echo "TARGET=$(rustc -vV | sed -n 's/^host: //p')"; \
       echo "BYTES=$(wc -c < /fulcrum)"; \
       echo "FILE=$(file -b /fulcrum)"; } > /evidence.txt
 
+# ★ ★ D23：**产物里真的链接了哪几套 TLS**。判据本体在 `tests/ci/tls-linkage.sh`
+#   （它只打 `键=值`，⛔ 自己不判红），判定在 `tests/musl/product.sh` ——
+#   与上面那份证据同一形状：取数与判定各一处。
+# ⚠ 它必须在**这一段**跑：`FROM scratch` 那一段里没有 `nm`，也没有 shell。
+RUN sh /w/tests/ci/tls-linkage.sh /fulcrum >> /evidence.txt
+
 # ── 第二段：什么都没有 ─────────────────────────────────────────────────────
 #
 # ★ ★ 这不是为了镜像小，**这就是判据本身**：§6.2 明写不做官方容器镜像、

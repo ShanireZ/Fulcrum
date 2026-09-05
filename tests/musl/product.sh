@@ -122,6 +122,38 @@ for arch in $ARCHES; do
     fail "[$arch] 不是完全静态：INTERP=$interp、NEEDED=$needed"
   fi
   echo "[product] 大小 $(field "$ev" BYTES) 字节"
+
+  # ── ★ ★ ★ D23：产物里真的链接了哪几套 TLS ────────────────────────────────
+  #
+  # ⚠ 它与供应链那两道门问的**不是同一个问题**：门 4 看 `Cargo.lock`、门 5 看依赖图，
+  #   而「图里有、产物里其实没链接」是门 5 **原理上**看不见的那一半。
+  # ★ 判据的推导在 `tests/ci/tls-linkage.sh` 的文件头，这里只做判定。
+  tls_nm=$(field "$ev" TLS_NM)
+  tls_ctrl=$(field "$ev" TLS_PROBE_CONTROL)
+  # ⚠ ⚠ **先判「量到了没有」**：读不到符号表时下面每一条「必须为 0」都会凭空全绿。
+  #   ⇒ 「没能检查」不算「检查通过」（与本仓其它几处同一条纪律）。
+  if [ "$tls_nm" != "ok" ]; then
+    fail "[$arch] 取不到符号表（TLS_NM=$tls_nm）⇒ 下面那组 TLS 链接判据一律不可信"
+  elif [ -z "$tls_ctrl" ] || [ "$tls_ctrl" -eq 0 ]; then
+    # ★ 扫描器自证：一个写错的模式与「真的一个都没有」给出完全相同的 0。
+    fail "[$arch] 扫描器自证没过（TLS_PROBE_CONTROL=$tls_ctrl）⇒ 那组判据分不出真假"
+  else
+    if [ "$(field "$ev" TLS_BORINGSSL_ONLY)" -eq 3 ]; then
+      ok "[$arch] 产物里有 BoringSSL 独有的 3 个符号（含 G6 那条共用回调的执行者）"
+    else
+      fail "[$arch] BoringSSL 独有符号只找到 $(field "$ev" TLS_BORINGSSL_ONLY)/3 —— TLS 后端不是 BoringSSL？"
+    fi
+    if [ "$(field "$ev" TLS_OPENSSL_ONLY)" -eq 0 ]; then
+      ok "[$arch] 产物里没有 OpenSSL 独有的符号"
+    else
+      fail "[$arch] 产物里出现了 OpenSSL 独有符号（$(field "$ev" TLS_OPENSSL_ONLY) 个）—— G6 第 1 条被破坏"
+    fi
+    if [ "$(field "$ev" TLS_RUSTLS_IMPL)" -eq 0 ]; then
+      ok "[$arch] rustls 本体没有被链接进来（rustls_pki_types 有 $(field "$ev" TLS_RUSTLS_PKI_TYPES) 个符号，是允许的：纯类型 crate）"
+    else
+      fail "[$arch] rustls **本体**被链接进产物了（$(field "$ev" TLS_RUSTLS_IMPL) 个符号）—— G6 第 1 条被破坏"
+    fi
+  fi
   rm -f "$ev"
 
   # ── 正向：在什么都没有的镜像里跑一次 validate ──────────────────────────

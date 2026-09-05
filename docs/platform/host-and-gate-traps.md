@@ -76,7 +76,10 @@ intent — **if you need an address that is actually connected to, take one from
 (`crates/fulcrum-config/src/compile.rs`) gives every auto-HTTPS site a 308 redirect site on a
 hardcoded `:80`, so these scenarios bind it implicitly: `tests/acme/run.sh` ·
 `tests/acme/renew.sh` · `tests/serve/` · `tests/log/` · `tests/h3/` · `tests/proxyproto/` ·
-`tests/quic-relay/`. Making it configurable is open as **D29**.
+`tests/quic-relay/`. ★ **Keeping it hardcoded is settled (G137, closing D29)** — HTTP-01 (RFC 8555
+§8.3) has the CA connect to port 80 only, so a knob would silently disable the backup issuance
+path (G54). ⚠ The cost is stated there: a deployment whose `:80` is taken by another proxy
+cannot use the automatic redirect at all.
 
 ⚠ ★ **`tests/stats/` was on that list on 2026-09-03 and was taken back off the same day** —
 worth reading, because it shows both failure modes. Its `gen3.Fulcrumfile` has

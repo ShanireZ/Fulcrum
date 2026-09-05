@@ -36,9 +36,13 @@ Read this before touching anything. It is short on purpose; everything it points
    `SslContextBuilder::set_select_certificate_callback` — the *same* callback for both entrypoints
    (h1/h2 and h3/QUIC), so "two entrypoints each with their own cert-picking code" is structurally
    impossible. All three former rustls sites are converted.
-   ⚠ Say "nothing in the dependency graph", **not "in the artifact"**: `Cargo.lock` is a superset
-   of the graph (gate 4), `cargo tree` reads the graph (gate 5), and what the artifact links is
-   still unanswered (D23).
+   ★ All three questions now have their own gate: what the lock says (gate 4) · what the
+   dependency graph really holds (gate 5, `cargo tree`) · **what the artifact actually links**
+   (G138 — `tests/ci/tls-linkage.sh`, asserted in `tests/musl/product.sh` against the musl
+   artifact). ⚠ That last one reads the **symbol table**, not strings: every `rustls` string in
+   the artifact comes from `rustls_pki_types`, a types-only crate — a `grep rustls` gate would
+   false-positive forever. ⚠ It only runs in the musl scenario, so it says nothing about the
+   glibc dev build.
 2. **tower middleware does not compose with Pingora's phase model.** ⚠ But we have never used
    `ProxyHttp` — `pingora-proxy` is not a dependency. Our execution chain hangs off
    `HttpServerApp` / `ServerSession`.
