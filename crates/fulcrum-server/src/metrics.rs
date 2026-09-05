@@ -61,7 +61,7 @@
 //! | `fulcrum_upstream_inflight` · `fulcrum_upstream_healthy` · `fulcrum_upstream_passive_open` | 当前 `Runtime` 快照里的每个 `Upstream`，**按地址归并**：在途数求和、健康位取**合取**、被动熔断位取**析取**（两者方向相反而纪律相同：都往「说得出故障」那一侧倒）|
 //! | `fulcrum_cert_expiry_seconds` | `SniResolver::expiries()`（R5：值是 `notAfter` 的**绝对 Unix 秒**）|
 //! | `fulcrum_acme_issue_total` | `AcmeManager::issue_counts()` |
-//! | `fulcrum_build_info` | 这个二进制自己（`CARGO_PKG_VERSION`），不需要任何活体源 |
+//! | `fulcrum_build_info` | 这个二进制自己（`FULCRUM_BUILD_VERSION`，见 `build.rs`），不需要任何活体源 |
 //! | `fulcrum_overrides_active` | `SharedRuntime::override_entries_of()` 的条目数（悬空的照样计入，裁决 R13）|
 //!
 //! ★ ★ ★ **第二类为什么不在事件点记账**：能从被测对象本身问到的东西，
@@ -376,6 +376,16 @@ const ACME_ISSUE_TOTAL: &Family = &FAMILIES[7];
 /// 而旧的那条从此再也不更新 —— 抓取端看到的是一堆看起来还活着的僵尸时序。
 const BUILD_INFO: &Family = &FAMILIES[8];
 
+/// [`BUILD_INFO`] 的 `version` 取什么值 —— 由 [`build.rs`](../build.rs) 在编译期算好。
+///
+/// ⛔ ★ **这是「跑的是哪一次构建」，不是「这个版本承诺了什么」**（`G141`）。
+/// 取值链、为什么用 semver 的构建元数据语法、以及各个面上什么算 breaking，
+/// 都在 `docs/governance/compatibility.md`。
+///
+/// ⚠ 取不到时它是 `<包版本>+unknown` 而**不是**裸的包版本 ——
+/// 「读不到」与「读到了 0.0.0」必须区分得开。
+const BUILD_VERSION: &str = env!("FULCRUM_BUILD_VERSION");
+
 /// 当前生效中的临时覆盖总数（**M2 批 N 任务 6.5**，G126 / 裁决 R13）。
 ///
 /// ⚠ ⚠ **悬空的照样计入**：R13 把「悬空的算不算生效中」定死为「算」——它确实
@@ -607,7 +617,7 @@ fn snapshot(src: &LiveSources) -> Registry {
 
     // ★ `build_info` 不需要任何活体源 —— 被问的对象就是这个二进制自己。
     //   ⚠ 于是它是**唯一一个「没登记也照样有样本」**的活体族。
-    r.set(BUILD_INFO, &[env!("CARGO_PKG_VERSION")], 1.0);
+    r.set(BUILD_INFO, &[BUILD_VERSION], 1.0);
 
     if let Some(rt) = &src.runtime {
         // ⚠ 一次抓取只取一份快照：分两次取的话，两个族可能落在**两份不同的配置**上，
@@ -1538,6 +1548,30 @@ mod tests {
     }
 
     #[test]
+    fn build_info的版本区分得出两次构建() {
+        // `PLAN.md` §11 的 D9 逐字点名过这个缺陷：六个 crate 全是 `0.0.0`
+        // ⇒ 这一族**区分不出任何两次构建**。G141 的第一部分就是修它。
+        //
+        // ⛔ ★ 判据不是「非空」——裸的 `0.0.0` 也非空。判据是**它不等于裸包版本**：
+        //   三档取值里，② 会是 `<包版本>+g<提交号>`，③ 会是 `<包版本>+unknown`，
+        //   ① 由构建环境喂真值。三档都过得了这一条，而**退回裸 `0.0.0` 过不了**。
+        assert_ne!(
+            BUILD_VERSION,
+            env!("CARGO_PKG_VERSION"),
+            "build_info 的版本退回了裸包版本 ⇒ 又区分不出两次构建了"
+        );
+
+        // ⚠ 「取不到」必须是**说出来的** `unknown`，⛔ 不许是一个看起来像真版本号的东西。
+        //   这一条守的是 build.rs 第 ③ 档的形状：它可以取不到，但不许假装取到了。
+        let 尾巴 = BUILD_VERSION
+            .split_once('+')
+            .map(|(_, meta)| meta.to_string());
+        if let Some(meta) = 尾巴 {
+            assert!(!meta.is_empty(), "构建元数据是空的：{BUILD_VERSION}");
+        }
+    }
+
+    #[test]
     fn build_info_恒为_1_且只有一条() {
         // ⛔ 不带 gen_id、不带 pid ⇒ 无论问谁、问几次，都只有这一条。
         for src in [
@@ -1556,8 +1590,7 @@ mod tests {
             assert_eq!(
                 样本行(&out, "fulcrum_build_info"),
                 vec![format!(
-                    "fulcrum_build_info{{version=\"{}\"}} 1",
-                    env!("CARGO_PKG_VERSION")
+                    "fulcrum_build_info{{version=\"{BUILD_VERSION}\"}} 1"
                 )],
                 "{out}"
             );

@@ -31,6 +31,12 @@ RUN apk add --no-cache build-base cmake perl linux-headers openssl git clang-dev
 # 反证把它翻成 `-crt-static`，产出一个动态二进制 —— 第二段必须跑不起来。
 ARG CRT_STATIC=+crt-static
 
+# 构建身份（`G141` 的第 ① 档）。⚠ **默认空，而空是有意义的**：
+#   这个上下文的 `.dockerignore` 排掉了 `.git/` ⇒ `build.rs` 的第 ② 档在这一趟必然落空，
+#   于是它如实报 `+unknown`。发布时由构建环境把真值喂进来（`tests/musl/product.sh` 转发它）。
+# ⚠ ⚠ **不要在这里改成「默认去问 git」** —— 读不到还是读不到，只会多一层假装。
+ARG FULCRUM_BUILD_ID=
+
 WORKDIR /w
 COPY . .
 
@@ -52,9 +58,11 @@ COPY . .
 #     它只会让 `/fulcrum` 不存在，而报错出现在离它很远的地方。
 RUN --mount=type=cache,id=fulcrum-musl-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=fulcrum-musl-target-$CRT_STATIC,target=/w/target \
+    FULCRUM_BUILD_ID="$FULCRUM_BUILD_ID" \
     RUSTFLAGS="-C target-feature=-crt-static" \
     cargo build --release --locked -p fulcrum \
- && RUSTFLAGS="-C target-feature=-crt-static" \
+ && FULCRUM_BUILD_ID="$FULCRUM_BUILD_ID" \
+    RUSTFLAGS="-C target-feature=-crt-static" \
     cargo rustc --release --locked -p fulcrum --bin fulcrum \
       -- -C "target-feature=$CRT_STATIC" \
  && cp target/release/fulcrum /fulcrum

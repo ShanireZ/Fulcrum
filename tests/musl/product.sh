@@ -76,12 +76,28 @@ field() { sed -n "s/^$2=//p" "$1"; }
 
 build_one() {
   local arch=$1 crt=$2 tag=$3
+
+  # ── 构建身份（`G141` 的第 ① 档）─────────────────────────────────────────────
+  #
+  # ⚠ ★ **只在调用方已经设了 `FULCRUM_BUILD_ID` 时才往下传**，⛔ 不在这里自己去问 git。
+  #   两条理由，都不是风格问题：
+  #   · 这个上下文的 `.dockerignore` 排掉了 `.git/` ⇒ 容器里**读不到**，第 ② 档在这一趟
+  #     必然落空 —— 身份只能从外面喂进来；
+  #   · ⚠ ⚠ 而**无条件喂**会让这一层的哈希**每次提交都变**，于是这道每次提交都要跑的门
+  #     每次都重编我们那几个 crate。门禁跑出来的是**测试产物不是发布物**，它报
+  #     `+unknown` 是如实的。⇒ 发布时由构建环境设这个变量，门禁不设。
+  local id_arg=()
+  if [ -n "${FULCRUM_BUILD_ID:-}" ]; then
+    id_arg=(--build-arg "FULCRUM_BUILD_ID=$FULCRUM_BUILD_ID")
+  fi
+
   echo "[product] docker build --platform linux/$arch（$crt）…"
   # ⚠ `--pull=false`：基础镜像已按 digest 钉死，不必每次去问 registry。
   docker build \
     --platform "linux/$arch" \
     --pull=false \
     --build-arg "CRT_STATIC=$crt" \
+    "${id_arg[@]}" \
     -f "$REPO_HOST/$DOCKERFILE" \
     -t "$tag" \
     "$REPO_HOST/$CONTEXT"

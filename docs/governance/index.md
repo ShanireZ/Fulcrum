@@ -17,5 +17,6 @@ sources:
 * [唯一权威与本 bundle 的定位](/governance/source-of-truth.md) - ★ **先读这篇**。`PLAN.md` 是权威；架构一节是本 bundle 唯一带真内容的例外
 * [决策日志](/governance/decision-log.md) - §10 的导航；★ owner 推翻 AI 建议的那些决定；三条不可回头的硬约束
 * [待定清单](/governance/open-questions.md) - 仍然开着的那些；★ 待定项不是需求，没拍板之前不得据以实现
+* [兼容性分类法](/governance/compatibility.md) - 五个对外面各自「什么算 breaking」；★ 分类法今天生效（估价），承诺 M4 起生效（约束）
 * [实施路线](/governance/roadmap.md) - M0–M4；★ 五个退出条件全是外部可核验的事实，不是「功能做完了」
 * [工作方式](/governance/working-agreement.md) - 决策不得静默重开、性能不得无据宣称、协议栈不得手写
