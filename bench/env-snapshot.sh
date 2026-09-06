@@ -40,13 +40,79 @@ ATTEST=${BENCH_HOST_ATTEST:-}
 #   不一致本身才是要暴露的东西，而那由 `tests/bench/run.sh` 的版本门管。
 SUBJECTS=$(read_or_empty /etc/fulcrum-bench-subjects)
 FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
+# ⚠ ⚠ ★ **枢衡没有 `--version` 这个参数**（它退 2 并打用法）⇒ 这一行**恒得到空串**，
+#   而空串在快照里与「问过了，它没有版本」长得一模一样。⛔ 留着它只是为了
+#   将来真加了这个参数时能自动接上，**它不是身份的来源**。
 FULCRUM_VER=$("$FULCRUM_BIN" --version 2>/dev/null || true)
+# ★ ★ ★ 身份靠这两个读数，⛔ 不靠上面那一行：
+#   ① **sha256** —— 一个文件总有一个，它是「量的到底是哪个二进制」的**唯一**可靠答案；
+#   ② **内嵌的构建身份**（G141 的 `FULCRUM_BUILD_VERSION`，semver 构建元数据语法）——
+#      它把那个 sha256 映射回一次提交。⚠ G141 自己写明它**不判工作树脏不脏**
+#      ⇒ 同一提交上带着不同未提交改动的两次构建，这一项相同而 sha256 不同。
+#      ★ 正因如此两个都要记：①分得开的它分得开，②说得出出处的它说得出出处。
+# ⚠ `fulcrum_build_info` 那个指标要服务跑起来且开了 metrics 才拿得到 ⇒ 这里够不着。
+FULCRUM_SHA=$(sha256sum "$FULCRUM_BIN" 2>/dev/null | cut -d' ' -f1 || true)
+FULCRUM_BUILD_ID=$(grep -aoE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9a-zA-Z._-]+' "$FULCRUM_BIN" 2>/dev/null | sort -u | head -1 || true)
 
-# 内核参数：一张**固定**清单，逐条读。
-# ⚠ ⚠ 容器有自己的 netns ⇒ 这里读到的多半是**容器的**值而不是宿主的。
-#   ⇒ 它们记进快照是为了「这一趟到底跑在什么参数下」可被第三方看到，
-#   ⛔ **不**作为合格性判据的输入 —— 那三件容器看不见的事归 `attest` 那一条管。
+# ── 内核参数与资源上限（G145）───────────────────────────────────────────────
+#
+# ★ ★ ★ G145 之前这一段只是**记录**，明写着「⛔ 不作为合格性判据的输入」，
+#   而「内核参数已固化」是 `attest` 那句人写的声明里的第三件。
+#   2026-09-06 的实测把那条路整个否掉了：四个键是 **per-netns** 的，
+#   宿主上 `sysctl --system` 过的值**一个都传不进这个容器** ——
+#   ⇒ 一句完全诚实的「已固化」声明，对被测行为零影响。
+#   ⇒ 现在它们由 `docker run --sysctl` 在容器里设，而这里**逐条断言实测==声明**。
+#
+# ⛔ 读法用 `/proc/sys/...` 直读，**不调 `sysctl(8)`**：那个工具不在镜像里时
+#   `sysctl -n x` 会走到「命令不存在」那条路，而一个恒失败的原语与「值不符」
+#   在输出上分不开（`tests/stress/run.sh` 栽过同形状的：写了 `ss` 而镜像里没有）。
+# ⛔ **读不到就不打这一行** —— 补一个空值等于把「这个键不存在」伪装成「值是空」，
+#   而 `bench_kparam_mismatches` 恰恰要把前者判红。
+read_sysctl_kv() {
+  local key path val
+  for key in "$@"; do
+    path=/proc/sys/$(printf '%s' "$key" | tr '.' '/')
+    if val=$(cat "$path" 2>/dev/null); then
+      printf '%s=%s\n' "$key" "$val"
+    fi
+  done
+}
+
+# 记进快照的那张清单**比要判的宽**：多记 `netdev_max_backlog` 与 `fs.file-max`
+# 是为了让第三方看到「容器里到底读得到什么」——
+# ★ 实测这两条在容器里的表现完全相反：前者**读不到**（非 netns 化，不出现在容器的
+#   /proc/sys/net 视图里），后者读得到而且就是**宿主的**值。
 SYSCTLS="net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.ipv4.ip_local_port_range net.ipv4.tcp_tw_reuse net.core.netdev_max_backlog fs.file-max"
+
+DECLARED=$(bench_container_sysctls)
+# ⚠ 只读声明里那几个键来做比较，⛔ 不拿上面那张更宽的清单 ——
+#   多记的两条本来就读不到 / 不归容器管，拿它们去比会得到两条必然的假红。
+DECLARED_KEYS=$(printf '%s\n' "$DECLARED" | cut -d= -f1)
+# shellcheck disable=SC2086  # 有意分词：DECLARED_KEYS 是一串以空白分隔的键名
+OBSERVED=$(read_sysctl_kv $DECLARED_KEYS)
+KPARAM=$(bench_kparam_mismatches "$DECLARED" "$OBSERVED")
+
+# nofile：★ 实测容器缺省只有 **1024**，而 `fs.file-max` 是 9.2e18 ——
+#   会咬的从来不是后者。⇒ 由 `docker run --ulimit` 设，在这里核。
+NOFILE=$(ulimit -n 2>/dev/null || true)
+if [ "$NOFILE" != "$BENCH_NOFILE" ]; then
+  KPARAM=$(printf '%s\n%s' "$KPARAM" "nofile 实测 '${NOFILE}' ≠ 声明 '${BENCH_NOFILE}'")
+fi
+
+# 宿主侧那一条（`net.core.netdev_max_backlog`）：⛔ 容器里读不到，只能由启动器
+# 在宿主上读了再传进来。
+# ★ ★ 这一格判的是**启动器到底跑没跑过** —— 不用 `bench/docker-run.sh` 起容器，
+#   这个变量就不存在，于是判红。⛔ 它不是「相信这个变量」，它是「没有它就不算数」。
+HOST_KV=${BENCH_HOST_SYSCTLS:-}
+DECLARED_HOST=$(bench_host_sysctls)
+HOST_MISMATCH=$(bench_kparam_mismatches "$DECLARED_HOST" "$HOST_KV")
+if [ -n "$HOST_MISMATCH" ]; then
+  KPARAM=$(printf '%s\n%s' "$KPARAM" "$(printf '%s\n' "$HOST_MISMATCH" | sed 's/^/宿主侧 /')")
+fi
+
+# ⚠ 上面三次拼接都可能在开头留下空行（KPARAM 一开始可能是空串）⇒ 去掉空行，
+#   ⛔ 否则一个只含换行的字符串会让 `[ -n ]` 成立，判出一条内容为空的「不合格理由」。
+KPARAM=$(printf '%s\n' "$KPARAM" | grep -v '^[[:space:]]*$' || true)
 
 # CPU 亲和。★ ★ 判据要的是「两组核**都**指定了」这一件事，⇒ 只设一个等于没设：
 #   那样负载生成器仍然会跑到被测那批核上，而读数看起来完全正常。
@@ -56,7 +122,10 @@ if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
 fi
 
 # ── 判合格性（判据在 lib.sh）────────────────────────────────────────────────
-DISQ=$(bench_disqualifiers "$KERNEL" "$NPROC" "$LOAD1" "$ATTEST" "$AFFINITY")
+# ⚠ ⚠ 第六个参数**必须传** —— `bench_disqualifiers` 给了它默认值（为了不推翻
+#   G145 之前写的每一条调用），⇒ 漏传时它会安静地不判内核参数那一格。
+#   ★ 这里是它在真实路径上**唯一**的一次调用。
+DISQ=$(bench_disqualifiers "$KERNEL" "$NPROC" "$LOAD1" "$ATTEST" "$AFFINITY" "$KPARAM")
 if [ -z "$DISQ" ]; then QUALIFIED=true; else QUALIFIED=false; fi
 
 # ── 落盘 ───────────────────────────────────────────────────────────────────
@@ -66,8 +135,11 @@ if [ -z "$DISQ" ]; then QUALIFIED=true; else QUALIFIED=false; fi
 export SNAP_KERNEL="$KERNEL" SNAP_NPROC="$NPROC" SNAP_LOAD1="$LOAD1" \
   SNAP_CPU="$CPU_MODEL" SNAP_MEM_KB="$MEM_KB" SNAP_HOST="$CONTAINER_HOST" \
   SNAP_ATTEST="$ATTEST" SNAP_SUBJECTS="$SUBJECTS" SNAP_FULCRUM="$FULCRUM_VER" \
+  SNAP_FULCRUM_SHA="$FULCRUM_SHA" SNAP_FULCRUM_BUILD_ID="$FULCRUM_BUILD_ID" \
   SNAP_DISQ="$DISQ" SNAP_QUALIFIED="$QUALIFIED" SNAP_SYSCTLS="$SYSCTLS" \
   SNAP_AFFINITY="$AFFINITY" \
+  SNAP_DECLARED_CONTAINER="$DECLARED" SNAP_DECLARED_HOST="$DECLARED_HOST" \
+  SNAP_HOST_KV="$HOST_KV" SNAP_NOFILE="$NOFILE" SNAP_NOFILE_DECLARED="$BENCH_NOFILE" \
   SNAP_OUT="$OUT" \
   SNAP_MIN_CPUS="$BENCH_MIN_CPUS" SNAP_MAX_LOAD="$BENCH_MAX_IDLE_LOAD" \
   SNAP_DURATION="${BENCH_DURATION:-}" SNAP_CONNECTIONS="${BENCH_CONNECTIONS:-}" \

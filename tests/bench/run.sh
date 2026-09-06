@@ -140,10 +140,34 @@ echo "── ③ 容器内：流水线与判据 ──"
 #      已经被 `docker-run.sh` 攥着（本格排在那次 `docker run` 之后）。
 #      写挂载会让「单独跑本格」与「跟着完整门禁跑」需要两套不同的加锁逻辑，
 #      而只读挂载让两条路一模一样。
+#
+# ── 内核参数旗标（G145）───────────────────────────────────────────────────
+#
+# ★ ★ 从 `bench/lib.sh` 那**一份**声明推导，⛔ 不在这里另抄一遍：旗标与声明一旦
+#   分家，容器会按 A 跑而快照按 B 判，两边都不红。
+#
+# ⚠ ⚠ **有意不设 `BENCH_HOST_SYSCTLS`**。那是宿主侧那个键的凭证，而这台开发机
+#   给不出来（WSL2 内核里根本没有 `net.core.netdev_max_backlog` 这个键）。
+#   ⇒ 这一趟因此必然多出一条 `kernel-params: 宿主侧 …` 的不合格理由 —— **那是对的**：
+#   ★ ★ ★ 于是这道门在每一次门禁里**两个方向都被走到**：容器侧那四个键因为旗标
+#   真的设上了而**相符**（正向），宿主侧那一条因为没有凭证而**判红**（反向）。
+#   ⛔ 别为了「让输出好看」把它补上 —— 补上就等于把反向那一半永久关掉。
+#   两个方向各由 `tests/bench/gate.sh` 的 C12 / C13 钉着。
+# shellcheck source=bench/lib.sh
+. "$REPO_UNIX/bench/lib.sh"
+SYSCTL_ARGS=()
+while IFS= read -r tok; do
+  [ -n "$tok" ] || continue
+  SYSCTL_ARGS+=("$tok")
+done <<EOF
+$(bench_docker_sysctl_flags)
+EOF
+
 docker run --rm \
   -v "${REPO_HOST}:/w" \
   -v "${TARGET_VOL}:/w/target:ro" \
   -w /w \
+  "${SYSCTL_ARGS[@]}" \
   -e BENCH_GATE_DURATION \
   -e BENCH_GATE_CONNECTIONS \
   "$BENCH_IMAGE" \

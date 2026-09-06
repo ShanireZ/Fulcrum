@@ -35,16 +35,24 @@ BENCH_GEN_HEADROOM=${BENCH_GEN_HEADROOM:-0.90}
 
 # ── 判据 ①：宿主合格性 ─────────────────────────────────────────────────────
 #
-#   bench_disqualifiers <kernel_release> <nproc> <loadavg1> <attest> <affinity>
+#   bench_disqualifiers <kernel_release> <nproc> <loadavg1> <attest> <affinity> [kparam_mismatch]
 #
 # 每行打一条「不合格的理由」；**一行都不打 = 合格**。
 #
-# ★ ★ 五条分成性质完全不同的两半，⛔ 别把它们读成一张清单：
+# ★ ★ 六条分成性质完全不同的三半，⛔ 别把它们读成一张清单：
 #
 #   四条（kernel / cpus / load / affinity）是**容器自己看得见**的，机器判。
-#   第五条（attest）是**容器原理上看不见**的 —— 「这台机器没在承载真业务」
-#   「网络路径上没有 TUN 代理」「内核参数已按 bench/sysctl.conf 固化」这三件事，
-#   在容器里问不出来（netns 是容器自己的，sysctl 读到的也是容器自己的）。
+#
+#   一条（kernel-params）是 **G145 从 attest 里拆出来的** —— 它此前是那句声明的第三件，
+#   而实测证明「已固化」这句话可以完全诚实、同时对被测行为零影响（per-netns，
+#   传不进容器）。⇒ 现在它由真实比较喂进来，比较本身在 `bench_kparam_mismatches`。
+#   ★ 本参数**有默认值** ⇒ G145 之前写的每一条调用都还能跑，⛔ 但那意味着漏传时
+#     它安静地不判 —— 所以 `env-snapshot.sh` 那唯一一处真实调用必须传满六个参数，
+#     而自测里专门有一条钉住「传了不符的比较结果就必须红」。
+#
+#   一条（attest）是**容器原理上看不见、也没有任何门看得见**的 ——
+#   「这台机器没在承载真业务」与「网络路径上没有 TUN 代理」这两件，
+#   在容器里问不出来（netns 是容器自己的）。
 #   ⇒ 它要求一句**人写下来的**声明。⚠ 声明不是证明，`README.md` 把这一格
 #     该核什么逐条写明；这里能做到的只有「谁都没声明过就一定不算合格」。
 #
@@ -52,7 +60,7 @@ BENCH_GEN_HEADROOM=${BENCH_GEN_HEADROOM:-0.90}
 #   那个 TUN 代理会干扰网络（容器出不去 UDP/443），而 Docker Desktop 的 Linux 侧
 #   跑在 WSL2 里 ⇒ 内核串是本轮**唯一**一条不需要人配合就判得死的证据。
 bench_disqualifiers() {
-  local kernel=$1 cpus=$2 load1=$3 attest=$4 affinity=${5:-}
+  local kernel=$1 cpus=$2 load1=$3 attest=$4 affinity=${5:-} kparam_mismatch=${6:-}
 
   # WSL2 / Docker Desktop：内核串里带 microsoft 或 WSL。
   # ⚠ 大小写两种都见过（`5.15.0-microsoft-standard-WSL2`）⇒ 先折成小写再比，
@@ -88,10 +96,152 @@ bench_disqualifiers() {
     echo "affinity: 没有设置 BENCH_SERVER_CPUS / BENCH_LOAD_CPUS ⇒ 被测与负载生成器抢同一批核"
   fi
 
-  # 人写下来的那三件（容器看不见）。
+  # 人写下来的那两件（容器看不见，**也没有任何门看得见**）。
+  # ★ ★ G145 之前这里是三件，第三件是「内核参数已固化」。它现在**不在这句声明里了** ——
+  #   六个键各自有了门（四个容器侧 + 一个宿主侧 + nofile），见本文件 `bench_container_sysctls`
+  #   的注释。⛔ 别把它加回来：一件既有门又要人声明的事，会让人以为声明是那道门。
   if [ -z "$attest" ]; then
-    echo "attest: 没有任何人声明过「专机 + 无 TUN 代理 + 内核参数已固化」（见 bench/README.md）"
+    echo "attest: 没有任何人声明过「专机 + 无 TUN 代理」（见 bench/README.md）"
   fi
+
+  # 内核参数（G145）。★ 比较本身在 `bench_kparam_mismatches` 里，本函数只把它的输出
+  #   转成不合格理由 —— ⇒ 「怎么比」与「比出来算不算不合格」各自可被单独反证。
+  # ⚠ 逐行加前缀，⛔ 不是 `printf '前缀 %s\n' "$整串"` —— 后者在多条不符时只给
+  #   第一行加前缀，而本函数对外的契约是「**每行**一条不合格理由」。
+  if [ -n "$kparam_mismatch" ]; then
+    printf '%s\n' "$kparam_mismatch" | sed 's/^/kernel-params: /'
+  fi
+}
+
+# ── 判据 ①bis：内核参数真的按声明生效了吗（G145）─────────────────────────────
+#
+# ★ ★ ★ **为什么这一格必须存在**：G145 之前，「内核参数已固化」是 `attest` 那句话里的
+#   第三件，⇒ 它没有门。而 2026-09-06 的实测把问题挖得更深 —— 就算真的在宿主上
+#   `sysctl --system` 了，**四个键里没有一个传得进对拍容器**：
+#
+#     宿主 net.ipv4.ip_local_port_range = 20000 60000 ⇒ 新开的默认网络容器仍读到 32768 60999
+#     宿主 net.core.somaxconn           = 12345       ⇒ 新开的默认网络容器仍读到 4096
+#
+#   它们是 **per-netns** 的，而对拍整个跑在自己的 netns 里。
+#   ⇒ 一份「已固化」的声明可以完全诚实，同时对被测行为**零影响**。
+#   ⚠ 这正是本仓最在意的那一族：一道**恒绿**的门与一道不存在的门，输出完全一样。
+#
+# ⇒ G145 的落法：**四个 per-netns 键改由 `docker run --sysctl` 在容器里设**，
+#   而本函数在容器内断言「实测值 == 声明值」。⛔ 声明与实测分家时判红。
+
+# 容器侧那四个键 —— ★ ★ **唯一**那份声明。
+#   `bench/docker-run.sh` 用它拼 `--sysctl` 旗标，`bench/env-snapshot.sh` 用它当期望值。
+#   ⛔ 别在任何别处再抄一份：两份一旦分家，容器会按 A 跑而快照按 B 判，**两边都不红**。
+#
+# ⚠ ⚠ `tcp_tw_reuse` 声明成 **2 而不是 1**（G145 改的，此前是 1）。
+#   `2` 的语义是「**仅对环回**启用」，而对拍的四家与 oha 同处一个容器、只走环回
+#   ⇒ 2 恰好覆盖本场景，而 1（全局启用）比它更宽却**一点也不更贴切**。
+#   ★ 顺带：2 也正是 Linux 4.12 起的内核缺省 ⇒ 这一条声明的是「缺省没有被改坏」。
+bench_container_sysctls() {
+  printf '%s\n' \
+    'net.core.somaxconn=65535' \
+    'net.ipv4.tcp_max_syn_backlog=65535' \
+    'net.ipv4.ip_local_port_range=10240 65535' \
+    'net.ipv4.tcp_tw_reuse=2'
+}
+
+# 宿主侧那一条 —— ⛔ 它**设不进也读不到**容器里。
+#
+# ★ 实测（2026-09-06，`47.104.190.255`，Linux 6.8）：
+#     docker run --sysctl net.core.netdev_max_backlog=16384 …
+#       ⇒ runc 当场拒绝：`open sysctl … : no such file or directory`
+#     容器内 `cat /proc/sys/net/core/netdev_max_backlog`
+#       ⇒ `No such file or directory`（它非 netns 化 ⇒ 不出现在容器的 /proc/sys/net 视图里）
+#
+# ⇒ 它只能在**宿主上**设、在**宿主上**判 —— 那道门在 `bench/docker-run.sh` 里，
+#   而启动器把宿主实测值经环境变量传进容器，本文件据此判「启动器到底跑没跑过」。
+#
+# ★ 为什么单独留它而不是一并丢掉：**环回包也走 per-CPU `input_pkt_queue`**，
+#   正是这个键管的队列。那台机器的出厂值是 **1000** ⇒ 它是六个键里**唯一**
+#   既有效、又真有可能在对拍里成为瓶颈的。
+bench_host_sysctls() {
+  printf '%s\n' 'net.core.netdev_max_backlog=16384'
+}
+
+# 容器里的 `nofile` 软/硬上限。
+# ⚠ ⚠ ★ **实测容器缺省只有 1024**（2026-09-06，docker 29.1.3）—— 而 `fs.file-max`
+#   在那台机器上是 9223372036854775807。⇒ 会咬的从来不是 `fs.file-max`，是这个。
+#   ★ G145 之前的 `bench/sysctl.conf` 只管前者，而且把它**从 9.2e18 降到 2097152**。
+BENCH_NOFILE=${BENCH_NOFILE:-1048576}
+
+# `docker run` 要加的旗标 —— ★ ★ **从上面那两份声明推导，⛔ 不另写一份清单**。
+#   两个调用方（`bench/docker-run.sh` 真跑、`tests/bench/run.sh` 门禁）都用它。
+#   ⚠ 旗标与清单一旦分家，容器会按 A 跑而快照按 B 判，**两边都不会红**。
+#
+# ⚠ **一行一个 token**，⛔ 不是一整行空格分隔的字符串：
+#   `net.ipv4.ip_local_port_range=10240 65535` 这个值**自己带空格**，
+#   拼成一行再让调用方分词，会把它劈成两个参数而 docker 只报一句语焉不详的用法错。
+#   ⇒ 调用方用 `while IFS= read -r` 逐行读进数组。
+bench_docker_sysctl_flags() {
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s\n%s\n' '--sysctl' "$line"
+  done <<EOF
+$(bench_container_sysctls)
+EOF
+  printf '%s\n%s\n' '--ulimit' "nofile=${BENCH_NOFILE}:${BENCH_NOFILE}"
+}
+
+# 把任意空白（含 tab）压成单个空格并去掉首尾。
+# ⚠ ⚠ 这一步是承重的：`sysctl` 打多值时用 **tab** 分隔（`10240<TAB>65535`），
+#   而声明里写的是空格 ⇒ 不归一化的话，一次完全正确的固化会被判成不符。
+_bench_norm_ws() {
+  printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
+}
+
+# 在一份 `key=value` 多行文本里查一个键；查不到返回非 0（⛔ 不返回空串当成查到了）。
+_bench_sysctl_lookup() {
+  local key=$1 observed=$2 line
+  while IFS= read -r line; do
+    case "$line" in
+      "$key="*)
+        printf '%s' "${line#*=}"
+        return 0
+        ;;
+    esac
+  done <<EOF
+$observed
+EOF
+  return 1
+}
+
+#   bench_kparam_mismatches <声明 key=value 多行> <实测 key=value 多行>
+#
+# 每行打一条问题；**一行都不打 = 逐条相符**。
+#
+# ⚠ 三种「判不了」一律算问题，⛔ 不算通过：
+#   ① 声明本身是空的 —— 一个空声明会让本函数**恒返回空集**，而那与「全部相符」
+#      的输出一模一样。★ 这是本仓反复栽的那一族，所以它排在最前面。
+#   ② 某个键在实测里读不到（⚠ 报文有意不写「在容器里」——宿主侧那道门也用这个函数） —— 「没能检查」不算「检查通过」。
+#   ③ 读到了但不等于声明值。
+bench_kparam_mismatches() {
+  local declared=$1 observed=$2
+  local line key want got
+
+  if [ -z "$(printf '%s' "$declared" | tr -d '[:space:]')" ]; then
+    echo "声明为空 —— 一个空声明会让本判据恒返回「全部相符」，⛔ 那不算通过"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key=${line%%=*}
+    want=$(_bench_norm_ws "${line#*=}")
+    if ! got=$(_bench_sysctl_lookup "$key" "$observed"); then
+      echo "${key} 读不到 —— 「没能检查」不算「检查通过」"
+      continue
+    fi
+    got=$(_bench_norm_ws "$got")
+    [ "$got" = "$want" ] || echo "${key} 实测 '${got}' ≠ 声明 '${want}'"
+  done <<EOF
+$declared
+EOF
 }
 
 # ── 判据 ②：逐类取「该类最强者」 ───────────────────────────────────────────
@@ -263,6 +413,60 @@ bench_self_check() {
   # —— 边界：恰好等于阈值的那一侧算合格（⛔ 别让门在边界上随机翻面）——
   out=$(bench_disqualifiers "$OK_KERNEL" "$BENCH_MIN_CPUS" "$BENCH_MAX_IDLE_LOAD" "$OK_ATTEST" "$OK_AFF")
   want_empty "恰好压在阈值上的宿主被判成了不合格" "$out"
+
+  # —— 内核参数（G145）——
+  #
+  # ★ 先钉「声明本身不是空的」：`bench_kparam_mismatches` 拿一份空声明会**恒返回空集**，
+  #   而那与「逐条相符」的输出一模一样 ⇒ 声明一旦被谁清空，下面每一条都会照常绿。
+  local DECL OBS
+  DECL=$(bench_container_sysctls)
+  want_eq "容器侧声明的条数不对（空声明会让整格判据恒绿）" 4 "$(printf '%s\n' "$DECL" | grep -c .)"
+  want_eq "宿主侧声明的条数不对" 1 "$(bench_host_sysctls | grep -c .)"
+
+  # 第六个参数：传进不符的比较结果就必须红，传空就不该红。
+  out=$(bench_disqualifiers "$OK_KERNEL" "$OK_CPUS" "$OK_LOAD" "$OK_ATTEST" "$OK_AFF" "net.core.somaxconn 实测 '4096' ≠ 声明 '65535'")
+  want_match "内核参数不符没被判成不合格" '*kernel-params:*' "$out"
+  out=$(bench_disqualifiers "$OK_KERNEL" "$OK_CPUS" "$OK_LOAD" "$OK_ATTEST" "$OK_AFF" "")
+  want_empty "内核参数逐条相符时被判成了不合格" "$out"
+
+  # 比较本身：逐条相符 ⇒ 一行都不打。
+  OBS=$(printf '%s\n' 'net.core.somaxconn=65535' 'net.ipv4.tcp_max_syn_backlog=65535' \
+    'net.ipv4.ip_local_port_range=10240 65535' 'net.ipv4.tcp_tw_reuse=2')
+  want_empty "逐条相符却打出了问题" "$(bench_kparam_mismatches "$DECL" "$OBS")"
+
+  # ★ ★ 承重：`sysctl` 打多值用 **tab**，声明里写的是空格 ⇒ 少了归一化，
+  #   一次完全正确的固化会被判成不符，而那种门最后会被人绕过去而不是被人满足。
+  want_empty "tab 与空格的差别被当成了不符（归一化那一步失效了）" \
+    "$(bench_kparam_mismatches 'net.ipv4.ip_local_port_range=10240 65535' "$(printf 'net.ipv4.ip_local_port_range=10240\t65535')")"
+
+  # 值不等 ⇒ 逐字点名那个键。
+  want_match "值不等没被判出来" '*somaxconn*' \
+    "$(bench_kparam_mismatches 'net.core.somaxconn=65535' 'net.core.somaxconn=4096')"
+  # ⚠ 只点该点的那一个：另一条相符的键不许被顺带报出来。
+  want_eq "值不等时报出的条数不对（相符的那条被顺带报了）" 1 \
+    "$(bench_kparam_mismatches "$(printf 'net.core.somaxconn=65535\nnet.ipv4.tcp_tw_reuse=2\n')" \
+       "$(printf 'net.core.somaxconn=4096\nnet.ipv4.tcp_tw_reuse=2\n')" | grep -c .)"
+
+  # 「读不到」必须判红，⛔ 不许当成通过 —— 一个查不到就返回空串的实现，会把
+  # 「这个键不存在」和「这个键的值是空」混成同一件事。
+  want_match "键在实测里读不到却被当成了相符" '*读不到*' \
+    "$(bench_kparam_mismatches 'net.core.somaxconn=65535' 'net.ipv4.tcp_tw_reuse=2')"
+  want_eq "实测整份为空时没有逐条报出来" 4 \
+    "$(bench_kparam_mismatches "$DECL" "" | grep -c .)"
+
+  # ★ ★ ★ 空声明：⛔ 不许静默通过。
+  want_match "空声明被当成了「全部相符」" '*声明为空*' "$(bench_kparam_mismatches "" "$OBS")"
+  want_match "只有空白的声明被当成了「全部相符」" '*声明为空*' "$(bench_kparam_mismatches "$(printf '  \n\n')" "$OBS")"
+
+  # —— docker 旗标：从声明推导出来的那一份 ——
+  want_eq "docker 旗标行数不对（4 个 --sysctl + 1 个 --ulimit ⇒ 10 行）" 10 \
+    "$(bench_docker_sysctl_flags | grep -c .)"
+  # ★ ★ 承重：`10240 65535` 自己带空格，它必须是**一整行一个 token**。
+  #   ⛔ 被劈成两个参数时 docker 只报一句语焉不详的用法错，而不会提到那个空格。
+  want_eq "带空格的那个值被劈开了" 1 \
+    "$(bench_docker_sysctl_flags | grep -cF 'net.ipv4.ip_local_port_range=10240 65535')"
+  want_eq "nofile 旗标没跟着 BENCH_NOFILE 走" 1 \
+    "$(bench_docker_sysctl_flags | grep -cF "nofile=${BENCH_NOFILE}:${BENCH_NOFILE}")"
 
   # —— 最强者：逐类现算，⛔ 不是第一行、不是平均 ——
   out=$(printf 'caddy 100\nnginx 300\nhaproxy 200\n' | bench_best_of)

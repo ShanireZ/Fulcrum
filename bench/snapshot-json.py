@@ -62,8 +62,33 @@ snapshot = {
     # ⚠ 容器有自己的 netns ⇒ 这些多半是**容器的**值，不是宿主的。
     #   记它们是为了可追溯，⛔ 它们不参与合格性判定（见 env-snapshot.sh 那段注释）。
     "sysctl_as_seen_in_container": read_sysctls(env("SNAP_SYSCTLS")),
+    # ── 内核参数与资源上限（G145）────────────────────────────────────────
+    # ★ 记的是「声明了什么」与「实测是什么」**两份**，⛔ 不是只记实测：
+    #   第三方要能自己重算那次比较，而只有实测值的话，一次不符与一次改了声明
+    #   在快照里长得一模一样。
+    "kernel_params": {
+        # 容器侧四个键 —— 由 `docker run --sysctl` 设，由 env-snapshot 断言。
+        "declared_in_container": [
+            line for line in env("SNAP_DECLARED_CONTAINER").splitlines() if line.strip()
+        ],
+        # 宿主侧一个键 —— ⛔ 容器读不到，由 `bench/docker-run.sh` 在宿主上读了传进来。
+        "declared_on_host": [
+            line for line in env("SNAP_DECLARED_HOST").splitlines() if line.strip()
+        ],
+        "host_as_reported_by_launcher": [
+            line for line in env("SNAP_HOST_KV").splitlines() if line.strip()
+        ],
+        # ⚠ 会咬的是这个，不是 `fs.file-max`（容器缺省实测只有 1024）。
+        "nofile_declared": maybe_int(env("SNAP_NOFILE_DECLARED")),
+        "nofile_observed": maybe_int(env("SNAP_NOFILE")),
+    },
     "subjects": {
+        # ⚠ 这一项**恒为 null**：枢衡没有 `--version` 参数。⛔ 别把它读成
+        #   「问过了，它没有版本」—— 身份在下面那两项里。
         "fulcrum": env("SNAP_FULCRUM") or None,
+        # ★ 量的到底是哪个二进制：sha256 是唯一可靠的答案，构建身份把它映射回一次提交。
+        "fulcrum_sha256": env("SNAP_FULCRUM_SHA") or None,
+        "fulcrum_build_id": env("SNAP_FULCRUM_BUILD_ID") or None,
         "pinned_in_image": [
             line for line in env("SNAP_SUBJECTS").splitlines() if line.strip()
         ],

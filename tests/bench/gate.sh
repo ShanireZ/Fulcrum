@@ -98,6 +98,60 @@ else
   ok "整份判定里一个 PASS / FAIL 都没有"
 fi
 
+# ── C12 / C13：内核参数那道门（G145），两个方向都在这一趟里被走到 ───────────
+#
+# ★ ★ ★ 这两条是一对，**少任何一条另一条都说明不了问题**：
+#   C13 只证「容器侧四个键真的被 `--sysctl` 设上了」；如果没有 C12，
+#   一个把宿主侧检查整个删掉的改动会让 C13 照常绿。
+#   C12 只证「宿主侧缺凭证会判红」；如果没有 C13，一个**根本没传旗标**的改动
+#   会让容器侧四个键也一起判红，而 C12 仍然绿 —— 那时红的来源说不清。
+echo "── C12/C13 内核参数（G145）──"
+
+# C13 正向：容器侧那四个键，实测必须等于声明。
+# ⚠ 判据取快照里那两份**独立记录**（声明 / 实测），⛔ 不重跑一次比较 ——
+#   重跑等于用同一段代码给自己作证。
+if python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+kp = d.get("kernel_params") or {}
+declared = dict(x.split("=", 1) for x in kp.get("declared_in_container") or [])
+if not declared:
+    print("declared_in_container 是空的 —— 空声明会让整格判据恒绿"); sys.exit(1)
+seen = d.get("sysctl_as_seen_in_container") or {}
+bad = []
+for k, want in declared.items():
+    got = seen.get(k)
+    if got is None:
+        bad.append(k + " 没被记进快照"); continue
+    if " ".join(got.split()) != " ".join(want.split()):
+        bad.append("%s 实测 %r ≠ 声明 %r" % (k, got, want))
+if bad:
+    print("; ".join(bad)); sys.exit(1)
+print(len(declared))
+' "$OUT/env.json" > /tmp/bench-c13.txt 2>&1; then
+  ok "C13 容器侧 $(cat /tmp/bench-c13.txt) 个键实测==声明 ⇒ --sysctl 旗标真的生效了"
+else
+  bad "C13 容器侧内核参数没按声明生效：$(cat /tmp/bench-c13.txt)"
+fi
+
+# C12 反向：本格**有意不给** `BENCH_HOST_SYSTLS` ⇒ 宿主侧那一条必须判红。
+# ★ 它证明的是「那道门会咬」，⛔ 不是「这台机器不合格」——
+#   后者本来就被 kernel 那一条判死了，拿它当证据等于什么都没证。
+if python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+reasons = [r for r in d.get("disqualifiers") or [] if r.startswith("kernel-params:")]
+host = [r for r in reasons if "netdev_max_backlog" in r]
+if not host:
+    print("一条 kernel-params/netdev_max_backlog 的理由都没有；实际理由=%r" % (d.get("disqualifiers"),))
+    sys.exit(1)
+print(host[0])
+' "$OUT/env.json" > /tmp/bench-c12.txt 2>&1; then
+  ok "C12 缺宿主侧凭证 ⇒ 判红并逐字点名（$(cut -c1-72 /tmp/bench-c12.txt)…）"
+else
+  bad "C12 没给宿主侧凭证却没判红 —— 那道门是空操作：$(cat /tmp/bench-c12.txt)"
+fi
+
 # ── C 反证：合成的合格宿主上，判定必须真的出得来 ─────────────────────────────
 #
 # ★ ★ ★ 没有这一组，B 的判别力是零。
