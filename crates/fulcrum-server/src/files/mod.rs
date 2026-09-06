@@ -20,18 +20,37 @@
 //!
 //! 前四步全在 [`path`] 里，是纯函数、有自己的单测。
 //!
-//! ## ⚠ 阻塞 IO 走 `spawn_blocking`
+//! ## ⚠ 阻塞 IO 走 `spawn_blocking`，但**每请求只走一次**
 //!
 //! 这里的 `std::fs` 调用全部包在 [`tokio::task::spawn_blocking`] 里。
 //! 直接在 async 里做文件 IO 会**占住一个工作线程** —— 页缓存命中时只是几微秒，
 //! 而一次冷读（或一块坏盘）能把它占到毫秒级，那时整个 worker 上的其它连接一起卡住。
-//! ★ 代价认下：每 64 KiB 一次 `spawn_blocking`。这一批**不为吞吐做优化**，
-//! 性能是 M3 的事 —— 而在有数字之前先猜一个实现，是本仓库反复点名的那种做法。
+//!
+//! ★ ★ ★ **批 F 当初写的是「不为吞吐做优化，性能是 M3 的事」——
+//! M3 发生了，而它给出的数字推翻了那时的实现。** 2026-09-06 第一趟真实对拍：
+//! 枢衡静态吞吐 **7638 rps**，nginx / HAProxy **54000+**，⇒ `FAIL`。
+//! 根因不是猜的，是量的（同进程、同负载、只换终结指令）：
+//!
+//! | | rps | 每请求自愿上下文切换 | tokio 阻塞线程 |
+//! |---|---:|---:|---|
+//! | `file_server`（改前）| 20623 | **5.87** | 8 → **89** |
+//! | `respond`（纯内存）| 110341 | **0.01** | 9 → 8 |
+//!
+//! 每请求**三次** `spawn_blocking`（`stat` / `open` / `read`），而对一个已在页缓存
+//! 里的小文件，那三次调度往返的代价远大于 I/O 本身。
+//! ⇒ 现在 [`probe_file`] 一次做完 `open` + `fstat` +（≤ [`CHUNK`] 时）整读，
+//! 而 [`send_bytes`] 从内存发 ⇒ **常见路径上每请求只剩一次 `spawn_blocking`**。
+//!
+//! ⚠ ⛔ **大文件、预压缩旁文件、目录索引仍然走原来的分块路径** ——
+//! `spawn_blocking` 存在的理由（别让真会阻塞的活堵住 runtime）在那些场景仍然成立。
 
 pub mod httpdate;
 pub mod mime;
 pub mod path;
+mod probe;
 pub mod range;
+
+use probe::Probe;
 
 use crate::Downstream;
 use bytes::Bytes;
@@ -112,11 +131,26 @@ pub(crate) async fn serve(
         return Err(403);
     }
 
-    // ── 6. metadata ───────────────────────────────────────────────────────
-    let Some(meta) = stat(&full).await else {
-        debug!("file_server：不存在 → 404（{}）", full.display());
-        return Err(404);
+    // ── 6. metadata（+ 小文件顺手整读，一次 spawn_blocking 做完）──────────
+    //
+    // ★ ★ 为什么合成一次：见 [`open_stat_read`] 的注释里那张实测表。
+    // ⚠ ⚠ `open` 失败**不是** 404 —— 它的失败面比 `stat` 宽（文件本身要可读）
+    //   ⇒ 回落到 `stat()`，让「存在但打不开」照旧走原来那条路。
+    //   ⛔ 这一步是纯性能改动，不许改掉任何一个可观察行为。
+    let probed = match probe_file(&full).await {
+        Some(p) => p,
+        // ⚠ ⚠ `open` 失败**不是** 404 —— 它的失败面比 `stat` 宽（文件本身要可读）
+        //   ⇒ 回落到 `stat()`，让「存在但打不开」照旧走原来那条路。
+        //   ★ `meta_only` **结构上不可能带字节** ⇒ 这条回落路径不会误带任何数据。
+        None => match stat(&full).await {
+            Some(m) => Probe::meta_only(full.clone(), m),
+            None => {
+                debug!("file_server：不存在 → 404（{}）", full.display());
+                return Err(404);
+            }
+        },
     };
+    let meta = probed.meta();
 
     // ── 7. 目录 ───────────────────────────────────────────────────────────
     if meta.is_dir() {
@@ -146,7 +180,10 @@ pub(crate) async fn serve(
             if let Some(m) = stat(&cand).await
                 && m.is_file()
             {
-                return send_file(session, req, fs, &cand, &m, head_only, encoder).await;
+                // ★ 索引文件的 metadata 来自对**它**的一次 `stat` ⇒ `meta_only`，
+                //   而那个构造口结构上带不了字节。
+                let probed = Probe::meta_only(cand, m);
+                return send_file(session, req, fs, &probed, head_only, encoder).await;
             }
         }
         if fs.browse {
@@ -166,7 +203,7 @@ pub(crate) async fn serve(
     }
 
     // ── 8–11 ──────────────────────────────────────────────────────────────
-    send_file(session, req, fs, &full, &meta, head_only, encoder).await
+    send_file(session, req, fs, &probed, head_only, encoder).await
 }
 
 /// `follow_symlinks false` 时的校验：canonicalize 之后必须仍在 root 之内。
@@ -198,6 +235,88 @@ async fn stat(p: &Path) -> Option<Metadata> {
         .await
         .ok()
         .flatten()
+}
+
+/// 一次 [`tokio::task::spawn_blocking`] 里做完 `open` + `fstat` +（小文件）整读。
+///
+/// ★ ★ ★ **它取代的是三次跨线程 handoff**：`stat()` 一次、`stream_body()` 开文件
+/// 一次、每块 `read` 一次。2026-09-06 实测那三次就是静态吞吐的瓶颈 ——
+/// 同一个进程里、同一个负载、只换终结指令：
+///
+/// | | rps | 每请求自愿上下文切换 | tokio 阻塞线程 |
+/// |---|---:|---:|---|
+/// | `file_server` | 20623 | **5.87** | 8 → **89** |
+/// | `respond`（纯内存）| 110341 | **0.01** | 9 → 8 |
+///
+/// ⇒ 对一个**已经在页缓存里**的小文件，`spawn_blocking` 的调度往返代价远大于
+/// I/O 本身；而 `spawn_blocking` 的用途是「别让真的会阻塞的活堵住 runtime」，
+/// 在这里是负收益。
+///
+/// ⚠ 「小」的界取 [`CHUNK`]，⛔ **不引入新常量**：那是本模块已有的分块粒度，
+/// ⇒ 「一个块装得下的」与「本来就不必分块的」是同一件事。
+///
+/// ⚠ ★ 顺带修掉一个 TOCTOU：原来 `stat(path)` 与后面的 `open(path)` 是**两次独立
+/// 的路径解析**，中间文件可以被换掉（`stream_body` 里那句「文件在两步之间被换掉了」
+/// 说的就是它）。现在 metadata 取自**已经打开的那个 fd** ⇒ 两者必然是同一个文件。
+///
+/// ⚠ ⚠ ⛔ **`open` 失败时返回 `None`，由调用方回落到 `stat()`。** 两者的失败面
+/// **不一样**：`stat` 只要父目录可搜索就成，而 `open` 还要文件本身可读
+/// ⇒ 一个 mode 000 的文件在旧路径上会走到「发完头再断」，直接改成 404 是**行为变更**。
+/// 本次是纯性能改动，⛔ 不许顺手改掉任何一个可观察行为。
+async fn probe_file(p: &Path) -> Option<Probe> {
+    let p = p.to_path_buf();
+    // ★ 阻塞的那一段整个在 [`Probe::open_blocking`] 里，本函数只负责把它挪出 runtime。
+    //   ⇒ 「谁保证不阻塞 worker」在这一行上看得见。
+    tokio::task::spawn_blocking(move || Probe::open_blocking(p, CHUNK as u64).ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 从**已经在内存里**的字节发（[`probe_file`] 预取到的那一份）。⛔ 零 `spawn_blocking`。
+///
+/// ★ 逻辑与 [`stream_body`] 的循环体逐条对应，只是数据源换了 —— ⚠ 压缩那两条
+/// 陷阱（空块不能带 `last=false`、压缩时最后一块也不能标 `last`）在这里**一字不改**
+/// 地成立，⛔ 别因为「只有一块」就把它们省掉。
+async fn send_bytes(
+    session: &mut Downstream<'_>,
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+    encoder: &mut Option<crate::encode::Encoder>,
+) {
+    let s = start as usize;
+    let e = s + count as usize;
+    // ⚠ 防御：预取的那一份必须真的覆盖这个区间。⛔ 覆盖不到就断掉，
+    //   与 `stream_body` 里「文件比 Content-Length 说的短」同一个处置。
+    if e > bytes.len() {
+        warn!("file_server：预取的字节比要发的区间短（头已发出）");
+        let _ = session.write_response_body(Bytes::new(), true).await;
+        return;
+    }
+    let raw = Bytes::copy_from_slice(&bytes[s..e]);
+    let out = match encoder.as_mut() {
+        Some(en) => en.body_filter(Some(&raw), false),
+        None => None,
+    };
+    let chunk = out.unwrap_or(raw);
+    let mark_last = encoder.is_none();
+    if (!chunk.is_empty() || mark_last)
+        && let Err(err) = session.write_response_body(chunk, mark_last).await
+    {
+        debug!("file_server：写响应体失败：{err}");
+        return;
+    }
+    if let Some(en) = encoder.as_mut() {
+        if let Some(tail) = en.body_filter(None, true)
+            && !tail.is_empty()
+            && let Err(err) = session.write_response_body(tail, false).await
+        {
+            debug!("file_server：写压缩收尾失败：{err}");
+            return;
+        }
+        let _ = session.write_response_body(Bytes::new(), true).await;
+    }
 }
 
 /// 预压缩旁文件的后缀（**M2 批 I**，G99）。
@@ -296,11 +415,14 @@ async fn send_file(
     session: &mut Downstream<'_>,
     req: &RequestHeader,
     fs: &FileServerRt,
-    full: &Path,
-    meta: &Metadata,
+    // ★ ★ 「哪个文件」与「它的 metadata / 字节」现在是**同一个值**带来的
+    //   ⇒ ⛔ 不再有一个能与 metadata 各说各话的独立 `full` 参数。
+    probed: &Probe,
     head_only: bool,
     encoder: Option<crate::encode::Encoder>,
 ) -> Result<(), u16> {
+    let full = probed.path();
+    let meta = probed.meta();
     let base_name = full.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let ctype = mime::for_name(base_name);
     // ★ ★ 预压缩旁文件优先（**G99**）：它既省 CPU，又把强 ETag / Range /
@@ -417,7 +539,15 @@ async fn send_file(
         let _ = session.write_response_body(Bytes::new(), true).await;
         return Ok(());
     }
-    stream_body(session, full, start, body_len, &mut encoder).await;
+    // ★ ★ ★ **按路径取回**：要发的是 `full`（可能已经被换成预压缩旁文件），
+    //   而 `bytes_for` 在路径不符时回 `None` ⇒ 旁文件**自动**落回分块路径。
+    //   ⛔ 这里不再有「表示是不是原文件」这个需要人记得写对的条件 ——
+    //   它由 `Probe` 的类型面挡着（见 `files/probe.rs` 的不变式 ②）。
+    match probed.bytes_for(full) {
+        // 整个文件已经在内存里 ⇒ **这一整趟请求只有那一次 `spawn_blocking`**。
+        Some(bytes) => send_bytes(session, bytes, start, body_len, &mut encoder).await,
+        None => stream_body(session, full, start, body_len, &mut encoder).await,
+    }
     Ok(())
 }
 

@@ -109,6 +109,29 @@ printf 'outside-secret\n'       > "$OUTSIDE/secret.txt"
 #   一个「在开发机上跑得通、在门里跑不起来」的夹具，正是本仓库点过名的那一类。
 : > "$ROOT/range.bin"
 for _ in $(seq 1 100); do printf '0123456789' >> "$ROOT/range.bin"; done
+# ★ ★ ★ **跨过 `CHUNK`（64 KiB）那条界的三份夹具。**
+#
+# 2026-09-06 起 `file_server` 分两条发送路径：长度 ≤ CHUNK 的在 `serve()` 里就被
+# 一次 `spawn_blocking` 整读进内存、由 `send_bytes` 发；更大的走原来的分块循环
+# `stream_body`（`open` + 逐块 `read`，各自一次 `spawn_blocking`）。
+#
+# ⚠ ⚠ ★ **在这三份夹具之前，本仓没有任何一个测试用过大于 64 KiB 的文件。**
+#   改之前分块路径是**唯一**路径（每个文件测试都在走它），改之后它只剩
+#   大文件 / 预压缩旁文件 / 目录索引能走到 ⇒ `stream_body` 一旦被弄坏，
+#   **不会有任何东西变红**。这三份就是补上的那道门。
+# ⛔ **不许把 `chunk-plus.bin` 改成「明显更大」的尺寸**：它只比界大 **1 个字节**，
+#   那正是它的判别力所在 —— 界写成 `>=` 还是 `>` 只有它分得开。
+#
+# ⚠ ⛔ **不用 `yes … | head -c N`**：本文件是 `set -o pipefail`，`head` 先退会给
+#   `yes` 一个 SIGPIPE ⇒ 管道状态 141 ⇒ 整个脚本被 `set -e` 杀掉。
+#   ⇒ 先造一份填充料，再用**重定向**（⛔ 不是管道）截出三个尺寸。
+FILL_LINE=""
+for _ in $(seq 1 100); do FILL_LINE="${FILL_LINE}0123456789"; done
+: > "$WORK/filler"
+for _ in $(seq 1 300); do printf '%s' "$FILL_LINE" >> "$WORK/filler"; done
+head -c 65536 < "$WORK/filler" > "$ROOT/chunk-exact.bin"
+head -c 65537 < "$WORK/filler" > "$ROOT/chunk-plus.bin"
+head -c 200000 < "$WORK/filler" > "$ROOT/big.bin"
 # ★ 目录列表的夹具：一个正常名字 + 一个**带尖括号的名字**（XSS 那条判据用）。
 printf 'listed\n' > "$ROOT/browsable/plain.txt"
 printf 'xss\n'    > "$ROOT/browsable/<script>.txt"
@@ -273,6 +296,35 @@ expect_status "GET /nope.txt（不存在）" 404 "$(probe "$BASE/nope.txt")"
 # 空文件：Content-Length 必须是 0，而不是「没有这个头」。
 expect_status "GET /empty.txt（空文件）" 200 "$(probe "$BASE/empty.txt")"
 expect_header "GET /empty.txt（空文件）" "Content-Length" "0"
+
+# ── ★★★ 跨 `CHUNK` 界的两条发送路径 ────────────────────────────────────────
+#
+# ⚠ 断言取**逐字节相等**（`cmp`），⛔ 不只是长度：一个把偏移算错的分块循环
+#   长度照样对，而内容是错位的。
+expect_same_bytes() {
+  local what=$1 src=$2
+  if cmp -s "$src" "$WORK/body"; then
+    ok "$what 体与源文件逐字节相同（$(stat -c '%s' "$src") 字节）"
+  else
+    fail "$what 体与源文件不同（源 $(stat -c '%s' "$src") 字节，实收 $(stat -c '%s' "$WORK/body") 字节）"
+  fi
+}
+
+# ① 恰好 CHUNK ⇒ 走**内存**路径（界是 `> CHUNK` 才分块 ⇒ 等于时不分）。
+expect_status "GET /chunk-exact.bin（恰好 64 KiB）" 200 "$(probe "$BASE/chunk-exact.bin")"
+expect_header "GET /chunk-exact.bin" "Content-Length" "65536"
+expect_same_bytes "GET /chunk-exact.bin" "$ROOT/chunk-exact.bin"
+# ② CHUNK+1 ⇒ 走**分块**路径。★ ★ 只比 ① 大一个字节，而**这一对确实钉得开两条路径**
+#   —— 2026-09-06 反证实测：给 `stream_body` 注入「只发第一块就停」之后，
+#   ① 照常绿、② 与 ③ 当场红（实收 65536 字节）。⇒ ① 没走分块路径，②③ 走了。
+expect_status "GET /chunk-plus.bin（64 KiB + 1）" 200 "$(probe "$BASE/chunk-plus.bin")"
+expect_header "GET /chunk-plus.bin" "Content-Length" "65537"
+expect_same_bytes "GET /chunk-plus.bin" "$ROOT/chunk-plus.bin"
+# ③ 200000 字节 ⇒ 分块循环真的转 **4 圈**（最后一圈 3392 字节）。
+#   ★ 只有它能抓到「第二块之后就不对了」这一类错。
+expect_status "GET /big.bin（200000 字节，4 块）" 200 "$(probe "$BASE/big.bin")"
+expect_header "GET /big.bin" "Content-Length" "200000"
+expect_same_bytes "GET /big.bin" "$ROOT/big.bin"
 
 # ── [2/6] 方法 · 尾斜杠 301 · browse ────────────────────────────────────────
 echo
@@ -472,6 +524,17 @@ expect_header_absent "Range 多段" "Content-Range"
 # 不认识的单位 ⇒ 忽略、200 全量。
 CODE=$(probe -H "Range: items=0-10" "$BASE/range.bin")
 expect_status "Range 单位不是 bytes ⇒ 忽略" 200 "$CODE"
+# ★ ★ ★ **一个跨越多块的 Range**：1000–100000 共 **99001** 字节 ⇒ 分块循环要转 2 圈。
+#
+# ⚠ ⚠ ★ **初稿写的是 `bytes=65530-65545`，说它「压在第 1 块与第 2 块的接缝上」——
+#   那句话是错的。** `stream_body` 先 `seek(start)`，分块是**从 range 的起点重新数的**
+#   ⇒ 一个 16 字节的 range 永远只有一块，它跨不过任何边界。
+#   反证当场戳穿了它：给 `stream_body` 注入「只发第一块就停」，那一条**照常绿**。
+#   ⇒ 判据必须让 range 自己**长过 CHUNK**，否则它只测到 `seek`，测不到跨块拼接。
+CODE=$(probe -H "Range: bytes=1000-100000" "$BASE/big.bin")
+expect_status "Range 跨多块（99001 字节）" 206 "$CODE"
+expect_header "Range 跨多块" "Content-Range" "bytes 1000-100000/200000"
+expect_bytes  "Range 跨多块" 99001
 # ── If-Range ──
 probe "$BASE/range.bin" >/dev/null
 RETAG=$(hdr ETag)
