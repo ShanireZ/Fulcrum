@@ -106,9 +106,30 @@ EOF
 echo "[bench/launch] 镜像 $BENCH_IMAGE · 产物 $FULCRUM_BIN_HOST · 输出 $OUT_REL"
 
 # ★ 把宿主实测值经环境变量传进去 —— 容器读不到它，只能这样过河。
+# ── 站点根挂在一个匿名卷上（⇒ ext4），⛔ 不是容器可写层 ────────────────────
+#
+# ★ ★ ★ **这是口径不是编排细节。** 枢衡的静态文件路径先在本线程上试一次
+#   `preadv2(RWF_NOWAIT)`，而**认不认由文件系统各自决定** —— 2026-09-06 实测
+#   ext4 认、**overlayfs 与 tmpfs 回 `EOPNOTSUPP`**；同一个二进制、同一台机器，
+#   站点根换一种文件系统，静态吞吐差 **45%**。
+# ⚠ ⚠ 而在此之前站点根来自 `mktemp -d`，落在**容器可写层（overlayfs）**上 ——
+#   那是编排的副产品，**从来没人挑过**，却决定了被测的哪条路径会被走到。
+#   ⇒ 而枢衡按 G13 的分发形状（systemd + 单静态二进制）在生产上是 ext4/xfs。
+# ★ 用**匿名卷**（`-v /bench-www`，没有源路径）而不是命名卷：`--rm` 会连它一起删
+#   ⇒ ⛔ 不跨趟留残留、不用管回收，也不会被门禁那道「说不出属主的卷」判据挑出来
+#   （它认得 docker 匿名卷那 64 位十六进制名字）。
+# ⚠ 用 `${VAR-default}`（**没有冒号**）⇒ 显式传一个空串就回到 overlayfs 那种形状，
+#   而两种形状都由 `bench/env-snapshot.sh` 写进 `env.json` 的 `site_root` 里
+#   ⇒ ⛔ 不管走哪条，原始数据都说得出自己是在哪种形状下量的。
+# ⚠ 必须 `export`：下面那行 `-e BENCH_WWW_ROOT`（不带 `=`）取的是**本进程环境里**
+#   的值，而一个没导出的普通赋值在那里是看不见的 —— 症状是站点根静默落回
+#   容器可写层，而输出看起来完全正常。
+export BENCH_WWW_ROOT=${BENCH_WWW_ROOT-/bench-www}
+
 docker run --rm \
   -v "${REPO_HOST}:/w" \
   -v "${FULCRUM_BIN_MOUNT}:/w/target/release/fulcrum:ro" \
+  -v /bench-www \
   -w /w \
   "${DOCKER_ARGS[@]}" \
   -e BENCH_HOST_SYSCTLS="$HOST_KV" \
@@ -121,5 +142,6 @@ docker run --rm \
   -e BENCH_PAYLOAD_BYTES \
   -e BENCH_MIN_SPREAD \
   -e BENCH_GEN_HEADROOM \
+  -e BENCH_WWW_ROOT \
   "$BENCH_IMAGE" \
   bash bench/run.sh "$OUT_REL"

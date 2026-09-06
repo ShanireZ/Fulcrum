@@ -69,6 +69,11 @@ bad() {
 cleanup() {
   stop_child
   rm -rf "$WORK"
+  # ⚠ `$WWW` 可能落在一个**跨趟存活**的命名卷上（`BENCH_WWW_ROOT`）⇒ 单独删。
+  #   ⛔ `${WWW:-}` 那层守卫是承重的：`set -u` 下，在 `WWW` 赋值之前退出（比如
+  #   payload 字节数对不上）会让这里 `unbound variable`，而那会把一条清楚的
+  #   失败报文换成一句 bash 的错。
+  [ -z "${WWW:-}" ] || rm -rf "$WWW"
 }
 trap cleanup EXIT
 
@@ -123,7 +128,25 @@ if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
 fi
 
 # ── 准备 payload ───────────────────────────────────────────────────────────
-WWW="$WORK/www"
+#
+# ★ ★ ★ **站点根落在哪种文件系统上是口径的一部分**，⛔ 不是实现细节：
+#   枢衡的静态文件路径先在本线程上试一次 `preadv2(RWF_NOWAIT)`，而**认不认由
+#   文件系统各自决定** —— 2026-09-06 实测 ext4 认、**overlayfs 与 tmpfs 回
+#   `EOPNOTSUPP`**，同一个二进制、同一台机器差 **45%**。
+#   ⚠ ⚠ 而 `mktemp -d` 落在容器可写层（overlayfs）上 —— 那是**编排的副产品，
+#   从来没人挑过**，却决定了被测的哪条路径会被走到。
+# ⇒ `BENCH_WWW_ROOT` 由 `bench/docker-run.sh` 指到一个命名卷（ext4）。
+# ⚠ ⛔ **缺省仍然回落到 `$WORK`，而这不是「悄悄回落」** —— 实际落在哪种文件系统上
+#   由 `bench/env-snapshot.sh` 探出来写进 `env.json` 的 `site_root` 里
+#   ⇒ 每一份原始数据都说得出自己是在哪种形状下量的。
+if [ -n "${BENCH_WWW_ROOT:-}" ]; then
+  # ⚠ 命名卷**跨趟存活** ⇒ 每趟用自己的子目录并在收尾时删掉，
+  #   ⛔ 否则上一趟的 payload 会留在那里，而它与这一趟的可能不是同一份字节。
+  WWW="$BENCH_WWW_ROOT/static-throughput-$$"
+  rm -rf "$WWW"
+else
+  WWW="$WORK/www"
+fi
 mkdir -p "$WWW" "$RAW_DIR"
 # ★ 用 `/dev/urandom` 而不是可压缩的重复字节：四家的默认压缩策略不同，
 #   一个高度可压缩的 payload 会把「压不压缩」的差异混进吞吐里。本类**不比压缩**。

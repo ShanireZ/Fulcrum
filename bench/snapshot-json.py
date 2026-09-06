@@ -82,6 +82,20 @@ snapshot = {
         "nofile_declared": maybe_int(env("SNAP_NOFILE_DECLARED")),
         "nofile_observed": maybe_int(env("SNAP_NOFILE")),
     },
+    # ── 站点根落在哪种文件系统上 ──────────────────────────────────────────
+    #
+    # ★ ★ ★ **这是口径，⛔ 不是元数据。** 枢衡的静态文件路径先在本线程上试一次
+    #   `preadv2(RWF_NOWAIT)`，而认不认由文件系统各自决定（实测 ext4 认、
+    #   overlayfs 与 tmpfs 回 `EOPNOTSUPP`）⇒ 同一个二进制、同一台机器，
+    #   站点根换一种文件系统，静态吞吐差 45%。
+    # ⚠ ⚠ **两个字段要一起读**：一个恒返回 `no` 的探测与「真的跑在 overlayfs 上」
+    #   输出完全相同 ⇒ `fs=ext4` 配 `rwf_nowait=no` 是看得出来不对劲的组合。
+    # ⛔ `unknown` 是「探不了」，**不是**「不认」——两件事必须分得开。
+    "site_root": {
+        "path": env("SNAP_SITE_ROOT") or None,
+        "fs": env("SNAP_SITE_FS") or None,
+        "rwf_nowait": env("SNAP_SITE_NOWAIT") or None,
+    },
     "subjects": {
         # ⚠ 这一项**恒为 null**：枢衡没有 `--version` 参数。⛔ 别把它读成
         #   「问过了，它没有版本」—— 身份在下面那两项里。

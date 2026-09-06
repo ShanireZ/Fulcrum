@@ -121,6 +121,30 @@ if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
   AFFINITY="server=${BENCH_SERVER_CPUS} load=${BENCH_LOAD_CPUS}"
 fi
 
+# ── 站点根落在哪种文件系统上（口径的一部分，⛔ 不是元数据）─────────────────
+#
+# ★ ★ ★ 枢衡的静态文件路径先在本线程上试一次 `preadv2(RWF_NOWAIT)`，而
+#   **认不认由文件系统各自决定**（实测 ext4 认、overlayfs 与 tmpfs 回 `EOPNOTSUPP`）
+#   ⇒ 同一个二进制、同一台机器，站点根换一种文件系统，静态吞吐差 45%。
+#   ⛔ 一份不说出这一格的读数是复现不出来的（G19）。
+# ⚠ 本步只**采读数**，⛔ 不判红：跑在 overlayfs 上仍然是一次有效的测量，
+#   量的只是另一种部署形状 —— 而那件事必须**写在数据里**，不能靠谁记得。
+# ⚠ 用例还没跑 ⇒ 探的是站点根**将要落在**的那个目录，不是站点根本身。
+SITE_ROOT=${BENCH_WWW_ROOT:-${TMPDIR:-/tmp}}
+SITE_FS=unknown
+SITE_NOWAIT=unknown
+if [ -d "$SITE_ROOT" ]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      fs) SITE_FS=$v ;;
+      rwf_nowait) SITE_NOWAIT=$v ;;
+      *) ;;
+    esac
+  done <<EOF
+$(python3 "$BENCH_DIR/site-root-probe.py" "$SITE_ROOT" 2>/dev/null || true)
+EOF
+fi
+
 # ── 判合格性（判据在 lib.sh）────────────────────────────────────────────────
 # ⚠ ⚠ 第六个参数**必须传** —— `bench_disqualifiers` 给了它默认值（为了不推翻
 #   G145 之前写的每一条调用），⇒ 漏传时它会安静地不判内核参数那一格。
@@ -143,7 +167,8 @@ export SNAP_KERNEL="$KERNEL" SNAP_NPROC="$NPROC" SNAP_LOAD1="$LOAD1" \
   SNAP_OUT="$OUT" \
   SNAP_MIN_CPUS="$BENCH_MIN_CPUS" SNAP_MAX_LOAD="$BENCH_MAX_IDLE_LOAD" \
   SNAP_DURATION="${BENCH_DURATION:-}" SNAP_CONNECTIONS="${BENCH_CONNECTIONS:-}" \
-  SNAP_WORKERS="${BENCH_WORKERS:-}" SNAP_PAYLOAD_BYTES="${BENCH_PAYLOAD_BYTES:-}"
+  SNAP_WORKERS="${BENCH_WORKERS:-}" SNAP_PAYLOAD_BYTES="${BENCH_PAYLOAD_BYTES:-}" \
+  SNAP_SITE_ROOT="$SITE_ROOT" SNAP_SITE_FS="$SITE_FS" SNAP_SITE_NOWAIT="$SITE_NOWAIT"
 
 python3 "$BENCH_DIR/snapshot-json.py"
 
