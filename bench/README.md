@@ -70,6 +70,12 @@ BENCH_DURATION=60s BENCH_CONNECTIONS=200 \
 3. **内核参数已固化** —— 至少这几项被显式设过并记录：
    `net.core.somaxconn` · `net.ipv4.tcp_max_syn_backlog` · `net.ipv4.ip_local_port_range` ·
    `net.ipv4.tcp_tw_reuse` · `net.core.netdev_max_backlog` · `fs.file-max`
+   ⇒ 这六项连同**每一条「不设会怎样」**写在 [`bench/sysctl.conf`](sysctl.conf) 里，
+   照抄即可：`cp bench/sysctl.conf /etc/sysctl.d/99-fulcrum-bench.conf && sysctl --system`。
+   ⚠ ⚠ ★ **在容器里读到的 sysctl 不是宿主的** ⇒ ⛔ 别拿容器里的读数当「已经固化」的证据，
+   要核就在**宿主上**跑 `sysctl -a | grep -E 'somaxconn|syn_backlog|tw_reuse|local_port_range'`。
+   ★ 那份文件还写明了**有意不放进来的三类**（拥塞控制 · socket 缓冲 · `vm.*`）——
+   它们会**改变结论本身**，而不只是消除噪声。
 
 ★ ★ **声明不是证明。** 这一格能做到的只有「谁都没声明过就一定不算合格」，
 ⛔ 它拦不住一句不实的声明 —— 那一格没有门，只有纪律。快照会把声明原文记下来。
