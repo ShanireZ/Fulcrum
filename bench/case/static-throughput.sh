@@ -26,6 +26,17 @@
 set -euo pipefail
 
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ⚠ ⚠ ★ **只为拿那四个负载参数的缺省**（`bench/lib.sh` 的「负载参数」一节）。
+#   ⛔ **不许在本文件里再写一份 `:-` 缺省** —— 2026-09-06 之前正是那样：
+#   用例用「声明值或缺省」，而 `env-snapshot.sh` 记「声明值」
+#   ⇒ 没人显式设的参数，用例真的用了缺省而快照写 `null`
+#   （那一趟的 `payload_bytes` 与门禁里的 `workers` 都是这么来的）。
+#   ⇒ 缺省一处定义、两边都从这里取，那一族缺陷就**结构性地不存在**。
+# ★ `lib.sh` 被 `source` 时什么都不做（它自己那道 `BASH_SOURCE` 判断），
+#   ⇒ 这里拿到的只有变量与函数，⛔ 没有任何副作用。
+# shellcheck source=bench/lib.sh
+. "$BENCH_DIR/lib.sh"
+
 OUT_DIR=${1:?用法：bash bench/case/static-throughput.sh <输出目录>}
 CASE=static-throughput
 RAW_DIR="$OUT_DIR/raw/$CASE"
@@ -33,10 +44,12 @@ WORK=$(mktemp -d)
 HOST=127.0.0.1
 
 # ── 参数（★ 它们是口径的一部分，会被写进环境快照）────────────────────────────
-DURATION=${BENCH_DURATION:-10s}
-CONNECTIONS=${BENCH_CONNECTIONS:-50}
-WORKERS=${BENCH_WORKERS:-1}
-PAYLOAD_BYTES=${BENCH_PAYLOAD_BYTES:-4096}
+# ⛔ 这四个**不带 `:-`**：缺省由上面那次 `source` 供。少了那一行就是 `set -u`
+#   当场报错，⛔ 而不是安静地回落到一个只有本文件知道的数。
+DURATION=$BENCH_DURATION
+CONNECTIONS=$BENCH_CONNECTIONS
+WORKERS=$BENCH_WORKERS
+PAYLOAD_BYTES=$BENCH_PAYLOAD_BYTES
 FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 
 # 端口：9940–9943（端口表在 docs/platform/host-and-gate-traps.md）。

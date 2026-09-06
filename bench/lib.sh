@@ -41,6 +41,33 @@ BENCH_MAX_IDLE_LOAD=${BENCH_MAX_IDLE_LOAD:-0.50}
 BENCH_MIN_SPREAD=${BENCH_MIN_SPREAD:-0.05}
 BENCH_GEN_HEADROOM=${BENCH_GEN_HEADROOM:-0.90}
 
+# ── 负载参数：**缺省只在这里定义一次**（2026-09-06）───────────────────────────
+#
+# ⚠ ⚠ ★ ★ ★ **这四行为什么必须在这个文件里，而不是在用例脚本里。**
+#
+# 在它们搬过来之前，缺省写在 `bench/case/static-throughput.sh`（`:-4096` 那一族），
+# 而 `bench/env-snapshot.sh` 记的是**声明值** `${BENCH_PAYLOAD_BYTES:-}`
+# ⇒ 没人显式设的那些参数，**用例真的用了缺省，而快照写 `null`**。
+# 2026-09-06 那组读数就带着这个缺陷：`payload_bytes: null`，而那一趟真的用了 4096。
+# ★ 门禁里同时露出的还有 `workers: null` ⇒ ⛔ **别把它记成「payload 的毛病」**，
+#   四个参数用的是同一个写法，只是那一趟 owner 恰好显式设了另外三个。
+#
+# ★ ★ G19 要的是**原始数据可被第三方复现**，而一份说不出自己用了多大 payload、
+#   几个 worker 的静态吞吐读数**复现不出来** ⇒ 这不是元数据，是口径本身。
+#
+# ⛔ **别把缺省「顺手也写进 `env-snapshot.sh` 一份」** —— 那才是更坏的形态：
+#   两处缺省一旦飘掉，快照会**理直气壮地报一个错的数**，而 `null` 至少不骗人。
+#   ⇒ 一处定义、两边都 `source` 本文件，于是这一族缺陷**结构性地不存在**。
+# ★ 与上面那几个阈值同一个写法（`${X:-缺省}`）⇒ 宿主侧设了就一路带进容器
+#   （`bench/docker-run.sh` 的 `-e BENCH_*`），没设则两边各自算出**同一个**缺省。
+#
+# ⚠ 这四个值本身是**口径**，改它们要连 `bench/README.md` 一起改。
+#   ⛔ 真要出数那天必须显式设 `BENCH_WORKERS`（理由见用例脚本头部第 ⑤ 条）。
+BENCH_DURATION=${BENCH_DURATION:-10s}
+BENCH_CONNECTIONS=${BENCH_CONNECTIONS:-50}
+BENCH_WORKERS=${BENCH_WORKERS:-1}
+BENCH_PAYLOAD_BYTES=${BENCH_PAYLOAD_BYTES:-4096}
+
 # ── 判据 ①：宿主合格性 ─────────────────────────────────────────────────────
 #
 #   bench_disqualifiers <kernel_release> <nproc> <loadavg1> <attest> <affinity> [kparam_mismatch]

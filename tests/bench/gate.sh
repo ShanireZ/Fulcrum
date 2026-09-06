@@ -400,6 +400,41 @@ else
   fi
 fi
 
+# ── C16：**原始数据必须说得出自己是在什么口径下量的** ───────────────────────
+#
+# ⚠ ⚠ ★ 判的是 **A 那一趟真跑出来的** `env.json`（⛔ 不是合成夹具）——
+#   这一条问的正是「那份快照诚不诚实」，拿合成的去问等于问了个假问题。
+#
+# **起因是一个真实缺陷**（2026-09-06 那组读数里就带着）：`env-snapshot.sh` 记的是
+# **声明值** `${BENCH_PAYLOAD_BYTES:-}`，而用例跑的是 **声明值或缺省** `:-4096`
+# ⇒ 没人显式设它时，快照写 `null`，而那一趟**真的**用的是 4096。
+# ★ ★ ★ 那不是「少了一格元数据」：G19 要的是**原始数据可被第三方复现**，
+# 而一份说不出自己用了多大 payload 的静态吞吐读数**复现不出来**。
+# ⚠ ⚠ 它**不止 payload 一格** —— 四个参数用的是同一个写法，只是那一趟 owner
+#   恰好显式设了另外三个 ⇒ 只有 payload 露了头。⛔ 别把它记成「payload 的毛病」。
+#
+# ★ 修法是**把缺省收进 `bench/lib.sh` 一处定义**，两边（快照与用例）都从那里取
+#   ⇒ 「两处缺省飘掉」这类缺陷结构性地不存在，而不是被修好一次。
+#
+# ⛔ 本条**不判这四个值取得对不对** —— 那是口径本身，归 `bench/README.md`。
+#   它只判「快照说不说得出话」。⚠ 失效方向是噪音（多一条红），不是沉默。
+echo "── C16 口径必须落在原始数据里 ──"
+if python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+lp = d.get("load_params")
+if not lp:
+    print("快照里根本没有 load_params —— 空的会让这一格恒绿"); sys.exit(1)
+missing = sorted(k for k, v in lp.items() if v is None or v == "")
+if missing:
+    print("这几格没被记进去：%s（整份 load_params=%r）" % (", ".join(missing), lp)); sys.exit(1)
+print("%d 格全部记到：%s" % (len(lp), lp))
+' "$OUT/env.json" > /tmp/bench-c16.txt 2>&1; then
+  ok "C16 $(cat /tmp/bench-c16.txt)"
+else
+  bad "C16 快照说不出自己是在什么口径下量的：$(cat /tmp/bench-c16.txt)"
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"
