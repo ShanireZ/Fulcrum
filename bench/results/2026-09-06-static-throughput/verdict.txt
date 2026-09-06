@@ -1,0 +1,14 @@
+# 枢衡对拍判定
+# 环境快照：env.json
+
+## static-throughput
+VERDICT: FAIL
+  该类最强者：haproxy = 54531.2335
+  门槛（最强者 × 0.9，G19「不劣于 10%」）：49078.1102
+  枢衡：7638.6264
+  全部读数：
+    caddy 10834.7315
+    fulcrum 7638.6264
+    haproxy 54531.2335
+    nginx 54144.1168
+
