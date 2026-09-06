@@ -31,7 +31,9 @@ BENCH_MAX_IDLE_LOAD=${BENCH_MAX_IDLE_LOAD:-0.50}
 #     ⚠ ⚠ ★ **但同一组数暴露了 B 的一个真实缺陷**：最快两家（haproxy / nginx）只差
 #     **0.0071**，正是 B 声称要怀疑的形状，而 B 一声没吭 —— 因为它取的是**全场极差**，
 #     被枢衡的慢整个撑开了。⇒ **一个慢的被测会掩盖掉快的那几家之间的收敛。**
-#     ⏳ 怎么修还没拍，⛔ 在拍之前别把 `0.05` 读成「已被实测确认的阈值」。
+#     ✅ 已由 **`G146`** 结案（原 `D34`）：新增判据 **④C**（`bench_top_convergence`），
+#     判「最强者 vs 第二强」，**只作用于 PASS**。⛔ 但 `0.05` 这个数**本身**
+#     仍然没有实测支撑 —— G146 改的是「拿它去比什么」，不是「它该取多少」。
 #   · `0.90` **一次都没被执行过**（那一趟 A 没打开，没有 ceiling.txt）⇒ 仍然验不了。
 #
 # ★ 取 0.05 的理由写在判据 ④ 的注释里（四套结构完全不同的实现挤进 5% 更像是
@@ -367,6 +369,72 @@ bench_saturation() {
   fi
 }
 
+# ── 判据 ④C：最强者附近的收敛（`G146`，结案 `D34`）──────────────────────────
+#
+#   bench_top_convergence <全场读数，每行 `<名字> <数值>`>
+#
+# 每行打一条理由；**一行都不打 = 最强者与第二强分得开**。
+#
+# ★ ★ ★ **它存在的理由是一组真实数据推翻了 B 的一个前提。** 2026-09-06 第一趟
+#   真实对拍：全场极差 **0.8599**（远高于 `BENCH_MIN_SPREAD`）⇒ B 一声没吭；
+#   而**最快两家 haproxy 与 nginx 只差 0.0071** —— 两套架构差异极大的实现落进
+#   0.71% 以内，**那正是 B 声称要怀疑的形状**。
+#   ⇒ B 取的是**全场极差**，被最慢那一家（枢衡 7638）整个撑开了
+#   ⇒ **一个慢的被测会掩盖掉快的那几家之间的收敛。**
+#
+# ⚠ ⚠ ★ **而它只威胁 PASS，永远不威胁 FAIL** —— 这一条是 `G146` 与原先那三条
+#   候选的分水岭，也是它为什么排在 `bench_verdict_one` **之后**：
+#
+#     门槛 = max(竞品) × 0.9。若那个 max 被天花板压住了，**门槛就是被低估的**。
+#     · 结论是 PASS ⇒ 枢衡可能只是压过了一个被低估的门槛 ⇒ **不可信，作废**。
+#     · 结论是 FAIL ⇒ 真实门槛只会**更高** ⇒ FAIL **更成立** ⇒ ⛔ 不该作废。
+#
+#   ★ `G142` 那条「两边都往作废侧倒」的初衷是**不给出错结论**，而天花板之下的
+#   FAIL **不可能是错的** ⇒ 这不是放松，是把那条初衷贯彻到底。
+#   ⛔ 三条原候选（最快 k 家 / 每一对 / 极差外加一条）都会把 09-06 那个结实的
+#   FAIL 扣掉，而扣掉一个正确结论并不比给出一个错结论便宜。
+#
+# ⚠ ⚠ ⛔ **排在后面 ≠ 可以先把 PASS 打出来。** `verdict.sh` 内部算完再决定写什么，
+#   一个会被作废的 PASS **一个字都不许落进 `verdict.txt` 或标准输出** ——
+#   `G142` 当初把 B 排在前面，理由正是「先打出来的那个 PASS 已经会被人引用了」。
+#
+# ⚠ 喂的是**全场**读数（含枢衡），⛔ 不是竞品集合：枢衡自己与最强者一起顶在
+#   天花板上时，那个 PASS 同样不可信。
+bench_top_convergence() {
+  local readings=$1
+  local stats cnt m1 m2 n1 n2 gap
+
+  stats=$(printf '%s\n' "$readings" | awk '
+    NF >= 2 && $2 + 0 == $2 {
+      n++
+      v = $2 + 0
+      if (n == 1) { m1 = v; n1 = $1 }
+      else if (v > m1) { m2 = m1; n2 = n1; m1 = v; n1 = $1 }
+      else if (n == 2 || v > m2) { m2 = v; n2 = $1 }
+    }
+    END {
+      printf "%d %s %s %s %s\n", n + 0, (n ? m1 : "-"), (n >= 2 ? m2 : "-"), (n ? n1 : "-"), (n >= 2 ? n2 : "-")
+    }
+  ')
+  read -r cnt m1 m2 n1 n2 <<< "$stats"
+
+  # 「判不了」一律作废，⛔ 不算「分得开」——同判据 ① 那句「『没能检查』不算『检查通过』」。
+  if [ "$cnt" -lt 2 ]; then
+    echo "top-convergence: 只有 ${cnt} 条有效读数，判不了最强者附近的收敛（至少要 2 条）"
+    return 0
+  fi
+  if ! awk -v m="$m1" 'BEGIN { exit !(m + 0 > 0) }'; then
+    echo "top-convergence: 最强者读数是 '${m1}'，不是正数 ⇒ 判不了"
+    return 0
+  fi
+
+  gap=$(awk -v a="$m1" -v b="$m2" 'BEGIN { printf "%.4f", (a - b) / a }')
+  # ★ 边界与其余判据取同一个约定：**恰好压在阈值上算分得开**（不作废）。
+  if awk -v g="$gap" -v t="$BENCH_MIN_SPREAD" 'BEGIN { exit !(g < t) }'; then
+    echo "top-convergence: 最强者 ${n1}=${m1} 与第二强 ${n2}=${m2} 只差 ${gap}（阈值 ${BENCH_MIN_SPREAD}）⇒ 这个「最强者」可能被某个外部上限压住了，⇒ 由它算出的门槛是**被低估的**，⛔ 压过它的 PASS 不可信"
+  fi
+}
+
 # ── 自测：全部用**合成输入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不依赖宿主上此刻恰好是什么样（同 G133 的九条自测）。这一点是承重的：
@@ -553,6 +621,39 @@ bench_self_check() {
   want_match "上限不是数字时被当成了没饱和" '*ceiling:*' "$out"
   out=$(bench_saturation 0 "$CEIL_SET")
   want_match "上限是 0 时被当成了没饱和" '*ceiling:*' "$out"
+
+  # —— 判据 ④C：最强者附近的收敛（G146，结案 D34）——
+  #
+  # ★ ★ ★ 这一组的**承重对照**是第一条：2026-09-06 那组**真实数据**喂给 B 时
+  #   它一声没吭（全场极差 0.8599），而喂给 C 时它响 ——
+  #   ⇒ 证明 C 抓的正是 B **结构上**抓不到的那件事。
+  #   ⛔ 少了这条对照，「C 判得动」与「C 在重复 B 已经会做的事」分不开。
+  local REAL_0906
+  REAL_0906=$(printf 'haproxy 54531.2335\nnginx 54144.1168\ncaddy 10834.7315\nfulcrum 7638.6264\n')
+  want_empty "2026-09-06 那组真实数据被 B 判成了收敛（它的全场极差是 0.8599）" \
+    "$(bench_saturation "" "$REAL_0906")"
+  want_match "同一组真实数据里最快两家只差 0.0071，C 却没判出来" '*top-convergence:*' \
+    "$(bench_top_convergence "$REAL_0906")"
+
+  # 分得开 ⇒ 一行都不打。
+  want_empty "最强者与第二强差 0.30 却被判成了收敛" \
+    "$(bench_top_convergence "$(printf 'a 100\nb 70\nc 50\n')")"
+  # ⚠ 边界：恰好等于阈值算**分得开**（与其余判据同一个约定）。
+  want_empty "恰好压在阈值上被判成了收敛" \
+    "$(bench_top_convergence "$(printf 'a 100\nb 95\n')")"
+  # ★ 刚跨过去那一侧必须响 —— 少了这条，上一条与「恒不响」分不开。
+  want_match "刚跨进阈值内却没判出来" '*top-convergence:*' \
+    "$(bench_top_convergence "$(printf 'a 100\nb 96\n')")"
+  # ⚠ 它看的是**最强者与第二强**，⛔ 不是最强与最弱：下面这组极差 0.9 而顶部收敛。
+  want_match "顶部收敛被底部的离散掩盖了（这正是 D34 那个缺陷）" '*top-convergence:*' \
+    "$(bench_top_convergence "$(printf 'a 100\nb 99\nc 10\n')")"
+  # 「判不了」一律作废。
+  want_match "只有一条读数时被当成了分得开" '*top-convergence:*' \
+    "$(bench_top_convergence "$(printf 'a 100\n')")"
+  want_match "读数全不是数字时被当成了分得开" '*top-convergence:*' \
+    "$(bench_top_convergence "$(printf 'a x\nb y\n')")"
+  want_match "最强者不是正数时被当成了分得开" '*top-convergence:*' \
+    "$(bench_top_convergence "$(printf 'a 0\nb 0\n')")"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"

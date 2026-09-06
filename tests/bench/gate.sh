@@ -355,6 +355,51 @@ else
   bad "C11 最强者不是 nginx=300 —— ceiling.txt 可能被当成一份读数排进去了"
 fi
 
+# ── C14 / C15：判据 ④C（最强者附近的收敛，G146 结案 D34）────────────────────
+#
+# ★ ★ ★ **这两条是一对，而 C15 才是分水岭。** C14 只证「顶部收敛时那个 PASS 被扣下」；
+#   ⚠ 没有 C15，一个把这条判据做成「对所有结论都作废」的实现会让 C14 照常绿 ——
+#   而那正是 owner 否掉的那三条原候选，它们会把 2026-09-06 那个结实的 FAIL 扣掉。
+echo "── C14/C15 最强者附近的收敛（G146）──"
+
+# C14：枢衡 295 对最强者 300（门槛 270）⇒ 本该 PASS；
+#      而 nginx=300 与 haproxy=299 只差 0.0033 < 0.05 ⇒ 门槛可能被低估 ⇒ 必须 VOID。
+rm -rf "$FIX"
+python3 "$REPO/tests/bench/mkfixture.py" "$FIX" true \
+  fulcrum=295 nginx=300 haproxy=299 caddy=100 > /dev/null
+if bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c14.log 2>&1; then
+  bad "C14 顶部收敛时那个 PASS 没被扣下，verdict.sh 退出 0"
+else
+  # ⚠ ⚠ ★ 三个方向一起判，缺一不可：报了 VOID · 说得出理由 · **⛔ 整份判定里
+  #   一个 `VERDICT: PASS` 都不许有** —— G142 那条「先打出来的 PASS 已经会被引用」
+  #   在这里一字不改地成立。
+  if grep -q '^VERDICT: VOID' "$FIX/verdict.txt" &&
+    grep -q 'top-convergence' "$FIX/verdict.txt" &&
+    ! grep -q '^VERDICT: PASS' "$FIX/verdict.txt"; then
+    ok "C14 最强者 300 与第二强 299 只差 0.0033 ⇒ VOID，且整份判定里没有 PASS"
+  else
+    bad "C14 没走 VOID 那条路，或把 PASS 打了出来：$(tr '\n' ' ' < "$FIX/verdict.txt")"
+  fi
+fi
+
+# C15 ★★★ 分水岭：**同样顶部收敛，但结论是 FAIL ⇒ ⛔ 不许作废**。
+#   枢衡 100 远低于门槛 270，而 nginx=300 / haproxy=299 仍然收敛。
+#   ★ 理由：门槛被低估时真实门槛只会**更高** ⇒ FAIL 更成立，作废它等于扣掉一个
+#   正确结论，而那并不比给出一个错结论便宜。
+rm -rf "$FIX"
+python3 "$REPO/tests/bench/mkfixture.py" "$FIX" true \
+  fulcrum=100 nginx=300 haproxy=299 caddy=100 > /dev/null
+if bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c15.log 2>&1; then
+  bad "C15 枢衡低于门槛，verdict.sh 却退出 0"
+else
+  if grep -q '^VERDICT: FAIL' "$FIX/verdict.txt" &&
+    ! grep -q '^VERDICT: VOID' "$FIX/verdict.txt"; then
+    ok "C15 同样顶部收敛但结论是 FAIL ⇒ 照常打 FAIL，⛔ 没有被作废"
+  else
+    bad "C15 一个结实的 FAIL 被顶部收敛判据扣掉了：$(tr '\n' ' ' < "$FIX/verdict.txt")"
+  fi
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"

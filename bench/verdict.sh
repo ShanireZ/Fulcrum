@@ -165,6 +165,39 @@ for raw_case in "$OUT_DIR"/raw/*/; do
     RC=1
     continue
   fi
+  # ── 判据 ④C：最强者附近的收敛（`G146`，结案 `D34`）──────────────────────
+  #
+  # ★ ★ ★ **位置也是承重的，而它与 B 恰好相反：它必须排在 `bench_verdict_one`
+  #   之后**，因为它只威胁 PASS、永远不威胁 FAIL ——
+  #     门槛 = max(竞品) × 0.9；那个 max 被天花板压住时**门槛是被低估的**。
+  #     · PASS ⇒ 枢衡可能只是压过了一个被低估的门槛 ⇒ 不可信，作废。
+  #     · FAIL ⇒ 真实门槛只会更高 ⇒ FAIL 更成立 ⇒ ⛔ 不该作废。
+  #   起因是 2026-09-06 第一趟真实数据：全场极差 0.8599（B 一声没吭），而最快两家
+  #   只差 0.0071 —— **一个慢的被测会掩盖掉快的那几家之间的收敛**（原 D34）。
+  #
+  # ⚠ ⚠ ⛔ **「排在后面」绝不等于「可以先把 PASS 打出来」。** 上面那次
+  #   `bench_verdict_one` 只算不打；到这里才决定 `verdict.txt` 与标准输出上
+  #   写的是 PASS 还是 VOID。★ `G142` 当初把 B 排在前面，理由正是
+  #   「先打出来的那个 PASS 已经会被人引用了」—— 那条理由在这里一字不改地成立。
+  if [ "$v_status" = "PASS" ]; then
+    top_conv=$(bench_top_convergence "$readings")
+    if [ -n "$top_conv" ]; then
+      {
+        echo "## $case_name"
+        echo "VERDICT: VOID（门槛可能被低估 ⇒ 这个 PASS 不可信）"
+        printf '%s\n' "$top_conv" | sed 's/^/  · /'
+        echo "  ⛔ 被扣下的那个结论是：PASS（最强者 $v_best_name = $v_best_val，门槛 $v_floor，枢衡 $v_ours）"
+        echo "  全部读数："
+        printf '%s\n' "$readings" | sed 's/^/    /'
+        echo
+      } >> "$VERDICT_TXT"
+      echo "[bench/verdict] $case_name：**VOID** —— 最强者附近收敛 ⇒ 那个 PASS 不可信"
+      printf '%s\n' "$top_conv" | sed 's/^/               · /'
+      RC=1
+      continue
+    fi
+  fi
+
   {
     echo "## $case_name"
     echo "VERDICT: $v_status"
