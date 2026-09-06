@@ -8,9 +8,8 @@ Read this before touching anything. It is short on purpose; everything it points
 
 - [PLAN.md](PLAN.md) — scope, milestones and exit conditions, the §10 decision table
   (G-numbers) and the §11 open list (D-numbers). On conflict, `PLAN.md` wins.
-- [docs/](docs/index.md) — an [Open Knowledge Format v0.2](docs/references/okf-spec.md) bundle.
-  [docs/architecture/](docs/architecture/index.md) is the technical baseline and carries real
-  content; the rest mostly navigates `PLAN.md`.
+- [docs/](docs/index.md) — an [Open Knowledge Format v0.2](docs/references/okf-spec.md) bundle;
+  [docs/architecture/](docs/architecture/index.md) is the technical baseline, the rest navigates `PLAN.md`.
 - [vendor/pingora/FORK.md](vendor/pingora/FORK.md) — the authority on what the fork changes.
 
 ## Working rules
@@ -36,13 +35,9 @@ Read this before touching anything. It is short on purpose; everything it points
    `SslContextBuilder::set_select_certificate_callback` — the *same* callback for both entrypoints
    (h1/h2 and h3/QUIC), so "two entrypoints each with their own cert-picking code" is structurally
    impossible. All three former rustls sites are converted.
-   ★ All three questions now have their own gate: what the lock says (gate 4) · what the
-   dependency graph really holds (gate 5, `cargo tree`) · **what the artifact actually links**
-   (G138 — `tests/ci/tls-linkage.sh`, asserted in `tests/musl/product.sh` against the musl
-   artifact). ⚠ That last one reads the **symbol table**, not strings: every `rustls` string in
-   the artifact comes from `rustls_pki_types`, a types-only crate — a `grep rustls` gate would
-   false-positive forever. ⚠ It only runs in the musl scenario, so it says nothing about the
-   glibc dev build.
+   ★ Three separate gates cover "what the lock says" / "what the dependency graph holds" / "what
+   the artifact actually links" — the three-layer table is in `docs/platform/supply-chain.md`.
+   ⚠ The last one only runs in the musl scenario, so it says **nothing** about the glibc dev build.
 2. **tower middleware does not compose with Pingora's phase model.** ⚠ But we have never used
    `ProxyHttp` — `pingora-proxy` is not a dependency. Our execution chain hangs off
    `HttpServerApp` / `ServerSession`.
@@ -67,13 +62,12 @@ when it exits; copy the `cleanup` check in `tests/quic-relay/run.sh`.
 cargo can reuse a stale test binary and the new tests never run. See **Gate discipline**.
 
 ★ **The cargo `target` cache lives in a docker volume named after *both* the build image and the
-checkout path**, so every git worktree gets its own and the first run in a fresh worktree is a
-cold build. One shared volume let cargo reuse another worktree's `.rlib` by mtime, and the
-compile error that came out of it named an innocent file. Splitting by tree only handles *other*
-trees: two gates on the **same** tree still share that one volume, so a run first takes a lock
-named after it — ⚠ **it refuses and exits, naming the holding pid. It does not queue.** The
-naming rule and the lock are both in `tests/lib/vol-lock.sh`, and `docker-run.sh` self-tests
-both on every run.
+checkout path**, so every git worktree gets its own and the first run in a fresh worktree is a cold
+build. One shared volume let cargo reuse another worktree's `.rlib` by mtime, and the compile error
+named an innocent file. Splitting by tree only handles *other* trees: two gates on the **same** tree
+still share that volume, so a run first takes a lock named after it — ⚠ **it refuses and exits,
+naming the holding pid. It does not queue.** Naming rule and lock: `tests/lib/vol-lock.sh`
+(`docker-run.sh` self-tests both every run).
 
 Per-scenario detail: [docs/platform/build-and-test.md](docs/platform/build-and-test.md).
 
@@ -120,17 +114,10 @@ confident-looking wrong output rather than an error.
 3. **Do not edit a shell script while the gate is running.** The tree is bind-mounted live and
    `bash` reads a script by byte offset; an edit makes it resume mid-line and abort the whole run.
    (Editing Rust or Markdown mid-run is fine.)
-Traps 1 and 2 are gates: `tests/ci/shellcheck-all.sh` runs `shellcheck` over every `.sh` under
-`tests/` **and `bench/`** — the file set is **derived** with `find`, never listed, and its
-enumerator self-tests against a fixture tree (two levels deep, a path with a space) on every run.
-⚠ ★ "Derived" only ever meant *within the roots it is given*: a new **top-level** directory used
-to escape it entirely (measured — `bench/` arrived with five unscanned scripts). A second,
-**wider** probe now asks `git ls-files --cached --others --exclude-standard` for every `.sh` the
-repo owns (tracked *or* newly written but not ignored, minus `vendor/`) and fails if one lives
-outside the roots — so adding a root is a red gate rather than a silent gap, while a throwaway
-script under gitignored `handoff/` is correctly none of its business. And
-`docker-run.sh` self-tests its byte probes against known-CRLF, known-LF and known-binary fixtures
-on every run.
+Traps 1 and 2 are gates (`tests/ci/shellcheck-all.sh`; `docker-run.sh` self-tests its byte probes
+every run). ⚠ ★ **"Derived with `find`" only ever meant *within the roots it is given*** — a new
+**top-level** directory escaped it entirely (measured: `bench/`, five unscanned scripts). A wider
+`git ls-files` probe now makes that red rather than silent. Both: the traps doc below.
 
 ## Dependencies
 
