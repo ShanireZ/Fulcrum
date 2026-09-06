@@ -1,0 +1,21 @@
+# aarch64 已验证记录（`D24` = 候选 ②）
+#
+# ⛔ ⛔ **别手写这个文件。** 它由 `tests/m0/docker-run.sh` 在一次**真的成功的**
+#   aarch64 验证之后、经 `arm64-trigger.sh --record` 写入。手写等于伪造一份验证
+#   记录 —— 而本仓判据的全部意义就在那句「判据不是有没有人说做过了」。
+#
+# 它回答的问题只有一个：**当前这个依赖状态，有没有被 aarch64 真的验证过。**
+# `hash=` 是 `bash tests/musl/arm64-trigger.sh --hash` 对**触发集**算出来的值；
+# 触发集 = `Cargo.lock` + 那三张钉 rustc 的 Dockerfile（**推导**得出，⛔ 不是手写
+# 清单，见 `tests/musl/arm64-trigger.sh` 的文件头）。
+#
+# ⇒ 这个值变了 = 依赖 / 工具链 / 基础镜像变了 = aarch64 那一格要重跑。
+#   ⚠ 它**不**随源码提交变：我们自己那几个 crate 是架构中立的，而 amd64 那一格每趟都编。
+#
+# ⚠ ⚠ 墙钟是**机器本地**的：2026-09-06 `ShanirePCX` 冷建 34m05s，而 `ShanireHomePC`
+#   2026-09-05 同样一趟 18m07s —— 近两倍差距，⛔ 别互相照抄、也别当成「这道门要多久」。
+
+hash=fe7c22785a83a1ed287e980950148c23a1940a4130950995dcecf6742d7a4478
+verified_at=2026-09-06T10:06:00+0800
+verified_on=ShanirePCX
+verified_commit=baec0d0

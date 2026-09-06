@@ -235,6 +235,70 @@ else
   bad "C7 良性且量小的 deadline 记录被判成了无效：$(tr '\n' ' ' < "$FIX/verdict.txt")"
 fi
 
+# ── C8–C10：判据 ④（压测端饱和）的端到端接线 ──────────────────────────────
+#
+# ★ ★ ★ `bench/lib.sh --self-check` 已经把这条判据的**两个方向**用合成输入钉死了
+#   （31 条）。⛔ **那些一条都证明不了 `verdict.sh` 真的去问了它** —— 纯函数判得动
+#   与「判定器在流水线上真的调用它、并且真的因此不出结论」是两件事，
+#   而后者只有端到端走一遍才看得见（同 G136 那三处落账点的教训）。
+
+# C8：**B 承重** —— 四家挤在一起 ⇒ VOID，且退出码非 0。
+# ⚠ 注意这组数在判据 ③ 眼里是**合格的 PASS**（枢衡 1000 对最强者 1020，门槛 918）
+#   ⇒ 若 ④ 没有被接上，这一格会打出 PASS 而不是 VOID。**这正是它守的那个失效。**
+rm -rf "$FIX"
+python3 "$REPO/tests/bench/mkfixture.py" "$FIX" true \
+  fulcrum=1000 nginx=1010 caddy=1005 haproxy=1020 > /dev/null
+if bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c8.log 2>&1; then
+  bad "C8 四家挤在 2% 以内，verdict.sh 却退出 0 —— 判据 ④ 没有被接上"
+else
+  if grep -q '^VERDICT: VOID' "$FIX/verdict.txt" &&
+    grep -q 'spread:' "$FIX/verdict.txt"; then
+    ok "C8 四家挤在 2% 以内 ⇒ VOID（且理由是 spread），⛔ 没有变成一个 PASS"
+  else
+    bad "C8 没报 VOID：$(tr '\n' ' ' < "$FIX/verdict.txt")"
+  fi
+fi
+
+# C9：**A 那一半的接线** —— 同一组分得开的数，只多一个 `ceiling.txt` ⇒ VOID。
+# ★ 一个变量的翻面：C1 用的就是这组数且打的是 PASS ⇒ 红的来源只可能是那个文件。
+rm -rf "$FIX"
+python3 "$REPO/tests/bench/mkfixture.py" "$FIX" true \
+  fulcrum=280 nginx=300 caddy=100 haproxy=200 > /dev/null
+echo 320 > "$FIX/raw/synthetic/ceiling.txt"
+if bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c9.log 2>&1; then
+  bad "C9 最强者 300 越过了上限 320×0.9=288，verdict.sh 却退出 0"
+else
+  if grep -q '^VERDICT: VOID' "$FIX/verdict.txt" &&
+    grep -q 'ceiling:' "$FIX/verdict.txt"; then
+    ok "C9 raw/<类>/ceiling.txt=320 ⇒ VOID（且理由是 ceiling）"
+  else
+    bad "C9 没报 VOID：$(tr '\n' ' ' < "$FIX/verdict.txt")"
+  fi
+fi
+
+# C10：**正向** —— 上限文件在、但最强者远低于它 ⇒ 照常出结论。
+# ⚠ ⚠ 没有这一条，C9 与「只要存在 ceiling.txt 就一律作废」**无法区分** ——
+#   而那种实现会让 A 这一半变成一个恒作废的空操作。
+rm -rf "$FIX"
+python3 "$REPO/tests/bench/mkfixture.py" "$FIX" true \
+  fulcrum=280 nginx=300 caddy=100 haproxy=200 > /dev/null
+echo 10000 > "$FIX/raw/synthetic/ceiling.txt"
+if bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c10.log 2>&1 &&
+  grep -q '^VERDICT: PASS' "$FIX/verdict.txt"; then
+  ok "C10 上限 10000 远高于最强者 300 ⇒ 照常出结论（A 不是恒作废）"
+else
+  bad "C10 上限远高于最强者却没出结论：$(tr '\n' ' ' < "$FIX/verdict.txt")"
+fi
+
+# C11：⛔ `ceiling.txt` **不许**被 read-raw.py 当成第五家被测。
+# ★ 判据取「最强者仍然是 nginx=300」：若那个文件被当成一份读数排进去，
+#   最强者会变成它，而 C10 那一格照样是绿的 —— 两者分不开就等于没判。
+if grep -q 'nginx = 300' "$FIX/verdict.txt"; then
+  ok "C11 ceiling.txt 没有被当成第五家被测（最强者仍是 nginx=300）"
+else
+  bad "C11 最强者不是 nginx=300 —— ceiling.txt 可能被当成一份读数排进去了"
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"

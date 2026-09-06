@@ -109,6 +109,39 @@ for raw_case in "$OUT_DIR"/raw/*/; do
     continue
   fi
 
+  # ── 判据 ④：压测端自己先饱和 ────────────────────────────────────────────
+  #
+  # ★ ★ ★ **位置是承重的：它必须排在 `bench_verdict_one` 之前。** 它守的恰恰是
+  #   「判据 ③ 会照常打 PASS」的那个失效 —— 排在后面等于先出一个结论、再说
+  #   那组数其实不可比，而先打出来的那个 PASS 已经会被人引用了。
+  #
+  # ★ 生成器上限是**可选输入**（判据 A）：`raw/<类>/ceiling.txt` 里一个数，
+  #   没有这个文件时 A 完全不参与、B 照常判。
+  # ⚠ ⚠ ⛔ **有意不叫 `ceiling.json`** —— `read-raw.py` 对这个目录做的是
+  #   `glob("*.json")`，一个 `.json` 会被它当成**第五家被测**混进竞品集合，
+  #   于是「最强者」可能变成那个参照服务，而**不会有任何东西说**。
+  ceiling=
+  if [ -f "$raw_case/ceiling.txt" ]; then
+    ceiling=$(tr -d ' \n\r' < "$raw_case/ceiling.txt")
+  fi
+  # ⚠ 喂进去的是**全场**读数（含枢衡自己），⛔ 不是 `rivals`：饱和是整组数的性质，
+  #   而枢衡自己顶到天花板同样让这一类不可比。
+  saturation=$(bench_saturation "$ceiling" "$readings")
+  if [ -n "$saturation" ]; then
+    {
+      echo "## $case_name"
+      echo "VERDICT: VOID（这一类的读数不可比 ⇒ 结构性地不出结论）"
+      printf '%s\n' "$saturation" | sed 's/^/  · /'
+      echo "  全部读数："
+      printf '%s\n' "$readings" | sed 's/^/    /'
+      echo
+    } >> "$VERDICT_TXT"
+    echo "[bench/verdict] $case_name：**VOID** —— 压测端饱和判据不通过 ⇒ 不判定"
+    printf '%s\n' "$saturation" | sed 's/^/               · /'
+    RC=1
+    continue
+  fi
+
   if [ -z "$ours" ]; then
     {
       echo "## $case_name"

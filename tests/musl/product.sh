@@ -38,8 +38,11 @@ DOCKERFILE="docker/Dockerfile.musl-product"
 # ⚠ ⚠ **上下文是仓库根**：根 `Cargo.toml` 的 `[patch.crates-io]` 指着 `vendor/pingora`。
 #   仓库根那份 `.dockerignore` 负责把 `target/` 挡在上下文之外。
 CONTEXT="."
-# ★ 默认只跑 amd64。aarch64 要在 qemu 上编**整个产品**（不只是探针那点代码），
-#   ⏳ 何时把它也挂上今天挂在 **D24** 名下（D22 本身已由 G108 结案）—— 写在这里而不是留白。
+# ★ 缺省只跑 amd64。aarch64 要在 qemu 上编**整个产品**（不只是探针那点代码）。
+# ✅ 「何时也跑 aarch64」曾挂号 **D24**，已由 **G144** 结案 = 候选 ②：
+#   只在 `Cargo.lock` 或那三张钉 rustc 的 Dockerfile 变化时跑。
+#   ⚠ ⚠ **那个决定不在本脚本里**（本脚本只认 `ARCHES`）—— 编排在 `tests/m0/docker-run.sh`，
+#   判据与触发集在 `tests/musl/arm64-trigger.sh`。⇒ 直接手跑本脚本时它**不会**替你判。
 ARCHES=${ARCHES:-"amd64"}
 REVERSE=${REVERSE:-1}
 
@@ -243,7 +246,7 @@ echo
 if [ "$FAILS" -eq 0 ]; then
   echo "MUSL PRODUCT PASSED —— 产品本体编成了 musl 单静态二进制，并在一个什么都没有的镜像里跑完了 validate。"
   echo "  ⚠ 它**证不了**的：产品功能对不对（那是容器里那些场景的事，它们跑的是 glibc 产物）；"
-  echo "    也证不了 aarch64（本格默认只跑 amd64，见脚本顶部）。"
+  echo "    ⚠ 它只证了刚才真跑过的那几个架构（本趟：$ARCHES）—— ⛔ 别读成两个架构都验过了。"
 else
   echo "MUSL PRODUCT FAILED（$FAILS 条）" >&2
   exit 1

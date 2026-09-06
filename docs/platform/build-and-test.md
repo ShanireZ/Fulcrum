@@ -301,8 +301,14 @@ G36 只管构建镜像的 rustc，见 [待定清单](/governance/open-questions.
 > ★ **这一格的来历**：D22 登记的本是「把 `tests/musl/probe.sh` 挂成常设的门」，
 > 而 owner 换掉了**判据本身**（**G108**）—— 探针编的是 spike，答不了「产物是不是单静态二进制」。
 > ⇒ D22 **已结案**，探针留在门外当历史记录。
-> ⚠ ⚠ **但这一格只覆盖 x86_64**（`ARCHES="amd64"`），而 G13 承诺两个架构 ——
-> 那半边仍然开着，是 §11 的 **D24**。⛔ 别把「这一格是绿的」读成「G13 的分发口径全都有门守着」。
+> ⚠ **这一格的缺省是 x86_64**（`ARCHES="amd64"`），而 G13 承诺两个架构 —— 另外那半边
+> 曾挂号 **D24**，✅ **已由 `G144` 结案 = 候选 ②**：aarch64 只在 `Cargo.lock` 或那三张钉
+> rustc 的 Dockerfile 变化时才跑，其余时候读 [`tests/musl/arm64-verified.txt`](../../tests/musl/arm64-verified.txt)
+> 那份**验证记录**（判据与触发集在 [`tests/musl/arm64-trigger.sh`](../../tests/musl/arm64-trigger.sh)）。
+> ⛔ 别把「这一格是绿的」读成「G13 的分发口径全都有门守着」：它**不看**产品功能对不对
+> （那是容器里那些场景的事，而它们跑的是 glibc 产物）。
+> ⚠ ⚠ **binfmt 是机器本地状态**：没装的机器上，一旦触发集变了这一格会**判红而不是静默跳过**
+> （「没能检查」不算「检查通过」），报文里给了两条出路。
 
 ⚠ ⚠ **它的上下文是仓库根**（根 `Cargo.toml` 的 `[patch.crates-io]` 指着 `vendor/pingora`），
 所以仓库根有一份 [`.dockerignore`](../../.dockerignore) —— ★ 而 `.dockerignore` 是**按上下文根读的**，

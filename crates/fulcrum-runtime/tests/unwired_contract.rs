@@ -120,6 +120,101 @@ fn 文档里那句未接线清单与_unwired_对得上() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
+const PLAN_MD: &str = include_str!("../../../PLAN.md");
+
+/// `PLAN.md` §1「能力面」那句 `⏳ **未落地** ——` 里，**反引号键名**的那一部分。
+///
+/// ★ ★ 判据只截到**第一个句号**：句号之后是给人看的注解，而注解里必然会提到
+/// 那些键名（讲的就是它们）。⛔ 把注解也读进来 = 一个把正确写法判红的门，
+/// 而那种门最后会被人绕过去，不会被人满足（同 `tools/plan-refs.py` 记的第 4 条）。
+fn plan_unlanded_segment(md: &str) -> &str {
+    let start = md
+        .find("⏳ **未落地** ——")
+        .expect("PLAN.md §1 里找不到那句「⏳ **未落地** ——」——它被改写了？");
+    let seg = &md[start..];
+    match seg.find('。') {
+        Some(i) => &seg[..i],
+        None => panic!("「未落地」那一行后面应当有一个句号把它收住"),
+    }
+}
+
+/// 那一段里出现、而**已经不在** `unwired` 里的反引号键名。
+///
+/// ★ 写成纯函数是承重的：今天那一段里**一个反引号词都没有**（`passive_fail` 已由
+/// G136 销号并从这行删掉，剩下的 PROXY protocol「发」那半边是散文）⇒ 拿真数据跑
+/// 只能得到一个空集，而**一个恒返回空集的判据，与一个坏掉的判据输出完全相同**。
+/// ⇒ 判别力由下面那几条**合成输入**提供。
+fn stale_unlanded_keys(segment: &str, unwired: &[&str]) -> Vec<String> {
+    segment
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|w| !unwired.contains(w))
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// ★ ★ ★ **这一行讲的是「还没接线」，而它没有任何门守着 —— 直到这一条。**
+///
+/// 2026-09-06 实测：`passive_fail` 由 `G136` 接线并从 [`UNWIRED`] 销号之后，
+/// `PLAN.md` §1 那一行**仍然把它列在「未落地」里**，多挂了一天。
+/// ⚠ ⚠ 它躲过了本仓当时**每一道**门：
+///
+/// * 上面那条 `文档里那句未接线清单与_unwired_对得上` 只钉 `dsl-reference.md`；
+/// * `tools/plan-refs.py` 判据 ② 只认**同一行里带 `§11` 字样**的句子，
+///   而这一句不带 —— 那道门的文件头自己把这一类列为第 1 条漏网；
+/// * `docs-check.py` 只判可达性，不读句意。
+///
+/// ⇒ 一句**自洽的**假话，本仓内**原理上**没有任何东西看得见它。这一条补的就是它。
+///
+/// ⚠ **只判一个方向**（这一行 → UNWIRED），⛔ 不判反向：这一行是**摘要不是全集**
+/// （`tls_internal` / `on_demand` / `tracing` 都在 UNWIRED 里而不在这一行），
+/// 而且 PROXY protocol「发」那半边**根本进不了 UNWIRED** —— 它连 DSL 面都没有，
+/// 而 UNWIRED 记的是「DSL 认得、运行时不做」。⇒ 反向判据会把一句正确的话判红。
+#[test]
+fn plan_第1节未落地那一行不许列已接线的能力() {
+    let keys: Vec<&str> = UNWIRED.iter().map(|(k, _)| *k).collect();
+    let segment = plan_unlanded_segment(PLAN_MD);
+
+    // ① 真数据：那一段里不许出现已经销号的键名。
+    let stale = stale_unlanded_keys(segment, &keys);
+    assert!(
+        stale.is_empty(),
+        "PLAN.md §1「未落地」那一行还写着 {stale:?}，而它已经不在 UNWIRED 里了 —— \
+         接线做完就要把它从这一行删掉。过期的状态比没有状态更危险。\n\
+         那一段：{segment}"
+    );
+
+    // ② ★ ★ ★ **合成输入：证明它真的判得动。** 没有这几条，上面那个 `is_empty()`
+    //   在「函数恒返回空 vec」时**同样是绿的** —— 而那正是今天最可能的坏法，
+    //   因为真数据这一侧本来就是空集。
+    let synthetic = "⏳ **未落地** —— PROXY protocol 的「发」那半边 · `passive_fail`";
+    assert_eq!(
+        stale_unlanded_keys(plan_unlanded_segment(&format!("{synthetic}。")), &keys),
+        vec!["passive_fail".to_string()],
+        "一个已经销号的键名写在这一行里，判据没有把它逮出来"
+    );
+    // 还在 UNWIRED 里的键名**不许**被判红（否则这道门恒红，早晚被加 #[ignore]）。
+    let ok_line = "⏳ **未落地** —— `tracing` 与 `on_demand`";
+    assert!(
+        stale_unlanded_keys(plan_unlanded_segment(&format!("{ok_line}。")), &keys).is_empty(),
+        "还没接线的键名被判成了过期"
+    );
+    // 纯散文（今天的真实形状）不该报任何东西。
+    let prose = "⏳ **未落地** —— PROXY protocol 的「发」那半边";
+    assert!(
+        stale_unlanded_keys(plan_unlanded_segment(&format!("{prose}。")), &keys).is_empty(),
+        "一行散文被判出了键名"
+    );
+    // ⚠ 截断那一步也要钉：句号**之后**的注解里提到销号键名时，⛔ 不许被算进来。
+    let with_note = "⏳ **未落地** —— PROXY protocol 的「发」那半边。\n\
+                     ⚠ 注解：`passive_fail` 已由 G136 销号。";
+    assert!(
+        stale_unlanded_keys(plan_unlanded_segment(with_note), &keys).is_empty(),
+        "句号之后的注解被读进了判据范围 —— 这道门会把正确的写法判红"
+    );
+}
+
 const DSL_DOC: &str = include_str!("../../../docs/architecture/dsl-reference.md");
 
 /// `dsl-reference.md` 里一张**子指令表**的一行。

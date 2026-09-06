@@ -1136,7 +1136,56 @@ docker run --rm \
 # ★ 实测：冷编一趟 **6m49s**；加了 BuildKit 缓存挂载之后，
 #   源码没变的重跑 **7.7s**。⇒ 它挂得起每一次门禁。
 if [ "${MUSL_TESTS:-1}" = "1" ] && ! env | only_mode_in; then
-  bash "$REPO_UNIX/tests/musl/product.sh"
+  # ── aarch64 那一格什么时候跑：**D24 = 候选 ②**（owner 2026-09-06 拍板）────────
+  #
+  #   只在 `Cargo.lock` 或那三张钉 rustc 的 Dockerfile 变化时才连 aarch64 一起跑；
+  #   其余时候读 `tests/musl/arm64-verified.txt` 那份**验证记录**。
+  #
+  # ★ 判据与触发集都在 `tests/musl/arm64-trigger.sh`，这里只做编排。
+  # ⚠ 走**子进程**而不是 `source`：那个文件的自测会定义 `want_*` 这几个名字，
+  #   source 进来会和本脚本里的同名函数打架，而那种打架**不报错**，
+  #   只是让某一边的断言悄悄换了一个实现。
+  # ★ 自测排在最前，理由与 `bench/run.sh` 那条逐字相同：判据自己坏了的时候，
+  #   它最典型的形态就是**恒返回同一个答案**，而那种坏法在下面这个 case 里
+  #   长得和「一切正常」一模一样。
+  # ★ 决定本身是 `arm64-trigger.sh` 里的一个**纯函数**（三条分支各有合成输入钉着，
+  #   含那条在装了 binfmt 的机器上平时执行不到的红路径）⇒ 本处只按它的答案分派，
+  #   ⛔ 这里不再有第二份判断逻辑。
+  bash "$REPO_UNIX/tests/musl/arm64-trigger.sh" --self-check
+  ARM64_STAMP="$REPO_UNIX/tests/musl/arm64-verified.txt"
+  ARM64_DECISION=$(bash "$REPO_UNIX/tests/musl/arm64-trigger.sh" --decide "$ARM64_STAMP")
+
+  case "$ARM64_DECISION" in
+    amd64-only)
+      echo "[docker-run] aarch64：这个依赖状态已经被真的验证过（tests/musl/arm64-verified.txt）"
+      echo "[docker-run]            ⇒ 本趟只跑 amd64（D24 = 候选 ②）"
+      bash "$REPO_UNIX/tests/musl/product.sh"
+      ;;
+    both)
+      echo "[docker-run] aarch64：Cargo.lock 或那三张钉 rustc 的 Dockerfile 变了 ⇒ 本趟连 aarch64 一起跑。"
+      echo "[docker-run]            ⚠ 冷建以十分钟计（实测 ShanirePCX 34m05s / ShanireHomePC 18m07s）。"
+      ARCHES="amd64 arm64" bash "$REPO_UNIX/tests/musl/product.sh"
+      # ★ 走到这里说明上面那趟**真的成功了**（`set -e`：失败根本到不了这一行）
+      #   ⇒ 这时候写验证记录才是如实的。
+      bash "$REPO_UNIX/tests/musl/arm64-trigger.sh" --record "$ARM64_STAMP"
+      echo "[docker-run] ★ 已刷新 tests/musl/arm64-verified.txt —— 它是一份**验证记录**，"
+      echo "[docker-run]   ⚠ 记得随本次改动一起提交，否则下一趟会再跑一次这十几分钟。"
+      ;;
+    *)
+      # ⚠ ⚠ ⛔ **「没能检查」不算「检查通过」** —— 这里有意判红而不是静默跳过。
+      #   本仓栽过同一物种：`348 passed / 0 failed`，而整个运行时根本没加载起来。
+      echo "MUSL FAILED: Cargo.lock 或那三张钉 rustc 的 Dockerfile 变了，而这台机器" >&2
+      echo "  跑不了 aarch64 ⇒ G13 承诺的第二个架构在这一趟里**没有任何判据**。" >&2
+      echo "  （判据答的是 '$ARM64_DECISION'）两条路，选一条：" >&2
+      echo "    ① 在本机装 qemu binfmt，然后重跑：" >&2
+      echo "         docker run --privileged --rm tonistiigi/binfmt --install arm64" >&2
+      echo "       ⚠ 特权 + 机器级改动 ⇒ 由 owner 定；装完 docker buildx inspect 会列出 linux/arm64。" >&2
+      echo "    ② 在一台已经装了 binfmt 的机器上跑一次完整门禁，把刷新后的" >&2
+      echo "       tests/musl/arm64-verified.txt 一起提交过来。" >&2
+      echo "  ⛔ 别用「本机跑不了」当豁免 —— 那正是这道门存在的那一天要拦的东西。" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 # ── M1 场景 ────────────────────────────────────────────────────────────────

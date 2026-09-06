@@ -22,9 +22,10 @@ pingora-http = { workspace = true }
 #   BoringSSL 的早回调（`src/l4.rs` 的 `peek_client_hello`），FORK.md 改动 8 / 8b / 10
 #   随之归零。⇒ **「依赖图里只有一套 TLS」成立**
 #   （`cargo tree … -i rustls` → nothing to print）。
-#   ⚠ ⚠ **但别说成「产物里」**：那是第三个问题，仍然没有判据（**D23**）；
+#   ⚠ ⚠ **但别说成「产物里」**：那是第三个问题，由 **G138** 单独回答（结案 **D23**）——
+#   `tests/ci/tls-linkage.sh` 取数 + `tests/musl/product.sh` 判**符号表**；
 #   而「锁里」是第一个问题 —— `rustls` 那一族**仍然写在 `Cargo.lock` 里**，
-#   因为锁是依赖图的超集。三个问题分别由门 4 / 门 5 / 无人回答。
+#   因为锁是依赖图的超集。三个问题分别由门 4 / 门 5 / G138 那一格回答。
 # BoringSSL 那侧的类型（`SslAcceptor` / `SslMethod` / ALPN 那几样 / ClientHello 早回调）。
 # ★ 纪律是「优先经这一个 crate 拿」，目的是**类型同一性**。
 #   ⚠ G111 破了例（下面那行 `boring`）：只有 `pingora-boringssl` 没有 re-export 的那几样

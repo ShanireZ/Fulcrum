@@ -81,7 +81,7 @@ sources:
 > |---|---|
 > | **锁里写着**哪些 | 读 `Cargo.lock`（`supply_gates.rs` 门 1 / 门 4）。⚠ 它既可能**少**（未启用的可选依赖）也可能**多**（本条）|
 > | **依赖图里真有**哪些 | `cargo tree -e all --workspace --target all --locked`（门 5）|
-> | **产物里真的链接了**哪些 | ⏳ 仍无判据 —— **D23** |
+> | **产物里真的链接了**哪些 | ✅ **判符号表**：`tests/ci/tls-linkage.sh` 取数 + `tests/musl/product.sh` 判定（**G138** 结案 **D23**）。⛔ 不判 `strings` —— `rustls` 那 4 次全来自纯类型 crate `rustls_pki_types` |
 >
 > ⚠ ⚠ **这三问此前被当成同一问**，而门 4 的注释里那句「换完时我会先红一次提醒你改」
 > 正是建立在那个混同上 —— **③ 换完了，它没红。**

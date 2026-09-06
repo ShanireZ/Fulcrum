@@ -22,6 +22,17 @@ set -euo pipefail
 BENCH_MIN_CPUS=${BENCH_MIN_CPUS:-4}
 BENCH_MAX_IDLE_LOAD=${BENCH_MAX_IDLE_LOAD:-0.50}
 
+# ── 压测端饱和的两个阈值（判据 ④）─────────────────────────────────────────
+#
+# ⚠ ⚠ ★ **这两个数今天没有实测支撑，它们是判断，不是读数。** 合格宿主还不存在
+#   ⇒ 「四套不同实现之间正常该差多少」这件事本仓一次都没量过。⛔ 别把它们
+#   读成「实测得出的阈值」；★ 第一次在合格宿主上跑完之后**要回头核这两个数**，
+#   那一趟的四家真实离散度就是定它们的判据。
+# ★ 取 0.05 的理由写在判据 ④ 的注释里（四套结构完全不同的实现挤进 5% 更像是
+#   共享了外部上限）—— 是一条可以被第一组真实数据推翻的假设，⛔ 不是结论。
+BENCH_MIN_SPREAD=${BENCH_MIN_SPREAD:-0.05}
+BENCH_GEN_HEADROOM=${BENCH_GEN_HEADROOM:-0.90}
+
 # ── 判据 ①：宿主合格性 ─────────────────────────────────────────────────────
 #
 #   bench_disqualifiers <kernel_release> <nproc> <loadavg1> <attest> <affinity>
@@ -126,6 +137,80 @@ bench_verdict_one() {
   fi
 }
 
+# ── 判据 ④：压测端自己先饱和 ───────────────────────────────────────────────
+#
+#   bench_saturation <生成器上限读数或空> <全场读数，每行 `<名字> <数值>`>
+#
+# 每行打一条「这一类不可信的理由」；**一行都不打 = 没测到饱和**。
+# ★ 契约与判据 ① 逐字相同（打理由 / 空 = 通过）⇒ 两个调用点可以同一个形状处理。
+#
+# ★ ★ ★ **它守的失效不会让任何东西变红。** 负载生成器自己先到顶时，四家读数会
+#   一起收敛到生成器的天花板，而判据 ③（`ours >= best × 0.9`）**照常打 PASS** ——
+#   输出一组看起来完全正常、其实量的是 oha 的数。⇒ 判据 ① 那五条一条都答不了它：
+#   它们判的是「这台机器合不合格」，而这里坏掉的是**量具本身到顶了**。
+#
+# 两条判据，性质完全不同：
+#
+#   **B（收敛，承重）** —— 全场读数彼此挤在一起就作废该类。★ 它**不需要任何新测量**，
+#     用的就是已经采到的那组数 ⇒ 今天就能用合成输入把两个方向全反证掉。
+#     依据：nginx（C）· HAProxy（C）· Caddy（Go）· 枢衡（Rust/pingora）是四套结构
+#     完全不同的实现，它们落进同一个百分点里，**「共享了某个外部上限」远比
+#     「它们真的一样快」更可能**。⚠ 它说不出是哪一个上限（生成器 / 环回 / 亲和）——
+#     ⛔ 别把它的报文读成「一定是 oha 饱和了」，它只说「这组数不可比」。
+#
+#   **A（绝对天花板，可选）** —— 给了生成器上限读数时，最强者逼近它就作废该类。
+#     ⚠ ⚠ A 的正确性**整个压在「参照服务真的比四家都快」这一条上**，而那条在合格
+#     宿主到位之前**验不了**：参照选慢了 ⇒ 恒作废；选的是另一个真实服务器 ⇒ 量到的
+#     是 `min(oha, 那个服务器)`，天花板被低估。⇒ ⛔ **今天它是可选输入、不是承重件**：
+#     上限留空时 A 完全不参与，B 照常判。参照服务选定那天再把它打开。
+#
+# ⚠ ⚠ 误判方向是**有意不对称**的：一次误作废只是**扣下一个结论**，一次漏判是
+#   **给出一个错结论**。⇒ 两条都往「作废」那侧倒，且**「判不了」一律作废，
+#   ⛔ 不算通过**（读数不足两条 / 上限不是正数 —— 同判据 ① 那句「『没能检查』
+#   不算『检查通过』」）。
+#
+# ★ 边界与判据 ① 取同一个约定：**恰好压在阈值上算好的那一侧**（不作废），
+#   ⇒ 两处都用严格不等号，⛔ 别让门在边界上随机翻面。
+bench_saturation() {
+  local ceiling=$1 readings=$2
+  local stats cnt max min max_name min_name spread
+
+  # ★ 数值那一格用与 `bench_best_of` **逐字相同**的判法（`$2 + 0 == $2`）：
+  #   两处对「什么算一条有效读数」的口径必须一致，否则同一组数在判据 ②
+  #   与判据 ④ 里的「全场」不是同一个集合，而那种不一致不会有任何东西说。
+  stats=$(printf '%s\n' "$readings" | awk '
+    NF >= 2 && $2 + 0 == $2 {
+      n++
+      if (n == 1 || $2 + 0 > max + 0) { max = $2; max_name = $1 }
+      if (n == 1 || $2 + 0 < min + 0) { min = $2; min_name = $1 }
+    }
+    END { printf "%d %s %s %s %s\n", n + 0, (n ? max : "-"), (n ? min : "-"), (n ? max_name : "-"), (n ? min_name : "-") }
+  ')
+  read -r cnt max min max_name min_name <<< "$stats"
+
+  # —— B：收敛（承重）——
+  if [ "$cnt" -lt 2 ]; then
+    echo "spread: 只有 ${cnt} 条有效读数，判不了收敛（至少要 2 条）——「判不了」不算「没饱和」"
+  elif ! awk -v m="$max" 'BEGIN { exit !(m + 0 > 0) }'; then
+    echo "spread: 最强者读数是 '${max}'，不是正数 ⇒ 判不了收敛"
+  else
+    spread=$(awk -v hi="$max" -v lo="$min" 'BEGIN { printf "%.4f", (hi - lo) / hi }')
+    if awk -v s="$spread" -v t="$BENCH_MIN_SPREAD" 'BEGIN { exit !(s < t) }'; then
+      echo "spread: 全场 ${cnt} 家挤在 ${spread} 以内（阈值 ${BENCH_MIN_SPREAD}）——最高 ${max_name}=${max}，最低 ${min_name}=${min} ⇒ 四套不同实现这么齐，更像是共享了某个外部上限（生成器 / 环回 / 亲和），⛔ 这组数不可比"
+    fi
+  fi
+
+  # —— A：绝对天花板（可选；⛔ 上限留空时整条不参与）——
+  [ -n "$ceiling" ] || return 0
+  if ! printf '%s' "$ceiling" | grep -qE '^[0-9]+([.][0-9]+)?$' ||
+    awk -v c="$ceiling" 'BEGIN { exit !(c + 0 <= 0) }'; then
+    echo "ceiling: 生成器上限读数是 '${ceiling}'，不是正数 ——「判不了」不算「没饱和」"
+  elif [ "$cnt" -ge 1 ] &&
+    awk -v m="$max" -v c="$ceiling" -v h="$BENCH_GEN_HEADROOM" 'BEGIN { exit !(m + 0 > c * h) }'; then
+    echo "ceiling: 最强者 ${max_name}=${max} 已越过生成器上限 ${ceiling} 的 ${BENCH_GEN_HEADROOM} ⇒ 量到的可能是 oha 自己的天花板，不是被测的能力"
+  fi
+}
+
 # ── 自测：全部用**合成输入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不依赖宿主上此刻恰好是什么样（同 G133 的九条自测）。这一点是承重的：
@@ -201,6 +286,63 @@ bench_self_check() {
   want_match "恰好 90% 该 PASS" "PASS *" "$out"
   out=$(bench_verdict_one 999 "")
   want_eq "没有竞品读数时该报 NODATA" "NODATA" "$out"
+
+  # —— 判据 ④：压测端饱和 ————————————————————————————————————————
+  #
+  # ★ 一组**分得开**的全场读数：下面每条负向用例都从它出发，只翻一个变量。
+  local SPREAD_OK CEIL_SET
+  SPREAD_OK=$(printf 'fulcrum 300\nnginx 280\nhaproxy 200\ncaddy 100\n')
+  # ★ ★ 合格那一侧必须真的存在（同判据 ① 那条承重的自测）：
+  #   **一个恒作废的判据，与一个坏掉的判据给出完全相同的输出。**
+  out=$(bench_saturation "" "$SPREAD_OK")
+  want_empty "一组分得开的读数被判成了饱和" "$out"
+
+  # —— B（承重）：四家挤在一起 ——
+  local SPREAD_TIGHT
+  SPREAD_TIGHT=$(printf 'fulcrum 1000\nnginx 1010\nhaproxy 1020\ncaddy 1005\n')
+  out=$(bench_saturation "" "$SPREAD_TIGHT")
+  want_match "四家挤在 2% 以内没被判成饱和" '*spread:*' "$out"
+
+  # ★ ★ ★ **承重的是这一条对照**：同一组饱和数据喂给判据 ③，它照常打 PASS
+  #   （枢衡 1000 对最强者 1020，门槛 918）。⇒ ④ 抓的正是 ③ **结构上**抓不到的
+  #   那件事。⛔ 少了这条，「④ 判得动」与「④ 在重复 ③ 已经会做的事」分不开。
+  out=$(bench_verdict_one 1000 "$(printf 'nginx 1010\nhaproxy 1020\ncaddy 1005\n')")
+  want_match "同一组饱和数据判据 ③ 本来就该照常 PASS（这正是 ④ 存在的理由）" "PASS *" "$out"
+
+  # —— 边界：离散度恰好等于阈值算**不**饱和（⛔ 别在边界上随机翻面）——
+  #   (100 − 95) / 100 = 0.0500，恰好是 BENCH_MIN_SPREAD。
+  out=$(bench_saturation "" "$(printf 'a 100\nb 95\n')")
+  want_empty "离散度恰好等于阈值时被判成了饱和" "$out"
+
+  # —— 「判不了」必须作废，⛔ 不许当成「没饱和」——
+  out=$(bench_saturation "" "$(printf 'fulcrum 300\n')")
+  want_match "只有一条读数时被当成了没饱和" '*spread:*' "$out"
+  out=$(bench_saturation "" "")
+  want_match "一条读数都没有时被当成了没饱和" '*spread:*' "$out"
+  # ⚠ 非数字行不算有效读数（与 bench_best_of 同一口径）⇒ 只剩一条 ⇒ 判不了。
+  out=$(bench_saturation "" "$(printf 'fulcrum 300\nnginx n/a\n')")
+  want_match "非数字行被当成了有效读数" '*spread:*' "$out"
+
+  # —— A：上限那一半。★ CEIL_SET 的离散度是 0.7778，B 一定不响 ⇒
+  #   下面几条红或不红**只可能来自 A**，红的来源说得清。
+  CEIL_SET=$(printf 'fulcrum 900\nnginx 600\nhaproxy 400\ncaddy 200\n')
+  # ★ ★ 一个变量的翻面：同一组读数，上限留空 vs 给一个逼近的上限。
+  out=$(bench_saturation "" "$CEIL_SET")
+  want_empty "上限留空时 A 不该参与（它是可选输入，不是承重件）" "$out"
+  out=$(bench_saturation 950 "$CEIL_SET")
+  want_match "最强者逼近上限没被判出来" '*ceiling:*' "$out"
+  out=$(bench_saturation 10000 "$CEIL_SET")
+  want_empty "最强者远低于上限时被判成了饱和" "$out"
+  # ⚠ 边界：900 恰好等于 1000 × 0.90 ⇒ 算**不**饱和。
+  #   ★ 数值有意取整除得尽的一对，⛔ 别用 300/0.9 那种 —— 浮点尾数会让边界随机翻面，
+  #     而那样的话这条自测本身就成了一个不可靠的判据。
+  out=$(bench_saturation 1000 "$CEIL_SET")
+  want_empty "最强者恰好压在 上限×headroom 上时被判成了饱和" "$out"
+  # —— 上限读不出来必须作废 ——
+  out=$(bench_saturation "n/a" "$CEIL_SET")
+  want_match "上限不是数字时被当成了没饱和" '*ceiling:*' "$out"
+  out=$(bench_saturation 0 "$CEIL_SET")
+  want_match "上限是 0 时被当成了没饱和" '*ceiling:*' "$out"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"
