@@ -169,15 +169,28 @@ mod tests {
 
     const LIMIT: u64 = 64 * 1024;
 
-    /// ⚠ ⚠ ★ **这一族判据有意与文件系统无关。**
+    /// ⚠ ⚠ ★ **这一族判据的**断言**与文件系统无关，而它的**覆盖**不是。**
     ///
     /// `RWF_NOWAIT` 是**每个文件系统各自决定认不认**的：2026-09-06 在内核 `6.18`
-    /// 上实测 ext4 认、**overlayfs 与 tmpfs 回 `EOPNOTSUPP`** —— 而门禁跑在容器里，
-    /// `std::env::temp_dir()` 正是 overlayfs。
-    /// ⇒ 一条写成「快路径必须命中」的断言会在**本机绿、门禁红**，
+    /// 上实测 ext4 认、**overlayfs 与 tmpfs 回 `EOPNOTSUPP`**。
+    /// ⇒ 一条写成「快路径必须命中」的断言会在一种文件系统上绿、另一种上红，
     /// 而一条写成「快路径没命中就跳过」的判据是**恒真的**，两种都不要。
     /// ⇒ 这里断言的是**契约**：两条路要么给出同一个答案，要么快路径老实说
     /// 「我这一趟做不完」而慢路径把事情做对。★ 两个分支都被断言，⛔ 没有 skip。
+    ///
+    /// ⚠ ⚠ ★ ★ ★ **但「两个分支都被断言」≠「两个分支这一趟都被走到」** ——
+    /// 而这两件事被混成一句话，代价是这族判据落地当天一整天是半瞎的。
+    ///
+    /// **落地那天**：门禁只跑在容器可写层（overlayfs）上 ⇒ `认` **恒为假**
+    /// ⇒ `Some(fast)` 那一支**除空文件那一格外一次都走不到**。
+    /// ⚠ 那不是推理，是量出来的：把 [`read_full_nowait`] 改成「非空文件一律回
+    /// `false`」（＝快路径对每一个真实文件都失效），整趟 `UNIT_ONLY`
+    /// **RC=0、881 条全绿，连这条契约测试自己都是 `ok`**。
+    ///
+    /// **修完之后**：[`本趟要跑的根`] 再供一个根（门禁挂的匿名卷，实测落在 ext4 上）
+    /// ⇒ 同一个注入现在 **RC=1**，红的正是本条、报文逐字点名
+    /// `根="/fulcrum-fs-fixture"`。而「那个根真的在场」由
+    /// [`每趟必须两个方向都真的走到`] 单独钉着 —— ⛔ 少了它，本条会悄悄退回半瞎。
     ///
     /// 「快路径在 ext4 上真的省掉了那次跨线程」是一条**测量**，不是这里的门 ——
     /// 它由诊断台上的每请求上下文切换数给出。⛔ 别把这两件事混成一句话。
@@ -185,8 +198,14 @@ mod tests {
 
     impl Tmp {
         fn new(tag: &str) -> Self {
-            let d =
-                std::env::temp_dir().join(format!("fulcrum-probe-{tag}-{}", std::process::id()));
+            Self::under(&std::env::temp_dir(), tag)
+        }
+
+        /// ⚠ `root` 逐字用作父目录 —— 调用方给哪个根就落在哪个根上，
+        /// ⛔ 这里不做任何回落到 `temp_dir()` 的补救：一次静默的回落会让
+        /// 「在 ext4 上跑过了」与「其实又跑在 overlayfs 上」长得一模一样。
+        fn under(root: &Path, tag: &str) -> Self {
+            let d = root.join(format!("fulcrum-probe-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
             Self(d)
@@ -232,38 +251,114 @@ mod tests {
         rc == 3 && &buf == b"cap"
     }
 
+    /// 本趟要在**哪几个目录**上各跑一遍这族判据。
+    ///
+    /// `std::env::temp_dir()` 恒在；`FULCRUM_TEST_FS_ROOTS`（`:` 分隔）由门禁供，
+    /// [`tests/m0/docker-run.sh`] 给容器挂一个 **匿名卷**（`-v /fulcrum-fs-fixture`，
+    /// 没有源）—— 实测它落在 **ext4** 上，而容器可写层是 **overlayfs**
+    /// ⇒ 两种文件系统这一趟都在。
+    ///
+    /// ⚠ ⚠ ★ **这里有意不写死「哪个根该是 ext4」。** 承重的性质是
+    /// 「本趟见过一个认的、也见过一个不认的」，⛔ 不是「某个具体路径是某个具体
+    /// 文件系统」—— 后者会在换一台宿主（xfs 一样认 `RWF_NOWAIT`）时红得毫无道理。
+    /// 那条性质由 [`每趟必须两个方向都真的走到`] 断言。
+    ///
+    /// ⚠ 取不到环境变量时**只回 `temp_dir()`，⛔ 不报错** —— 报错的地方只有一处，
+    /// 就是那条覆盖判据；两处都报会让一次红说不清是「夹具没挂」还是「契约破了」。
+    fn 本趟要跑的根() -> Vec<PathBuf> {
+        let mut v = vec![std::env::temp_dir()];
+        if let Ok(s) = std::env::var("FULCRUM_TEST_FS_ROOTS") {
+            v.extend(s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from));
+        }
+        v
+    }
+
     #[test]
     fn 认_nowait_就必须命中快路径_不认就必须老实回落() {
-        let t = Tmp::new("cap");
-        let 认 = 文件系统认不认_nowait(&t.0);
-        // 0 / 1 / 常见 / **正好压在上限上**（边界与其余判据同一个约定：等于算「装得下」）
-        for len in [0usize, 1, 4096, LIMIT as usize] {
-            let (p, body) = t.file(&format!("f{len}.bin"), len);
-            let slow = Probe::open_blocking(p.clone(), LIMIT).unwrap();
-            assert_eq!(
-                slow.bytes_for(&p),
-                Some(&body[..]),
-                "慢路径本来就该带全字节（len={len}）"
-            );
-            // ⚠ 空文件**不需要等任何 I/O** ⇒ 它在每种文件系统上都该走快路径。
-            //   这不是猜的：内核把零长读短路在 `FMODE_NOWAIT` 检查之前（见上）。
-            let 该命中 = 认 || len == 0;
-            match Probe::open_nowait(p.clone(), LIMIT) {
-                Some(fast) => {
-                    assert!(
-                        该命中,
-                        "文件系统不认 RWF_NOWAIT，快路径却声称做完了（len={len}）"
-                    );
-                    assert_eq!(fast.meta().len(), slow.meta().len(), "len={len}");
-                    assert_eq!(fast.bytes_for(&p), Some(&body[..]), "len={len}");
+        for root in 本趟要跑的根() {
+            let t = Tmp::under(&root, "cap");
+            let 认 = 文件系统认不认_nowait(&t.0);
+            // 0 / 1 / 常见 / **正好压在上限上**（边界与其余判据同一个约定：等于算「装得下」）
+            for len in [0usize, 1, 4096, LIMIT as usize] {
+                let (p, body) = t.file(&format!("f{len}.bin"), len);
+                let slow = Probe::open_blocking(p.clone(), LIMIT).unwrap();
+                assert_eq!(
+                    slow.bytes_for(&p),
+                    Some(&body[..]),
+                    "慢路径本来就该带全字节（len={len}，根={root:?}）"
+                );
+                // ⚠ 空文件**不需要等任何 I/O** ⇒ 它在每种文件系统上都该走快路径。
+                //   这不是猜的：内核把零长读短路在 `FMODE_NOWAIT` 检查之前（见上）。
+                let 该命中 = 认 || len == 0;
+                match Probe::open_nowait(p.clone(), LIMIT) {
+                    Some(fast) => {
+                        assert!(
+                            该命中,
+                            "文件系统不认 RWF_NOWAIT，快路径却声称做完了（len={len}，根={root:?}）"
+                        );
+                        assert_eq!(
+                            fast.meta().len(),
+                            slow.meta().len(),
+                            "len={len}，根={root:?}"
+                        );
+                        assert_eq!(
+                            fast.bytes_for(&p),
+                            Some(&body[..]),
+                            "len={len}，根={root:?}"
+                        );
+                    }
+                    None => assert!(
+                        !该命中,
+                        "文件系统认 RWF_NOWAIT，快路径却回落了（len={len}，根={root:?}）—— \
+                         ⛔ 这条回落是纯亏损，它正是本次改动要去掉的那一次跨线程"
+                    ),
                 }
-                None => assert!(
-                    !该命中,
-                    "文件系统认 RWF_NOWAIT，快路径却回落了（len={len}）—— \
-                     ⛔ 这条回落是纯亏损，它正是本次改动要去掉的那一次跨线程"
-                ),
             }
         }
+    }
+
+    /// ★ ★ ★ **它与上面那条是一对，而少了哪一条都会留下一个安静的洞** ——
+    /// 形状照 `tests/bench/gate.sh` 的 C12/C13（`G145`）。
+    ///
+    /// - 只有上面那条契约判据：门禁只跑在 overlayfs 上时 `认` 恒假 ⇒
+    ///   `Some(fast)` 那一支除空文件外**一次都走不到**，而它照常绿。
+    ///   ⚠ ⚠ **这不是推理，是实测**：把 [`read_full_nowait`] 改成非空一律回 `false`，
+    ///   2026-09-06 那趟 `UNIT_ONLY` **RC=0、881 条全绿、契约测试自己也是 `ok`**。
+    /// - 只有本条覆盖判据：两个方向都走得到，而快路径可以在 ext4 上发错的字节，
+    ///   本条一声不吭 —— 那件事只有上面那条判得动。
+    ///
+    /// ⇒ 本条**只**回答一句话：「这一趟，认与不认两种文件系统是不是都真的在场」。
+    /// ⛔ 它不判任何产品行为。
+    ///
+    /// ⚠ 失效方向是**噪音不是沉默**：夹具没挂、挂错地方、或哪天 `temp_dir()`
+    /// 自己变成了 ext4（两个根一起认）都会红，而红的那一刻它逐字说出该去看哪里。
+    #[test]
+    fn 每趟必须两个方向都真的走到() {
+        let mut 认的 = Vec::new();
+        let mut 不认的 = Vec::new();
+        for root in 本趟要跑的根() {
+            let t = Tmp::under(&root, "cover");
+            if 文件系统认不认_nowait(&t.0) {
+                认的.push(root);
+            } else {
+                不认的.push(root);
+            }
+        }
+        assert!(
+            !认的.is_empty(),
+            "本趟没有任何一个根认 RWF_NOWAIT ⇒ 「认 ⇒ 必须命中快路径」那一支\
+             （空文件那一格除外）这一趟一次都没走到，而契约判据会照常绿。\n\
+             \x20  查这里：`tests/m0/docker-run.sh` 里那行 `-v /fulcrum-fs-fixture`\
+             （匿名卷，落在 ext4 上）与随它一起传的 `FULCRUM_TEST_FS_ROOTS`。\n\
+             \x20  本趟的根：认的 {认的:?}；不认的 {不认的:?}"
+        );
+        assert!(
+            !不认的.is_empty(),
+            "本趟每一个根都认 RWF_NOWAIT ⇒ 回落那一支一次都没走到。\n\
+             \x20  它平时由容器可写层（overlayfs）供 —— 若 `temp_dir()` 被挪到了\
+             一个认 RWF_NOWAIT 的文件系统上，得另外给一个不认的根。\n\
+             \x20  本趟的根：认的 {认的:?}；不认的 {不认的:?}"
+        );
     }
 
     #[test]

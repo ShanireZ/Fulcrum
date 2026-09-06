@@ -1110,6 +1110,33 @@ if [ "${DOCS_GATE:-1}" = "1" ]; then
   python3 "$REPO_HOST/tools/plan-refs.py"
 fi
 
+# ── ★ ★ ★ 认 `RWF_NOWAIT` 的那个夹具根（2026-09-06）────────────────────────
+#
+# `crates/fulcrum-server/src/files/probe.rs` 的快路径（`preadv2(RWF_NOWAIT)` 整读、
+# 零跨线程）**能不能生效由文件系统决定**：实测 ext4 认，**overlayfs 与 tmpfs 回
+# `EOPNOTSUPP`**。而这个容器里 `std::env::temp_dir()` 就在**镜像可写层**上，即
+# overlayfs ⇒ 在这一行出现之前，那族判据里「认 ⇒ 必须命中快路径」那一支
+# **除空文件那一格外一次都走不到**。
+#
+# ⚠ ⚠ ★ **代价是实测出来的，⛔ 不是推理**：把 `read_full_nowait` 改成
+#   「非空文件一律回 `false`」（＝快路径对每一个真实文件都失效），
+#   整趟 `UNIT_ONLY` **RC=0、881 条全绿，连那条契约测试自己都是 `ok`**。
+#   ⇒ 一个把本次改动整个废掉的回归，当时没有任何东西会说。
+#
+# ★ ★ **必须是匿名卷（`-v /路径`，没有源），⛔ 不许换成命名卷**，两条理由：
+#   ① 上面那道「说不出属主的卷」判据按名字判，而匿名卷那 64 位十六进制名字
+#      被 `fulcrum_vol_attribution` 认成 `anonymous` ⇒ 不会被点名；
+#      一个命名的诊断卷 2026-09-06 当场被它挑出来过（`bench/docker-run.sh` 挑
+#      匿名卷是同一个理由）。
+#   ② `--rm` 会**连它一起删** ⇒ 不跨趟留残留、不用管回收。
+# ⚠ 路径逐字进 docker，靠的是上面那句 `export MSYS_NO_PATHCONV=1`；
+#   ⛔ 别把它挪到那句之前，否则 Git Bash 会把它改写成 `D:/Program Files/Git/...`。
+#
+# ⛔ **这里不断言它落在 ext4 上。** 承重的性质是「本趟认与不认两种都在场」，
+#   而那条断言在 Rust 那边（`每趟必须两个方向都真的走到`）—— 它对 xfs 之类
+#   同样认 `RWF_NOWAIT` 的文件系统照样成立，⛔ 不写死文件系统名字。
+FS_FIXTURE=/fulcrum-fs-fixture
+
 docker run --rm \
   "${DOCKER_USER_ARGS[@]}" \
   "${PASS_ENV_ARGS[@]}" \
@@ -1117,8 +1144,10 @@ docker run --rm \
   -v "${REPO_HOST}:/w" \
   -v fulcrum-cargo:/usr/local/cargo/registry \
   -v "${TARGET_VOL}:/w/target" \
+  -v "$FS_FIXTURE" \
   -w /w \
   -e RUST_LOG="${RUST_LOG:-info}" \
+  -e FULCRUM_TEST_FS_ROOTS="$FS_FIXTURE" \
   "$IMAGE" \
   bash -c "$TOOLCHAIN; $BLACKHOLE_CMD; $CMD"
 
