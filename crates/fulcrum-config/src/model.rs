@@ -9,7 +9,8 @@
 //! - **不做反向生成**（结构化 → DSL）：注释、缩进、简写在往返中必然丢失。
 //!
 //! ⚠ 字段会随自研进度增加，
-//! **稳定性承诺是 D9（M4）** —— 现在还没有承诺，`schema_version` 先占住位置。
+//! **稳定性承诺仍从 M4 起**（`G149`，原 `D9`，2026-09-07 结案）——
+//! 现在还没有承诺，`schema_version` 先占住位置。
 
 use crate::secret::Secret;
 use serde::{Deserialize, Serialize};
