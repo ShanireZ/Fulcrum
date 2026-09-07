@@ -368,7 +368,8 @@ fulcrum_vol_size_of() {
 #     的卷（`pingora-up994-target` 就是这个形状）写进白名单。** 那一格没有门，只有纪律。
 # ⚠ 这份清单是**某一台开发机上**的读数，换台机器多半要加/减 —— 加不上没关系，
 #   后果只是多报几行（安全方向）。⛔ 别为了让它「干净」而删掉本机用不到的条目。
-FULCRUM_FOREIGN_VOL_PREFIXES='betai-      betai 教学平台
+FULCRUM_FOREIGN_VOL_PREFIXES='act-toolcache nektos/act 的工具缓存（Node 26.7.0）——★ 属主是「用 act 跑 CI 的那几个 Node 项目」而不是某一个：这个名字由 act 自己起、不带项目前缀，本机 26.7.0 对得上 BetAI/ChengJun/LuoguSP/WenTian 四家。⛔ 不是本仓的（gate.yml 明写本仓没有 Node 代码、不用 setup-node），2026-09-07 按三条判据逐条查过
+betai-      betai 教学平台
 betapass    BetaPass 身份中枢
 nxtstrict-  Plumbline 的 nxtstrict 探针
 plumbline-  Plumbline
