@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "fulcrum"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "env_logger",
  "fulcrum-acme",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-acme"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "fulcrum-tls",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-config"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-runtime"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fulcrum-config",
  "regex",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-server"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "boring",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "fulcrum-tls"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fulcrum-config",
  "libc",

@@ -1,6 +1,6 @@
 [package]
 name = "fulcrum-server"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
 description = "枢衡的数据面：把运行时对象图挂到 Pingora 上（HTTP/1.1 + h2c + TLS + ACME + 管理面 + 进程托管）"

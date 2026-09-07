@@ -1,6 +1,6 @@
 [package]
 name = "fulcrum-tls"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
 description = "枢衡的 TLS 层：证书存储（G55）、按 SNI 的动态证书解析（§5.1 第 1 条）、续期判定（G56）"

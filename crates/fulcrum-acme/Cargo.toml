@@ -1,6 +1,6 @@
 [package]
 name = "fulcrum-acme"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
 description = "枢衡的 ACME 层：账户、订单、挑战求解、签发与续期调度（G53/G54/G56）"

@@ -1,6 +1,6 @@
 [package]
 name = "fulcrum-runtime"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
 description = "枢衡的运行时对象图：结构化配置 → 站点索引 / 匹配器 / 执行链，纯逻辑不碰网络"

@@ -1,6 +1,6 @@
 [package]
 name = "fulcrum"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
 description = "枢衡 Fulcrum 的产品二进制：validate / compile / plan / serve"

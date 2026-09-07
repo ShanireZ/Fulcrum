@@ -1,6 +1,6 @@
 [package]
 name = "fulcrum-config"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
 description = "枢衡的配置层：DSL（Caddyfile 式）→ 诊断 → 结构化配置（JSON）"
