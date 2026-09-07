@@ -416,7 +416,7 @@ impl Upstream {
         // saturating：配对错了也不该 wrap 成一个天文数字。
         let _ = self
             .inflight
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
     }
