@@ -272,14 +272,27 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       #   自己说得出「这一格为什么是空的」，比事后猜强。
       # ⚠ `2>&1 >/dev/null` 只捕 stderr（⛔ 顺序不能反）；`|| _rc=$?` 接住，
       #   ⛔ 否则 `set -e` 会在这里把整个 --record 掐掉，连成功的那趟也写不成记录。
+      #
+      # ★ ★ ★ **`61b867a` 那个 `unknown` 的真因（2026-09-08 查实并复现）：**
+      #   `tests/m0/docker-run.sh:615` 有一句 `export MSYS_NO_PATHCONV=1`（docker 那些
+      #   调用要它），而本脚本由该文件在**第 1217 行**调起 ⇒ **继承了这个 export**。
+      #   于是 MSYS 不再翻译 argv 里的路径，原生 `git.exe` 拿到字面量 `/d/Workspace/Fulcrum`：
+      #     fatal: cannot change to '/d/Workspace/Fulcrum': No such file or directory   (rc=128)
+      #   ⚠ 而 `docker-run.sh:495` 那道行尾检查**排在 615 之前**，git 在那里是好的
+      #   ⇒ 同一趟门禁里「git 一会儿行一会儿不行」，看起来毫无道理。
+      # ⛔ **所以这里不用 `git -C <路径>`** —— 那正是把 MSYS 路径喂给原生 exe 的写法。
+      #   改成在子 shell 里 `cd` 过去再问：`cd` 是 bash 内建，⛔ 不经过 argv 转换，
+      #   于是这一句在 `MSYS_NO_PATHCONV` 设与不设时**行为相同**。
+      #   （同源写法：`tests/lib/vol-lock.sh:168` 的 `git hash-object --stdin` —— 没有路径参数。）
+      _git_head() { ( cd "$_root" 2>/dev/null && git rev-parse --short HEAD ); }
       _commit_rc=0
-      _commit=$(git -C "$_root" rev-parse --short HEAD 2>/dev/null) || _commit_rc=$?
+      _commit=$(_git_head 2>/dev/null) || _commit_rc=$?
       _commit_err=''
       if [ "$_commit_rc" -ne 0 ]; then
-        _commit_err=$(git -C "$_root" rev-parse --short HEAD 2>&1 >/dev/null) || true
+        _commit_err=$(_git_head 2>&1 >/dev/null) || true
         _commit=unknown
         echo "⚠ ⚠ 写 aarch64 验证记录时**问不出当前提交** —— 这一格会是 \`unknown\`。" >&2
-        echo "  \`git -C $_root rev-parse --short HEAD\` 退了 $_commit_rc，它自己的原话：" >&2
+        echo "  \`(cd $_root && git rev-parse --short HEAD)\` 退了 $_commit_rc，它自己的原话：" >&2
         printf '%s\n' "$_commit_err" | sed 's/^/      /' >&2
         echo "  ⛔ 这**不**使这份记录作废（它的主键是 hash=），但补记时别去猜那个提交号。" >&2
       fi

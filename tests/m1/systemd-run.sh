@@ -108,7 +108,11 @@ SYSTEMD_DOCKERFILE="${REPO_UNIX}/docker/Dockerfile.systemd"
 if command -v sha256sum >/dev/null 2>&1; then
   SYSTEMD_SHA=$(sha256sum "$SYSTEMD_DOCKERFILE" | cut -d' ' -f1)
 elif command -v git >/dev/null 2>&1; then
-  SYSTEMD_SHA="githash-$(git hash-object "$SYSTEMD_DOCKERFILE")"
+  # ⚠ ⚠ ★ `--stdin`：本脚本由 `tests/m0/docker-run.sh` 在它 `export MSYS_NO_PATHCONV=1`
+  #   **之后**调起 ⇒ 继承那个变量 ⇒ 原生 git.exe 拿到未转换的 `/d/...` 会报
+  #   `fatal: could not open '/d/…' for reading`。argv 里不放路径就没这回事。
+  #   （`docker-run.sh` 第 42 行那条位置硬要求说的是同一件事；同源写法见 `tests/lib/vol-lock.sh:168`。）
+  SYSTEMD_SHA="githash-$(git hash-object --stdin < "$SYSTEMD_DOCKERFILE")"
 else
   SYSTEMD_SHA=""
   echo "⚠ 既没有 sha256sum 也没有 git，无法判断测试宿主镜像是否过期——本次强制重建" >&2

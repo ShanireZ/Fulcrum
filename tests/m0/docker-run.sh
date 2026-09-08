@@ -634,7 +634,13 @@ DOCKERFILE="${REPO_UNIX}/docker/Dockerfile.build"
 if command -v sha256sum >/dev/null 2>&1; then
   DOCKERFILE_SHA=$(sha256sum "$DOCKERFILE" | cut -d' ' -f1)
 elif command -v git >/dev/null 2>&1; then
-  DOCKERFILE_SHA="githash-$(git hash-object "$DOCKERFILE")"
+  # ⚠ ⚠ ★ `--stdin` 不是风格：本行在第 615 行那句 `export MSYS_NO_PATHCONV=1` **之后**，
+  #   ⇒ 原生 git.exe 会拿到未转换的 `/d/...` 并报
+  #   `fatal: could not open '/d/…' for reading`（2026-09-08 实测 rc=128）。
+  #   本文件第 42 行为行尾检查写下的那条位置硬要求，说的正是这件事 —— 而这一行在它之后。
+  #   ⇒ 用 `--stdin` 由 bash 做重定向，**argv 里没有路径**，设不设那个变量都一样。
+  #   （同源写法：`tests/lib/vol-lock.sh:168`。实测两种写法哈希逐字相同。）
+  DOCKERFILE_SHA="githash-$(git hash-object --stdin < "$DOCKERFILE")"
 else
   DOCKERFILE_SHA=""
   echo "⚠ 既没有 sha256sum 也没有 git，无法判断构建镜像是否过期——本次强制重建" >&2
