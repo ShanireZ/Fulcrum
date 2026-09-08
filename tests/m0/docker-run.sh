@@ -904,6 +904,14 @@ LINT_CMD="$LINT_CMD && cargo clippy --workspace --all-targets --locked -- -D war
 # ★ `LC_ALL=C.UTF-8` 那条（中文注释会让 shellcheck 在 POSIX locale 下报不出话来）
 #   搬进了那个脚本里，谁来调都逃不掉。
 LINT_CMD="$LINT_CMD && bash tests/ci/shellcheck-all.sh"
+# ★ ★ 「`MSYS_NO_PATHCONV=1` 生效那片区域里，git 的 argv 不许出现路径」。
+#   2026-09-08 实付一次：本文件下面那句 `export` 漏给了它调起的子脚本，
+#   于是 `arm64-trigger.sh` 里的 `git -C "$_root"` 拿到未转换的 `/d/...` 而失败，
+#   代价是一份 `verified_commit=unknown` 的验证记录。
+#   ⚠ 本文件顶部**早就写下过**这条位置硬要求，⛔ 却只有行尾检查那一个消费者照做了
+#   ⇒ 这道门存在的意义是：这件事从此不再依赖谁记得。判据与自证在那个脚本里。
+# ⛔ 它只管 `git`。`docker` 正相反 —— 那句 export 本来就是为它加的。
+LINT_CMD="$LINT_CMD && bash tests/ci/msys-argv-guard.sh"
 # ★ ★ CI 那段搬运代码的自证（G94）。**挂在 lint 这一格而不是新开一个场景**：
 #   它只花毫秒、不需要 docker、也不需要网络，而且它验的是**门自己的管道**
 #   （退出码是怎么取的），与各场景验的产品行为不是一回事。

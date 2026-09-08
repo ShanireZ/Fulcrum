@@ -90,8 +90,20 @@ fulcrum_arm64_state() {
 #   `exec format error`、装**之后**回 `aarch64`，两个方向都实测过；但
 #   `buildx inspect` 的输出**只在装好之后看过**。⇒ 下面这个函数的**解析**两个方向
 #   都由合成输入钉着，而「装之前 buildx 到底怎么打」本机没有观察过。
-# ★ 好在误判方向是软的：探针**假阳**（说能跑其实不能）会退化成那趟构建自己报错，
-#   ⛔ 只有**假阴**会误拦，而假阴要求 buildx 在装了 binfmt 之后仍不列 arm64。
+#
+# ★ ★ ★ **缺的那个方向 2026-09-08 在 `ShanireHomePC` 上量到了，结论比预想的坏：**
+#   binfmt **没有**注册时（`docker run --platform linux/arm64 alpine:3 uname -m`
+#   当场回 `exec /bin/uname: exec format error`），`docker buildx inspect` **照样列着**
+#     Platforms: linux/amd64, …, linux/arm64, linux/riscv64, linux/ppc64le, linux/s390x, linux/arm/v7, linux/arm/v6
+#   ⇒ 它列的是**buildx 愿意接受的目标**，⛔ 不是「这台机器现在跑得动的」。
+#   ⇒ **假阳不是边角情况，它是 Docker Desktop 上的常态** ——
+#     这个探针在本机实际上**拦不住任何东西**。
+# ⚠ 同一天还量到：binfmt 的注册**不跨 Docker Desktop / WSL2 VM 重启存活** ——
+#   09-08 10:28 那趟 aarch64 编得好好的，同一台机器同一天下午就 `exec format error` 了。
+# ★ 误判方向仍然是软的（假阳 ⇒ 那趟构建自己报错，本次实测正是如此：
+#   `[build 5/7]` 第一条真正要执行的指令上 `exec /bin/sh: exec format error`），
+#   ⛔ 但别再把这个探针读成一道门。真要判「这台机器现在跑不跑得了 arm64」，
+#   判据得是**真执行一次**（`docker run --platform linux/arm64 … true`），不是问 buildx。
 fulcrum_arm64_platform_ok() {
   case "$1" in
     *linux/arm64*) return 0 ;;
