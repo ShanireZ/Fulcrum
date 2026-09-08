@@ -1,0 +1,36 @@
+# 枢衡 · `respond` 上界诊断的被测配置（M3）。
+#
+# ★ ★ ★ **这不是 §8 七类里的一类。** 七类是「与三家对拍」，而这一份只有枢衡自己 ——
+#   它量的是「把响应推出去」这条路的上界，用来与同一趟里的 `file_server` 背靠背比。
+#   ⇒ 它的读数落 `diag/`，⛔ **不落 `raw/`**：`bench/verdict.sh` 把 `raw/` 下每个
+#   子目录都当成一类去判，只有一家读数会被判成 `VOID`，而那会把一个诊断上界
+#   摆成一个 §8 的类别。判据在 `tests/bench/gate.sh` 的 C17（两个方向都钉着）。
+#
+# ★ 与 [`fulcrum.Fulcrumfile`](fulcrum.Fulcrumfile) **逐条对齐**：同一个 worker 数、
+#   访问日志一律关、明文 HTTP/1.1、keep-alive 开、同一份 payload 字节。
+#   ⛔ 唯一有意不同的是终结指令：`file_server` → `respond`。
+#
+# ⚠ ⚠ **一处已知的口径不对等，写在明处**：`respond` 与 `file_server` 写响应走的是
+#   **不同的路** —— `docs/architecture/dsl-reference.md` 原话：「`metrics` 与
+#   `respond` / `redir` 同病 —— 三者写响应走的是同一条**没有 encoder** 的路
+#   （`encode` 今天只接在 `file_server` 与转发那两处）」。
+#   ⇒ 本文件与它的对照组**都不配 `encode`**，且 payload 不可压缩
+#   ⇒ 这一格对两边都不起作用。⛔ 但引用差值时别把这句话丢掉。
+#
+# ⚠ ⚠ **正文只有内联形态**（`respond [matcher] <status> [body]`，⛔ 没有 file 形式，
+#   不像 HAProxy 那条 `http-request return … file <路径>`）⇒ 那份 payload 必须是
+#   **可打印的**（对拍那边取 base64 字母表：不含 `|`、`&`、反斜杠与引号）。
+#   ★ 「词法与编译吃得下 4096 字节的一个 token 且一个字节都不改」这条前提
+#   由 `crates/fulcrum-config/tests/compile_behaviour.rs` 里那条契约测试钉着
+#   （注入反证实测：把正文截成 16 字节 ⇒ 同一个二进制里 79 条通过、只有它一条红）。
+#
+# ⚠ 占位符由 bench/diag/respond-ceiling.sh 替换。
+{
+    # ★ ★ L7 数据面的 worker 数（G140）。与对照组吃**同一个** `BENCH_WORKERS`
+    #   ⇒ 「两个变体 worker 数一致」这条对齐口径在这里落实。
+    threads_l7 __WORKERS__
+}
+
+:__PORT__ {
+    respond 200 "__BODY__"
+}

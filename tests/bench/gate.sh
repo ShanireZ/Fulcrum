@@ -435,6 +435,48 @@ else
   bad "C16 快照说不出自己是在什么口径下量的：$(cat /tmp/bench-c16.txt)"
 fi
 
+# ── C17：`respond` 上界那一步真的产出了，且**没有**混成 §8 的一类 ────────────
+#
+# `respond` 量的是「把响应推出去」的上界，与 `file_server` 背靠背比
+# （handoff/design-static-file-cache.md §7：先量再决定方案 ③ 做不做）。
+# ★ ★ 它**不是 §8 七类里的一类** —— §8 那七类是「与三家对拍」，而这一步只有枢衡。
+#
+# ⚠ ⚠ ⛔ **所以它的输出不许落 `raw/`**：`bench/verdict.sh` 是
+#   `for raw_case in "$OUT_DIR"/raw/*/` —— **`raw/` 下每个子目录都会被当成一类去判**，
+#   而 `bench/read-raw.py` 把该目录下每个 `*.json` 当成一家被测。
+#   只有枢衡一家 ⇒ 判据 ④ 会按「有效读数不足两条」判 `VOID`：那不是错结论，
+#   但它把一个**诊断上界**摆成了 §8 的一个类别，而七类里没有它。
+#   ★ 与 G142 记的那条同族（`ceiling.txt` 不许叫 `.json`，否则被当成第五家被测）。
+#
+# 本条**两半都判**，缺一半都不够：
+#   ① 两份读数真的产出了（少了它，diag 那一步整个不跑也没人会说）
+#   ② `raw/` 下的类别数**没有因为它而变多**（少了它，输出挪回 `raw/` 也没人会说）
+echo "── C17 respond 上界：产出了，且没混成 §8 的一类 ──"
+# ⚠ ⚠ 计数必须**报得出来**，⛔ 不许把脚本掐掉：`find` 在不存在的目录上退出码非 0，
+#   而本文件是 `set -euo pipefail` ⇒ 初稿写成 `$(find … | wc -l)` 时，
+#   目录不存在那一趟**整个门在这里静默中止**（35 条 ✓、0 条 ✗、连收尾行都没打）。
+#   ★ 那正是判据最该说话的那一刻，而它当时哑了。⇒ 先判目录在不在。
+DIAG_DIR="$OUT/diag/respond-ceiling"
+if [ -d "$DIAG_DIR" ]; then
+  DIAG_N=$(find "$DIAG_DIR" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')
+else
+  DIAG_N=0
+fi
+if [ -d "$OUT/raw" ]; then
+  RAW_N=$(find "$OUT/raw" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+  RAW_NAMES=$(find "$OUT/raw" -mindepth 1 -maxdepth 1 -type d -printf '%f ' )
+else
+  RAW_N=0
+  RAW_NAMES="(raw/ 不存在)"
+fi
+if [ "$DIAG_N" != 2 ]; then
+  bad "C17 diag/respond-ceiling/ 下该有 2 份读数，实际 $DIAG_N（目录里有：$(find "$DIAG_DIR" -maxdepth 1 -mindepth 1 -printf '%f ' 2>/dev/null || echo '（目录不存在）')）"
+elif [ "$RAW_N" != 1 ]; then
+  bad "C17 raw/ 下该只有 static-throughput 一类，实际 $RAW_N 类：$RAW_NAMES ⇒ 诊断读数混进 §8 的类别里了"
+else
+  ok "C17 diag 两份读数在（file / respond），而 raw/ 仍只有 $RAW_N 类：$RAW_NAMES"
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"
