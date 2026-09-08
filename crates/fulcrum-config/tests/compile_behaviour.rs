@@ -1898,3 +1898,45 @@ fn 写了_passive_fail_之后旋钮不再报警告() {
         "旋钮已经生效了还报「不生效」：{cs:?}"
     );
 }
+
+// ── M3 对拍的 `respond` 上界诊断所依赖的一条 DSL 契约 ────────────────────────
+//
+// 对拍要拿 `respond` 量出「把响应推出去」的上界，与 `file_server` 背靠背比。
+// 为此那份被测配置必须内联一份与静态吞吐那一类**同样字节数**的正文
+// （`BENCH_PAYLOAD_BYTES`，缺省 4096），而 `respond` 的正文**只有内联形态**
+// （`respond [matcher] <status> [body]`，⛔ 没有 file 形式，不像 HAProxy 那条
+// `http-request return … file <路径>`）。
+// ⇒ 「词法与编译吃得下这么长的一个 token、且一个字节都不改」是那份配置成立的前提，
+//    而它此前**没有任何判据**。本条把它钉住。
+
+/// `respond` 的内联正文能原样带过 4096 字节。
+#[test]
+fn respond_的内联正文收得下四千零九十六字节且逐字节不变() {
+    // ★ 字符集与 `bench/diag/` 那边生成 payload 的一致：base64 字母表
+    //   不含 `|`、`&`、反斜杠与引号 ⇒ `sed` 替换与 DSL 的引号都不会被它撑破。
+    // ⛔ 有意不用 `"A".repeat(4096)`：单一重复字符测不出「内容有没有被改写」，
+    //   只测得出长度。
+    const 字母表: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let 正文: String = (0..4096)
+        .map(|i| 字母表[i % 字母表.len()] as char)
+        .collect();
+    assert_eq!(正文.len(), 4096, "先证明这份正文自己真的是 4096 字节");
+
+    let cfg = ok(&format!(":9944 {{\n    respond 200 \"{正文}\"\n}}\n"));
+
+    let step = &cfg.sites[0].chain[0];
+    match &step.body {
+        StepBody::Respond { status, body } => {
+            assert_eq!(*status, 200);
+            let 收到 = body.as_deref().expect("respond 的正文不该丢成 None");
+            assert_eq!(
+                收到.len(),
+                4096,
+                "正文长度在编译过程中变了：{} 字节",
+                收到.len()
+            );
+            assert_eq!(收到, 正文, "正文必须逐字节原样带过来");
+        }
+        其它 => panic!("第 70 步该是 respond，实际是 {}", 其它.directive_name()),
+    }
+}
