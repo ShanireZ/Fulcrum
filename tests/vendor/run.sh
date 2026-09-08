@@ -411,6 +411,10 @@ echo
 #      ★ 真要根治，方向在**上游**：`release_stream()` 不该把第二个 Arc 交给 spawn 出去的任务，
 #        或 `reused_stream()` 不该用 `Arc::try_unwrap` 这种对引用计数敏感的取法。
 #        ⛔ 本仓不改 vendor 去修它 —— 那是上游的缺陷，改了要自己背 rebase 成本。
+#      ⇒ **已报上游：`cloudflare/pingora#998`**（2026-09-08，含两份复现与逐档读数）。
+#        ⚠ 上游 `main`（`09696b5`）与 0.8.1 在这三个函数上**逐字相同** ⇒ 升 vendor 不会自动解决。
+#        ★ 它与 `#967`（短读，本仓已用 `read_exact` 治掉）是**同一条测试的两个独立原因**，
+#          ⛔ 别把两者混成一件事。
 #
 #   ★ 一条相关事实：`connectors::*` 里那批测试**连的是真的 1.1.1.1:443 / :80**
 #     （见 `pingora-core/src/connectors/http/{mod,v1,v2}.rs`）——**这道门一直悄悄依赖容器
