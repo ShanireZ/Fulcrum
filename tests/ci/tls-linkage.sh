@@ -47,6 +47,15 @@ fi
 #   `TLS_NM=stripped` —— 于是人拿着「它被剥了符号」这句话去查一个**不存在的文件**。
 #   nm 的原话是 `file format not recognized` / `No such file or directory`，
 #   那比任何分类都准。
+# ★ ★ 这个分法**站得住，是量出来的**（2026-09-08 在 `fulcrum-build:local` 里实测
+#   GNU binutils 的退出码，⛔ 不是推断）：
+#     · 有符号            ⇒ rc=0，stdout 非空          ⇒ ok
+#     · `strip` 过的       ⇒ rc=**0**，stderr `no symbols` ⇒ stripped（真被剥了）
+#     · 不是目标文件       ⇒ rc=1，`file format not recognized`
+#     · 文件不存在         ⇒ rc=1，`No such file`
+#   ⇒ 「rc≠0」与「被剥符号」在这个平台上**确实是两条不相交的路**，
+#   下面那句「这不是被剥掉」才敢写。⚠ 哪天 binutils 改了退出码约定，
+#   要红的是这张表，⛔ 别默默把那句断言留着。
 # ★ 失败路径上**再问一次**只为取 stderr（`2>&1 >/dev/null`，⛔ 顺序不能反）——
 #   与 `tests/ci/shellcheck-all.sh`、`tests/musl/arm64-trigger.sh` 同一套写法。
 # ⚠ `|| nm_rc=$?` 接住，⛔ 否则 `set -e` 在这里就把脚本掐了。
