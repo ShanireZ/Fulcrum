@@ -33,16 +33,32 @@ else
   echo "=== [1/5] 已有 vendor/pingora/Cargo.lock ==="
   # ★ 锁文件存在 ≠ 锁文件还对得上清单。
   #   FORK.md 的 rebase 步骤第 3、4 步改的正是 vendor 里的 Cargo.toml，
-  #   改完之后这份锁就过期了，而下面用的是 `--locked`——cargo 会抛一句
-  #   与真正修法（删锁重生成）毫无关系的原始错误。**每次 rebase 必踩**，
+  #   改完之后这份锁就过期了，而下面用的是 `--locked`——cargo 抛的原始错误
+  #   离「删锁重生成」这条修法**隔着一层**。**每次 rebase 必踩**，
   #   所以这里提前用一次不编译的 `cargo metadata --locked` 把它问出来。
-  if ! cargo metadata --manifest-path "$MANIFEST" --format-version 1 --locked >/dev/null 2>&1; then
+  # ⚠ ⚠ ★ 但**隔着一层 ≠ 该丢掉**：它是唯一分得开「锁过期」与「网络／鉴权／取不到 crate」
+  #   的东西。⇒ 下面把它原样打出来，再补那条最常见的解读，⛔ 不是拿解读替掉它。
+  # ⚠ ⚠ ★ 原先这里把 cargo 的 stderr 丢进 `/dev/null`，然后**断言**死因是「锁过期」
+  #   并教人 `rm vendor/pingora/Cargo.lock`。实测（2026-09-08，把 cargo 换成一个
+  #   报网络错的桩）：一次**取不到 crate** 的失败，得到的也是那一整段「删掉锁」——
+  #   ⇒ 照着敲会**删掉一份入库的解析结果**，而且删了也修不好。
+  # ★ 现在先把 cargo 的原话原样打出来，再把「最常见的那一种」降级成**建议**，
+  #   并写明什么情况下**不该**删锁。⛔ 判据不替 cargo 说它没说过的话。
+  cargo_rc=0
+  cargo_err=$(cargo metadata --manifest-path "$MANIFEST" --format-version 1 --locked 2>&1 >/dev/null) || cargo_rc=$?
+  if [ "$cargo_rc" -ne 0 ]; then
     echo
-    echo "★ vendor/pingora/Cargo.lock 与清单对不上了（多半是刚 rebase 过、改了某个 Cargo.toml）。"
-    echo "  修法就一步——删掉它，重跑本脚本会自动重新生成："
-    echo "      rm vendor/pingora/Cargo.lock"
-    echo "  ★ 重新生成之后记得**连同新锁一起提交**（G29 第 2 条：Cargo.lock 入库）。"
-    fail "锁文件已过期"
+    echo "★ \`cargo metadata --locked\` 没过（退出码 $cargo_rc）。⛔ 先看它自己怎么说："
+    printf '%s\n' "$cargo_err" | sed 's/^/      /'
+    echo
+    echo "  ★ **最常见**的一种是锁与清单对不上（刚 rebase 过、改了某个 Cargo.toml）——"
+    echo "    上面那段里出现 lock file / --locked / needs to be updated 之类字样时才是它。"
+    echo "    那一种的修法就一步——删掉它，重跑本脚本会自动重新生成："
+    echo "        rm vendor/pingora/Cargo.lock"
+    echo "    ★ 重新生成之后记得**连同新锁一起提交**（G29 第 2 条：Cargo.lock 入库）。"
+    echo "  ⛔ ⛔ 上面说的若是网络、鉴权、或某个 crate 取不到，**别删锁**：删了修不好，"
+    echo "    还会把一份入库的解析结果弄丢。"
+    fail "cargo metadata --locked 没过（退出码 $cargo_rc）——死因见上面 cargo 的原话"
   fi
   echo "  ✓ 锁文件与清单一致"
 fi

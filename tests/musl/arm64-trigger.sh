@@ -261,6 +261,29 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     --record)
       _out=${2:?用法：--record <文件>}
       _root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+
+      # ── 这份记录是哪一次提交上验的 ────────────────────────────────────────
+      #
+      # ⚠ ⚠ ★ 原先这里是一句 `git … 2>/dev/null || echo unknown`，于是 git 拒答时
+      #   记录里落一个 `verified_commit=unknown`，而**屏幕上一个字都不会有**。
+      #   ⇒ 2026-09-08 `61b867a` 那份记录正是这么来的：一份**验证记录**说不出
+      #   自己验的是哪一次提交，而当时没有任何东西说过为什么。
+      # ★ 现在真因由 git 的原话说，并且**连同原话一起写进记录** —— 一份记录
+      #   自己说得出「这一格为什么是空的」，比事后猜强。
+      # ⚠ `2>&1 >/dev/null` 只捕 stderr（⛔ 顺序不能反）；`|| _rc=$?` 接住，
+      #   ⛔ 否则 `set -e` 会在这里把整个 --record 掐掉，连成功的那趟也写不成记录。
+      _commit_rc=0
+      _commit=$(git -C "$_root" rev-parse --short HEAD 2>/dev/null) || _commit_rc=$?
+      _commit_err=''
+      if [ "$_commit_rc" -ne 0 ]; then
+        _commit_err=$(git -C "$_root" rev-parse --short HEAD 2>&1 >/dev/null) || true
+        _commit=unknown
+        echo "⚠ ⚠ 写 aarch64 验证记录时**问不出当前提交** —— 这一格会是 \`unknown\`。" >&2
+        echo "  \`git -C $_root rev-parse --short HEAD\` 退了 $_commit_rc，它自己的原话：" >&2
+        printf '%s\n' "$_commit_err" | sed 's/^/      /' >&2
+        echo "  ⛔ 这**不**使这份记录作废（它的主键是 hash=），但补记时别去猜那个提交号。" >&2
+      fi
+
       {
         echo "# aarch64 已验证记录（\`D24\` = 候选 ②）"
         echo "#"
@@ -282,7 +305,16 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         echo "hash=$(fulcrum_arm64_trigger_hash "$_root")"
         echo "verified_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
         echo "verified_on=$(hostname)"
-        echo "verified_commit=$(git -C "$_root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        echo "verified_commit=$_commit"
+        # ⚠ 只有问不出来的时候才有这一段：把 git 的原话原样留在记录里。
+        #   ⛔ 别把它写成 `verified_commit=` 的值 —— 解析 `hash=` 的是 sed，
+        #   而这几行以 `#` 开头，对解析器天然透明（`--self-check` 里那条
+        #   「hash= 不在首行时也取得到」正是钉这件事的）。
+        if [ -n "$_commit_err" ]; then
+          echo "#"
+          echo "# ⚠ verified_commit 问不出来（git 退 $_commit_rc），它自己的原话："
+          printf '%s\n' "$_commit_err" | sed 's/^/#     /'
+        fi
       } > "$_out"
       ;;
     *)

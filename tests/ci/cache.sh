@@ -85,10 +85,32 @@ sniff_codec() {
 case "$MODE" in
   save)
     mkdir -p "$DIR"
-    docker volume inspect "$TARGET_VOL" >/dev/null 2>&1 || {
+    # ── 卷在不在：⛔ 别把「docker 答不出话」也算成「卷不存在」───────────────
+    #
+    # ⚠ ⚠ ★ 原先这里是 `docker volume inspect … >/dev/null 2>&1 || { 说「不存在」; exit 0; }`。
+    #   实测（2026-09-08，把 docker 换成一个恒失败的桩）：守护进程连不上时，
+    #   这一格照样打「卷不存在 —— 没什么可存的，跳过」并**退 0**
+    #   ⇒ 一次坏掉的 CI 被记成一次「本来就没东西可存」，而现象只是「怎么老是冷缓存」。
+    # ★ 分辨的办法**不是**去猜 stderr 的文本，而是**另问一个能分开两者的问题**：
+    #   守护进程答不答得出话。答得出 ⇒「没有这个卷」这句话可信，跳过是对的；
+    #   答不出 ⇒ 这一格什么都没证明，⛔ 不许静默退 0。
+    vol_rc=0
+    vol_err=$(docker volume inspect "$TARGET_VOL" 2>&1 >/dev/null) || vol_rc=$?
+    if [ "$vol_rc" -ne 0 ]; then
+      echo "  \`docker volume inspect $TARGET_VOL\` 退了 $vol_rc，它自己的原话：" >&2
+      printf '%s\n' "$vol_err" | sed 's/^/      /' >&2
+      daemon_rc=0
+      daemon_err=$(docker version --format '{{.Server.Version}}' 2>&1 >/dev/null) || daemon_rc=$?
+      if [ "$daemon_rc" -ne 0 ]; then
+        echo "CACHE SAVE FAILED: docker 守护进程也答不出话（\`docker version\` 退 $daemon_rc）" >&2
+        echo "  ⇒ 上面那句「卷怎么样」什么都没证明。⛔ 「没能检查」不算「没什么可存的」。" >&2
+        printf '%s\n' "$daemon_err" | sed 's/^/      /' >&2
+        exit 1
+      fi
       echo "★ 卷 $TARGET_VOL 不存在 —— 这一轮没什么可存的，跳过"
+      echo "  （守护进程答得出话 ⇒ 上面那句「没有这个卷」是可信的）"
       exit 0
-    }
+    fi
     # meta 先写，再打包 —— 灌回时它是唯一的凭证。
     {
       echo "dockerfile-sha256=$DOCKERFILE_SHA"

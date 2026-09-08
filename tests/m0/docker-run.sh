@@ -492,7 +492,33 @@ crlf_scan_without_git() {
   done < <(find "${find_args[@]}")
 }
 
-if command -v git >/dev/null 2>&1 && git -C "$REPO_UNIX" rev-parse --git-dir >/dev/null 2>&1; then
+# ── git 答不答得出「$REPO_UNIX 是不是工作树」────────────────────────────────
+#
+# ★ ★ 判据**分两段问**，⛔ 不合成一句。`command -v git && git rev-parse …` 那种写法
+#   把三种死因压成同一句话 ——「没装」「不是仓库」「装着、也是仓库、但它拒答」——
+#   而 2026-09-08 那次 CI 连红十一趟，真正发生的正是**第三种**：
+#     fatal: detected dubious ownership in repository at '/w'
+#   ⇒ 那句 else 里的话（「没装，或不是 git 仓库」）当时**两条都不成立**。
+# ★ 用 `2>&1 >/dev/null` **只捕 stderr**（⛔ 顺序不能反，反了是把两股都并进变量），
+#   把 git 的原话逐行缩进打出来。⛔ 本判据**不自己给死因分类** —— 真因由 git 的原话说，
+#   那比任何分类都准。
+# ⚠ 用 `|| git_rc=$?` 接住，⛔ 否则 `set -e` 会在判据最该说话的一刻把脚本掐掉。
+GIT_EOL_OK=0
+if ! command -v git >/dev/null 2>&1; then
+  echo "★ 行尾检查拿不到权威口径：这个环境里**没有 git**。" >&2
+else
+  git_eol_rc=0
+  git_eol_err=$(git -C "$REPO_UNIX" rev-parse --git-dir 2>&1 >/dev/null) || git_eol_rc=$?
+  if [ "$git_eol_rc" -eq 0 ]; then
+    GIT_EOL_OK=1
+  else
+    echo "★ 行尾检查拿不到权威口径：git **装着**（$(command -v git)），" >&2
+    echo "  \`git -C $REPO_UNIX rev-parse --git-dir\` 却退了 $git_eol_rc。它自己的原话：" >&2
+    printf '%s\n' "$git_eol_err" | sed 's/^/      /' >&2
+  fi
+fi
+
+if [ "$GIT_EOL_OK" = 1 ]; then
   echo "[docker-run] 行尾检查：git ls-files --eol（权威口径，尊重 .gitattributes）"
   # ★ 路径按 **TAB** 取。`git ls-files --eol` 的每行是
   #     i/<eol><空白>w/<eol><空白>attr/<attr…><空白><TAB><PATH>
@@ -505,8 +531,10 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_UNIX" rev-parse --git-dir >/d
   CRLF_FILES=$(git -C "$REPO_UNIX" -c core.quotePath=false ls-files --eol \
                  | awk -F'\t' '{ split($1, a, " "); if (a[2] == "w/crlf") print $2 }')
 else
-  echo "★ 拿不到 git（没装，或 $REPO_UNIX 不是 git 仓库），改用逐字节扫描。" >&2
-  echo "  这条路不认识 .gitattributes，只认 CR 字节；跟踪状态与属性一概不知，可能比权威口径更严。" >&2
+  echo "  ⇒ 改用逐字节扫描。⚠ ⚠ **这是另一把尺子，不是同一道判据的备用实现**：" >&2
+  echo "    它不认识 .gitattributes，也**不认识跟踪状态** —— 未跟踪与 .gitignore 掉的文件" >&2
+  echo "    照样会被算进来（实测：handoff/ 下十几份 .md 会被列出来）⇒ 它比权威口径更严，" >&2
+  echo "    ⛔ 下面那条「一行修复」对这些文件是**错的**，别照着敲。" >&2
   CRLF_FILES=$(crlf_scan_without_git)
 fi
 

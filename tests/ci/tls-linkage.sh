@@ -42,8 +42,28 @@ if ! command -v nm >/dev/null 2>&1; then
   echo "TLS_NM=missing"
   exit 0
 fi
-SYMS=$(nm "$BIN" 2>/dev/null || true)
+# ⚠ ⚠ ★ **`nm` 失败** 与 **符号表真的被剥掉** 是两件事，⛔ 原先它们都打 `stripped`。
+#   实测（2026-09-08）：路径写错、或者传进来的根本不是目标文件，得到的也是
+#   `TLS_NM=stripped` —— 于是人拿着「它被剥了符号」这句话去查一个**不存在的文件**。
+#   nm 的原话是 `file format not recognized` / `No such file or directory`，
+#   那比任何分类都准。
+# ★ 失败路径上**再问一次**只为取 stderr（`2>&1 >/dev/null`，⛔ 顺序不能反）——
+#   与 `tests/ci/shellcheck-all.sh`、`tests/musl/arm64-trigger.sh` 同一套写法。
+# ⚠ `|| nm_rc=$?` 接住，⛔ 否则 `set -e` 在这里就把脚本掐了。
+# ★ 新取值 `nm-failed` 对调用方是安全的：`tests/musl/product.sh` 判的是
+#   `[ "$tls_nm" != "ok" ]` ⇒ 任何非 ok 一律判红，**不会**因为多一种取值而放行。
+nm_rc=0
+SYMS=$(nm "$BIN" 2>/dev/null) || nm_rc=$?
+if [ "$nm_rc" -ne 0 ]; then
+  nm_err=$(nm "$BIN" 2>&1 >/dev/null) || true
+  echo "★ nm 读不了这个文件（退出码 $nm_rc）——⛔ 这**不是**「符号表被剥掉」。" >&2
+  echo "  \`nm $BIN\` 自己的原话：" >&2
+  printf '%s\n' "$nm_err" | sed 's/^/      /' >&2
+  echo "TLS_NM=nm-failed"
+  exit 0
+fi
 if [ -z "$SYMS" ]; then
+  # ★ 走到这里 nm **成功**了、只是一条符号都没有 ⇒ 「被剥掉」这句话现在是有据的。
   echo "TLS_NM=stripped"
   exit 0
 fi

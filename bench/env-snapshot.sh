@@ -43,7 +43,19 @@ FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 # ⚠ ⚠ ★ **枢衡没有 `--version` 这个参数**（它退 2 并打用法）⇒ 这一行**恒得到空串**，
 #   而空串在快照里与「问过了，它没有版本」长得一模一样。⛔ 留着它只是为了
 #   将来真加了这个参数时能自动接上，**它不是身份的来源**。
-FULCRUM_VER=$("$FULCRUM_BIN" --version 2>/dev/null || true)
+FULCRUM_VER_RC=0
+FULCRUM_VER=$("$FULCRUM_BIN" --version 2>/dev/null) || FULCRUM_VER_RC=$?
+if [ "$FULCRUM_VER_RC" -ne 0 ]; then
+  # ⚠ ⚠ ★ 快照里**一个字段都不改**（口径归 G19 / `G147` 管，⛔ 不在这一笔里动）——
+  #   这里只是把上面那句自认的毛病「空串与『问过了，它没有版本』长得一模一样」
+  #   在**日志里**分开：真因由枢衡自己的原话说。
+  # ★ 于是「为什么这一格是空的」不再需要事后猜；⛔ 它仍然不是身份的来源。
+  fulcrum_ver_err=$("$FULCRUM_BIN" --version 2>&1 >/dev/null) || true
+  echo "★ \`$FULCRUM_BIN --version\` 退了 $FULCRUM_VER_RC ⇒ 快照里 fulcrum_version 会是空的。" >&2
+  echo "  ⛔ 这个空**不**表示「问过了，它没有版本」。它自己的原话：" >&2
+  printf '%s\n' "$fulcrum_ver_err" | sed 's/^/      /' >&2
+  echo "  ★ 这一趟量的到底是哪个二进制，看 fulcrum_sha256 与 fulcrum_build_id —— 那两项才是身份。" >&2
+fi
 # ★ ★ ★ 身份靠这两个读数，⛔ 不靠上面那一行：
 #   ① **sha256** —— 一个文件总有一个，它是「量的到底是哪个二进制」的**唯一**可靠答案；
 #   ② **内嵌的构建身份**（G141 的 `FULCRUM_BUILD_VERSION`，semver 构建元数据语法）——
