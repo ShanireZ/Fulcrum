@@ -38,7 +38,10 @@ sources:
 | 5 个直接依赖 | 全是最新 | 全是最新 |
 | Docker 基镜像 | `rust:1-bookworm`（Debian 12 oldstable）| **`rust:1-trixie`**（Debian 13，Rust 1.97.1）|
 
-**只剩 `daemonize` 一条**（RUSTSEC-2025-0069，失维、无 CVE、无可升版本）。★ **它是被权衡后保留的，不是漏掉的**——换掉它意味着手写特权丢弃代码，理由与出路见 [`FORK.md`](../../vendor/pingora/FORK.md) 第 7 节与 [D12](/governance/open-questions.md)。★ 此后 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 迁走**，不再在名单上。
+**只剩 `daemonize` 一条**（RUSTSEC-2025-0069，失维、无 CVE、无可升版本）。★ **它是被权衡后保留的，不是漏掉的**——换掉它意味着手写特权丢弃代码，理由与出路见 [`FORK.md`](../../vendor/pingora/FORK.md) 第 7 节。
+⚠ ⚠ **此处原先链到 [待定清单](/governance/open-questions.md) 的 `D12`，那是过期的**（2026-09-08 更正）——
+`D12` 已结案（`G32`），而那份清单里**一个 D 号都没有**，链过去什么都看不到。
+★ 与本页下文那句「它已经不在待定清单里了」原本是**同一份文件里自相矛盾的两句**。★ 此后 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 迁走**，不再在名单上。
 
 > ★ ★ ★ ** 重要更正：上面这句「只剩一条」的适用范围比它读起来窄。**
 >
