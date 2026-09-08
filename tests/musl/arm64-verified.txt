@@ -15,7 +15,7 @@
 # ⚠ ⚠ 墙钟是**机器本地**的：2026-09-06 `ShanirePCX` 冷建 34m05s，而 `ShanireHomePC`
 #   2026-09-05 同样一趟 18m07s —— 近两倍差距，⛔ 别互相照抄、也别当成「这道门要多久」。
 
-hash=fe7c22785a83a1ed287e980950148c23a1940a4130950995dcecf6742d7a4478
-verified_at=2026-09-06T10:06:00+0800
-verified_on=ShanirePCX
-verified_commit=baec0d0
+hash=2933563f1a373982653ff71be4b32626dc63e5d86dcf66038c8750555f7c0f98
+verified_at=2026-09-08T10:46:51+0800
+verified_on=ShanireHomePC
+verified_commit=unknown
