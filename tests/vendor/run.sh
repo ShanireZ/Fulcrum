@@ -357,6 +357,42 @@ echo
 #   ② `connectors::*` 那一批，偶发过几次而**归因没有查实**（「公网抖动」解释不了其中那条
 #      纯本地的 UDS 测试）。⚠ **在查实之前不许把它们登记进 EXPECTED_FAILURES。**
 #
+#      ── `connectors::tests::test_connect_uds` 的实测记录（2026-09-08 查了一层）──
+#
+#      **它红在哪一行**：`pingora-core/src/connectors/mod.rs:545` 的 `assert!(reused)`
+#      （panic 原话就是 `assertion failed: reused`）⇒ 连接**没能从池里复用**，
+#      `get_stream` 新建了一条。⛔ 与「读到的字节不对」无关，那是另一个缺陷、已由
+#      FORK.md §3 的 `read_exact` 改动治掉了，⛔ 别把两者混起来。
+#
+#      **两边各跑了多少趟**（这是本类条目要求的「在哪台机器上量的」）：
+#        · GitHub runner：09-03 红 · 09-04 过×3 · 09-05 过×2 · 09-08 红×2 ⇒ **约 3/8，间歇**
+#        · `ShanireHomePC`：完整门禁 2 趟 · 单跑该条 `--cpus=2` 3 趟 ·
+#          整套 lib 并行 `--cpus=2` 3 趟 ⇒ **0/8，一次都没红**
+#        ⚠ 两趟之间 `vendor/` **一个字节没动**，runner 镜像也**逐字相同**
+#          （`ubuntu-24.04` / Provisioner `20260828.587` / Image `20260831.293.1`）
+#          ⇒ ⛔ 不是代码变了，也不是镜像换了。
+#
+#      **最可能的机制（narrowed，⛔ 没坐实）**：`reused_stream()` 里的 TOCTOU。
+#      `release_stream()` 把**第二个 Arc** 交了出去 —— 它藏在 `OwnedMutexGuard`
+#      （`stream.clone().try_lock_owned()`）里，随 `rt.spawn(idle_poll(...))` 去了别的线程。
+#      而 `reused_stream()` 等的是**互斥锁**（`s.lock().await`），`Arc::try_unwrap(s)`
+#      要的却是**引用计数 == 1**。`OwnedMutexGuard` 析构时**先放锁、再掉 Arc**，
+#      两步之间另一个线程可以醒过来跑到 `try_unwrap` ⇒ 计数仍是 2 ⇒ 走
+#      `Err(_) => error!("failed to acquire reusable stream"); None` ⇒ `reused == false`。
+#      ★ 这与观察到的每一条都对得上：`flavor = "multi_thread"`（两个线程才有窗口）、
+#        只在整套并行时红、**单独重跑必过**、机器越闲越不出现。
+#
+#      **为什么没坐实**：vendor 单测**不初始化 logger**（`env_logger` 只是 dev-dep），
+#      而四条返回 `None` 的路径全靠 `log::{debug,error}` 区分 ⇒ 那条判别性日志抓不到；
+#      本机 8 次也复现不出来。★ 下一步要坐实，最小做法是**把那四条分支各断言一次**
+#      （或临时加日志），推上去让 CI 多跑几趟 —— 那是一笔 fork 改动，要进 FORK.md。
+#
+#      ⛔ ⛔ **有意没有把它登记进下面的 `HOST_DEPENDENT_FAILURES`**（owner 2026-09-08 拍板）。
+#      两条理由：① 那张表的判据是「在这台机器上**稳定**失败」，而这条是**间歇** 3/8，
+#      对不上；② 那张表**两个方向都不判红**（`grep -vxF` 直接从 actual 里摘掉）⇒ 登记进去
+#      就**放弃了「它哪天变成真回归时判红」的能力**，而它的归因还没查实。
+#      ⇒ 留给下面那段重跑逻辑管：重跑仍失败才判红，且每次都打「它确实红过一次」。
+#
 #   ★ 一条相关事实：`connectors::*` 里那批测试**连的是真的 1.1.1.1:443 / :80**
 #     （见 `pingora-core/src/connectors/http/{mod,v1,v2}.rs`）——**这道门一直悄悄依赖容器
 #     能上公网**，而 §8 要求环境可复现。真要处置，方向是把它们指向容器内的假上游。
