@@ -133,11 +133,39 @@ orphan_sh_files() {
 }
 
 selftest_no_orphans() {
-  local f rel root hit orphans="" n=0 owned=0
+  local f rel root hit orphans="" n=0 owned=0 git_err git_rc=0
 
   # ★ ★ 「没能检查」不算「检查通过」：问不出来就红，⛔ 不静默跳过。
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "★ 普查跑不了：这里不是 git 工作树，或者没有 git——**「没能检查」不算「检查通过」**。" >&2
+  #
+  # ⚠ ⚠ ★ **报文必须说出是「哪一种」问不出来** —— 这一条是 2026-09-08 用
+  #   **三天、十一趟 CI 连红**换来的。原先这里写的是
+  #       `git rev-parse --is-inside-work-tree >/dev/null 2>&1`
+  #   ⇒ **git 的原话被 `2>&1` 连同 stdout 一起吞掉**，只留下一句
+  #   「不是 git 工作树，或者没有 git」。而在 CI 上**那两条都不成立**：
+  #   git 装着（2.47.3）、`.git` 也随 bind mount 进来了 —— git 只是**拒绝回答**：
+  #       `fatal: detected dubious ownership in repository at '/w'`
+  #   （容器以 root 跑，而 runner 的检出属主是另一个 uid）。
+  #   ⇒ ★ 一个把三种死因合并成一句话的判据，**红了三天而没有人知道为什么**。
+  #   本机复现过（把检出 `chown` 给 1001 再以 root 跑）：报文与 CI 逐字相同。
+  #
+  # ⚠ ⛔ **捕获失败命令的输出时不能让 `set -e` 把脚本掐掉** ——
+  #   `x=$(失败的命令)` 在 `set -e` 下当场退出，而那正是判据最该说话的一刻。
+  #   ⇒ 用 `|| git_rc=$?` 接住。
+  if ! command -v git >/dev/null 2>&1; then
+    echo "★ 普查跑不了：这个环境里**没有 git**——**「没能检查」不算「检查通过」**。" >&2
+    return 1
+  fi
+  # `2>&1 >/dev/null` 的顺序是承重的：先把 stderr 接到当前的 stdout（＝捕获），
+  # 再把 stdout 丢掉 ⇒ 只拿到 git 说的话。⛔ 反过来写会连正常输出一起收。
+  git_err=$(git rev-parse --is-inside-work-tree 2>&1 >/dev/null) || git_rc=$?
+  if [ "$git_rc" != 0 ]; then
+    # ★ 措辞有意覆盖两种死因：「这里不是仓库」与「是仓库但 git 不肯认」——
+    #   ⛔ 本判据**不自己给死因分类**，真因由下面 git 的原话说，那比任何分类都准。
+    echo "★ 普查跑不了：git **没有回答**「这是不是工作树」（退出码 $git_rc）——**「没能检查」不算「检查通过」**。" >&2
+    echo "  ★ git 自己说的是（⛔ 别把这几行吞掉，它们才是真因）：" >&2
+    # ⚠ 用 `sed` 逐行缩进，⛔ 不用 `printf '    %s\n'` —— 后者对多行只给第一行加前缀，
+    #   而 git 这条报文正好是多行的（第二、三行才写着修法）。
+    printf '%s\n' "$git_err" | sed 's/^/    /' >&2
     return 1
   fi
 

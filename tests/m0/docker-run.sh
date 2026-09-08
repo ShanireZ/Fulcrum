@@ -1137,6 +1137,21 @@ fi
 #   同样认 `RWF_NOWAIT` 的文件系统照样成立，⛔ 不写死文件系统名字。
 FS_FIXTURE=/fulcrum-fs-fixture
 
+# ── 让容器里的 git 肯回答「/w 是不是工作树」（2026-09-08）──────────────────
+#
+# ⚠ ⚠ ★ **这三个环境变量修的是一次三天、十一趟的 CI 连红。**
+#   `tests/ci/shellcheck-all.sh` 的普查要问 `git ls-files`，而在 **CI** 上
+#   git 会拒绝：容器以 **root** 跑（除非设了 `DOCKER_USER`），而 runner 的检出
+#   属主是另一个 uid ⇒ `fatal: detected dubious ownership in repository at '/w'`。
+#   ★ 本机不会（Docker Desktop 的 bind mount 属主不冲突）⇒ **「本机绿」对这件事
+#   没有判别力**，这也是它三天没被发现的原因之一。
+#
+# ★ 用 `GIT_CONFIG_*` 而不是往容器里写 `~/.gitconfig`：**不落任何文件**、
+#   作用域就是这一个容器、且在这里一处可见。
+#   ⛔ 它**不削弱**那道普查 —— 普查照样真跑；它只是让 git 肯开口。
+# ⚠ `actions/checkout` 加的 `safe.directory` 记的是 **runner 宿主**上的路径
+#   （`/home/runner/work/...`），而容器里仓库挂在 `/w` ⇒ 那条**对不上**，
+#   ⛔ 别指望它顺带管住这里。
 docker run --rm \
   "${DOCKER_USER_ARGS[@]}" \
   "${PASS_ENV_ARGS[@]}" \
@@ -1148,6 +1163,9 @@ docker run --rm \
   -w /w \
   -e RUST_LOG="${RUST_LOG:-info}" \
   -e FULCRUM_TEST_FS_ROOTS="$FS_FIXTURE" \
+  -e GIT_CONFIG_COUNT=1 \
+  -e GIT_CONFIG_KEY_0=safe.directory \
+  -e GIT_CONFIG_VALUE_0=/w \
   "$IMAGE" \
   bash -c "$TOOLCHAIN; $BLACKHOLE_CMD; $CMD"
 
