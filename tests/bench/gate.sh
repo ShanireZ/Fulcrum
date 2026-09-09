@@ -469,12 +469,26 @@ else
   RAW_N=0
   RAW_NAMES="(raw/ 不存在)"
 fi
+# ★ ★ **诊断步骤的名字一个都不许在 `raw/` 下出现** —— 名单**推导出来**，
+#   ⛔ 不数类别总数：§8 有七类，补齐路上那个数要改 5 次，而漏改一次要么误红、
+#   要么被人顺手放宽成不判。★ 与 `bench/run.sh` 里「用例集推导出来，
+#   ⛔ 不写死清单」同一条纪律。
+# ⚠ `diag/<名>.sh` 与它的产出目录 `diag/<名>/` 同名，这一条由本判据自己依赖着 ——
+#   哪天有脚本不这么命名，它会**漏判**而不是误报 ⇒ 新增 diag 脚本时照此命名。
+DIAG_IN_RAW=
+for diag_sh in "$REPO/bench/diag"/*.sh; do
+  [ -f "$diag_sh" ] || continue
+  dname=$(basename "$diag_sh" .sh)
+  if [ -d "$OUT/raw/$dname" ]; then
+    DIAG_IN_RAW="$DIAG_IN_RAW $dname"
+  fi
+done
 if [ "$DIAG_N" != 2 ]; then
   bad "C17 diag/respond-ceiling/ 下该有 2 份读数，实际 $DIAG_N（目录里有：$(find "$DIAG_DIR" -maxdepth 1 -mindepth 1 -printf '%f ' 2>/dev/null || echo '（目录不存在）')）"
-elif [ "$RAW_N" != 1 ]; then
-  bad "C17 raw/ 下该只有 static-throughput 一类，实际 $RAW_N 类：$RAW_NAMES ⇒ 诊断读数混进 §8 的类别里了"
+elif [ -n "$DIAG_IN_RAW" ]; then
+  bad "C17 诊断读数混进 §8 的类别里了：raw/ 下出现了$DIAG_IN_RAW（raw/ 现有 $RAW_N 类：$RAW_NAMES）"
 else
-  ok "C17 diag 两份读数在（file / respond），而 raw/ 仍只有 $RAW_N 类：$RAW_NAMES"
+  ok "C17 diag 两份读数在（file / respond），而 raw/ 的 $RAW_N 类里没有任何诊断步骤：$RAW_NAMES"
 fi
 
 # ── C18：缓存命中 p99 那一步真的产出了，且那个差值不是编的 ────────────────────
