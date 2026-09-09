@@ -477,6 +477,92 @@ else
   ok "C17 diag 两份读数在（file / respond），而 raw/ 仍只有 $RAW_N 类：$RAW_NAMES"
 fi
 
+# ── C18：缓存命中 p99 那一步真的产出了，且那个差值不是编的 ────────────────────
+#
+# `G150` ② 要的是「磁盘命中的 p99 − 内存命中的 p99」这一格落进原始数据。
+# ★ ★ 它**不是 §8 七类里的一类** —— 那七类是「与三家对拍」，而这一步只有枢衡自己
+#   （磁盘命中对内存命中是**枢衡内部**对比，根本没有竞品）。
+#   ⇒ 输出落 `diag/`，理由与 C17 逐字相同，⛔ 不在这里重述。
+#   ⚠ 「没混进 §8」那一半**已经由 C17 那条 `RAW_N != 1` 判着了**（它判的是 raw/ 的
+#     类别总数，任何一个诊断步骤挪进去都会让它红）⇒ 本条不再重复判一遍，
+#     只判本步自己的三份产物。
+#
+# ⚠ ⚠ **计数前先判目录在不在**：`find` 在不存在的目录上退出码非 0，而本文件是
+#   `set -euo pipefail` ⇒ 写成 `$(find … | wc -l)` 会让整个门在这里**静默中止**
+#   （C17 那段的注释记着这个坑，它当初真的这么坏过一次）。
+echo "── C18 缓存命中 p99：三份产物在，且 delta 与两份读数对得上 ──"
+C18_DIR="$OUT/diag/cache-hit-p99"
+if [ -d "$C18_DIR" ]; then
+  C18_N=$(find "$C18_DIR" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')
+else
+  C18_N=0
+fi
+if [ "$C18_N" != 3 ]; then
+  bad "C18 diag/cache-hit-p99/ 下该有 3 份产物（cache-mem / cache-disk / delta），实际 $C18_N（目录里有：$(find "$C18_DIR" -maxdepth 1 -mindepth 1 -printf '%f ' 2>/dev/null || echo '（目录不存在）')）"
+elif [ ! -f "$C18_DIR/delta.json" ]; then
+  bad "C18 delta.json 不在 —— 差值没被记下来，而那正是 G150 ② 要的那一格"
+else
+  # ★ ★ ★ **判 delta 真的等于那两份读数之差，⛔ 不只判文件在**：
+  #   一个恒写 0 的 delta.json 与一个算对了的 delta.json，在「文件在不在」
+  #   这条判据下**完全相同** —— 而本条要守的正是那个数本身。
+  # ⚠ p99 的键路径是 `latencyPercentiles.p99`（2026-09-09 对着
+  #   `bench/results/2026-09-06-static-throughput/` 那组真实读数实测）。
+  #   ⛔ **不是** `summary.p99`（summary 里根本没有 p99），
+  #   ⛔ 也不是 `metrics.latency_ms.p99`（那份单位是**毫秒**，取错差 1000 倍
+  #      而看着像个正常的数）。
+  if C18_SUMMARY=$(python3 - "$C18_DIR" <<'PY'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+delta = json.loads((d / "delta.json").read_text(encoding="utf-8"))
+src = delta["source"]
+p = {}
+for side in ("mem", "disk"):
+    raw = json.loads((d / src[side]).read_text(encoding="utf-8"))
+    p[side] = raw["latencyPercentiles"]["p99"]
+ok = (abs(delta["p99_mem"] - p["mem"]) < 1e-12
+      and abs(delta["p99_disk"] - p["disk"]) < 1e-12
+      and abs(delta["delta"] - (p["disk"] - p["mem"])) < 1e-12)
+
+# ★ ★ ★ **独立复核那四格后端状态**，⛔ 不靠信任 diag 脚本自己的控制流。
+#   `X-Fulcrum-Cache` 的后缀说的是「这个进程**真的**挑中了哪个后端」
+#   （`dsl-reference.md` 原话）⇒ 这是分得开「真磁盘命中」与
+#   「缓存压根没开、照常转发」的**唯一**判据 —— 后者下 oha 照样量得出一组
+#   看着完全正常的数。⚠ `metrics` 那层答不了（`cache/mod.rs:280`：
+#   它「折得比响应头粗」，`HIT` 与 `HIT-DISK` 在指标上是同一格）。
+# ⛔ ⛔ **「after 与 before 取值相同」证不了「整趟没重验证」** —— 2026-09-09
+#   用反证实测证伪过（注入 `ttl=1s` < `duration=2s`，整个门禁照样全绿）：
+#   重验证之后条目重新变新鲜，之后的请求又是 `Hit`，与从未过期完全相同。
+# ★ 分得开的是 `after.age`：重验证把 `stored_at` 置为当前时刻（`store.rs:208`）
+#   ⇒ `Age` 归零。⇒ `after.age >= duration_secs` 才代表从预热起没被刷新过。
+want = {"cache-mem": "HIT", "cache-disk": "HIT-DISK"}
+st = delta.get("cache_state", {})
+dur = delta.get("duration_secs")
+if not isinstance(dur, int):
+    ok = False
+for variant, expect in want.items():
+    got = st.get(variant, {})
+    before, after = got.get("before", {}), got.get("after", {})
+    if before.get("state") != expect or after.get("state") != expect:
+        ok = False
+    age = after.get("age", "")
+    if not str(age).isdigit() or not isinstance(dur, int) or int(age) < dur:
+        ok = False
+
+# ★ 把观测到的 Age 打出来：否则这条证据又变成「只有脚本自己知道」的东西，
+#   而本条判据存在的全部理由就是让它看得见（见上面那段注释）。
+print("mem Age={} / disk Age={} / 负载 {}s".format(
+    st.get("cache-mem", {}).get("after", {}).get("age", "?"),
+    st.get("cache-disk", {}).get("after", {}).get("age", "?"),
+    dur))
+sys.exit(0 if ok else 1)
+PY
+  ); then
+    ok "C18 三份产物在；delta 与两份读数对得上；四格后端真命中（HIT / HIT-DISK），且跑完后 Age ≥ 负载时长 ⇒ 整趟没重验证 —— $C18_SUMMARY"
+  else
+    bad "C18 delta.json 通不过复核 —— 三种可能：差值与它指名的那两份读数对不上、四格后端状态不是真命中、或跑完后 Age < 负载时长（中途重验证过）。读数：${C18_SUMMARY:-（取不到）}"
+  fi
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"
