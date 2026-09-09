@@ -74,7 +74,7 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/quic-relay/` | 9910–9911 |
 | `tests/metrics/` | 9920–9926 (9923 and 9926 are python upstreams, not Fulcrum listeners) |
 | `tests/stats/` | 9930–9932 (range 9930–9935 reserved) |
-| `bench/` (M3) | 9940–9945 (range 9940–9949 reserved) — 9940–9943 the four contenders in `bench/case/`, 9944–9945 the two variants in `bench/diag/respond-ceiling.sh` — ⚠ **different container, own netns**, see below |
+| `bench/` (M3) | 9940–9948 (range 9940–9949 reserved) — 9940–9943 the four contenders in `bench/case/`, 9944–9945 the two variants in `bench/diag/respond-ceiling.sh`, 9946–9948 the origin and two cache-backend variants in `bench/diag/cache-hit-p99.sh` — ⚠ **different container, own netns**, see below |
 | *(registered, never listened on)* | 19999 — see below |
 | *(shared, hardcoded)* | 80 — see below |
 
