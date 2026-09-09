@@ -157,6 +157,28 @@ $(python3 "$BENCH_DIR/site-root-probe.py" "$SITE_ROOT" 2>/dev/null || true)
 EOF
 fi
 
+# ★ ★ 磁盘缓存的根落在哪种文件系统上，与站点根**同等重要**（`G150` ②）：
+#   那一格量的是「磁盘命中的 p99 − 内存命中的 p99」，而磁盘那一半直接由文件系统决定。
+#   ⛔ 不记它就是 `G147` 那个缺陷原样重演 —— 一份说不出自己缓存落在什么文件系统上的
+#   p99 读数**复现不出来**（2026-09-06 实测过：站点根换一种文件系统，静态吞吐差 45%）。
+# ⚠ 与 site_root 同一条纪律：本步只**采读数**，⛔ 不判红。
+# ⚠ 用例还没跑 ⇒ 探的是缓存根**将要落在**的那个目录（`bench/diag/cache-hit-p99.sh`
+#   在 `$BENCH_WWW_ROOT` 下按 pid 开子目录），不是缓存根本身。
+CACHE_ROOT=${BENCH_WWW_ROOT:-${TMPDIR:-/tmp}}
+CACHE_FS=unknown
+CACHE_NOWAIT=unknown
+if [ -d "$CACHE_ROOT" ]; then
+  while IFS='=' read -r k v; do
+    case "$k" in
+      fs) CACHE_FS=$v ;;
+      rwf_nowait) CACHE_NOWAIT=$v ;;
+      *) ;;
+    esac
+  done <<EOF
+$(python3 "$BENCH_DIR/site-root-probe.py" "$CACHE_ROOT" 2>/dev/null || true)
+EOF
+fi
+
 # ── 判合格性（判据在 lib.sh）────────────────────────────────────────────────
 # ⚠ ⚠ 第六个参数**必须传** —— `bench_disqualifiers` 给了它默认值（为了不推翻
 #   G145 之前写的每一条调用），⇒ 漏传时它会安静地不判内核参数那一格。
@@ -180,7 +202,8 @@ export SNAP_KERNEL="$KERNEL" SNAP_NPROC="$NPROC" SNAP_LOAD1="$LOAD1" \
   SNAP_MIN_CPUS="$BENCH_MIN_CPUS" SNAP_MAX_LOAD="$BENCH_MAX_IDLE_LOAD" \
   SNAP_DURATION="$BENCH_DURATION" SNAP_CONNECTIONS="$BENCH_CONNECTIONS" \
   SNAP_WORKERS="$BENCH_WORKERS" SNAP_PAYLOAD_BYTES="$BENCH_PAYLOAD_BYTES" \
-  SNAP_SITE_ROOT="$SITE_ROOT" SNAP_SITE_FS="$SITE_FS" SNAP_SITE_NOWAIT="$SITE_NOWAIT"
+  SNAP_SITE_ROOT="$SITE_ROOT" SNAP_SITE_FS="$SITE_FS" SNAP_SITE_NOWAIT="$SITE_NOWAIT" \
+  SNAP_CACHE_ROOT="$CACHE_ROOT" SNAP_CACHE_FS="$CACHE_FS" SNAP_CACHE_NOWAIT="$CACHE_NOWAIT"
 
 python3 "$BENCH_DIR/snapshot-json.py"
 

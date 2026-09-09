@@ -490,6 +490,32 @@ fi
 # ⚠ ⚠ **计数前先判目录在不在**：`find` 在不存在的目录上退出码非 0，而本文件是
 #   `set -euo pipefail` ⇒ 写成 `$(find … | wc -l)` 会让整个门在这里**静默中止**
 #   （C17 那段的注释记着这个坑，它当初真的这么坏过一次）。
+# ── C19：缓存根的文件系统必须落在原始数据里 ──────────────────────────────────
+#
+# ★ ★ 与 C16 同一条口径，判的同样是 **A 那一趟真跑出来的** `env.json`。
+#   `diag/cache-hit-p99` 量的是「磁盘命中 p99 − 内存命中 p99」，而磁盘那一半
+#   **直接由文件系统决定** —— 2026-09-06 实测过：站点根换一种文件系统，
+#   静态吞吐差 **45%**。⇒ 一份说不出自己缓存落在哪种文件系统上的差值
+#   **复现不出来**（G19 / G147）。
+# ⚠ ⚠ **两个字段要一起读**：一个恒返回 `unknown` 的探测与「真的探不了」输出完全相同
+#   ⇒ 本条要求 `fs` 与 `rwf_nowait` **都不是空**，⛔ 不只判 `path`（那一格恒有值）。
+echo "── C19 缓存根的文件系统必须落在原始数据里 ──"
+if python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+cr = d.get("cache_root")
+if not cr:
+    print("快照里根本没有 cache_root —— 空的会让这一格恒绿"); sys.exit(1)
+missing = sorted(k for k, v in cr.items() if v is None or v == "")
+if missing:
+    print("这几格没被记进去：%s（整份 cache_root=%r）" % (", ".join(missing), cr)); sys.exit(1)
+print("三格全部记到：%s" % (cr,))
+' "$OUT/env.json" > /tmp/bench-c19.txt 2>&1; then
+  ok "C19 $(cat /tmp/bench-c19.txt)"
+else
+  bad "C19 $(cat /tmp/bench-c19.txt)"
+fi
+
 echo "── C18 缓存命中 p99：三份产物在，且 delta 与两份读数对得上 ──"
 C18_DIR="$OUT/diag/cache-hit-p99"
 if [ -d "$C18_DIR" ]; then

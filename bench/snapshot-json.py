@@ -96,6 +96,16 @@ snapshot = {
         "fs": env("SNAP_SITE_FS") or None,
         "rwf_nowait": env("SNAP_SITE_NOWAIT") or None,
     },
+    # ★ 与 site_root **同形同写法**（G150 ②）：`diag/cache-hit-p99` 量的是
+    #   「磁盘命中 p99 − 内存命中 p99」，而磁盘那一半直接由文件系统决定
+    #   ⇒ 一份说不出自己缓存落在哪种文件系统上的差值**复现不出来**（G19 / G147）。
+    # ⚠ ⚠ 上面那条「两个字段要一起读」在这里**一字不改地成立**。
+    # ⛔ `unknown` 是「探不了」，**不是**「不认」。
+    "cache_root": {
+        "path": env("SNAP_CACHE_ROOT") or None,
+        "fs": env("SNAP_CACHE_FS") or None,
+        "rwf_nowait": env("SNAP_CACHE_NOWAIT") or None,
+    },
     "subjects": {
         # ⚠ 这一项**恒为 null**：枢衡没有 `--version` 参数。⛔ 别把它读成
         #   「问过了，它没有版本」—— 身份在下面那两项里。
