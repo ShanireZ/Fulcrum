@@ -41,6 +41,30 @@ BENCH_MAX_IDLE_LOAD=${BENCH_MAX_IDLE_LOAD:-0.50}
 BENCH_MIN_SPREAD=${BENCH_MIN_SPREAD:-0.05}
 BENCH_GEN_HEADROOM=${BENCH_GEN_HEADROOM:-0.90}
 
+# ── 判据 ⑤ 的阈值：每千请求新建多少条上游连接才算「没在复用」──────────────────
+#
+# ★ ★ **与上面那两个不同，这一个有实测支撑**（2026-09-09 `ShanirePCX`，
+#   全部在**门禁那组参数**下量的：`BENCH_GATE_DURATION=2s` / `..._CONNECTIONS=10`）：
+#
+#   · 对齐口径配好，**三趟**：3.20/3.16/2.40/2.39 · 2.92/—/1.72/— · 0.84/1.31/0.68/1.39
+#     ⇒ ★ ★ **同一形态波动约 5 倍**（0.68–3.20），⛔ 这不是噪声可以忽略的量级。
+#   · 把 nginx 那三行撤掉 ⇒ nginx **1005.65**（每请求恰好新建一条）
+#   · 另在 10s/50 连接下量过：把 caddy 的 `transport` 块撤掉 ⇒ **100.30**
+#
+# ⇒ 取 50：离对齐那侧的**最大观测值** 3.20 有 15 倍余量，离两种未对齐形态
+#   分别有 20 倍与 2 倍。
+#
+# ⛔ **不取 10**：① 对齐那侧实测已经到过 3.20，而波动是 5 倍量级 ⇒ 余量只剩 3 倍；
+#   ② 门禁跑 2s × 10 连接，若某趟 rps 掉到 500，oha 自己那 10 条连接就是 10/千。
+#   两条都指向同一件事 —— 那会变成一道**随机翻面**的门。
+#   ⚠ 这个观测量是**整个 netns 的**累计值，本来就含 oha 那一份
+#   （见 `bench/case/reverse-proxy-throughput.sh` 里 `passive_opens` 那段）。
+#
+# ⚠ ⚠ ★ **它的能力边界写在自测里**（`bench_self_check` 判据 ⑤ 那一段）：
+#   门禁参数下它只抓得住「每请求新建」那一族；「部分不复用」那一族的表现依赖
+#   并发数，要到窗口参数（连接数大一个量级）才暴露。⛔ 别把它读成「四家都验过了」。
+BENCH_UPSTREAM_REUSE_MAX=${BENCH_UPSTREAM_REUSE_MAX:-50}
+
 # ── 负载参数：**缺省只在这里定义一次**（2026-09-06）───────────────────────────
 #
 # ⚠ ⚠ ★ ★ ★ **这四行为什么必须在这个文件里，而不是在用例脚本里。**
@@ -462,6 +486,41 @@ bench_top_convergence() {
   fi
 }
 
+# ── 判据 ⑤：上游连接复用口径对齐 ───────────────────────────────────────────
+#
+#   bench_upstream_reuse_violations <阈值> <每行 `<名字> <每千请求新建连接数>`>
+#
+# 每行打一条「这一家没在复用上游连接」的理由；**一行都不打 = 对齐了**。
+# ★ 契约与判据 ① / ④ 逐字相同（打理由 / 空 = 通过）⇒ 调用点可以同一个形状处理。
+#
+# ★ ★ ★ **它守的失效不会让任何东西变红。** 四家对上游连接的**默认**行为不同
+#   —— 镜像按 digest 钉的 nginx 1.29.1 每请求新建一条（upstream keepalive 是
+#   1.29.7 起才默认开的），caddy 走 Go 的 transport 只留少量空闲连接 ——
+#   而 **oha 的 JSON 里看不出这件事**：成功率、状态码、错误分布全都正常，
+#   只是那一家的 rps 被系统性压低。⇒ 判据 ①–④ 一条都答不了它。
+#   ⚠ 而 nginx 在静态吞吐里是**第二强** ⇒ 它被低估会直接污染「该类最强者」与判据 ④C。
+#
+# ⚠ ⚠ **「判不了」一律算违规，⛔ 不算通过**（同判据 ① 那句「『没能检查』不算
+#   『检查通过』」）：读数不是数字（含 `NaN`）、或那一行根本没有第二列时，打违规。
+# ★ 边界与判据 ①/④ 取同一个约定：**恰好压在阈值上算好的那一侧** ⇒ 严格不等号。
+bench_upstream_reuse_violations() {
+  local limit=$1 readings=$2
+  printf '%s\n' "$readings" | awk -v lim="$limit" '
+    NF == 0 { next }
+    NF < 2 {
+      printf "%s：这一行读不出「每千请求新建连接数」（原文 %s）—— 「判不了」不算「判过了」\n", $1, $0
+      next
+    }
+    $2 + 0 != $2 {
+      printf "%s：每千请求新建连接数不是数字（%s）—— 「判不了」不算「判过了」\n", $1, $2
+      next
+    }
+    $2 + 0 > lim + 0 {
+      printf "%s：每千请求新建了 %s 条上游连接（上限 %s）⇒ 它没在复用上游连接，这一家的读数被系统性压低\n", $1, $2, lim
+    }
+  '
+}
+
 # ── 自测：全部用**合成输入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不依赖宿主上此刻恰好是什么样（同 G133 的九条自测）。这一点是承重的：
@@ -681,6 +740,40 @@ bench_self_check() {
     "$(bench_top_convergence "$(printf 'a x\nb y\n')")"
   want_match "最强者不是正数时被当成了分得开" '*top-convergence:*' \
     "$(bench_top_convergence "$(printf 'a 0\nb 0\n')")"
+
+  # —— 判据 ⑤：上游连接复用（**口径对齐**，⛔ 不是性能门槛）——
+  #
+  # ★ ★ 合成输入用的是**真实实测值**（2026-09-09 `ShanirePCX`），⛔ 不是编的
+  #   —— 与上面那组 `REAL_0906` 同一个做法。
+  local REUSE_ALIGNED REUSE_NGINX_OFF
+  REUSE_ALIGNED=$(printf 'fulcrum 3.20\ncaddy 3.16\nhaproxy 2.40\nnginx 2.39\n')
+  REUSE_NGINX_OFF=$(printf 'fulcrum 2.92\ncaddy 4.12\nhaproxy 1.72\nnginx 1005.65\n')
+  want_empty "四家对齐后的真实读数被判成了违规 —— 那道判据恒红" \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$REUSE_ALIGNED")"
+  want_match "nginx 每千请求新建 1005.65 条却没被判成违规 —— 那道判据是空操作" '*nginx*' \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$REUSE_NGINX_OFF")"
+
+  # ⚠ ⚠ ★ ★ ★ **已知的能力边界，钉在这里免得被误读。**
+  #   上面那组 `REUSE_NGINX_OFF` 里 caddy 的 `transport` 块**也被撤掉了**，
+  #   而它的读数只有 4.12 ⇒ **判不出来**。「部分不复用」那一族的表现**依赖并发数**
+  #   （门禁只跑 10 条连接），⇒ 这道判据在门禁参数下只抓得住「每请求新建」那一族。
+  #   ⛔ 别据此把阈值压到 4 附近：门禁 2s×10 连接下若 rps 掉到 500，
+  #   oha 自己那 10 条就是 10/千 —— 那会变成一道随机翻面的门。
+  want_empty "门禁参数下的 caddy 4.12 被判成了违规（这条红了说明阈值紧到会误伤）" \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(printf 'caddy 4.12\n')")"
+  # ★ 而窗口参数（连接数大一个量级）下同一处缺陷会暴露成 100.3 ⇒ 那时必须抓住。
+  #   ⇒ **同一道判据在两种参数下各抓一族**，而窗口那一趟的读数会进原始数据。
+  want_match "窗口参数下 caddy 未对齐的 100.30 没被判成违规" '*caddy*' \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(printf 'caddy 100.30\n')")"
+
+  # 「判不了」一律算违规（同判据 ①/④ 那句「『没能检查』不算『检查通过』」）。
+  want_match "NaN 被当成了通过" '*caddy*' \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(printf 'caddy NaN\n')")"
+  want_match "少一列的行被当成了通过" '*caddy*' \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(printf 'caddy\n')")"
+  # ⚠ 边界：恰好压在阈值上算**好**的那一侧（与其余判据同一个约定）。
+  want_empty "恰好压在阈值上被判成了违规" \
+    "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(printf 'a %s\n' "$BENCH_UPSTREAM_REUSE_MAX")")"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"

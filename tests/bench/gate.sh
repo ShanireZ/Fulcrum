@@ -23,6 +23,14 @@ REPO=${REPO:-/w}
 OUT=/tmp/bench-gate-out
 FIX=/tmp/bench-gate-fixture
 
+# ★ 判据是**纯函数**，本文件与 `bench/verdict.sh` 调的是**同一个**，
+#   ⛔ 不是两份手写的平行逻辑（与 `bench/docker-run.sh` 复用
+#   `bench_kparam_mismatches` 同一条理由：两份「差不多的」判据一定会分家，
+#   而分家的现场是「配置照过、门没生效」）。
+# ★ `lib.sh` 被 `source` 时什么都不做（它自己那道 `BASH_SOURCE` 判断）⇒ 无副作用。
+# shellcheck source=bench/lib.sh
+. "$REPO/bench/lib.sh"
+
 FAILS=0
 ok() { echo "  ✓ $*"; }
 bad() {
@@ -627,6 +635,32 @@ else
   #   ⇒ 用例脚本自己打印的那几行**没有任何人看得见**，包括写它的人。
   #   ⇒ 定那道复用判据的阈值时，要读的正是这一行。
   ok "C20 四家的原始数据都落盘了；上游连接读数：$(tr '\n' ' ' < "$C20_DIR/upstream-conns.txt" 2>/dev/null || echo '(upstream-conns.txt 还不在)')"
+fi
+
+# ── C20 第 ② 半：上游连接复用那一格真的被记下来并判过了 ──────────────────────
+#
+# ★ ★ 判据本体是 `bench/lib.sh` 的纯函数，它自己的两个方向由
+#   `bench_self_check` 用合成输入钉着（`bench/run.sh` 第 ① 步就跑）。
+#   ⇒ **本条判的是「接线通不通」**：用例真的产出了那个文件、gate 真的读到了、
+#   判据真的被喂了进去。⚠ 两者缺一不可 —— 一个把路径写错的 C20 会让那几条
+#   合成反证照常全绿。
+#
+# ⚠ ⚠ ★ **措辞有意不写「四家都在复用」。** 门禁跑的是 10 条连接，而
+#   「部分不复用」那一族的表现依赖并发数（实测：同一处缺陷在 10 连接下是 4.12，
+#   在 50 连接下是 100.30）⇒ 这一格在门禁参数下**只抓得住「每请求新建」那一族**。
+#   ⛔ 一句「四家都验过了」会让人以为 caddy 那一格也被守着了 —— 它没有。
+echo "── C20 上游连接复用（口径对齐）──"
+C20_CONNS="$C20_DIR/upstream-conns.txt"
+if [ ! -s "$C20_CONNS" ]; then
+  bad "C20 $C20_CONNS 不在或为空 —— 上游复用那一格没被记下来，而它缺席不会让任何东西变红"
+else
+  C20_VIOL=$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(cat "$C20_CONNS")")
+  if [ -n "$C20_VIOL" ]; then
+    bad "C20 有被测没在复用上游连接（上限 $BENCH_UPSTREAM_REUSE_MAX）："
+    printf '%s\n' "$C20_VIOL" | sed 's/^/        · /' >&2
+  else
+    ok "C20 没有一家落进「每请求新建」那一族（上限 $BENCH_UPSTREAM_REUSE_MAX，实得 $(tr '\n' ' ' < "$C20_CONNS")）"
+  fi
 fi
 
 echo
