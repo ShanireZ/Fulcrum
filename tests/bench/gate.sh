@@ -603,6 +603,32 @@ PY
   fi
 fi
 
+# ── C20：§8 第二类「反代吞吐」真的产出了 ────────────────────────────────────
+#
+# ★ ★ **四家逐个点名，名单写死，而这是有意的** —— 与 A 组那句逐字同源：
+#   这一格问的正是「G19 要的那四家一个都不少」，⇒ 它必须独立于
+#   `bench/case/` 自己推导出来的集合。从产出目录反推名单会让「少跑一家」
+#   变得看不见：少的那一家两边一起消失。
+# ⚠ ⚠ 与 C17 / C18 方向**相反**：本类**就是** §8 的一类 ⇒ 它必须落 `raw/`，
+#   ⛔ 不是 `diag/`。
+echo "── C20 反代吞吐：四家的原始数据都落盘了 ──"
+C20_DIR="$OUT/raw/reverse-proxy-throughput"
+C20_MISSING=
+for subject in fulcrum caddy haproxy nginx; do
+  if [ ! -s "$C20_DIR/$subject.json" ]; then
+    C20_MISSING="$C20_MISSING $subject"
+  fi
+done
+if [ -n "$C20_MISSING" ]; then
+  bad "C20 这几家的原始数据没落盘：$C20_MISSING（看的是 $C20_DIR/<家>.json）"
+else
+  # ⚠ ⚠ ★ **把上游复用那一格的读数打进报文里** —— 本文件第 40 行把
+  #   `bench/run.sh` 的输出重定向进**容器里**的 /tmp，而容器是 `--rm` 的
+  #   ⇒ 用例脚本自己打印的那几行**没有任何人看得见**，包括写它的人。
+  #   ⇒ 定那道复用判据的阈值时，要读的正是这一行。
+  ok "C20 四家的原始数据都落盘了；上游连接读数：$(tr '\n' ' ' < "$C20_DIR/upstream-conns.txt" 2>/dev/null || echo '(upstream-conns.txt 还不在)')"
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"

@@ -1,0 +1,26 @@
+# 枢衡 · 反代吞吐这一类的被测配置（M3，§8 七类之二）。
+#
+# ★ 与 [`fulcrum.Fulcrumfile`](fulcrum.Fulcrumfile) 逐条对齐：同一个 worker 数、
+#   访问日志一律关、明文 HTTP/1.1、keep-alive 开。
+#   ⛔ 唯一有意不同的是终结指令：`file_server` → `reverse_proxy`。
+#
+# ★ 上游连接复用（对齐口径第 ⑥ 条）：枢衡默认就复用 —— `Connector::new(None)`
+#   配 `get_http_session`（返 `reused`）与 `release_http_session` 归还
+#   （`crates/fulcrum-server/src/lib.rs:302/336/979/1110`）。开发机实测每千请求
+#   0.4 条。⚠ DSL 面今天没有调它的口子 ⇒ 这一格**没有可写的行**，
+#   而另外三家各自要显式写。那道判据对四家一视同仁地判。
+#
+# ⚠ ⚠ ★ **这一趟是四家里唯一的 fulcrum→fulcrum**（源站也是枢衡的 `respond`）
+#   ⇒ 它比另外三家多背一份「同二进制两实例」的代价。**方向对枢衡不利**
+#   ⇒ PASS 更可信；⛔ FAIL 不许拿这一条去辩解。理由与取舍见 `bench/README.md`。
+#
+# ⚠ 占位符由 bench/case/reverse-proxy-throughput.sh 替换。
+{
+    # ★ ★ L7 数据面的 worker 数（G140）。与源站及另外三家吃**同一个** `BENCH_WORKERS`
+    #   ⇒ 「worker 数四家一致」这条对齐口径在这里落实。
+    threads_l7 __WORKERS__
+}
+
+:__PORT__ {
+    reverse_proxy __ORIGIN_HOST__:__ORIGIN_PORT__
+}

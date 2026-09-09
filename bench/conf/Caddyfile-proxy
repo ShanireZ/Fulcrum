@@ -1,0 +1,34 @@
+# Caddy · 反代吞吐这一类的被测配置（M3，§8 七类之二）。
+# ⚠ 占位符由 bench/case/reverse-proxy-throughput.sh 替换。
+#
+# ★ `auto_https off` 是**口径**不是省事，理由与 [`Caddyfile`](Caddyfile) 那段
+#   逐字相同（跑明文 HTTP/1.1；且默认行为会撞门禁里共享的 :80）。
+# ★ Caddy 的并行度由 GOMAXPROCS 定，编排脚本用环境变量给，⛔ 不在这里写。
+#
+# ★ ★ ★ **`transport http` 那个块是口径，⛔ 不是调优。**
+#   Caddy 走 Go 的 `http.Transport`，它每个 host 只保留**少量**空闲连接，
+#   而对拍的并发远大于那个数 ⇒ 不写它，约一成请求要新建上游连接。
+#   开发机实测：每千请求 **100.3** 条对 **0.8** 条（rps 11690.2 → 13266.1）。
+#
+#   ⚠ ⚠ **官方文档没有写出这个默认值**（`reverse_proxy` 的 transport 表里
+#   `keepalive_idle_conns_per_host` 只写了含义，没写缺省）⇒ 上面那两个数是
+#   **实测**出来的，⛔ 不是从文档抄的。
+#
+#   ⇒ 与 nginx 那三行同属对齐口径第 ⑥ 条，由 `bench_upstream_reuse_violations`
+#   判着（`tests/bench/gate.sh` 的 C20 第 ② 半）。
+
+{
+    admin off
+    auto_https off
+    log {
+        output discard
+    }
+}
+
+:__PORT__ {
+    reverse_proxy __ORIGIN_HOST__:__ORIGIN_PORT__ {
+        transport http {
+            keepalive_idle_conns_per_host 64
+        }
+    }
+}
