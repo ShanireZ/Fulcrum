@@ -1,0 +1,37 @@
+{
+  "what": "磁盘命中的 p99 − 内存命中的 p99（G150 ②）",
+  "unit": "seconds",
+  "p99_mem": 0.011056529,
+  "p99_disk": 0.020272587,
+  "delta": 0.009216058000000001,
+  "source": {
+    "mem": "cache-mem.json",
+    "disk": "cache-disk.json"
+  },
+  "cache_state": {
+    "cache-mem": {
+      "before": {
+        "state": "HIT",
+        "age": "0"
+      },
+      "after": {
+        "state": "HIT",
+        "age": "62"
+      }
+    },
+    "cache-disk": {
+      "before": {
+        "state": "HIT-DISK",
+        "age": "0"
+      },
+      "after": {
+        "state": "HIT-DISK",
+        "age": "61"
+      }
+    }
+  },
+  "ttl": "600s",
+  "duration": "60s",
+  "duration_secs": 60,
+  "threshold": null
+}
