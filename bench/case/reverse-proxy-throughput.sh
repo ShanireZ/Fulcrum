@@ -173,6 +173,10 @@ URL_PATH=/payload.bin
 #
 # ★ 模板在 `bench/conf/` 下、是**交付物的一部分**，这里只替换占位符。
 #   ⛔ 别把配置内联进本脚本：第三方要看的就是那几份配置本身。
+# ★ ★ caddy / nginx 的上游空闲连接上限跟着并发数走（`bench/lib.sh` 的
+#   `bench_upstream_idle_cap`，2026-09-10）—— 写死 64 时窗口的 200 并发下两家部分不复用。
+#   算不出来就在 `set -e` 下当场失败，⛔ 不回落到一个只有本文件知道的数。
+IDLE_CAP=$(bench_upstream_idle_cap "$CONNECTIONS")
 render() {
   local src=$1 dst=$2 port=$3
   sed -e "s|__PORT__|$port|g" \
@@ -180,6 +184,7 @@ render() {
     -e "s|__RUN_DIR__|$WORK|g" \
     -e "s|__ORIGIN_HOST__|$HOST|g" \
     -e "s|__ORIGIN_PORT__|$PORT_ORIGIN|g" \
+    -e "s|__IDLE_CAP__|$IDLE_CAP|g" \
     "$src" > "$dst"
 }
 # 源站：与 diag/respond-ceiling.sh **共用同一份模板**（见那份文件头部的说明）。

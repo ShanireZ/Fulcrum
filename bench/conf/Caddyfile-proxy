@@ -10,9 +10,15 @@
 #   而对拍的并发远大于那个数 ⇒ 不写它，约一成请求要新建上游连接。
 #   开发机实测：每千请求 **100.3** 条对 **0.8** 条（rps 11690.2 → 13266.1）。
 #
-#   ⚠ ⚠ **官方文档没有写出这个默认值**（`reverse_proxy` 的 transport 表里
-#   `keepalive_idle_conns_per_host` 只写了含义，没写缺省）⇒ 上面那两个数是
-#   **实测**出来的，⛔ 不是从文档抄的。
+#   ⚠ 缺省值：这里原先写「官方文档没有写出这个默认值」；Caddy 官网文档现在写着
+#   `keepalive_idle_conns_per_host` **缺省 32**（`caddyserver/website` master，
+#   2026-09-10 查）。⚠ 文档是 master、镜像钉的是 v2.10.2 ⇒ 以上面那组**实测**为准。
+#
+#   ★ ★ **上限跟着并发数走，⛔ 不写死**（2026-09-10）：写死 64 时，窗口的 200 并发下
+#   多出来的连接每一轮都要新建 —— 开发机 200 并发单变量实测 179.32 → 1.52 条/千
+#   （rps 12520 → 14615），窗口二里报成 69.62。⇒ `__IDLE_CAP__` 由用例脚本按
+#   `bench_upstream_idle_cap`（`bench/lib.sh`）= max(64, 并发连接数) 渲染；
+#   门禁的 10 条连接下仍是 64。
 #
 #   ⇒ 与 nginx 那三行同属对齐口径第 ⑥ 条，由 `bench_upstream_reuse_violations`
 #   判着（`tests/bench/gate.sh` 的 C20 第 ② 半）。
@@ -28,7 +34,7 @@
 :__PORT__ {
     reverse_proxy __ORIGIN_HOST__:__ORIGIN_PORT__ {
         transport http {
-            keepalive_idle_conns_per_host 64
+            keepalive_idle_conns_per_host __IDLE_CAP__
         }
     }
 }

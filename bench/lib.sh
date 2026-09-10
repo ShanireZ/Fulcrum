@@ -525,6 +525,38 @@ bench_upstream_reuse_violations() {
   '
 }
 
+# ── 上游空闲连接上限：跟着并发数走（2026-09-10）──────────────────────────────
+#
+#   bench_upstream_idle_cap <并发连接数>   ⇒ 打印 max(64, 并发连接数)
+#
+# ★ ★ ★ caddy 的 `keepalive_idle_conns_per_host` 与 nginx upstream 的 `keepalive`
+#   都是「**每个 host / 每个 worker** 最多留几条**空闲**上游连接」—— 超出的在用完之后
+#   被关掉（nginx 官方文档：按 LRU 淘汰）。并发一旦大过它，多出来的连接每一轮都要新建
+#   ⇒ 「部分不复用」，而 oha 的 JSON 里看不出来，只是那一家的 rps 被压低。
+#   2026-09-10 开发机 200 并发、单变量实测（上限 64 → 256，haproxy 作对照不动）：
+#   caddy 179.32 → 1.52、nginx 130.16 → 1.35 条/千；rps +16.7% / +20.7%。
+#   窗口二（合格宿主）里同一处缺陷报成 caddy 69.62、nginx 21.26。
+# ⇒ 上限**跟着并发数**渲染（`bench/case/reverse-proxy-throughput.sh` 的 `render()`），
+#   「上限没跟上并发」这一族就结构性地不存在，⛔ 不靠人记得去改一个写死的数。
+# ★ 下限 64：门禁只跑 10 条连接，渲染出来仍是原来那个 64 ⇒ 门禁行为一字不变。
+# ⚠ nginx 按 worker 算：给**每个** worker 都留够并发数 ⇒ 连接全落在一个 worker 上也够；
+#   多出来的只是空闲槽位，不改变被测的工作量。
+# ⛔ 读不出正整数就当场非零退出 —— 一个安静回落到某个数的上限，与写死没有区别。
+bench_upstream_idle_cap() {
+  local c=${1:-}
+  case "$c" in
+    '' | *[!0-9]*)
+      echo "bench_upstream_idle_cap：并发连接数不是正整数（'$c'）" >&2
+      return 1
+      ;;
+  esac
+  if [ "$c" -lt 1 ]; then
+    echo "bench_upstream_idle_cap：并发连接数不是正整数（'$c'）" >&2
+    return 1
+  fi
+  if [ "$c" -gt 64 ]; then echo "$c"; else echo 64; fi
+}
+
 # ── 自测：全部用**合成输入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不依赖宿主上此刻恰好是什么样（同 G133 的九条自测）。这一点是承重的：
@@ -778,6 +810,20 @@ bench_self_check() {
   # ⚠ 边界：恰好压在阈值上算**好**的那一侧（与其余判据同一个约定）。
   want_empty "恰好压在阈值上被判成了违规" \
     "$(bench_upstream_reuse_violations "$BENCH_UPSTREAM_REUSE_MAX" "$(printf 'a %s\n' "$BENCH_UPSTREAM_REUSE_MAX")")"
+
+  # —— 上游空闲连接上限：跟着并发数走（2026-09-10）——
+  #
+  # ★ 写死的 64 在窗口的 200 并发下让 caddy / nginx 部分不复用（开发机单变量实测：
+  #   179.32 → 1.52、130.16 → 1.35 条/千）⇒ 上限 = max(64, 并发连接数)，由用例脚本渲染。
+  # ⚠ 下限 64 是承重的：门禁只跑 10 条连接，渲染出来必须**仍是 64** ⇒ 门禁行为一字不变。
+  want_eq "门禁的 10 条连接没有渲染成 64（门禁行为会变）" 64 "$(bench_upstream_idle_cap 10)"
+  want_eq "恰好 64 条连接没有渲染成 64" 64 "$(bench_upstream_idle_cap 64)"
+  want_eq "65 条连接没有渲染成 65（多一条也得跟上）" 65 "$(bench_upstream_idle_cap 65)"
+  want_eq "窗口的 200 条连接没有渲染成 200（上限没跟上并发 ⇒ 部分不复用）" 200 "$(bench_upstream_idle_cap 200)"
+  # 「算不出来」必须当场报错，⛔ 不许安静回落到某个数 —— 那与写死没有区别。
+  want_eq "并发数不是数字时没有报错" ERR "$(bench_upstream_idle_cap abc 2>/dev/null || echo ERR)"
+  want_eq "并发数为 0 时没有报错" ERR "$(bench_upstream_idle_cap 0 2>/dev/null || echo ERR)"
+  want_eq "并发数为空时没有报错" ERR "$(bench_upstream_idle_cap '' 2>/dev/null || echo ERR)"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"
