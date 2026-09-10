@@ -370,6 +370,34 @@ capture_ok "打一条会被缓存的请求" curl -sS -o /dev/null -w '%{http_cod
   --max-time 5 -H "Host: s.example" "http://$HOST:$S_PORT/cacheable"
 eq "请求走通（回源到上游）" 200 "$CAPTURE_OUT"
 
+# ⚠ ⚠ ★ **先轮询，⛔ 不能 curl 一回来就死读一次**（2026-09-10 坐实；此前完整门禁里红过）：
+#   产品在**响应体写完之后**才把条目存进缓存 —— `crates/fulcrum-server/src/lib.rs` 里
+#   `write_response_body(…, true)` 在前、`store_if_allowed` 在后，而这是**有意的**：
+#   缓存写入不该挂在客户端的延迟路径上。上游带 `Content-Length` ⇒ curl 在最后一个体字节
+#   到达时就退出了，此后服务端还要走完「读到 EOF → 压缩收尾 → 写空尾块 → 存」。
+#   ⇒ 一次死读在机器满载时会读到 0（完整门禁里红过；单跑 `STATS_ONLY` 从没红过）。
+#   ★ 在那两行之间注入 300 ms 延迟 ⇒ 旧写法 100% 红，报文逐字相同。
+# ★ 轮询**不削弱**这条判据要抓的东西：一个把 cache 硬编码成 `{entries:0}` 的实现永远
+#   等不到 1 ⇒ 超时后下面那条照原样红。⚠ 它放弃的是「存入变慢、但慢不过 5 秒」那一族，
+#   而那从来不是这条判据的目标。
+# ⛔ 循环里只取数、不判定（用 `capture` 不用 `capture_ok`，否则每轮没等到都记一笔失败）；
+#   判定仍是下面那几行原样的断言。
+C_TRIES=0
+while [ "$C_TRIES" -lt 50 ]; do
+  capture admin_get /stats
+  if [ "$CAPTURE_OUT" = 200 ]; then
+    capture sc cache_entries "$WORK/admin.out"
+    if [ "$CAPTURE_RC" -eq 0 ] && [ "$CAPTURE_OUT" = 1 ]; then break; fi
+  fi
+  sleep 0.1
+  C_TRIES=$((C_TRIES + 1))
+done
+if [ "$C_TRIES" -lt 50 ]; then
+  echo "  · 第 $((C_TRIES + 1)) 次读 /stats 看到条目落地（上限 50 次 ≈ 5 秒）"
+else
+  echo "  · 读了 50 次（≈ 5 秒）条目仍未落地 —— 下面那条会照原样判红"
+fi
+
 capture_ok "GET /stats（缓存之后）" admin_get /stats
 eq "GET /stats（缓存之后）" 200 "$CAPTURE_OUT"
 cp "$WORK/admin.out" "$WORK/stats2.json"
