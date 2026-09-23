@@ -1,0 +1,20 @@
+# Caddy ·「内联回一份正文」形态的被测配置（M3）。
+# ★ 按**形态**命名、不按类名：今天的用户是 bench/case/short-connection-throughput.sh。
+# ⚠ 占位符由用例脚本替换。
+# ★ `admin off` / `auto_https off` / 日志丢弃 —— 与 bench/conf/Caddyfile 同一套理由
+#   （明文 HTTP/1.1；Caddy 默认会去申请证书并把 :80 变成跳转）。
+# ★ Caddy 的并行度由 GOMAXPROCS 定，编排脚本用环境变量给，⛔ 不在这里写。
+# ⚠ 它每个请求都会先 `ReplaceKnown` 扫一遍正文找占位符、再 `fmt.Fprint` 写出去
+#   （v2.10.2 `modules/caddyhttp/staticresp.go`）—— 那是它自己的实现成本，⛔ 不是口径问题。
+
+{
+    admin off
+    auto_https off
+    log {
+        output discard
+    }
+}
+
+:__PORT__ {
+    respond "__BODY__" 200
+}

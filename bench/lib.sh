@@ -65,6 +65,20 @@ BENCH_GEN_HEADROOM=${BENCH_GEN_HEADROOM:-0.90}
 #   并发数，要到窗口参数（连接数大一个量级）才暴露。⛔ 别把它读成「四家都验过了」。
 BENCH_UPSTREAM_REUSE_MAX=${BENCH_UPSTREAM_REUSE_MAX:-50}
 
+# ── 判据 ⑥ 的阈值：「高并发短连接」那一类真的是每请求一条新连接 ─────────────────
+#
+# ★ **口径自证**，⛔ 不是性能门槛（与判据 ⑤ 同性质）。观测量与判法见
+#   `bench_short_conn_violations` 的注释。
+#
+#   **新建下限 990**：对的时候每个完成的请求**恰好**对应一次被动建连，再加上 deadline
+#   砍掉的那几条 ⇒ **构造上 ≥ 1000**；2026-09-23 `ShanirePCX` 容器里门禁参数（2s × 10）
+#   实测四家 1000.15–1000.51。两个旗标都去掉时 ≈ 0.x。⇒ 取 1000 × 0.99，那 1% 只留给
+#   「判不出的怪事」，⛔ 不是给「部分复用」留的口子（带着 `Connection: close` 时那一族不存在）。
+# ⚠ 「服务端先关」那一半**没有阈值**：它判的是 oha 发出的请求里有没有 `Connection: close`
+#   （`bench_request_close_violations`），⛔ 不是 TIME_WAIT 占比 —— 后者实测是竞态、
+#   而且门禁参数下会被 netns 的 TIME_WAIT 上限截断，见那个函数的注释。
+BENCH_SHORT_NEW_CONNS_MIN=${BENCH_SHORT_NEW_CONNS_MIN:-990}
+
 # ── 负载参数：**缺省只在这里定义一次**（2026-09-06）───────────────────────────
 #
 # ⚠ ⚠ ★ ★ ★ **这四行为什么必须在这个文件里，而不是在用例脚本里。**
@@ -575,6 +589,124 @@ bench_build_id_from_bytes() {
   { grep -aoE '[0-9]+\.[0-9]+\.[0-9]+\+(g[0-9a-f]{12}|unknown)' || true; } | sort -u | head -1
 }
 
+# ── 「高并发短连接」那一类的诊断列：TIME_WAIT 落在哪一侧（⛔ 不是判据）──────────
+#
+#   bench_tw_split <被测端口> <`/proc/net/tcp` 与 `/proc/net/tcp6` 的原文>
+#     ⇒ 打印一行 `<服务端条数> <客户端条数>`
+#
+# ★ 只数 state `06`（TIME_WAIT）。**本地**端口 = 被测端口 ⇒ 那一条是服务端先关留下的；
+#   **远端**端口 = 被测端口 ⇒ 是客户端先关留下的。
+# ⚠ ⚠ **它原本是判据 ⑥ 的第二半，实测站不住，owner 2026-09-23 改判**（见
+#   `bench_request_close_violations`）。两条理由都是实测：
+#   ① 门禁参数下 netns 的 TIME_WAIT 表（开发机容器 65536 条）被前两家占满，后两家读到 `0 0`
+#     （`TcpExt: TCPTimeWaitOverflow` 一趟涨到 112042）；
+#   ② 表是空的时候它也只是**竞态**：oha 读完响应自己也立刻关 —— 每家之间等 65 秒时服务端占比
+#     nginx 0.946 · HAProxy 0.975 · 枢衡 0.581 · Caddy 0.569。
+#   ⇒ 它照记进 `new-conns.txt` 当**诊断**，⛔ 不据它判任何事。
+# ⚠ /proc 里的端口是**大写四位十六进制**（9956 ⇒ `26E4`）；地址列是 `IP:PORT`，
+#   IPv6（含 IPv4 映射地址，Go 写的 Caddy 就落在这里）那一段是 32 位十六进制、不含冒号
+#   ⇒ 取冒号后最后一段。
+# ⚠ 两份文件各有一行表头（首列 `sl`）⇒ 按首列跳，⛔ 不按 `NR == 1`：拼起来之后第二份的表头在中间。
+# ★ 本函数只解析**传进来的原文**，⛔ 不自己去读 /proc —— 与本文件其余判据同一条纪律：
+#   解析是最容易写错的那一段，⇒ 它必须能用合成输入两个方向都证给人看。
+bench_tw_split() {
+  local port=$1 text=$2 hex
+  case "$port" in
+    '' | *[!0-9]*)
+      echo "bench_tw_split：端口不是正整数（'$port'）" >&2
+      return 1
+      ;;
+  esac
+  hex=$(printf '%04X' "$port")
+  printf '%s\n' "$text" | awk -v p="$hex" '
+    $1 == "sl" || NF < 4 { next }
+    $4 != "06" { next }
+    {
+      n = split($2, l, ":")
+      m = split($3, r, ":")
+      if (l[n] == p) s++
+      else if (r[m] == p) c++
+    }
+    END { printf "%d %d\n", s, c }
+  '
+}
+
+# ── 判据 ⑥：「高并发短连接」那一类真的是「每请求一条新连接、服务端先关」────────────
+#
+# ★ ★ ★ **它守的失效同样不会让任何东西变红**：去掉 oha 的两个旗标，这一类就安静地
+#   变回「keep-alive 吞吐」—— 成功率、状态码全都正常，量的却是另一件事；只去掉
+#   `Connection: close`，就安静地从「服务端先关」变成「客户端先关」。
+#
+# 两半，各一个纯函数；再加用例脚本里那道行为探针（`bench/close-probe.py`，四家收到头会不会关），
+# 三件事各有一道门：
+#   ① `bench_short_conn_violations` —— 每请求一条新连接（PassiveOpens 差值）；
+#   ② `bench_request_close_violations` —— oha 发出的请求里**真的带着** `Connection: close`
+#      （开跑前用负载那一组 oha 参数，向一个只记请求头的合成服务端发一次，抓到的原文）。
+# ★ 单点变化各自落在哪道门上（2026-09-23 逐个注入、各跑一趟 `BENCH_ONLY` 实测）：
+#   两个旗标都删 ⇒ ① ② 都红；只删 `-H 'Connection: close'` ⇒ ⛔ **不红，而且这是对的**：
+#   oha v1.15.0 的 `--disable-keepalive` 自己带上那个头（`src/lib.rs:537`），线上口径没变；
+#   加 `-H 'Connection: keep-alive'`（用户头覆盖 oha 插的 close）⇒ ① 仍绿、只有 ② 红 ——
+#   ★ **② 单独守着的就是这一种**。⚠ 设计时写的是「只删头 ⇒ ② 红」，那是错的（以为 oha 不发）。
+#
+#   bench_short_conn_violations <新建下限> <每行 `<名字> <每千请求新建> [诊断列…]`>
+#
+# 每行打一条违规理由；**一行都不打 = 通过**。契约与判据 ⑤ 逐字相同。
+# ⚠ 第 3 列起（TIME_WAIT 两侧条数）是**诊断**，⛔ 不判（理由见 `bench_tw_split`）。
+# ⚠ ⚠ **「判不了」一律算违规**：非数字（含 `NaN`）、少列。
+# ★ 边界：恰好压在下限上算好的那一侧 ⇒ 严格不等号（与其余判据同一个约定）。
+bench_short_conn_violations() {
+  local new_min=$1 readings=$2
+  printf '%s\n' "$readings" | awk -v nm="$new_min" '
+    NF == 0 { next }
+    NF < 2 {
+      printf "%s：这一行读不全（原文 %s）—— 「判不了」不算「判过了」\n", $1, $0
+      next
+    }
+    $2 + 0 != $2 {
+      printf "%s：每千请求新建连接数不是数字（%s）—— 「判不了」不算「判过了」\n", $1, $2
+      next
+    }
+    $2 + 0 < nm + 0 {
+      printf "%s：每千请求只新建了 %s 条连接（下限 %s）⇒ 有请求复用了连接，这一类量的就不是短连接\n", $1, $2, nm
+    }
+  '
+}
+
+#   bench_request_close_violations <抓到的请求原文>
+#
+# 打一条违规理由；**什么都不打 = 请求里带着 `Connection: close`**。
+# ★ 只看**请求头**（请求行之后、第一个空行之前），头名**行首锚定、整名相等、大小写不敏感**，
+#   值按逗号分词、去空白后逐个比 `close`（大小写不敏感）—— `x-connection: close` 不是那个头，
+#   `Connection: te, close` 是。
+# ⚠ 原文是 CRLF 分行的（合成服务端原样落盘）⇒ 先去掉 `\r`。
+# ⚠ ⚠ **什么都没抓到算违规**（「判不了」不算「判过了」）。
+bench_request_close_violations() {
+  local req=$1
+  if [ -z "$req" ]; then
+    echo "没抓到 oha 发出的请求 —— 「判不了」不算「判过了」"
+    return 0
+  fi
+  printf '%s\n' "$req" | tr -d '\r' | awk '
+    NR == 1 { next }
+    $0 == "" { exit }
+    {
+      line = tolower($0)
+      if (line ~ /^connection[[:space:]]*:/) {
+        sub(/^connection[[:space:]]*:/, "", line)
+        n = split(line, toks, ",")
+        for (i = 1; i <= n; i++) {
+          t = toks[i]
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", t)
+          if (t == "close") found = 1
+        }
+      }
+    }
+    END {
+      if (!found) print "oha 发出的请求里没有 `Connection: close` ⇒ 服务端不会先关，这一类就悄悄变成了客户端先关"
+    }
+  '
+}
+
 # ── 自测：全部用**合成输入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不依赖宿主上此刻恰好是什么样（同 G133 的九条自测）。这一点是承重的：
@@ -858,6 +990,71 @@ bench_self_check() {
     "$(printf 'x0.1.0+g6bf1f3fe0618abc' | bench_build_id_from_bytes)"
   want_empty "没有身份串的字节里取出了东西" \
     "$(printf 'no version here 1.2.3 and 1.2.3+ nothing\n' | bench_build_id_from_bytes)"
+
+  # —— 判据 ⑥：高并发短连接（**口径自证**，⛔ 不是性能门槛）——
+  #
+  # 解析：一份合成的 /proc/net/tcp + tcp6 原文。★ 端口 9956 = 0x26E4、9957 = 0x26E5。
+  local TCP_TEXT
+  TCP_TEXT=$(printf '%s\n' \
+    '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode' \
+    '   0: 0100007F:26E4 0100007F:A001 06 00000000:00000000 03:00000F00 00000000     0        0 0 3 0000000000000000' \
+    '   1: 0100007F:26E4 0100007F:A002 06 00000000:00000000 03:00000F00 00000000     0        0 0 3 0000000000000000' \
+    '   2: 0100007F:A003 0100007F:26E4 06 00000000:00000000 03:00000F00 00000000     0        0 0 3 0000000000000000' \
+    '   3: 0100007F:26E4 0100007F:A004 01 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000' \
+    '   4: 0100007F:26E5 0100007F:A005 06 00000000:00000000 03:00000F00 00000000     0        0 0 3 0000000000000000' \
+    '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode' \
+    '   0: 0000000000000000FFFF00000100007F:26E4 0000000000000000FFFF00000100007F:A006 06 00000000:00000000 03:00000F00 00000000     0        0 0 3 0000000000000000')
+  # ★ 服务端 3 = v4 两条 + v6（IPv4 映射地址）一条；客户端 1；ESTABLISHED 与别的端口都不算。
+  want_eq "TIME_WAIT 两侧数错了" "3 1" "$(bench_tw_split 9956 "$TCP_TEXT")"
+  # ★ 反向：换一个端口，同一份原文里只剩 26E5 那一条 —— 少了这条，「数对了」与「恒打 3 1」分不开。
+  want_eq "换了端口还数出了别人的 TIME_WAIT" "1 0" "$(bench_tw_split 9957 "$TCP_TEXT")"
+  want_eq "端口不是数字时没有报错" ERR "$(bench_tw_split abc "$TCP_TEXT" 2>/dev/null || echo ERR)"
+
+  # 判定 ① 半：每请求一条新连接。★ 对齐那一组是**真实实测值**（2026-09-23 `ShanirePCX` 容器里、
+  #   门禁参数 2s × 10，与 REUSE_ALIGNED 同一个做法）。⚠ 后两家 TIME_WAIT 是 `0 0`：那一趟 netns 的
+  #   TIME_WAIT 表被前两家占满了（`TCPTimeWaitOverflow` 112042）⇒ ★ 它正好钉住「第 3、4 列不许被判」。
+  local SHORT_ALIGNED SHORT_KEEPALIVE
+  SHORT_ALIGNED=$(printf 'fulcrum 1000.31 21708 15425\ncaddy 1000.41 16189 12213\nhaproxy 1000.15 0 0\nnginx 1000.17 0 0\n')
+  # ★ keep-alive 那一行也是真实值：NC-1 注入（两个旗标都删），同一天同一台机器。
+  SHORT_KEEPALIVE=$(printf 'fulcrum 0.19 1 3\ncaddy 0.25 1 4\nhaproxy 0.12 1 3\nnginx 0.11 1 5\n')
+  want_empty "四家对齐的真实读数被判成了违规（TIME_WAIT 那两列是诊断，⛔ 不许判）" \
+    "$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$SHORT_ALIGNED")"
+  want_match "每千请求只新建 0.19 条却没判出来 —— 这一类悄悄变回了 keep-alive 吞吐" '*fulcrum*只新建了*' \
+    "$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$SHORT_KEEPALIVE")"
+  # 「判不了」一律算违规。
+  want_match "NaN 被当成了通过" '*caddy*新建连接数不是数字*' \
+    "$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$(printf 'caddy NaN 10 0\n')")"
+  want_match "少列的行被当成了通过" '*caddy*读不全*' \
+    "$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$(printf 'caddy\n')")"
+  # ⚠ 边界：恰好压在下限上算好的那一侧（与其余判据同一个约定）；刚跨过去那一侧必须响。
+  want_empty "恰好压在新建下限上被判成了违规" \
+    "$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$(printf 'a %s 0 0\n' "$BENCH_SHORT_NEW_CONNS_MIN")")"
+  want_match "刚低于新建下限却没判出来" '*a*只新建了*' \
+    "$(bench_short_conn_violations 990 "$(printf 'a 989.99 0 0\n')")"
+
+  # 判定 ② 半：oha 真的发了 `Connection: close`（抓到的请求原文，CRLF 分行）。
+  # ★ 头两条是 oha v1.15.0 **真实发出**的请求头（2026-09-23 抓到的原文，逐字）：
+  #   一条是负载那一组参数，一条是 NC-2′ 注入的 `-H 'Connection: keep-alive'`（用户头覆盖了 oha 自己插的 close）。
+  want_empty "oha 真实发出的 connection: close 被判成了没带" \
+    "$(bench_request_close_violations "$(printf 'GET /payload.bin HTTP/1.1\r\naccept: */*\r\naccept-encoding: gzip, compress, deflate, br\r\nuser-agent: oha/1.15.0\r\nconnection: close\r\nhost: 127.0.0.1:9960\r\n\r\n')")"
+  want_match "oha 真实发出的 connection: keep-alive 被当成了 close（NC-2′ 那一种）" '*没有*Connection: close*' \
+    "$(bench_request_close_violations "$(printf 'GET /payload.bin HTTP/1.1\r\naccept: */*\r\naccept-encoding: gzip, compress, deflate, br\r\nuser-agent: oha/1.15.0\r\nconnection: keep-alive\r\nhost: 127.0.0.1:9960\r\n\r\n')")"
+  want_empty "首字母大写的 Connection: Close 被判成了没带" \
+    "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nConnection: Close\r\n\r\n')")"
+  want_empty "逗号分隔的 Connection 值里有 close 却被判成了没带" \
+    "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nConnection: te, close\r\n\r\n')")"
+  want_match "请求里没有 Connection 头却没判出来 —— 这一类悄悄变成了客户端先关" '*没有*Connection: close*' \
+    "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nhost: x\r\naccept: */*\r\n\r\n')")"
+  want_match "Connection: keep-alive 被当成了 close" '*没有*Connection: close*' \
+    "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n')")"
+  # ⚠ 头名必须**行首锚定、整名相等**：`x-connection: close` 不是那个头。
+  want_match "别的头名里含 connection 被当成了那个头" '*没有*Connection: close*' \
+    "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nx-connection: close\r\n\r\n')")"
+  # ⚠ 只看请求头：空行之后出现同样的字样不算（抓头服务端只存头，这一条防的是有人改成存整段）。
+  want_match "空行之后的字样被当成了请求头" '*没有*Connection: close*' \
+    "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nhost: x\r\n\r\nConnection: close\r\n')")"
+  want_match "什么都没抓到被当成了通过" '*没抓到*' \
+    "$(bench_request_close_violations '')"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"

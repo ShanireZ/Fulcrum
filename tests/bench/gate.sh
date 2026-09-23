@@ -663,6 +663,68 @@ else
   fi
 fi
 
+# ── C21：§8 第三类「高并发短连接」真的产出了，而且原始数据真的算数 ─────────────
+#
+# ★ ★ 四家逐个点名，名单写死 —— 理由与 A 组、C20 逐字同源。
+# ⚠ 与 C20 不同，这里**还要**把原始数据喂一遍 `read-raw.py`：短连接比另外两类更容易
+#   在负载中途出传输层错误（重置、临时端口），而开发机上 `verdict.sh` 因为宿主不合格
+#   **根本不读** raw/ ⇒ 一份 INVALID 的读数在门禁里会一直没人看见。
+# ⛔ 报文里不打任何读数（G132）：只说有没有、算不算数。
+echo "── C21 高并发短连接：四家的原始数据都落盘了，而且都算数 ──"
+C21_DIR="$OUT/raw/short-connection-throughput"
+C21_MISSING=
+for subject in fulcrum caddy haproxy nginx; do
+  if [ ! -s "$C21_DIR/$subject.json" ]; then
+    C21_MISSING="$C21_MISSING $subject"
+  fi
+done
+if [ -n "$C21_MISSING" ]; then
+  bad "C21 这几家的原始数据没落盘：$C21_MISSING（看的是 $C21_DIR/<家>.json）"
+else
+  C21_READ=$(python3 "$REPO/bench/read-raw.py" "$C21_DIR" || true)
+  C21_N=$(printf '%s\n' "$C21_READ" | grep -c . || true)
+  if printf '%s\n' "$C21_READ" | grep -q 'INVALID'; then
+    bad "C21 有被测的读数无效：$(printf '%s\n' "$C21_READ" | grep 'INVALID' | tr '\n' ' ')"
+  elif [ "$C21_N" != 4 ]; then
+    bad "C21 校验器读到 $C21_N 行，该是 4 —— 「没有 INVALID」可能只是因为它一行都没读到"
+  else
+    ok "C21 四家的原始数据都落盘了，且都通过了有效性校验（成功率 1.0、只有 200、无传输层错误）"
+  fi
+fi
+
+# ── C21 第 ② 半：判据 ⑥ 两半真的被喂过，而且都过了 ────────────────────────────
+#
+# ★ 判据本体是 `bench/lib.sh` 的纯函数（`bench_short_conn_violations` /
+#   `bench_request_close_violations`），两个方向由 `bench_self_check` 用合成输入钉着
+#   ⇒ **本条判的是接线**：用例真的产出了那两个文件、这里真的读到了、判据真的被喂了进去。
+# ⚠ ★ 把实得读数打进报文：容器是 `--rm` 的，不打出来就没人看得见（与 C20 同一条）。
+#   那几列是连接计数与 TIME_WAIT 计数（后两列是诊断、不判），⛔ 不是性能数字。
+echo "── C21 短连接口径（判据 ⑥：每请求一条新连接 · oha 真带着 Connection: close）──"
+C21_CONNS="$C21_DIR/new-conns.txt"
+C21_REQ="$C21_DIR/oha-request.txt"
+if [ ! -s "$C21_CONNS" ]; then
+  bad "C21 $C21_CONNS 不在或为空 —— 判据 ⑥ ① 没被喂过，而它缺席不会让任何东西变红"
+else
+  C21_LINES=$(grep -c . "$C21_CONNS" || true)
+  C21_VIOL=$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$(cat "$C21_CONNS")")
+  if [ "$C21_LINES" != 4 ]; then
+    bad "C21 new-conns.txt 有 $C21_LINES 行，该是 4 —— 少判一家与判过在输出上分不开（实得 $(tr '\n' ' ' < "$C21_CONNS")）"
+  elif [ -n "$C21_VIOL" ]; then
+    bad "C21 判据 ⑥ ① 有违规（新建下限 $BENCH_SHORT_NEW_CONNS_MIN，实得 $(tr '\n' ' ' < "$C21_CONNS")）："
+    printf '%s\n' "$C21_VIOL" | sed 's/^/        · /' >&2
+  else
+    ok "C21 四家都是每请求一条新连接（下限 $BENCH_SHORT_NEW_CONNS_MIN；实得「名字 每千请求 服务端TW 客户端TW」$(tr '\n' ' ' < "$C21_CONNS")）"
+  fi
+fi
+# ⚠ 文件不在时喂进去的是空串 ⇒ 判据按「没抓到」判违规 —— ⛔ 不在这里另写一条「在不在」。
+C21_REQ_VIOL=$(bench_request_close_violations "$(cat "$C21_REQ" 2>/dev/null || true)")
+if [ -n "$C21_REQ_VIOL" ]; then
+  bad "C21 判据 ⑥ ② 有违规：$C21_REQ_VIOL"
+  sed 's/^/        | /' "$C21_REQ" >&2 2>/dev/null || true
+else
+  ok "C21 oha 发出的请求里带着 Connection: close（抓到的原文在 raw/short-connection-throughput/oha-request.txt）"
+fi
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"
