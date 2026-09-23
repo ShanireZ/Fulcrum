@@ -64,7 +64,10 @@ fi
 #      ★ 正因如此两个都要记：①分得开的它分得开，②说得出出处的它说得出出处。
 # ⚠ `fulcrum_build_info` 那个指标要服务跑起来且开了 metrics 才拿得到 ⇒ 这里够不着。
 FULCRUM_SHA=$(sha256sum "$FULCRUM_BIN" 2>/dev/null | cut -d' ' -f1 || true)
-FULCRUM_BUILD_ID=$(grep -aoE '[0-9]+\.[0-9]+\.[0-9]+\+[0-9a-zA-Z._-]+' "$FULCRUM_BIN" 2>/dev/null | sort -u | head -1 || true)
+# ★ 取法在 `bench/lib.sh` 的 `bench_build_id_from_bytes`（带自测）：2026-09-10 窗口二那份快照里
+#   这一格粘上了产物里紧挨着的下一个字符串字面量，而原先这里那条正则**没有收尾边界**。
+# ⚠ `{ …; } 2>/dev/null` 包住重定向：产物不存在时 `<` 那一步的报错也进 `/dev/null`。
+FULCRUM_BUILD_ID=$( { bench_build_id_from_bytes < "$FULCRUM_BIN"; } 2>/dev/null || true)
 
 # ── 内核参数与资源上限（G145）───────────────────────────────────────────────
 #

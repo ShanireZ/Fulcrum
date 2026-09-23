@@ -557,6 +557,24 @@ bench_upstream_idle_cap() {
   if [ "$c" -gt 64 ]; then echo "$c"; else echo 64; fi
 }
 
+# ── 构建身份：从产物字节里取 `FULCRUM_BUILD_VERSION`（`G141`）─────────────────
+#
+#   bench_build_id_from_bytes < <产物>   ⇒ 打印构建身份；取不到就什么都不打（恒返回 0）
+#
+# ★ 只认 `crates/fulcrum-server/build.rs` 真会产出的两种形状：
+#   `<x.y.z>+g<12 位小写十六进制>`（读 `.git` 那一档）与 `<x.y.z>+unknown`（第三档）。
+# ⚠ ⚠ ★ **收尾边界是承重的**：Rust 的字符串字面量在产物里**首尾相接、不带 NUL**，
+#   身份串后面紧跟着别的字面量 ⇒ 一条「后面还能接字母数字就一直吃」的正则会把邻居吃进来。
+#   2026-09-10 窗口二的 `env.json` 正是这样：`0.1.0+g6bf1f3fe0618` 后面粘上了
+#   `HeadersResetPriority…`。⇒ 两种形状都以**定长**或**定字面量**收尾，邻居是什么都吃不进来。
+# ⛔ 第一档（`FULCRUM_BUILD_ID` 环境变量喂进来的任意串）在字节里**原理上划不出边界**
+#   ⇒ 那种产物这里取不到、打印空串 —— ★ 空串不骗人，粘了邻居的串会。
+# ⚠ **开头那一侧同理划不出**：前一个字面量若以数字结尾，会被当成主版本号的一部分吃进来。
+#   今天没观察到过；⛔ 身份的权威本来就是 sha256（`env-snapshot.sh` 那一段注释），不是这一格。
+bench_build_id_from_bytes() {
+  { grep -aoE '[0-9]+\.[0-9]+\.[0-9]+\+(g[0-9a-f]{12}|unknown)' || true; } | sort -u | head -1
+}
+
 # ── 自测：全部用**合成输入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不依赖宿主上此刻恰好是什么样（同 G133 的九条自测）。这一点是承重的：
@@ -824,6 +842,22 @@ bench_self_check() {
   want_eq "并发数不是数字时没有报错" ERR "$(bench_upstream_idle_cap abc 2>/dev/null || echo ERR)"
   want_eq "并发数为 0 时没有报错" ERR "$(bench_upstream_idle_cap 0 2>/dev/null || echo ERR)"
   want_eq "并发数为空时没有报错" ERR "$(bench_upstream_idle_cap '' 2>/dev/null || echo ERR)"
+
+  # —— 构建身份：从产物字节里取（`G141`；2026-09-10 窗口二那次粘邻居的缺陷）——
+  #
+  # ★ 第一条用的是**真实的失效形状**（窗口二 `env.json` 的 `fulcrum_build_id`），⛔ 不是编的。
+  want_eq "身份串后面紧跟字母数字时把邻居吃了进来（窗口二那次的缺陷）" \
+    "0.1.0+g6bf1f3fe0618" \
+    "$(printf 'xx\000yyPriority0.1.0+g6bf1f3fe0618HeadersResetPriority\000zz' | bench_build_id_from_bytes)"
+  want_eq "第三档 unknown 后面紧跟字母数字时把邻居吃了进来" \
+    "0.1.0+unknown" \
+    "$(printf 'ab\000cd0.1.0+unknownFooBar\000ef' | bench_build_id_from_bytes)"
+  # ⚠ 提交号那一档是**定长** 12 位：多出来的十六进制就是邻居。
+  want_eq "12 位之后的十六进制邻居被吃了进来" \
+    "0.1.0+g6bf1f3fe0618" \
+    "$(printf 'x0.1.0+g6bf1f3fe0618abc' | bench_build_id_from_bytes)"
+  want_empty "没有身份串的字节里取出了东西" \
+    "$(printf 'no version here 1.2.3 and 1.2.3+ nothing\n' | bench_build_id_from_bytes)"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"
