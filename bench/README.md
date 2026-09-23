@@ -363,7 +363,12 @@ SONAME 同名而 **Debian 包名不同**（bookworm 的 `libssl3` 在 trixie 叫
 
 ⏳ 还缺五类：TLS 握手 · L4 转发 · 缓存命中 · 长连接 · 高并发短连接。
 ⚠ 已知它们**难度不均匀**：L4 转发撞「Caddy 官方二进制不含 L4 支持」（要 caddy-l4
-插件重新构建 ⇒ 撞 **G36**）；缓存命中撞「HAProxy 没有缓存层」——
+插件重新构建 ⇒ 撞 **G36**）；缓存命中撞的**也是 Caddy** —— 它的官方二进制没有 HTTP 缓存，
+要 `caddyserver/cache-handler` 插件重新构建（`xcaddy build --with …`，同一件事）。
+⚠ **不是 HAProxy**：此前这里写的「HAProxy 没有缓存层」不准确 —— HAProxy 自带一个放在内存里的
+小对象缓存（官方配置手册「Cache」一章：`cache` 段 + `http-request cache-use` /
+`http-response cache-store`），带着它自己的限制（只存 200、要有显式过期时间或校验器、
+对象大小受 `max-object-size` 限制等）；这一类要不要用它、怎么对齐，⛔ 还没设计过。
 两者都自带一个「缺一家竞品怎么判」的问题。
 
 ★ `run.sh` 与 `verdict.sh` 两处都是**推导**的（`case/*.sh` 与 `raw/*/`）
@@ -375,8 +380,11 @@ SONAME 同名而 **Debian 包名不同**（bookworm 的 `libssl3` 在 trixie 叫
 源站与被测**共享** `BENCH_SERVER_CPUS`：合格宿主只有 4 核，分三组会让 oha 只剩
 1 核去打四万多 rps ⇒ 很可能**压测端先饱和**，而那正是判据 ④B 会作废整类的情形。
 
-⛔ **枢衡 `file_server` 当场出局**：静态吞吐实测 7638.6 rps ⇒ 四家会一起被它压住，
+⚠ **枢衡 `file_server` 当时出局**：2026-09-06 静态吞吐实测 7638.6 rps ⇒ 四家会一起被它压住，
 判据 ④B 收敛作废整类 —— 白开一次窗口，而窗口要停一次服。
+★ **这条理由按今天的数已经不成立**：[窗口二](results/2026-09-10-window-2/README.md) 的 `file_server`
+是 19811.2 rps，已高于这一类的最强者 nginx 12971.5。⇒ 选 `respond` 作源站今天只靠下面那条依据
+（**误差方向**）站着，而那一条不受影响。
 
 ★ 镜像里能当源站的只有四家自己与 python3 ⇒ 加第五个实现要改镜像，撞 G36。
 ⇒ **无论选谁，都必然有一趟是「同二进制两实例」**。选枢衡的依据是**误差方向**：
