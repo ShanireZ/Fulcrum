@@ -924,6 +924,11 @@ LINT_CMD="$LINT_CMD && bash tests/ci/dump-cache.sh --self-check"
 #   于是它坏了要等到真出事那天才发现，而那一次现场也就跟着白丢了。
 #   ⚠ 它不碰 docker、不要产品二进制、只花几百毫秒（自己开一个监听 socket 当靶子）。
 LINT_CMD="$LINT_CMD && bash tests/acme/self-check.sh"
+# ★ `dep-check.py --apply` 判「两把锁对不对得上」的那段逻辑（2026-09-24 加）。
+#   挂在 lint 这一格，理由同上两条：`--apply` 一年跑不了几次，而它的判定一旦与 vendor 回归网 [2/5]
+#   分家，只会在那一次才露出来 —— 2026-09-24 就是：它比 [2/5] 更严，把三个合法的包误报成对不上。
+#   ⚠ 不出网、不跑 cargo，只喂合成输入；python3 用的是构建镜像里那一份。
+LINT_CMD="$LINT_CMD && python3 tools/dep-check.py --self-check"
 
 if [ "${VENDOR_ONLY:-0}" = "1" ]; then
   # 只跑 fork 回归网。它不依赖 spike 二进制，所以连构建都跳过。

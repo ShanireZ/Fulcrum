@@ -767,7 +767,12 @@ def main() -> int:
     ap.add_argument(
         "--skip-advisories", action="store_true", help="跳过安全公告检查（两把锁）"
     )
+    ap.add_argument(
+        "--self-check", action="store_true", help="只跑内置自测（不出网、不跑 cargo），门禁 lint 那一格调它"
+    )
     args = ap.parse_args()
+    if args.self_check:
+        return self_check()
 
     cargo = args.cargo.split()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
@@ -928,19 +933,112 @@ def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, s
         for n, v in sa.parse_lock(REPO / rel):
             store.setdefault(n, set()).add(v)
 
+    marks = {"ok": "✓", "absent": "○", "root-only-path": "·", "mismatch": "✗"}
     bad = 0
-    for name, _cur, _version in eligible:
-        rv, vv = root.get(name, set()), vendor.get(name)
-        if vv is None:
-            print(f"  ○ {name:<20} vendor 锁里没有这个包 —— 无从对不上")
-        elif rv == vv:
-            print(f"  ✓ {name:<20} 两把锁一致：{' '.join(sorted(rv))}")
-        else:
-            bad += 1
-            print(f"  ✗ {name:<20} 根 {' '.join(sorted(rv))} ≠ vendor {' '.join(sorted(vv))}")
+    for name, verdict, why in lock_alignment(
+        root, vendor, [n for n, _c, _v in eligible], lambda n, v: _pingora_users(cargo, n, v)
+    ):
+        print(f"  {marks[verdict]} {name:<20} {why}")
+        bad += verdict == "mismatch"
     if bad:
         print(f"  ⚠ {bad} 个包两把锁对不上 —— tests/vendor/run.sh 会拒绝跑回归网。")
     return bad
+
+
+def _pingora_users(cargo: list[str], name: str, version: str) -> list[str] | None:
+    """产物里有哪些 pingora crate 用到 `name@version`；问不出来返回 None。
+
+    ★ 与 `tests/vendor/run.sh` [2/5] 的 `who_uses` 问的是同一句：根 workspace 的反向树，
+      `-e normal,build`（产物里的图）、`--target all`（宁可多算路径）。
+    """
+    proc = run([*cargo, "tree", "--locked", "-i", f"{name}@{version}",
+                "-e", "normal,build", "--target", "all", "--prefix", "none"])
+    if proc.returncode != 0:
+        return None
+    return sorted({m.group(0) for line in proc.stdout.splitlines()
+                   if (m := re.match(r"pingora-[a-z-]+", line))})
+
+
+def lock_alignment(root, vendor, names, pingora_users):
+    """逐个包判定两把锁对不对得上，返回 [(名字, 判定, 说明)] —— 与 [2/5] 同一口径。
+
+    判定 ∈ "ok" / "absent"（vendor 锁里没有这个名字）/ "root-only-path"（根侧多出的版本
+    没有任何 pingora crate 在用）/ "mismatch"。`pingora_users(名字, 版本)` 返回用到它的
+    pingora crate 列表，问不出来返回 None（⛔ 问不出来 ≠ 没人用，一律判 mismatch）。
+    ★ vendor 侧**多**出来的版本合法（dev-dep／未启用的可选依赖拖进来的老大版本），不判。
+    """
+    out = []
+    for name in names:
+        rv, vv = root.get(name, set()), vendor.get(name)
+        if vv is None:
+            out.append((name, "absent", "vendor 锁里没有这个包 —— 无从对不上"))
+            continue
+        missing = sorted(rv - vv)
+        if not missing:
+            extra = "（vendor 另有旧版本，不进产物）" if vv - rv else ""
+            out.append((name, "ok", f"根侧的版本 vendor 侧都有：{' '.join(sorted(rv))}{extra}"))
+            continue
+        problems, root_only = [], []
+        for ver in missing:
+            users = pingora_users(name, ver)
+            if users is None:
+                problems.append(f"{ver} 在 vendor 侧缺席，且问不出产物里谁在用它（cargo tree 失败）")
+            elif users:
+                problems.append(f"{ver} 在 vendor 侧缺席，而 {' '.join(users)} 在用它")
+            else:
+                root_only.append(ver)
+        if problems:
+            out.append((name, "mismatch", "；".join(problems) + f"（vendor 有：{' '.join(sorted(vv))}）"))
+        else:
+            out.append((name, "root-only-path",
+                        f"根侧的 {' '.join(root_only)} 没有任何 pingora crate 在用 —— vendor 测不到也不必测"))
+    return out
+
+
+def self_check() -> int:
+    """`--self-check`：用合成输入钉住 [`lock_alignment`] 的每种判定 —— 不出网、不跑 cargo。
+
+    ★ 口径必须与 `tests/vendor/run.sh` 的 [2/5] 相同：根侧的每个版本都得在 vendor 侧，
+      **除非没有任何 pingora crate 用它**（那一问由 cargo tree 答，这里用桩代替）。
+      ⚠ 这里曾经是「两边版本集合逐字相等」—— 比它声称镜像的那道门更严，
+      2026-09-24 那次 `--apply` 因此把 rand / thiserror / thiserror-impl 误报成对不上、退出码 1。
+    """
+    users = {
+        ("base64", "0.23.1"): [],  # 只经 rcgen → pem 4 进产物（2026-09-24 的真实形状）
+        ("lru", "0.18.2"): ["pingora-pool"],  # pingora 在用、vendor 却没解析出来 —— 真问题
+        ("zstd", "9.9.9"): None,  # 问不出来
+    }
+    root = {
+        "rand": {"0.10.3"},
+        "base64": {"0.22.1", "0.23.1"},
+        "lru": {"0.18.2"},
+        "zstd": {"9.9.9"},
+        "pem": {"4.0.0"},
+    }
+    vendor = {
+        "rand": {"0.8.7", "0.10.3"},  # vendor 侧合法地多一个老大版本（dev-dep／可选依赖）
+        "base64": {"0.22.1"},
+        "lru": {"0.18.5"},
+        "zstd": {"0.14.0"},
+    }
+    want = {
+        "rand": "ok",
+        "base64": "root-only-path",
+        "lru": "mismatch",
+        "zstd": "mismatch",  # ⛔ 问不出来 ≠ 没人用
+        "pem": "absent",
+    }
+    got = {n: (v, why) for n, v, why in lock_alignment(root, vendor, list(want), lambda n, v: users[(n, v)])}
+    bad = [f"{n}：期望 {w}，得到 {got.get(n, ('（缺）', ''))[0]}" for n, w in want.items() if got.get(n, ("",))[0] != w]
+    if not bad and "pingora-pool" not in got["lru"][1]:
+        bad.append("lru：判红的说明里没点名是哪个 pingora crate 在用它")
+    if bad:
+        print("DEP-CHECK SELF-CHECK FAILED：")
+        for line in bad:
+            print(f"  ✗ {line}")
+        return 1
+    print(f"DEP-CHECK SELF-CHECK PASSED —— 两把锁的对齐判定 {len(want)} 种情况各钉一条（与 tests/vendor/run.sh [2/5] 同一口径）")
+    return 0
 
 
 if __name__ == "__main__":

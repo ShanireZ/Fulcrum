@@ -79,6 +79,7 @@ dump_lock "$ROOT_LOCK" > /tmp/root.pkgs
 dump_lock "$LOCK"      > /tmp/vendor.pkgs
 
 # ★ 不变量是「根 lock 里出现的每个版本，vendor lock 里都必须有」，**不是**「两边逐字相等」。
+#   （2026-09-24 起收窄成「……除非没有任何 pingora crate 用它」，由 cargo 答，见下面 `who_uses` 那段。）
 #   Cargo.lock 允许同名包多版本共存：vendor 侧多解析出 dev-dependencies 与未启用的可选依赖
 #   （sentry、reqwest、rstest 这些），它们会合法地拖进老版本——例如 rand 0.8.7 与 0.10.2 并存。
 #   那些不进产物，不该判红。**只有根侧那个版本在 vendor 侧缺席才是真问题。**
@@ -114,6 +115,23 @@ SHARED=$(wc -l < /tmp/shared.names)
 ROOTONLY=$(wc -l < /tmp/rootonly.names)
 MISMATCH=0
 DRAGGED=0
+ROOT_ONLY_PATH=0
+
+# ★ ★ 根侧有、vendor 侧缺的那个版本，**产物里是谁在用它** —— 问 cargo，不猜（2026-09-24 加）。
+#   起因：rcgen 0.14.10 → pem 4 把 base64 0.23.1 带进了根锁，而 pingora 用的仍是 0.22.1（两把锁都有）。
+#   按包名比，这与「pingora 自己在产物里用着一个 vendor 没解析出来的版本」长得一模一样 ——
+#   而本步要拦的只有后者：vendor 测试跑的不是产物里 **pingora 那一侧** 的组合。
+#   ⇒ 反向树上有 `pingora-*` = 真问题（红）；没有 = 只经根侧独有的包进产物，vendor 测不到也不必测（信息）。
+#   ⛔ 不用手写名单：将来若 pingora 自己也升到那个版本而 vendor 滞后，名单会把真问题盖住，而这里会红。
+# ★ `--target all`：宁可多算路径（多算只会更容易红），不让「只在某个 target 上出现的依赖」漏掉。
+# ★ `-e normal,build`：问的是产物里的图；dev 边只来自工作区成员自己，碰不到 pingora 那一侧。
+# ★ `</dev/null`：它跑在 `while read` 循环里，不许碰循环的 stdin。
+# ⚠ 反证（2026-09-24 实测）：只在根锁里把 pingora 用的 lru 退一个补丁版本 ⇒ 本步红、点名 pingora-pool。
+ROOT_MANIFEST="$REPO/Cargo.toml"
+who_uses() {
+  cargo tree --locked --manifest-path "$ROOT_MANIFEST" -i "$1@$2" \
+    -e normal,build --target all --prefix none </dev/null 2>&1
+}
 
 while IFS= read -r p; do
   rvs=$(versions_of /tmp/root.pkgs   "$p")
@@ -124,14 +142,30 @@ while IFS= read -r p; do
     printf '%s\n' "$vvs" | grep -qx "$v" || missing="$missing $v"
   done
 
-  if [ -n "$missing" ]; then
-    printf '  ✗  %-24s 根侧的%s 在 vendor 侧缺席（vendor 有：%s）\n' \
-           "$p" "$missing" "$(squash "$vvs")"
-    MISMATCH=$((MISMATCH + 1))
-  elif [ "$(printf '%s\n' "$vvs" | wc -l)" -gt "$(printf '%s\n' "$rvs" | wc -l)" ]; then
-    # vendor 侧多解析出别的版本——合法（dev-dep／未启用的可选依赖），只作信息
-    DRAGGED=$((DRAGGED + 1))
+  if [ -z "$missing" ]; then
+    if [ "$(printf '%s\n' "$vvs" | wc -l)" -gt "$(printf '%s\n' "$rvs" | wc -l)" ]; then
+      # vendor 侧多解析出别的版本——合法（dev-dep／未启用的可选依赖），只作信息
+      DRAGGED=$((DRAGGED + 1))
+    fi
+    continue
   fi
+
+  for v in $missing; do
+    if ! tree=$(who_uses "$p" "$v"); then
+      # ⛔ 问不出来 ≠ 没人用：失败一律判红。
+      printf '  ✗  %-24s 根侧的 %s 在 vendor 侧缺席，且问不出产物里谁在用它（cargo tree 失败）：\n' "$p" "$v"
+      printf '%s\n' "$tree" | sed -n '1,5s/^/        /p'
+      MISMATCH=$((MISMATCH + 1))
+    elif via=$(printf '%s\n' "$tree" | grep -o '^pingora-[a-z-]*' | sort -u) && [ -n "$via" ]; then
+      printf '  ✗  %-24s 根侧的 %s 在 vendor 侧缺席，而 %s 在用它（vendor 有：%s）\n' \
+             "$p" "$v" "$(squash "$via")" "$(squash "$vvs")"
+      MISMATCH=$((MISMATCH + 1))
+    else
+      printf '  ·  %-24s 根侧的 %s 只经根侧独有的包进产物（%s），没有 pingora crate 在路上\n' \
+             "$p" "$v" "$(printf '%s\n' "$tree" | sed -n '2,4p' | awk '{print $1}' | paste -sd'>' - | sed 's/>/ ← /g')"
+      ROOT_ONLY_PATH=$((ROOT_ONLY_PATH + 1))
+    fi
+  done
 done < /tmp/shared.names
 
 if [ "$MISMATCH" -ne 0 ]; then
@@ -142,7 +176,12 @@ if [ "$MISMATCH" -ne 0 ]; then
   echo "    cargo update -p <name> --precise <root 侧版本> --manifest-path vendor/pingora/Cargo.toml"
   fail "版本不一致，拒绝在不可采信的组合上跑测试"
 fi
-printf '  ✓  %s 个共有包，root 侧的版本在 vendor 侧全部在场' "$SHARED"
+if [ "$ROOT_ONLY_PATH" -eq 0 ]; then
+  printf '  ✓  %s 个共有包，root 侧的版本在 vendor 侧全部在场' "$SHARED"
+else
+  printf '  ✓  %s 个共有包，root 侧的版本在 vendor 侧全部在场 —— 除了上面 · 行那 %s 个（没有 pingora crate 用它们）' \
+         "$SHARED" "$ROOT_ONLY_PATH"
+fi
 printf '（其中 %s 个 vendor 另有旧版本，来自 dev-dep／未启用的可选依赖，不进产物）\n' "$DRAGGED"
 [ "$ROOTONLY" -eq 0 ] || printf '  ·  另有 %s 个只在 root 侧（工作区成员，vendor 本就测不到）：%s\n' \
      "$ROOTONLY" "$(squash "$(cat /tmp/rootonly.names)")"
@@ -151,7 +190,7 @@ printf '（其中 %s 个 vendor 另有旧版本，来自 dev-dep／未启用的�
 #   `MISMATCH` 恒为 0，于是它在**什么都没比**的情况下报绿。给个下界钉住。
 [ "$SHARED" -ge 100 ] || fail "只比出 $SHARED 个共有包（正常应有 170 上下）——
        两份 lock 的解析结果之一多半是空的或格式变了，本次比对没有意义。"
-echo "  ✓ 产物里那套版本在 vendor 侧全部在场——下面的测试结果对实际产物有效"
+echo "  ✓ 产物里 pingora 那一侧用到的版本在 vendor 侧全部在场——下面的测试结果对实际产物有效"
 
 # ── [3/5] ★ ★ 自证「黑洞」真的是黑洞 ────────────────────────────────────────
 #

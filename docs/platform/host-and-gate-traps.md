@@ -259,6 +259,10 @@ Two corollaries:
     written; present and empty → written; sub-path volume → empty dir left behind). ⇒ For ad-hoc
     container cargo against `vendor/pingora`, pass `--target-dir /w/target/<name>` instead of
     mounting a volume on its `target/`.
+    ⚠ The root `target/` is **always** such a leftover — the gate itself mounts `/w/target` — so any
+    ad-hoc `docker run … cargo` on the checkout must mount a volume there too. Commands that take no
+    `--target-dir` (`cargo tree`, `cargo metadata`) otherwise write straight onto the host; this bit
+    the same day it was written down.
 
 ## Dependency check exit codes and caveats
 
