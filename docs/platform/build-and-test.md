@@ -284,7 +284,7 @@ cgroup v2 下 `--privileged` 自己就会挂成 rw。详见
 
 ★ **测试宿主镜像也按内容哈希重建**（与构建镜像同一条纪律）：systemd 的版本是本 spike
 结论的一部分，浮动 tag 会让结论某天悄悄失效。⚠ 它**何时拔钉子尚未定案**——
-G36 只管构建镜像的 rustc，见 [待定清单](/governance/open-questions.md)。
+G36 的 rustc 口径只管构建镜像（`G152` 把它的 M3 冻结扩到了对拍镜像），不管本镜像，见 [待定清单](/governance/open-questions.md)。
 
 ★ ★ **复现类场景的绿意味着「坏行为已复现」，不是「功能正常」。** 上游
 `listen_addresses()` 发版、fork rebase 上去之后，那条断言要**反过来写**；届时它变红是口径
