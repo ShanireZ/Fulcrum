@@ -206,9 +206,11 @@ async fn build_quic_listener(
         return UdpSocket::bind(bind).await;
     };
 
-    let mut table = table.lock().await;
+    // ★ 0.9.0（上游 1d93711）：ListenFds 换成 parking_lot 锁 ⇒ 守卫不 Send、⛔ 不许跨 `.await`。
+    //   只在两个同步的瞬间持锁（查表、登记）；bind 期间不持锁 —— 每个服务的键独占，不需要按地址串行。
+    let inherited = table.lock().get(key).copied();
 
-    if let Some(&fd) = table.get(key) {
+    if let Some(fd) = inherited {
         info!("[quic] 继承了 UDP 监听 fd={fd}（{key}）—— 升级窗口内这个端口没有重新 bind 过");
         // SAFETY: fd 由上一代经 SCM_RIGHTS 传来，此处接管其所有权，且同一个键只取用一次。
         // ★ ManuallyDrop 的理由与 l4.rs 那两份完全相同：提前析构会 `close(fd)`，
@@ -231,7 +233,7 @@ async fn build_quic_listener(
 
     let sock = UdpSocket::bind(bind).await?;
     let fd = sock.as_raw_fd();
-    table.add(key.to_string(), fd);
+    table.lock().add(key.to_string(), fd);
     info!("[quic] 监听 {bind}（QUIC/UDP），fd={fd} 已登记为 {key}，下一代继承得到");
     Ok(sock)
 }
@@ -419,6 +421,13 @@ impl Service for QuicListenerService {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    /// pingora 0.9.0（上游 `f82478a`）：新一代据此关掉「没有任何服务认领」的继承 fd。
+    /// ⚠ 必须是 fd 表的**键**（带前缀），⛔ 不是 bind 地址 —— 写成地址，新一代会先关掉自己要继承的
+    ///   那个 fd；不实现（缺省 `None`）会让**整个进程**的清理静默关闭。钉在单测 `*_服务声明的正是它的_fd_表键`。
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(vec![self.fd_key.clone()])
     }
 }
 
@@ -1592,5 +1601,26 @@ mod tests {
         // ★ ★ 送进去的是**报文自带的那一对地址**，不是建连时那一对 ——
         //   转交进来的数据报是别的进程收到的，只有它自己知道 `from`。
         assert_eq!((f, t), (from, to));
+    }
+
+    /// ★ ★ pingora 0.9.0（上游 `f82478a`）：QUIC 服务也必须声明它的 fd 表键 —— 只要开了
+    /// TLS 端口就会挂上它，而它返回 `None`（缺省）就会让**整个进程**的未认领 fd 清理静默关闭。
+    #[test]
+    fn quic_服务声明的正是它的_fd_表键() {
+        let s = QuicListenerService::new(
+            "127.0.0.1:19003".to_string(),
+            false,
+            Arc::new(SniResolver::new()),
+            GenId::random(),
+            Arc::new(EchoHandler),
+            std::env::temp_dir(),
+            crate::conn_stats::ConnRegistry::new(),
+        );
+        assert_eq!(
+            s.listen_addresses(),
+            Some(vec![s.fd_key.clone()]),
+            "QUIC 服务必须声明它的 fd 表键（缺省的 None 会关掉整个进程的清理）"
+        );
+        assert_eq!(s.fd_key, "fulcrum-quic:127.0.0.1:19003");
     }
 }

@@ -33,7 +33,7 @@ impl Service for FdInspectService {
         match fds {
             None => log::info!("{TAG} no fd table (fresh start)"),
             Some(table) => {
-                let (keys, values) = table.lock().await.serialize();
+                let (keys, values) = table.lock().serialize();
                 log::info!("{TAG} table has {} entries", keys.len());
                 for (key, fd) in keys.iter().zip(values.iter()) {
                     log::info!("{TAG} entry key={key} fd={fd}");
@@ -48,6 +48,12 @@ impl Service for FdInspectService {
 
     fn name(&self) -> &str {
         "m0-fd-inspect"
+    }
+
+    /// pingora 0.9.0：本服务不持有任何监听器 ⇒ 声明一个**空**集合（⛔ 不是 `None` ——
+    /// 那会让整个进程的未认领 fd 清理静默关闭，`unclaimed.sh` 就又回到复现旧缺陷了）。
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(vec![])
     }
 
     fn threads(&self) -> Option<usize> {

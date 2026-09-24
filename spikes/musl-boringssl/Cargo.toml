@@ -24,9 +24,9 @@ description = "验 BoringSSL 能否与 musl 静态链接，并在 musl 上真的
 [dependencies]
 # ★ 探针**故意直接取产品将来要用的那两个 crate**，不取一个「随便什么用 BoringSSL 的东西」。
 #   D11 的判据是 quiche 这条路走不走得通，而不是「BoringSSL 一般而言能不能静态链接」。
-#   quiche 的 default feature 就是 `boringssl-boring-crate`（实测 0.29.3），
+#   quiche 的 default feature 就是 `boringssl-boring-crate`（实测 0.29.3；2026-09-24 随产品升到 0.30.0 后复核仍是），
 #   `Config::with_boring_ssl_ctx_builder` 走的正是它。
-quiche = "0.29.3"
+quiche = "0.30.0"
 # G104 的那个回调（`set_select_certificate_callback`）住在这里。
 #
 # ⚠ ⚠ **版本必须跟着 quiche 走，不能按 G29「追新」写。** 实测：
@@ -34,7 +34,10 @@ quiche = "0.29.3"
 #   照追新写一行 `boring = "5"`，cargo 会**同时**留下两份 boring ——
 #   `SslContextBuilder` 同名却是两个类型，`with_boring_ssl_ctx_builder` 当场编不过。
 #   ★ 本仓库在 `pingora-http` 那条上栽过一模一样的形状（见根 Cargo.toml 的 [patch] 注释）。
-boring = "4.22.0"
+#   ★ 2026-09-24 随产品升到 5.2.0（与产品那把锁相同）：quiche 0.30.0 的 boring 区间是 `>=4.19, <6`，
+#     4 与 5 都能与它合成**一份**，于是这一次「跟着 quiche 走」恰好也等于最新版。
+#     ⚠ 规矩本身不变：写到 quiche 的区间**之外**（比如将来的 6），照样会同时留下两份。
+boring = "5.2.0"
 # 只为量一件事：握手那条线程真实的栈大小（`pthread_getattr_np`）。
 # ★ **新增 0 个包** —— `quiche` 本来就把 libc 拉进来了（实测在同一份 Cargo.lock 里）。
 libc = "0.2"

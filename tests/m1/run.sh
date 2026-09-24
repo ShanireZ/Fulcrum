@@ -170,8 +170,8 @@ for g in "gen1:$FDPROF_GEN1" "gen2:$FDPROF_GEN2" "gen3:$FDPROF_GEN3"; do
   [ "${g#*:}" = "8080:1 8081:1 8082:1" ] \
     || fail "${g%%:*} 的监听 fd 重数是 [${g#*:}]，期望全 1。
        ★ 全 2 是**修复前**的形态（继承 1 + SCM_RIGHTS 1）。若它回来了，多半是
-       vendor/pingora 的 MSG_CMSG_CLOEXEC 那处改动在 rebase 时被冲掉了 ——
-       见 vendor/pingora/FORK.md「枢衡改动 ②」。"
+       get_fds_from() 里 MSG_CMSG_CLOEXEC 那处修复在某次 rebase / 升级里丢了 ——
+       它 0.9.0 起在上游（b2b35fd，owner 的 PR #960），此前是 vendor/pingora/FORK.md §4 ②。"
 done
 echo "  ✓ 三代的监听 fd 都是每个 socket 一个（移交来的 fd 带 CLOEXEC，没有被 fork 带进下一代）"
 
@@ -192,7 +192,8 @@ for g in "gen1:$GEN1" "gen2:$GEN2" "gen3:$GEN3"; do
   [ "$n" = "0" ] \
     || fail "${g%%:*} 还攥着 $n 个升级 socket 的 fd（应为 0）。
        ★ 这是 get_fds_from() 里 accept 出来的连接没被 close 造成的永久泄漏，
-       每升一次漏一个。见 vendor/pingora/FORK.md「枢衡改动 ①」。"
+       每升一次漏一个。0.9.0 起上游已修（b2b35fd 把它交给 OwnedFd，owner 的 PR #960），
+       此前是 vendor/pingora/FORK.md §4 ① ⇒ 这里红，说明那处修复在某次 rebase / 升级里丢了。"
 done
 echo "  ✓ 三代都没有攥着升级 socket（accept 出来的连接已被关闭）"
 

@@ -138,6 +138,8 @@ const MUST_DISABLE_DEFAULT: &[&str] = &[
     //   它进来是因为**另一条岔路**：`boringssl-vendored` 会让 quiche 自己从源码编一份
     //   BoringSSL ⇒ 产物里两套，而「统一 BoringSSL」（G104）按字面读就成了假话。
     //   ⇒ 本条守的是**上游哪天改了 default**，仅此而已。
+    //   ⚠ 2026-09-24 更正：quiche 0.29.3 / 0.30.0 的特性表里**没有** `boringssl-vendored`
+    //     （查 crates.io）⇒ 下文把它当成现有特性来写的地方，一律按「假如上游哪天加了这样一个特性」读。
     //
     // ⚠ ⚠ **门 5 守不住 `boringssl-vendored` 那一半**：门 4 与门 5 都对包名做了
     //   `dedup()`，判的是「出现了哪几个**名字**」，判不动「同一个名字有几个**版本**」；

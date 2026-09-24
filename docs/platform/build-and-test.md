@@ -162,7 +162,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 | ★ ★ **压力** | [`tests/stress/run.sh`](../../tests/stress/run.sh) | 持续负载下**零错误、fd 不涨、内存不涨**，且负载中途走一次全量 load 仍然零失败。⚠ **不产出性能声明**，性能口径见 [G19](/verification/performance-bar.md)（M3）|
 | ★ ★ **对拍流水线与判据**（M3 第一刀，G132）| [`tests/bench/run.sh`](../../tests/bench/run.sh) | ⛔ **它不判性能，也不产出任何性能数字** —— 判的是那条流水线还活着、判据还判得动。★ **2026-09-06 那句承诺兑现了**：合格宿主到位，第一组真实读数在 [`bench/results/`](../../bench/results/2026-09-06-static-throughput/README.md)（结论是 `FAIL`）。⛔ 本格自身仍然出不了数字 —— 它跑在这台开发机上，而这台机器仍被判成不合格。它跑在**第三张镜像**里（枢衡 + Caddy + HAProxy + nginx + oha 同处一室，全部按 digest / sha256 钉死）。三组：① 钉死的版本与 [`bench/README.md`](../../bench/README.md) 那张表逐条对上，且两张镜像里的 `oha` 是同一个（★ §8 要的「同一个负载生成器」）；② 四家真的起得来、真的回那个资源、原始数据真的落盘，**而这台开发机被判成不合格宿主 ⇒ 判定拒绝出结论**；③ ★ ★ ★ **反证七条**（承重）—— 喂合成的**合格**快照，判定必须真的打出 PASS 与 FAIL。⚠ 没有 ③，② 的判别力是零：**一个永远拒绝出结论的判定器，与一个坏掉的判定器给出完全相同的输出** |
 | **M0 接缝验证** | [`tests/m0/run.sh`](../../tests/m0/run.sh) | 优雅升级中三类流量零中断 |
-| ★ **未被认领的继承 fd** | [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) | ★ **它复现的是已知的坏行为**，见下 |
+| ★ **未被认领的继承 fd** | [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) | ★ 2026-09-24 起验的是**修复**（pingora 0.9.0 + 每个自建服务都声明 `listen_addresses()`），见下 |
 | ★ ★ **M1 产品二进制** | [`tests/m1/product.sh`](../../tests/m1/product.sh) | ★ **它跑的是 `fulcrum serve`，不是 spike**（G78）：`Type=notify` 就绪、pid 文件、三次 `systemctl reload`（改配置 / 回滚 / **换二进制**）、停机走完排空 |
 | **M1 systemd 主场景** | [`tests/m1/run.sh`](../../tests/m1/run.sh) | 两次 `systemctl reload` 零停机换代 + 停机仍走完排空。★ 跑的是 **spike**，验的是机制那一层（fd 移交、`CLOEXEC`）|
 | ★ **M1 `ExitType=main`** | [`tests/m1/exit-type-main.sh`](../../tests/m1/exit-type-main.sh) | ★ 复现坏行为：去掉 `ExitType=cgroup` 会怎样 |
@@ -286,9 +286,11 @@ cgroup v2 下 `--privileged` 自己就会挂成 rw。详见
 结论的一部分，浮动 tag 会让结论某天悄悄失效。⚠ 它**何时拔钉子尚未定案**——
 G36 的 rustc 口径只管构建镜像（`G152` 把它的 M3 冻结扩到了对拍镜像），不管本镜像，见 [待定清单](/governance/open-questions.md)。
 
-★ ★ **复现类场景的绿意味着「坏行为已复现」，不是「功能正常」。** 上游
-`listen_addresses()` 发版、fork rebase 上去之后，那条断言要**反过来写**；届时它变红是口径
-变了，不是它坏了。背景见 [尚未验证的接缝](/verification/open-seams.md)。
+★ ★ **复现类场景的绿意味着「坏行为已复现」，不是「功能正常」**（M1 的 `exit-type-main.sh` 等）。
+`unclaimed.sh` 原先也是这一类；2026-09-24 rebase 到 pingora 0.9.0（含上游 `listen_addresses()`）之后，
+它按预告**反写**成验修复：第二代关掉没人认领的 fd、老一代退出后端口拒连、不再传给第三代。
+⚠ 它现在守的最要紧的一条是「任一服务返回 `None` ⇒ 整个进程的清理静默关闭」（反证实测过）。
+背景见 [尚未验证的接缝](/verification/open-seams.md)。
 
 ★ M0 那几个场景共用 8080–8082 端口，**每一个都必须不留残余进程**（`tests/m0/run.sh` 末尾
 等最后一代真正退出正是为此）。⚠ 实际踩过：进程没走干净，下一个场景绑不上端口，
@@ -342,6 +344,10 @@ cache mount ⇒ **CI 每次都付冷价**。这一条写在明处。
 后一条的原因：进程已离开 `main_loop`、没人再从信号管道里读，而 tokio 的处理器仍然装着、顶掉了 `SIGINT` 默认的 terminate 行为。**排空中的那一代收不到任何可捕获的信号**——它只能自己走完 `CLOSE_TIMEOUT`(5) + `grace_period_seconds`(30) + `graceful_shutdown_timeout_seconds`(≤30)，最快 35 秒、最慢 65 秒。所以对更早那些用 `SIGKILL` 是**有意的选择，不是等待失败后的兜底**：判据此刻已全部做完，它们的 fd 也早已交接出去，只剩「把端口空出来」。
 
 ★ 这条同样适用于 M1 的 systemd 设计：**一旦一代开始排空，就叫不动了**，`TimeoutStopSec` 必须按 35–65 秒这个量级来配。
+⚠ 35–65 秒是按源码公式推的，**在 pingora 0.8.1 下它其实偏小**：等完各 runtime 之后还有一次重复的
+`sleep(graceful_shutdown_timeout_seconds)`，真实区间是 65–95 秒。2026-09-24 rebase 到 0.9.0（上游 `6f15714` 删了那次 sleep）
+之后公式才与实际相符 —— 最快 35（runtime 一收到关停就退）、最慢 65（拖满 graceful）。
+M1 实测佐证：同一个 grace 5 + graceful 5 的场景，`systemctl stop` 在 0.8.1 下 10 秒、0.9.0 下 5 秒。
 
 ### 三条从收尾这件事带走的
 

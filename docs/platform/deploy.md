@@ -179,6 +179,10 @@ systemctl stop 的耗时 ≈ grace_period + graceful_shutdown_timeout
 
 ⇒ **配了 `grace_period 120s` 就照着日志里的新数字把 `TimeoutStopSec` 提上去。**
 
+⚠ 这个和**在 2026-09-24 之前是少算的**：pingora 0.8.1 等完各 runtime 之后还要再 `sleep` 一次收尾时长，
+真实最长是 40 秒。rebase 到 0.9.0 之后（上游 `6f15714` 删了那次 sleep）和才与实际相符 ——
+M1 产品场景实测 `systemctl stop` **30 秒**（预算 35）。`TimeoutStopSec=60` 在两种情况下都够。
+
 > ⚠ ⚠ **`TimeoutStopSec` 小于停机预算的后果不是「慢一点」，是硬杀连接。**
 > systemd 到点就 SIGTERM → SIGKILL，而**一旦某一代开始排空，它就收不到任何
 > 可捕获的信号了** —— 补一刀没用，只能等它自己走完。现场形态是

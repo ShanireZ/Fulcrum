@@ -68,9 +68,10 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 ///
 /// ⚠ 这里**什么都不放宽**：`SslConnector::builder` 自己就调了
 /// `set_default_verify_paths()` 并把 `SSL_VERIFY_PEER` 打开
-/// （boring 4.22.0 `ssl/connector.rs`），我们只额外钉一条 ALPN。
+/// （boring 5.2.0 `ssl/connector.rs`，4.22.0 起就如此），我们只额外钉一条 ALPN。
+/// ★ boring 5 删了 `SslMethod::tls_client()` ⇒ 用 `tls()`；客户端 / 服务端由 `connect()` 自己设，行为不变。
 fn client_context() -> Result<SslConnector, String> {
-    let mut b = SslConnector::builder(SslMethod::tls_client())
+    let mut b = SslConnector::builder(SslMethod::tls())
         .map_err(|e| format!("建不出出站 TLS 上下文：{e}"))?;
     b.set_alpn_protos(ALPN_HTTP11)
         .map_err(|e| format!("出站 TLS 设不上 ALPN：{e}"))?;
@@ -313,7 +314,7 @@ mod tests {
 
     /// 服务端上下文：出示 `cert_der` / `key_der`，不要求客户端证书。
     fn server_ctx(cert_der: &[u8], key_der: &[u8]) -> SslContext {
-        let mut b = SslContextBuilder::new(SslMethod::tls_server()).expect("服务端 ctx");
+        let mut b = SslContextBuilder::new(SslMethod::tls()).expect("服务端 ctx");
         let cert = X509::from_der(cert_der).expect("服务端证书");
         let key = PKey::private_key_from_der(key_der).expect("服务端私钥");
         b.set_certificate(&cert).expect("装证书");
@@ -324,7 +325,7 @@ mod tests {
     /// ⚠ **只在测试里存在的对照**：把证书校验整个关掉。
     /// 产品面上没有任何一条路能造出这样一个连接器。
     fn insecure_connector() -> BoringHttpsConnector {
-        let mut b = SslConnector::builder(SslMethod::tls_client()).expect("客户端 ctx");
+        let mut b = SslConnector::builder(SslMethod::tls()).expect("客户端 ctx");
         b.set_verify(SslVerifyMode::NONE);
         b.set_alpn_protos(ALPN_HTTP11).expect("ALPN");
         BoringHttpsConnector::with_context(b.build())
@@ -334,7 +335,7 @@ mod tests {
     /// ★ 它是「名字不对要红」那一条的**正向对照**：同一个客户端、同一个 CA，
     ///   名字对的时候必须是绿的 —— 否则那条红说明不了任何事。
     fn ca_pinned_connector(ca_der: &[u8]) -> BoringHttpsConnector {
-        let mut b = SslConnector::builder(SslMethod::tls_client()).expect("客户端 ctx");
+        let mut b = SslConnector::builder(SslMethod::tls()).expect("客户端 ctx");
         let ca = X509::from_der(ca_der).expect("CA 证书");
         b.cert_store_mut().add_cert(ca).expect("装 CA");
         b.set_alpn_protos(ALPN_HTTP11).expect("ALPN");

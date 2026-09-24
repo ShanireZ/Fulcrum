@@ -222,7 +222,7 @@ Two corollaries:
 - **A broken measuring instrument reports a broken subject**, and the report reads exactly like
   a real defect. When a new gate goes red, first run it on a clean tree.
 
-## Host traps 4-9 (Windows + Git Bash / MSYS)
+## Host traps 4-11 (Windows + Git Bash / MSYS)
 
 4. **`/etc/hosts` inside the container is a bind-mounted *file*.** Truncate and rewrite in place
    (`cat > /etc/hosts`); `sed -i` and `mv` replace the inode, which a bind mount rejects. Restore
@@ -239,6 +239,26 @@ Two corollaries:
    `f(){ A+=(x); }; X=$(f)` — the exact shape that leaked a process for three months. Register the
    pid in the caller, and let `cleanup` assert the ports came back. ⚠ A comment line starting with
    `# shellcheck` is parsed as a *directive* (SC1073) — reword rather than indent it.
+10. **`git archive` on this host writes CRLF.** The global `core.autocrlf=true` applies to archive
+    output too, so an "official upstream tree" extracted that way differs from upstream in every
+    line ending, and a diff against it reports every file as changed. Measured 2026-09-24 while
+    reconciling the pingora 0.9.0 rebase. Extract with `git -c core.autocrlf=false archive …`, and
+    check the result with `tr -dc '\r' < file | wc -c` (MSYS `grep` normalizes line endings and
+    will not see the CRs).
+11. **`tools/dep-check.py` defaults to the host `cargo`, and that breaks G107 on the next gate.**
+    Host cargo writes `target/.rustc_info.json` into the checkout even when nothing is built, so the gate's
+    host-side G107 check (every `target/` in the tree must be empty) exits `RC=1` on a tree nobody
+    meant to build. Measured 2026-09-24. Pass `--cargo` a container command instead — the
+    `docker run … fulcrum-build:local cargo` form in [supply chain](supply-chain.md) — and if the
+    file already exists, delete it: it is a host artifact, not a cache worth keeping.
+    ⚠ **The same file can also arrive with no host cargo at all.** cargo writes `.rustc_info.json`
+    only if the target directory *already exists* — and mounting a named volume at a sub-path
+    (`-v vol:/w/vendor/pingora/target`) leaves that directory behind on the host as an empty
+    mount point. The vendor net's `cargo metadata --locked` has no `--target-dir`, so the next gate
+    writes into it and the gate after that goes red on G107. Measured 2026-09-24 (absent → nothing
+    written; present and empty → written; sub-path volume → empty dir left behind). ⇒ For ad-hoc
+    container cargo against `vendor/pingora`, pass `--target-dir /w/target/<name>` instead of
+    mounting a volume on its `target/`.
 
 ## Dependency check exit codes and caveats
 

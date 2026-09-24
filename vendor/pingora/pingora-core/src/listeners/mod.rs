@@ -86,73 +86,12 @@ use std::{any::Any, fs::Permissions, sync::Arc};
 use l4::{ListenerEndpoint, Stream as L4Stream};
 use tls::{Acceptor, TlsSettings};
 
+pub use crate::protocols::l4::stream::{
+    L4BufferSettings, DEFAULT_L4_READ_BUFFER_SIZE, DEFAULT_L4_WRITE_BUFFER_SIZE,
+};
 pub use crate::protocols::tls::ALPN;
-use crate::protocols::{GetSocketDigest, SocketDigest};
+use crate::protocols::GetSocketDigest;
 pub use l4::{ServerAddress, TcpSocketOptions};
-
-use pingora_error::{Error, ErrorType};
-use tokio::io::AsyncReadExt;
-
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
-#[cfg(windows)]
-use std::os::windows::io::AsRawSocket;
-
-// ─── ★ ★ ★ 枢衡改动 12：PROXY protocol 的「收」半边（2026-08-27）──────────────
-//
-// 上游**完全不支持 PROXY protocol**（全库零命中）。枢衡要在 HTTP 面收它，
-// 而唯一的正确位置是 **TLS 握手之前**拿到裸 `L4Stream` 的这一处
-// —— 它是 `pub(crate)`，外部够不到，所以必须动 fork。
-//
-// ★ ★ **这里放的是接缝，不是判断**：信任清单与 v1/v2 解析**一行都不进 pingora**，
-//   它们留在 `fulcrum_runtime::proxyproto`（已有 28 条单测）。
-//   本文件只负责「循环读 + 调用 + 覆盖地址」，而这三件事都与协议内容无关。
-//
-// ⚠ rebase 时要重做的是：本段、`Listeners` / `TransportStackBuilder` /
-//   `TransportStack` / `UninitializedStream` 四处各一个字段、`set_proxy_protocol`、
-//   以及 `handshake()` 里那一次调用。
-
-/// 本模块自己的错误类型。⚠ 命名沿用 `TLS_CONF_ERR` 的形状。
-pub const PROXY_PROTOCOL_ERR: ErrorType = ErrorType::Custom("ProxyProtocolError");
-
-/// 读一次 PROXY 头读到哪儿了。
-#[derive(Debug)]
-pub enum ProxyProtocolVerdict {
-    /// 还判不出来，要更多字节。里面那个数只是「至少还要几个」的提示，**不是承诺**。
-    Need(usize),
-    /// 判完了。
-    ///
-    /// ⚠ `client` 为 `None` 是**正常结果**：`LOCAL` 与 `PROXY UNKNOWN` 表示
-    /// 「这条连接没有真实客户端」（上游 LB 的健康检查就长这样）
-    /// ⇒ 此时**不覆盖**对端地址，继续用 socket 对端。
-    Done {
-        client: Option<std::net::SocketAddr>,
-        /// 这个头一共吃掉了前面几个字节。**后面的都是应用数据，一个都不能丢。**
-        consumed: usize,
-    },
-    /// 这不是一个合法的 PROXY 头 ⇒ 关连接。
-    Invalid(String),
-}
-
-/// 谁可以对本监听器发 PROXY 头，以及那串字节怎么解析。
-///
-/// ★ 两个方法都由使用方实现；本 crate 不认识 PROXY protocol 的任何一个字节。
-pub trait ProxyProtocolPolicy: std::fmt::Debug + Send + Sync {
-    /// 这个对端在信任清单里吗？
-    ///
-    /// ⚠ ⚠ **返回 `false` 时本 crate 一个字节都不会读**（不是「读掉丢弃」）。
-    /// 那是有意的：v2 头自带一个 u16 长度字段，「读掉丢弃」必须先解析
-    /// **攻击者控制**的那两个字节才知道丢多少，而「不读」完全不碰。
-    ///
-    /// ⚠ `peer` 为 `None` = 拿不到 inet 对端（例如 Unix domain socket）。
-    fn trusts(&self, peer: Option<&std::net::SocketAddr>) -> bool;
-
-    /// 喂进**已经读到的全部字节**，问它判得出来了没有。
-    ///
-    /// ⚠ ⚠ **必须是纯函数**：同一条连接上它会被反复调用，每次带着更长的前缀，
-    /// 而本 crate 依赖「同样的输入给同样的答案」。
-    fn feed(&self, buf: &[u8]) -> ProxyProtocolVerdict;
-}
 
 /// 这个监听器上多了一条 / 少了一条连接（**★ 枢衡改动 15**）。
 ///
@@ -203,101 +142,6 @@ impl Drop for ConnGuard {
     }
 }
 
-/// 读 PROXY 头时缓冲区的**硬上界**。
-///
-/// ★ 它不是协议上界（那由 [`ProxyProtocolPolicy::feed`] 自己的 `Invalid` 给），
-/// 而是**这个循环一定会停**的最后一道保证 —— 与 `fulcrum-server::l4` 里那个循环同构。
-/// ⚠ 正常情况下走不到：v1 的一行 ≤107 字节，v2 是 16 字节固定头 + payload。
-const PROXY_PROTOCOL_HARD_CAP: usize = 4096;
-
-/// 在 TLS 握手之前读掉一个 PROXY 头，并把对端地址换成它报的那个。
-///
-/// 返回 `Err` = **关掉这条连接**。⚠ 这与「不在清单里」有意相反：一个**在信任清单里**的
-/// 对端发来坏头（或干脆不发），说明配置或对端出了问题，而此时我们**已经吃掉了一部分字节、
-/// 还原不回去** —— 把残缺的流交给上层只会把问题推远。
-async fn read_proxy_protocol(
-    stream: &mut L4Stream,
-    policy: &dyn ProxyProtocolPolicy,
-) -> Result<()> {
-    let peer = stream
-        .get_socket_digest()
-        .and_then(|d| d.peer_addr().and_then(|a| a.as_inet().copied()));
-    if !policy.trusts(peer.as_ref()) {
-        // ★ ★ 一个字节都不读，原样交给上层。
-        return Ok(());
-    }
-
-    let mut buf: Vec<u8> = Vec::with_capacity(64);
-    let mut chunk = [0u8; 256];
-    loop {
-        // ★ 先拿已有的字节问一次 —— `feed` 是纯函数，重复问不要钱。
-        match policy.feed(&buf) {
-            ProxyProtocolVerdict::Done { client, consumed } => {
-                // ★ ★ ★ **多读到的字节必须还回去。** TCP 是流，一次 read 很可能把
-                //   PROXY 头与它后面的 ClientHello（或请求行）**一起**读回来。
-                //   少了这一步，上层拿到的流就从半截开始 —— 而那不会有任何报错，
-                //   只表现为「TLS 握手莫名其妙失败」。
-                if consumed < buf.len() {
-                    stream.rewind(&buf[consumed..]);
-                }
-                if let Some(addr) = client {
-                    override_peer_addr(stream, addr);
-                }
-                return Ok(());
-            }
-            ProxyProtocolVerdict::Invalid(why) => {
-                return Error::e_explain(PROXY_PROTOCOL_ERR, format!("bad PROXY header: {why}"));
-            }
-            ProxyProtocolVerdict::Need(_) => {}
-        }
-
-        if buf.len() >= PROXY_PROTOCOL_HARD_CAP {
-            return Error::e_explain(
-                PROXY_PROTOCOL_ERR,
-                format!("PROXY header exceeded {PROXY_PROTOCOL_HARD_CAP} bytes"),
-            );
-        }
-
-        // ⚠ 这里**故意没有自己的超时**：`services/listening.rs` 已经把整个
-        //   `handshake()` 包在一个 60s 的 timeout 里，而多一个数字就多一处要同步的地方。
-        match stream.read(&mut chunk).await {
-            Ok(0) => {
-                return Error::e_explain(
-                    PROXY_PROTOCOL_ERR,
-                    "peer closed the connection while we waited for its PROXY header",
-                );
-            }
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(e) => {
-                return Error::e_explain(PROXY_PROTOCOL_ERR, format!("read failed: {e}"));
-            }
-        }
-    }
-}
-
-/// 把这条连接的对端地址换成 PROXY 头报的那个。
-///
-/// # ⚠ ⚠ ★ ★ ★ 为什么是「换一整份 digest」而不是 `peer_addr.set(...)`
-///
-/// `SocketDigest.peer_addr` 是 `pub` 的 `OnceCell`，看起来 `set()` 一下就行 ——
-/// **而那行不通，因为它已经被填过了**：
-/// `services/listening.rs` 在 `io.handshake()` **之前**调 `io.peer_addr()`
-/// （为了握手失败时那行日志里能带上地址），而 `SocketDigest::peer_addr()` 是 `get_or_init`。
-/// ⇒ `OnceCell::set()` 到这一步必然返回 `Err`，**而它的返回值很容易被忽略**，
-///    于是「地址没换成」会是一次完全无声的失效。
-///
-/// ⇒ 换一整份。`local_addr` / `original_dst` 都会从**同一个 fd** 重新惰性派生，
-/// 什么都不丢。
-fn override_peer_addr(stream: &mut L4Stream, client: std::net::SocketAddr) {
-    #[cfg(unix)]
-    let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
-    #[cfg(windows)]
-    let digest = SocketDigest::from_raw_socket(stream.as_raw_socket());
-    // ★ 新造的 digest，这个 `set` 一定成功；写成 `let _ =` 是因为返回值确实无话可说。
-    let _ = digest.peer_addr.set(Some(SocketAddr::Inet(client)));
-    stream.set_socket_digest(digest);
-}
-
 /// The APIs to customize things like certificate during TLS server side handshake
 #[async_trait]
 pub trait TlsAccept {
@@ -325,14 +169,54 @@ pub trait TlsAccept {
 }
 
 pub type TlsAcceptCallbacks = Box<dyn TlsAccept + Send + Sync>;
+#[cfg(any(feature = "openssl_derived", feature = "rustls"))]
+pub(crate) type SharedTlsAcceptCallbacks = Arc<dyn TlsAccept + Send + Sync>;
+
+/// Callback for processing raw bytes before TLS handshake.
+///
+/// This trait allows applications to read and process data from the raw TCP stream
+/// before the TLS handshake occurs. This is useful for protocols like HAProxy's
+/// PROXY protocol, which sends client address information before TLS.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use pingora_core::listeners::PreTlsProcess;
+/// use pingora_core::protocols::l4::stream::Stream as L4Stream;
+/// use async_trait::async_trait;
+///
+/// struct ProxyProtocolHandler;
+///
+/// #[async_trait]
+/// impl PreTlsProcess for ProxyProtocolHandler {
+///     async fn process(&self, stream: &mut L4Stream) -> pingora_error::Result<()> {
+///         // Read PROXY protocol header, update socket digest, etc.
+///         Ok(())
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait PreTlsProcess: Send + Sync {
+    /// Process the raw stream before TLS handshake.
+    ///
+    /// The implementation can read bytes from the stream (e.g., PROXY protocol header)
+    /// and update the stream's socket digest with parsed information such as the
+    /// real client address.
+    ///
+    /// If this method returns an error, the connection will be dropped.
+    async fn process(&self, stream: &mut L4Stream) -> Result<()>;
+}
+
+/// Type alias for a boxed pre-TLS processor.
+pub type PreTlsCallback = Arc<dyn PreTlsProcess>;
 
 struct TransportStackBuilder {
     l4: ServerAddress,
     tls: Option<TlsSettings>,
+    l4_buffer: L4BufferSettings,
     #[cfg(feature = "connection_filter")]
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
-    /// ★ 枢衡改动 12：PROXY protocol 的「收」半边。`None` = 这个端口不收。
-    proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    pre_tls_callback: Option<PreTlsCallback>,
     /// ★ 枢衡改动 15：连接计数。`None` = 这个端口不数。
     connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
@@ -360,9 +244,88 @@ impl TransportStackBuilder {
         Ok(TransportStack {
             l4,
             tls: self.tls.take().map(|tls| Arc::new(tls.build())),
-            proxy_protocol: self.proxy_protocol.clone(),
+            l4_buffer: self.l4_buffer,
+            pre_tls_callback: self.pre_tls_callback.clone(),
             connection_counter: self.connection_counter.clone(),
         })
+    }
+}
+
+/// Configuration for one listening endpoint.
+///
+/// This configures the endpoint address and endpoint-specific transport
+/// settings such as [`TcpSocketOptions`], [`TlsSettings`], and L4
+/// [`BufStream`](tokio::io::BufStream) buffer sizes.
+pub struct ListenerConfig {
+    l4: ServerAddress,
+    tls: Option<TlsSettings>,
+    l4_buffer: L4BufferSettings,
+}
+
+impl ListenerConfig {
+    /// Create a TCP listening endpoint config.
+    pub fn tcp(addr: impl Into<String>) -> Self {
+        Self {
+            l4: ServerAddress::Tcp(addr.into(), None),
+            tls: None,
+            l4_buffer: L4BufferSettings::default(),
+        }
+    }
+
+    /// Create a Unix domain socket listening endpoint config.
+    #[cfg(unix)]
+    pub fn uds(addr: impl Into<String>) -> Self {
+        Self {
+            l4: ServerAddress::Uds(addr.into(), None),
+            tls: None,
+            l4_buffer: L4BufferSettings::default(),
+        }
+    }
+
+    /// Set TCP socket options for this endpoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this endpoint is not TCP.
+    #[track_caller]
+    pub fn tcp_socket_options(mut self, options: TcpSocketOptions) -> Self {
+        match &mut self.l4 {
+            ServerAddress::Tcp(_, opt) => *opt = Some(options),
+            #[cfg(unix)]
+            ServerAddress::Uds(_, _) => {
+                panic!("TCP socket options can only be set on TCP endpoints")
+            }
+        }
+        self
+    }
+
+    /// Set Unix domain socket permissions for this endpoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this endpoint is not a Unix domain socket.
+    #[cfg(unix)]
+    #[track_caller]
+    pub fn permissions(mut self, permissions: Permissions) -> Self {
+        match &mut self.l4 {
+            ServerAddress::Uds(_, perm) => *perm = Some(permissions),
+            ServerAddress::Tcp(_, _) => {
+                panic!("Unix domain socket permissions can only be set on UDS endpoints")
+            }
+        }
+        self
+    }
+
+    /// Set TLS settings for this endpoint.
+    pub fn tls(mut self, settings: TlsSettings) -> Self {
+        self.tls = Some(settings);
+        self
+    }
+
+    /// Set L4 `BufStream` buffer sizes for this endpoint.
+    pub fn l4_buffer(mut self, settings: L4BufferSettings) -> Self {
+        self.l4_buffer = settings;
+        self
     }
 }
 
@@ -370,8 +333,8 @@ impl TransportStackBuilder {
 pub(crate) struct TransportStack {
     l4: ListenerEndpoint,
     tls: Option<Arc<Acceptor>>,
-    /// ★ 枢衡改动 12。
-    proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    l4_buffer: L4BufferSettings,
+    pre_tls_callback: Option<PreTlsCallback>,
     /// ★ 枢衡改动 15。
     connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
@@ -391,7 +354,8 @@ impl TransportStack {
         Ok(UninitializedStream {
             l4: stream,
             tls: self.tls.clone(),
-            proxy_protocol: self.proxy_protocol.clone(),
+            l4_buffer: self.l4_buffer,
+            pre_tls_callback: self.pre_tls_callback.clone(),
         })
     }
 
@@ -403,19 +367,18 @@ impl TransportStack {
 pub(crate) struct UninitializedStream {
     l4: L4Stream,
     tls: Option<Arc<Acceptor>>,
-    /// ★ 枢衡改动 12。
-    proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    l4_buffer: L4BufferSettings,
+    pre_tls_callback: Option<PreTlsCallback>,
 }
 
 impl UninitializedStream {
     pub async fn handshake(mut self) -> Result<Stream> {
-        self.l4.set_buffer();
-        // ★ ★ 枢衡改动 12：PROXY 头在这里读 —— **TLS 握手之前**。
-        //   ⚠ 位置不能挪到 `accept()` 里：那条路是**串行的接受循环**，
-        //     在那儿等一个慢客户端会把整个监听器堵住。这里已经是 per-connection
-        //     的 spawn，而且上层还包了一个 60s 的 timeout。
-        if let Some(policy) = self.proxy_protocol.take() {
-            read_proxy_protocol(&mut self.l4, policy.as_ref()).await?;
+        self.l4.set_buffer(self.l4_buffer);
+        // ★ 枢衡改动 12（形状 B，2026-09-24）：pre-TLS 回调挪到 TLS 分支**之前** ⇒ 明文端口也调。
+        //   上游 600c5c0 有意把它收进了 TLS 分支，而枢衡的明文端口同样要收 PROXY 头
+        //   （tests/proxyproto 的主场景就是明文 9800）。读取逻辑在 fulcrum-server，见 FORK.md §12。
+        if let Some(ref callback) = self.pre_tls_callback {
+            callback.process(&mut self.l4).await?;
         }
         if let Some(tls) = self.tls {
             let tls_stream = tls.tls_handshake(self.l4).await?;
@@ -438,8 +401,7 @@ pub struct Listeners {
     stacks: Vec<TransportStackBuilder>,
     #[cfg(feature = "connection_filter")]
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
-    /// ★ 枢衡改动 12。
-    proxy_protocol: Option<Arc<dyn ProxyProtocolPolicy>>,
+    pre_tls_callback: Option<PreTlsCallback>,
     /// ★ 枢衡改动 15。
     connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
@@ -451,7 +413,7 @@ impl Listeners {
             stacks: vec![],
             #[cfg(feature = "connection_filter")]
             connection_filter: None,
-            proxy_protocol: None,
+            pre_tls_callback: None,
             connection_counter: None,
         }
     }
@@ -482,18 +444,22 @@ impl Listeners {
 
     /// Add a TCP endpoint to `self`.
     pub fn add_tcp(&mut self, addr: &str) {
-        self.add_address(ServerAddress::Tcp(addr.into(), None));
+        self.add_listener(ListenerConfig::tcp(addr));
     }
 
     /// Add a TCP endpoint to `self`, with the given [`TcpSocketOptions`].
     pub fn add_tcp_with_settings(&mut self, addr: &str, sock_opt: TcpSocketOptions) {
-        self.add_address(ServerAddress::Tcp(addr.into(), Some(sock_opt)));
+        self.add_listener(ListenerConfig::tcp(addr).tcp_socket_options(sock_opt));
     }
 
     /// Add a Unix domain socket endpoint to `self`.
     #[cfg(unix)]
     pub fn add_uds(&mut self, addr: &str, perm: Option<Permissions>) {
-        self.add_address(ServerAddress::Uds(addr.into(), perm));
+        let endpoint = perm.map_or_else(
+            || ListenerConfig::uds(addr),
+            |perm| ListenerConfig::uds(addr).permissions(perm),
+        );
+        self.add_listener(endpoint);
     }
 
     /// Add a TLS endpoint to `self` with the [Mozilla Intermediate](https://wiki.mozilla.org/Security/Server_Side_TLS#Intermediate_compatibility_.28recommended.29)
@@ -511,12 +477,24 @@ impl Listeners {
         sock_opt: Option<TcpSocketOptions>,
         settings: TlsSettings,
     ) {
-        self.add_endpoint(ServerAddress::Tcp(addr.into(), sock_opt), Some(settings));
+        let mut endpoint = ListenerConfig::tcp(addr).tls(settings);
+        if let Some(sock_opt) = sock_opt {
+            endpoint = endpoint.tcp_socket_options(sock_opt);
+        }
+        self.add_listener(endpoint);
     }
 
     /// Add the given [`ServerAddress`] to `self`.
     pub fn add_address(&mut self, addr: ServerAddress) {
         self.add_endpoint(addr, None);
+    }
+
+    /// The configured bind addresses, using the keys expected by transferred listening fds.
+    pub fn addresses(&self) -> Vec<String> {
+        self.stacks
+            .iter()
+            .map(|stack| stack.l4.as_ref().to_string())
+            .collect()
     }
 
     /// Set a connection filter for all endpoints in this listener collection
@@ -533,20 +511,53 @@ impl Listeners {
         }
     }
 
-    /// ★ 枢衡改动 12：给**所有**端点（已有的与之后加的）设 PROXY protocol 的收取策略。
+    /// Add the given listener endpoint to `self`.
+    pub fn add_listener(&mut self, endpoint: ListenerConfig) {
+        let ListenerConfig { l4, tls, l4_buffer } = endpoint;
+        self.stacks.push(TransportStackBuilder {
+            l4,
+            tls,
+            l4_buffer,
+            #[cfg(feature = "connection_filter")]
+            connection_filter: self.connection_filter.clone(),
+            pre_tls_callback: self.pre_tls_callback.clone(),
+            // ★ 枢衡改动 15：0.9.0 的 add_tcp / add_uds / add_tls_with_settings 都走这里。
+            connection_counter: self.connection_counter.clone(),
+        });
+    }
+
+    /// Set a pre-TLS callback for all endpoints in this listener collection.
     ///
-    /// ⚠ ⚠ 它是**全局**的，与 `set_connection_filter` 同一个形状，而这不是省事：
-    /// 收不收 PROXY 头是**连接级**判断 —— 一条连接上还没有 Host，还不知道会落到哪个站点。
-    pub fn set_proxy_protocol(&mut self, policy: Arc<dyn ProxyProtocolPolicy>) {
-        self.proxy_protocol = Some(policy.clone());
+    /// The callback will be invoked after TCP accept but before the TLS handshake,
+    /// allowing the application to read and process data such as PROXY protocol
+    /// headers that arrive before TLS.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use pingora_core::listeners::{Listeners, PreTlsProcess};
+    /// use std::sync::Arc;
+    ///
+    /// let callback = Arc::new(MyProxyProtocolHandler::new());
+    /// let mut listeners = Listeners::new();
+    /// listeners.set_pre_tls_callback(callback);
+    /// listeners.add_tls("0.0.0.0:443", "cert.pem", "key.pem")?;
+    /// ```
+    pub fn set_pre_tls_callback(&mut self, callback: PreTlsCallback) {
+        log::debug!("Setting pre-TLS callback on Listeners");
+
+        // Store the callback for future endpoints
+        self.pre_tls_callback = Some(callback.clone());
+
+        // Apply to existing stacks
         for stack in &mut self.stacks {
-            stack.proxy_protocol = Some(policy.clone());
+            stack.pre_tls_callback = Some(callback.clone());
         }
     }
 
     /// ★ 枢衡改动 15：给**所有**端点（已有的与之后加的）设连接计数器。
     ///
-    /// ⚠ 与 `set_proxy_protocol` 及上游自己的 `set_connection_filter` 同一个形状，
+    /// ⚠ 与上游自己的 `set_connection_filter` / `set_pre_tls_callback` 同一个形状，
     /// 而这不是省事：连接计数是**连接级**的 —— 一条连接上还没有 Host，
     /// 还不知道它会落到哪个站点。
     ///
@@ -559,14 +570,15 @@ impl Listeners {
         }
     }
 
-    /// Add the given [`ServerAddress`] to `self` with the given [`TlsSettings`] if provided
+    /// Add the given [`ServerAddress`] to `self` with the given [`TlsSettings`] if provided.
     pub fn add_endpoint(&mut self, l4: ServerAddress, tls: Option<TlsSettings>) {
         self.stacks.push(TransportStackBuilder {
             l4,
             tls,
+            l4_buffer: L4BufferSettings::default(),
             #[cfg(feature = "connection_filter")]
             connection_filter: self.connection_filter.clone(),
-            proxy_protocol: self.proxy_protocol.clone(),
+            pre_tls_callback: self.pre_tls_callback.clone(),
             connection_counter: self.connection_counter.clone(),
         })
     }
@@ -604,7 +616,268 @@ mod test {
     #[cfg(feature = "any_tls")]
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
-    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn test_listen_tcp() {
+        let mut listeners = Listeners::tcp("127.0.0.1:0");
+        listeners.add_tcp("127.0.0.1:0");
+
+        let listeners = listeners
+            .build(
+                #[cfg(unix)]
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(listeners.len(), 2);
+        let addrs: Vec<_> = listeners
+            .iter()
+            .map(|s| s.l4.local_addr().unwrap())
+            .collect();
+        for listener in listeners {
+            tokio::spawn(async move {
+                // just try to accept once
+                let stream = listener.accept().await.unwrap();
+                stream.handshake().await.unwrap();
+            });
+        }
+
+        // The listeners are already bound (port resolved during build()),
+        // so the kernel accepts connections into the backlog immediately.
+        // No readiness wait needed — connect will succeed as soon as the
+        // OS has completed the TCP handshake.
+        TcpStream::connect(addrs[0]).await.unwrap();
+        TcpStream::connect(addrs[1]).await.unwrap();
+    }
+
+    #[test]
+    fn test_add_listener_config_tcp_l4_buffer() {
+        let mut listeners = Listeners::new();
+        let tcp_options = TcpSocketOptions {
+            dscp: Some(10),
+            ..Default::default()
+        };
+        let l4_buffer = L4BufferSettings {
+            read: Some(0),
+            write: None,
+        };
+
+        listeners.add_listener(
+            ListenerConfig::tcp("127.0.0.1:7107")
+                .tcp_socket_options(tcp_options)
+                .l4_buffer(l4_buffer),
+        );
+
+        assert_eq!(listeners.stacks.len(), 1);
+        assert_eq!(listeners.stacks[0].l4_buffer, l4_buffer);
+        assert_eq!(listeners.stacks[0].l4_buffer.read_capacity(), 0);
+        assert_eq!(
+            listeners.stacks[0].l4_buffer.write_capacity(),
+            DEFAULT_L4_WRITE_BUFFER_SIZE
+        );
+
+        match &listeners.stacks[0].l4 {
+            ServerAddress::Tcp(addr, Some(options)) => {
+                assert_eq!(addr, "127.0.0.1:7107");
+                assert_eq!(options.dscp, Some(10));
+            }
+            other => panic!("unexpected listener address: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_add_listener_config_uds_l4_buffer() {
+        let mut listeners = Listeners::new();
+        let l4_buffer = L4BufferSettings::unbuffered();
+
+        listeners.add_listener(ListenerConfig::uds("/tmp/test_builder_uds").l4_buffer(l4_buffer));
+
+        assert_eq!(listeners.stacks.len(), 1);
+        assert_eq!(listeners.stacks[0].l4_buffer, l4_buffer);
+        assert_eq!(listeners.stacks[0].l4_buffer.read_capacity(), 0);
+        assert_eq!(listeners.stacks[0].l4_buffer.write_capacity(), 0);
+
+        match &listeners.stacks[0].l4 {
+            ServerAddress::Uds(addr, None) => assert_eq!(addr, "/tmp/test_builder_uds"),
+            other => panic!("unexpected listener address: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_l4_buffer_settings_defaults_per_direction() {
+        let l4_buffer = L4BufferSettings {
+            read: None,
+            write: Some(0),
+        };
+
+        assert_eq!(l4_buffer.read_capacity(), DEFAULT_L4_READ_BUFFER_SIZE);
+        assert_eq!(l4_buffer.write_capacity(), 0);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "any_tls")]
+    async fn test_listen_tls() {
+        use tokio::io::AsyncReadExt;
+
+        let addr = "127.0.0.1:7103";
+        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
+        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
+        let mut listeners = Listeners::tls(addr, &cert_path, &key_path).unwrap();
+        let listener = listeners
+            .build(
+                #[cfg(unix)]
+                None,
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        tokio::spawn(async move {
+            // just try to accept once
+            let stream = listener.accept().await.unwrap();
+            let mut stream = stream.handshake().await.unwrap();
+            let mut buf = [0; 1024];
+            let _ = stream.read(&mut buf).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
+                .await
+                .unwrap();
+        });
+        // The listener is already bound, so the kernel accepts connections
+        // into the backlog immediately. No readiness wait needed.
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
+        let res = client.get(format!("https://{addr}")).send().await.unwrap();
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "any_tls")]
+    async fn test_listen_tls_with_offload() {
+        use tokio::io::AsyncReadExt;
+
+        const REQUESTS: usize = 8;
+
+        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
+        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
+        let mut tls_settings = TlsSettings::intermediate(&cert_path, &key_path).unwrap();
+        let conf = crate::server::configuration::ServerConf {
+            downstream_tls_offload_threadpools: Some(2),
+            downstream_tls_offload_thread_per_pool: Some(2),
+            ..Default::default()
+        };
+        tls_settings.set_offload_threadpool_from_server_conf(&conf);
+
+        let mut listeners = Listeners::new();
+        listeners.add_tls_with_settings("127.0.0.1:0", None, tls_settings);
+        let listener = listeners
+            .build(
+                #[cfg(unix)]
+                None,
+            )
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let addr = listener.l4.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let mut streams = Vec::with_capacity(REQUESTS);
+            for _ in 0..REQUESTS {
+                streams.push(listener.accept().await.unwrap());
+            }
+
+            let mut responses = Vec::with_capacity(REQUESTS);
+            for stream in streams {
+                responses.push(tokio::spawn(async move {
+                    let mut stream = stream.handshake().await.unwrap();
+                    let mut buf = [0; 1024];
+                    let _ = stream.read(&mut buf).await.unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
+                        .await
+                        .unwrap();
+                }));
+            }
+
+            for response in responses {
+                response.await.unwrap();
+            }
+        });
+
+        let url = format!("https://{addr}");
+        let mut requests = Vec::with_capacity(REQUESTS);
+        for _ in 0..REQUESTS {
+            let url = url.clone();
+            requests.push(tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .build()
+                    .unwrap();
+                client.get(url).send().await.unwrap().status()
+            }));
+        }
+
+        for request in requests {
+            assert_eq!(request.await.unwrap(), reqwest::StatusCode::OK);
+        }
+        server.await.unwrap();
+    }
+
+    #[cfg(feature = "connection_filter")]
+    #[test]
+    fn test_connection_filter_inheritance() {
+        #[derive(Debug, Clone)]
+        struct TestFilter {
+            counter: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ConnectionFilter for TestFilter {
+            async fn should_accept(&self, _addr: Option<&std::net::SocketAddr>) -> bool {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+        }
+
+        let mut listeners = Listeners::new();
+
+        // Add an endpoint before setting filter
+        listeners.add_tcp("127.0.0.1:7104");
+
+        // Set the connection filter
+        let filter = Arc::new(TestFilter {
+            counter: Arc::new(AtomicUsize::new(0)),
+        });
+        listeners.set_connection_filter(filter.clone());
+
+        // Add endpoints after setting filter
+        listeners.add_tcp("127.0.0.1:7105");
+        #[cfg(feature = "any_tls")]
+        {
+            // Only test TLS if the feature is enabled
+            if let Ok(tls_settings) = TlsSettings::intermediate(
+                &format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR")),
+                &format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR")),
+            ) {
+                listeners.add_tls_with_settings("127.0.0.1:7106", None, tls_settings);
+            }
+        }
+
+        // Verify all stacks have the filter (only when feature is enabled)
+        for stack in &listeners.stacks {
+            assert!(
+                stack.connection_filter.is_some(),
+                "All stacks should have the connection filter set"
+            );
+        }
+    }
 
     /// ★ 枢衡改动 15 的回归守卫（手法照改动 13：**长在上游自己的测试模块里**）。
     ///
@@ -734,127 +1007,5 @@ mod test {
             "`services/listening.rs` 里那个连接守卫没被移进任务、或没绑名字 ⇒ \
              active 会恒为 0 而 total 照涨，且不会有任何东西报错"
         );
-    }
-
-    #[tokio::test]
-    async fn test_listen_tcp() {
-        let addr1 = "127.0.0.1:7101";
-        let addr2 = "127.0.0.1:7102";
-        let mut listeners = Listeners::tcp(addr1);
-        listeners.add_tcp(addr2);
-
-        let listeners = listeners
-            .build(
-                #[cfg(unix)]
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(listeners.len(), 2);
-        for listener in listeners {
-            tokio::spawn(async move {
-                // just try to accept once
-                let stream = listener.accept().await.unwrap();
-                stream.handshake().await.unwrap();
-            });
-        }
-
-        // make sure the above starts before the lines below
-        sleep(Duration::from_millis(10)).await;
-
-        TcpStream::connect(addr1).await.unwrap();
-        TcpStream::connect(addr2).await.unwrap();
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "any_tls")]
-    async fn test_listen_tls() {
-        use tokio::io::AsyncReadExt;
-
-        let addr = "127.0.0.1:7103";
-        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-        let mut listeners = Listeners::tls(addr, &cert_path, &key_path).unwrap();
-        let listener = listeners
-            .build(
-                #[cfg(unix)]
-                None,
-            )
-            .await
-            .unwrap()
-            .pop()
-            .unwrap();
-
-        tokio::spawn(async move {
-            // just try to accept once
-            let stream = listener.accept().await.unwrap();
-            let mut stream = stream.handshake().await.unwrap();
-            let mut buf = [0; 1024];
-            let _ = stream.read(&mut buf).await.unwrap();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
-                .await
-                .unwrap();
-        });
-        // make sure the above starts before the lines below
-        sleep(Duration::from_millis(10)).await;
-
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap();
-
-        let res = client.get(format!("https://{addr}")).send().await.unwrap();
-        assert_eq!(res.status(), reqwest::StatusCode::OK);
-    }
-
-    #[cfg(feature = "connection_filter")]
-    #[test]
-    fn test_connection_filter_inheritance() {
-        #[derive(Debug, Clone)]
-        struct TestFilter {
-            counter: Arc<AtomicUsize>,
-        }
-
-        #[async_trait]
-        impl ConnectionFilter for TestFilter {
-            async fn should_accept(&self, _addr: Option<&std::net::SocketAddr>) -> bool {
-                self.counter.fetch_add(1, Ordering::SeqCst);
-                true
-            }
-        }
-
-        let mut listeners = Listeners::new();
-
-        // Add an endpoint before setting filter
-        listeners.add_tcp("127.0.0.1:7104");
-
-        // Set the connection filter
-        let filter = Arc::new(TestFilter {
-            counter: Arc::new(AtomicUsize::new(0)),
-        });
-        listeners.set_connection_filter(filter.clone());
-
-        // Add endpoints after setting filter
-        listeners.add_tcp("127.0.0.1:7105");
-        #[cfg(feature = "any_tls")]
-        {
-            // Only test TLS if the feature is enabled
-            if let Ok(tls_settings) = TlsSettings::intermediate(
-                &format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR")),
-                &format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR")),
-            ) {
-                listeners.add_tls_with_settings("127.0.0.1:7106", None, tls_settings);
-            }
-        }
-
-        // Verify all stacks have the filter (only when feature is enabled)
-        for stack in &listeners.stacks {
-            assert!(
-                stack.connection_filter.is_some(),
-                "All stacks should have the connection filter set"
-            );
-        }
     }
 }

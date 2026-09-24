@@ -59,8 +59,8 @@ owner 拍板时因此附了一条强制条件：**这件事必须先做 spike，
 | [`mainpid-handover.sh`](../../tests/m1/mainpid-handover.sh) | G31 推断的形状（`ExitType=main` + 交接） | 它**为什么被否掉** |
 
 ★ 后两个脚本复现的是**坏行为**，所以它们的绿 = 坏行为照常发生 —— 与
-[`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) 同类。它们红了的含义是「行为变了」，
-不是「测试坏了」。
+[`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) 原先同类（它 2026-09-24 rebase 到 pingora 0.9.0 后已反写成验修复）。
+它们红了的含义是「行为变了」，不是「测试坏了」。
 
 # 2. ★ ★ ★ 最值钱的一条：交接 MainPID 会**悄悄弄丢优雅停机**
 
@@ -69,7 +69,7 @@ owner 拍板时因此附了一条强制条件：**这件事必须先做 spike，
 | 口径 | 老代退出后 unit | `systemctl stop` |
 |---|---|---|
 | 交接 MainPID（**G31 推断的形状**）| `active` ✅ | ★ **0 秒，`failed (signal)`** ❌ |
-| **`ExitType=cgroup`，不交接** | `active` ✅ | **10 秒走完排空，`success`** ✅ |
+| **`ExitType=cgroup`，不交接** | `active` ✅ | **10 秒走完排空，`success`** ✅（0.8.1 时；0.9.0 下 5 秒，见 §3）|
 | 两者都用 | `active` ✅ | ★ **0 秒，`failed (signal)`** ❌ |
 
 **机制**：交接过去的 pid 不是 systemd 亲生的（它是老进程 fork 出来的），systemd 会打一句
@@ -126,9 +126,15 @@ reparent 给 PID 1（也就是 systemd 自己），SIGKILL 掉它之后 systemd 
 
 ★ **停机耗时的下界也是判据**：`stop` 若秒回，说明它压根没等排空，那「`TimeoutStopSec` 要按
 排空时长配」这条结论就是假的——而秒回恰恰就是交接方案的失败形状。
-实测 10 秒 = `grace_period_seconds`(5) + `graceful_shutdown_timeout_seconds`(5)，与公式吻合。
+0.8.1 时实测 10 秒 = `grace_period_seconds`(5) + `graceful_shutdown_timeout_seconds`(5)，当时记成「与公式吻合」——
+⚠ **那是碰巧吻合**：0.8.1 等完各 runtime 之后还要再 `sleep(graceful)` 一次，而 runtime 本身几乎是立刻退出的
+⇒ 10 秒里的后 5 秒全是那次多出来的 sleep，`graceful` 超时本身没用上。
+✅ 2026-09-24 rebase 到 0.9.0（上游 `6f15714` 删了那次 sleep）后实测：本场景 **5 秒** = grace(5) + runtime 退出（≈ 0）；
+产品场景（`M1_ONLY=product`，grace 30 + graceful 5）**30 秒**，预算 35。
+`run.sh` 判的是下界（≥ grace），两版下都成立。
 
 > ⚠ 产品默认配置（M0 用的 30 + 30）对应的量级是 **35–65 秒**，`TimeoutStopSec` 必须按它配。
+> ⚠ 这组数是按源码公式推的：0.8.1 下还要再加一次 graceful（真实 65–95 秒），0.9.0 起公式才与实际相符。
 > 依据见 [`tests/m0/lifecycle.sh`](../../tests/m0/lifecycle.sh) 里实测出的那张表：
 > **一旦某一代开始排空，它就收不到任何可捕获的信号了**，`systemctl stop` 之后再补一刀是没用的。
 
@@ -182,7 +188,11 @@ M0 的第二代是**从 shell 起的**，与第一代没有 fork 关系。M1 改
 
 ## 4.2 ✅ 修法（G38）与它守在哪
 
-两处都在 fork 里修掉了（`vendor/pingora` 的 [`FORK.md`](../../vendor/pingora/FORK.md) §4）：
+两处都在 fork 里修掉了（`vendor/pingora` 的 [`FORK.md`](../../vendor/pingora/FORK.md) §4）。
+✅ **2026-09-24：上游 0.9.0 已含这两处修复**（`b2b35fd`，owner 的 PR #960）⇒ fork 那处改动归零，文件整份取上游。
+`[7/9]` 三条断言**保留**（上游单测只看单个进程，看不到 fork+exec 下的逐代累加），失败提示改指上游。
+★ 反证同日重做：把 `MSG_CMSG_CLOEXEC` 改回 `empty()` ⇒ 第三代的监听 fd 重数变成 `[8080:2 8081:2 8082:2]`，`[7/9]` 当场红
+（第二代仍是 1 —— 与当年一样，累加要到第三代才显形）。
 
 | | 修法 |
 |---|---|
@@ -195,7 +205,7 @@ M0 的第二代是**从 shell 起的**，与第一代没有 fork 关系。M1 改
 ★ 它们同时是 **rebase 的守门人**：上游若未接受这两条，而 rebase 时漏了重做，它们会红。
 
 ★ **上游 0.8.1 与当前 main 都有这两处**（2026-08-14 核对过 main 的同一函数），
-且上游仓库**没有任何 issue/PR 提过 CLOEXEC**。投稿材料见
+且上游仓库**没有任何 issue/PR 提过 CLOEXEC**（后来 owner 投了 #959 / #960，已进 0.9.0）。投稿材料见
 [`upstream-pr/`](../../upstream-pr/README.md)，按 G32 的流程由 owner 本人提交。
 
 # 5. 顺带坐实与更正的几条

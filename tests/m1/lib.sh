@@ -76,7 +76,9 @@ listener_fd_profile() {
 # 某个进程持有几个指向**升级 socket** 的 fd。
 #
 # ★ 正常值恒为 0：`get_fds_from()` 里 accept 出来的那个连接用完就该关掉。
-#   实测上游（0.8.1 与 main 均）**从来不关它**——只关了 listen_fd，
+#   ★ 2026-09-24 起上游 0.9.0 已修（`b2b35fd`，owner 的 PR #960）；本判据照旧留着 ——
+#   上游单测只看单个进程，看不到 fork+exec 下的逐代累加。以下是 0.8.1 时的实测：
+#   上游（0.8.1 与当时的 main 均）**从来不关它**——只关了 listen_fd，
 #   而 accept 的返回值是裸 RawFd、没有 Drop。于是**每完成一次优雅升级就永久泄漏一个
 #   已连接的 unix socket**（`/proc/net/unix` 里 St=03 CONNECTED、路径是 upgrade.sock）。
 #   判据取 `/proc/net/unix` 的**路径列**，而不是数 fd 总数——总数会被流量、线程数干扰。

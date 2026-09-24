@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # M1 反证场景：把 `ExitType` 换回 systemd 的默认值 `main`，其余一模一样。
 #
-# ★ 它复现的是**坏行为**，所以它的绿 = 坏行为照常发生 —— 与 `tests/m0/unclaimed.sh` 同类。
+# ★ 它复现的是**坏行为**，所以它的绿 = 坏行为照常发生 —— 与 `tests/m0/unclaimed.sh` 原先同类
+#   （后者 2026-09-24 rebase 到 pingora 0.9.0 后已反写成验修复）。
 #   存在的理由有两条，都很硬：
 #
 #   1. **证明 `ExitType=cgroup` 那一行确实在干活。** 少了它，unit 会在老代退出时被判定结束，

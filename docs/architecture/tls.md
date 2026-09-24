@@ -122,6 +122,19 @@ HTTP/3 端到端场景 [`tests/h3/run.sh`](../../tests/h3/run.sh) 全程用 `--c
 ★ **「不留双路径」这条目标一个字没变** —— 恰恰是为了守住它，才取「统一到 BoringSSL」
 而不是改动面更小的「两套并存」。
 
+## ⚠ 2026-09-24 起默认带后量子密钥交换（boring 5 的默认，owner 拍了沿用）
+
+rebase 到 pingora 0.9.0 时 `boring` 从 4 升到 5。boring 4 要靠 `pq-experimental` 给 BoringSSL
+打补丁才有后量子混合组（fork 当年把它去掉了，见 [`FORK.md`](../../vendor/pingora/FORK.md) §11），
+boring 5 把那个补丁**无条件**打上 ⇒ 上面四处 BoringSSL 一起变，产品侧没写一行配置。
+
+- ⚠ 后量子组的 key share 大得多 ⇒ 用这类组的 ClientHello 在 QUIC 上一个 Initial 包装不下、会拆成多个。
+  由 [`tests/h3`](../../tests/h3/run.sh) 与 [`tests/quic-relay`](../../tests/quic-relay/run.sh) 端到端兜底：
+  两处的客户端都是 curl 8.14.1 + OpenSSL 3.5.6；在同一张镜像里实测这份 libssl 的默认组
+  （`openssl s_client` 对 `s_server`，curl 不指定 `--curves` 时用的就是它）协商出 `X25519MLKEM768`
+  ⇒ 这个客户端**本来就发**后量子 key share。★ 所以「多包 Initial」在 rebase 之前就在发生，变的只是服务端现在也会选这个组。
+- ★ 压测里 TLS 握手那一类要把四家的组**显式写成同一组**，见 [`bench/README.md`](../../bench/README.md)。
+
 ★ **一处现实差距，查了一半**：`pingora-core` 的 `default = []`，
 **rustls 后端要显式开 `features = ["rustls"]`**。M0 不碰 TLS，所以这个 feature
 **从来没有被打开过**——G6 这条决策至今在 `Cargo.toml` 里没有任何表达。

@@ -1,7 +1,8 @@
 # vendor/pingora —— 枢衡对 Pingora 的 fork
 
-> 基线：`cloudflare/pingora` **tag `0.8.1`**（commit `719ef6c`，Apache-2.0）
-> 建立：2026-08-12，依据 [`PLAN.md`](../../PLAN.md) §10 **G30**
+> 基线：`cloudflare/pingora` **tag `0.9.0`**（commit `702f690`，Apache-2.0）
+> 建立：2026-08-12（基线 `0.8.1` / `719ef6c`），依据 [`PLAN.md`](../../PLAN.md) §10 **G30**
+> ★ rebase：**2026-09-24 从 0.8.1 换到 0.9.0**（owner 当场批）—— 这次撤掉了什么、重做了什么，见下面「★ 2026-09-24：rebase 到 0.9.0」
 > 上游：https://github.com/cloudflare/pingora
 
 ## 为什么有这个 fork
@@ -16,7 +17,7 @@
 
 ## 范围
 
-★ **只保留枢衡实际用到的 8 个 crate**，不是整个上游 workspace（21 个）：
+★ **只保留枢衡实际用到的 8 个 crate**，不是整个上游 workspace（0.9.0 是 22 个成员；0.8.1 是 20 个 —— 此处原写的「21」不准）：
 
 ```
 pingora-core  pingora-error  pingora-http  pingora-pool
@@ -44,6 +45,44 @@ L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**�
 > ★ 顺带一条方法论：**「没人用了」与「该删了」是两件事。**
 > 前者说的是依赖图，后者说的是 rebase 成本 —— 而这里两者指向相反的方向。
 
+## ★ 2026-09-24：rebase 到 0.9.0
+
+**做法**：8 个 crate 整体换成官方 tag `0.9.0`（`git -c core.autocrlf=false archive` ——
+⚠ 本机全局 `core.autocrlf=true`，不加 `-c` 会导出 CRLF，每个文件都像被改过），
+再按本文件的节号**逐条**重做仍需要的改动（没有走三方合并：被上游吸收的改动会以冲突的形式回来，
+而 `offload.rs` 被上游挪了位置，补丁跟不过去）。
+
+| 节 | 结果 | 依据 |
+|---|---|---|
+| §1 `lru` / `prometheus` / `nix` 上界 | ✅ 归零 | 0.9.0：`lru = "0.18.2"`（owner 的提交 `6463ad6`）· prometheus 从 pingora-core 整条删掉（`842ddd9`）· `nix = "~0.31.1"`（`7e29246`）|
+| §1 `brotli` / `rand` / `sfv` / `x509-parser` 上界 | 重做 | 0.9.0 仍是 `3` / `0.8` / `0.10.4` / `0.16.0` |
+| §2 `nix` 调用点 | ✅ 归零 | 上游同一次迁移（`7e29246`），逐条一致 |
+| §2 `rand` / `sfv` 调用点 | 重做 | ⚠ `connectors/offload.rs` 被上游挪成 `pingora-core/src/offload.rs`（`8aeef34`），在新位置重做 |
+| §3 `derivative` → `educe` | 重做 | 0.9.0 仍用 derivative 2.2.0 |
+| §4 fd 卫生（① accept 出来的连接不关 · ② 没有 CLOEXEC）| ✅ 归零 | 上游 `b2b35fd`（owner 的 PR #960），并自带测试 `test_receive_does_not_leak_fds` |
+| §5 ① rustls / tokio-rustls 关 default · ③ pingora-core 的 dev-dep | ✅ 归零 | 上游 `5396a1f`（owner 的 PR #966）|
+| §5 ② `rustls-native-certs` 0.8.4 | 重做 | 0.9.0 仍是 `0.7.1` |
+| §6 迁走 `rustls-pemfile` + 18 条特征化测试 | 重做 | 三方合并零冲突 |
+| §7 `test_connect_uds` 的 `read_exact` | ✅ 归零 | 上游 `91b880d`（owner 的 PR #968）|
+| §11 `pingora-boringssl` 去掉 `pq-experimental` | ✅ 归零 | 0.9.0 已是 `boring = "5"` 且不带特性（boring 5 里 `pq-experimental` 是空特性）；quiche 0.30 放宽到 `>=4.19, <6` ⇒ 图里只有一个 boring 5.2.0 |
+| §12 PROXY protocol「收」 | **重做，换了形状（B）** | 上游新增 `PreTlsProcess`，但只在 TLS 分支里调（`600c5c0` 有意收窄）⇒ fork 只剩「把调用挪到 TLS 分支之前」几行；读取循环搬进 `crates/fulcrum-server/src/proxyproto.rs`（owner 2026-09-24 拍板）|
+| §13 h1 `body_bytes_sent` | ✅ 归零 | 上游 `e7de90a`，语义与我们一致，还自带更强的测试 `body_bytes_sent_excludes_response_header` |
+| §14 `SslDigest` 的 `sni` / `alpn` | 重做 | 两个文件三方合并零冲突 |
+| §15 连接计数接缝 | 重做 | ⚠ 0.9.0 新增构造点 `add_listener()`（`add_tcp` / `add_uds` / `add_tls_with_settings` 都走它）⇒ 那里也复制了 `connection_counter`；⛔ 填 `None` 能编过，但之后加的端口会静默不计数 |
+| **新增：裁掉 dial9** | 新 | 删 pingora-core 的 `dial9*` 三个特性与 pingora-runtime 的两个可选依赖（`dial9-tokio-telemetry`、`aws-sdk-s3`）。vendor 锁会记下成员 crate 的**全部**可选依赖，而 aws-sdk-s3 的默认特性拉进 aws-lc-rs ⇒ `crates/fulcrum/tests/supply_gates.rs` 门 1 红。★ 反证实测：保留 dial9 时 vendor 锁多出 aws-lc-rs / aws-lc-sys / aws-sdk-s3 等，387 → 544 个包。★ 删掉的特性名（连同第 4 步删的 openssl / s2n）凡源码里仍有 `cfg` 引用的，登记进 workspace 清单 `[workspace.lints.rust]` 的 `check-cfg`，`pingora-core` 接上 `[lints] workspace = true` —— 不登记时每次编译 58 条 `unexpected_cfgs` 警告（实测：`LINT_ONLY` 58 → 0；`--features s2n` 仍报「没有这个特性」）|
+
+**结果**：fork 相对官方 0.9.0 改动 **14 个文件**（相对 0.8.1 时是 19 个），清单见文末「怎么核对」。
+**判据**：vendor 回归网的失败集合与官方 0.9.0 在同款容器里逐项相同（官方 0.9.0：19 个二进制 735 过 / 1 败，
+败的只有宿主机相关那条 ⇒ `tests/vendor/run.sh` 的 `EXPECTED_FAILURES` 清空）；fork 多出的 20 条是本 fork 自己的测试
+（§6 的 18 条 + §15 的 2 条）。
+
+**0.9.0 带来的、本 fork 之外的变化**（产品侧已适配或接受）：`ListenFds` 换成 parking_lot 锁（产品三处 + spike 三处
+fd 表取用改成短持锁）· 新一代关掉未认领的继承 fd（`f82478a`；产品与 spike 的自建服务都实现了 `listen_addresses()`，
+`tests/m0/unclaimed.sh` 反写成「修好了」）· 上游空闲连接池改成全局 LRU（反代 `Connector` 显式给 `128 × threads_l7`）·
+boring 5 默认开后量子密钥交换 · quiche 0.30 · HTTP/1 / HTTP/2 入口若干新拒绝 · h2 入口默认上限收紧到每连接 100 条流 /
+头部表 64 KiB（`90890bb`；枢衡没覆写 `h2_options()`，owner 2026-09-24 拍了接受）· 停机时 h2 已收到的流会处理完（`aece993`）
+（后三条见 `docs/architecture/data-path.md`，后量子那条见 `docs/architecture/tls.md`）。
+
 ## 改了什么
 
 ★ **改动的意图严格限定为「放宽版本上界 + 随之而来的调用点适配」。**
@@ -52,6 +91,9 @@ L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**�
 **教训不是「当时不够小心」，是「当时没有能发现它的东西」**——编译过、M0 七跑全绿，而那条 bug 一直在。
 
 ### 1. 版本上界（`Cargo.toml` × 3）
+
+> ★ 2026-09-24（0.9.0）：`lru` / `prometheus` / `nix` 三行**已归零**（0.9.0 自己就是这几个值，或把依赖整条删了）；
+> `brotli` / `rand` / `sfv` / `x509-parser` 四行照旧重做。下表是 0.8.1 时的原样，留作出处。
 
 | 依赖 | 上游 0.8.1 | fork | 动机 |
 |---|---|---|---|
@@ -89,6 +131,9 @@ L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**�
 ★ ★ **还原不改变任何源码**：这四条升级当初就没有产生调用点适配（升级后签名未变），所以还原是纯清单编辑。fork 相对官方原版的全部改动只有 **12 个文件**（2026-08-14 实测，G41 之后），可用下面「怎么核对」一节的命令随时重算。
 
 ### 2. 调用点适配（12 处，3 个文件）
+
+> ★ 2026-09-24（0.9.0）：`nix` 那部分**已归零**（上游同一次迁移，`7e29246`）；`rand` / `sfv` 部分重做 ——
+> ⚠ `connectors/offload.rs` 被上游挪成了 `pingora-core/src/offload.rs`（`8aeef34`），改动在新位置。
 
 **`nix` 0.24 → 0.31**（`server/transfer_fd/mod.rs`、`protocols/l4/stream.rs`）
 
@@ -136,6 +181,10 @@ L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**�
 ★ ★ **连带白赚一个**：`syn 1.0.109` 一起消失了——`derivative` 是整个依赖图里**唯一**还要 `syn ^1` 的包。
 
 ### ★ 4. fd 卫生：`get_fds_from()` 的两处泄漏（2026-08-14，M1 spike 实测发现）
+
+> ✅ **2026-09-24 已归零**：上游 0.9.0 含 `b2b35fd`（owner 的 PR #960），`transfer_fd/mod.rs` 整份取上游，
+> 上游还自带 `test_receive_does_not_leak_fds`。⚠ `tests/m1/run.sh` [7/9] 那三条断言**保留**：上游单测只看单个进程，
+> 看不到 fork+exec 下的逐代累加 —— 只是提示文字改指上游。
 
 ★ **这是 fork 里唯一一处主动改变运行时行为的改动**（其余都是版本上界与随之而来的适配）。
 ★ 2026-08-14 补注：§5 的 rustls 那组**不属于**这一类——它是清单 feature 修正加一处
@@ -192,6 +241,8 @@ L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**�
 
 #### ① 两处清单：`default-features = false`（aws-lc-rs 被无谓编进产物）
 
+> ✅ 2026-09-24 已归零（上游 `5396a1f`，owner 的 PR #966）。
+
 上游写的是 `rustls = { version = "0.23.12", features = ["ring"] }`，**没有关掉默认 feature**。
 而 `rustls 0.23` 的 `default` 是 `["aws_lc_rs", "logging", "prefer-post-quantum", "std", "tls12"]`，
 `tokio-rustls 0.26` 的 `default` 是 `["logging", "tls12", "aws_lc_rs"]`——**两扇门，都通向 aws-lc-rs**。
@@ -232,6 +283,8 @@ L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**�
 所以最终依赖图是 **174**，不是 173。
 
 #### ★ ★ ★ ③ 第三扇门：`pingora-core` 自己的 dev-dependency（2026-08-19，G45）
+
+> ✅ 2026-09-24 已归零（同 `5396a1f`）。
 
 **G41 只关了两扇。第三扇是上游 PR [#966](https://github.com/cloudflare/pingora/pull/966) 的
 Codex 复审提出来的**（P2），实测属实，而且**比它说的更宽**。
@@ -316,6 +369,9 @@ pki-types 的 `(SectionKind, Vec<u8>)` 迭代器**会**把它交出来，于是
 ★ 第一条同时证明了**照直迁移确实会改变行为**——白名单不是多余的谨慎。
 
 ### ★ 7. 一条 flaky 测试的根因：短读（2026-08-19）
+
+> ✅ 2026-09-24 已归零：上游 0.9.0 含 `91b880d`（owner 的 PR #968）。⚠ 同一条测试的另一个原因（#998 的 TOCTOU）
+> 在 0.9.0 里形状没变，照旧由 `tests/vendor/run.sh` 的重跑逻辑管。
 
 `connectors::tests::test_connect_uds` 会**间歇性**失败。它不是环境问题，是测试自己写错了：
 
@@ -524,6 +580,11 @@ provider 的选择仍然只由本 crate 的清单决定」。
 
 #### ★ 唯一的改动：去掉上游的 `boring/pq-experimental`
 
+> ✅ **2026-09-24 已归零**：0.9.0 的清单是 `boring = "5"` 且不带特性（boring 5 里 `pq-experimental` 是空特性，
+> PQ 补丁无条件打上）⇒ 这个 crate 在 fork 里**零改动**。⚠ 下面「与 G30 相反的上界纪律」（钉在 `^4`）一并作废：
+> quiche 0.30 接 `>=4.19, <6`，三个消费者统一到 boring 5.2.0。⚠ 下文「`SSL_use_second_keyshare` 只有打补丁才存在」
+> 一句存疑：2026-09-24 的调研在本机 boring-sys 4.22.0 源码（含补丁与 deps/boringssl）里没搜到这个符号。
+
 上游写的是 `boring = { version = "4.5", features = ["pq-experimental"] }`。
 ⚠ ⚠ **那个 feature 不是一个开关，它会让 `boring-sys` 给 BoringSSL 源码打一个补丁**
 （`boring-sys-4.22.0/build/main.rs`：`apply_patch(config, "boring-pq.patch")`，
@@ -573,6 +634,12 @@ G30 的口径是拆掉那些把传递依赖钉在旧版上的上界；这一条�
 `-D warnings` 只作用于 clippy 直接 lint 的那个 crate，vendor 作为依赖被普通 rustc 编译。
 
 ### ★ ★ ★ 12. 加了一条能力：PROXY protocol 的「收」接缝（2026-08-27，M2 批 L 第 ① 步）
+
+> ★ ★ **2026-09-24（0.9.0）换了形状（B，owner 拍板）**：上游 0.9.0 自己加了 `PreTlsProcess`（`600c5c0`），
+> 但有意只在 TLS 分支里调 ⇒ fork 只剩 `listeners/mod.rs` 的 `handshake()` 里「把回调挪到 TLS 分支之前」几行；
+> trait、读循环、换 digest、setter、四个字段**都不在 fork 里了**。读取逻辑在
+> `crates/fulcrum-server/src/proxyproto.rs`（`PreTlsProcess` 实现，6 条真 socket 单测）。
+> 下文描述的是 0.8.1 时的形状，留作出处。**归零条件改为：上游让 pre-TLS 回调在明文端口也调。**
 
 **上游完全不支持 PROXY protocol**（全库零命中，2026-08-24 核过）。
 枢衡要在 **HTTP 面**收它，而唯一正确的位置是**拿到裸 `L4Stream`、TLS 握手之前**的那一处
@@ -633,6 +700,9 @@ G30 的口径是拆掉那些把传递依赖钉在旧版上的上界；这一条�
 ⇒ 这里如实写：**没有已知的归零路径**，它就是一项要跟着 rebase 的常年成本。
 
 ### ★ ★ ★ 13. 一处缺陷修复：h1 的 `body_bytes_sent` 把响应头也数了进去（2026-08-27，M2 批 L 第 ② 步）
+
+> ✅ 2026-09-24 已归零：上游 `e7de90a` 修了同一个缺陷，语义与我们一致（h1 与 h2 都不计响应头），
+> 并自带 `body_bytes_sent_excludes_response_header`。
 
 **这一处属「缺陷修复」那一类**（与改动 4「fd 卫生」、改动 7「短读根因」同类），
 **不是「加能力」** —— 它让一个函数**符合它自己的文档**。
@@ -768,6 +838,10 @@ self.body_bytes_sent += write_buf.len();
 
 ### ★ ★ ★ 15. 加了一条能力：连接计数接缝（2026-09-03，M2 批 O）
 
+> ★ 2026-09-24（0.9.0）重做：⚠ 0.9.0 新增构造点 `add_listener()`，`add_tcp` / `add_uds` / `add_tls_with_settings`
+> 都走它 ⇒ 那里也复制 `connection_counter`（填 `None` 能编过，但之后加的端口静默不计数）；
+> `services/listening.rs` 的 import 与 0.9.0 新加的 `ListenerConfig` 并列。
+
 **上游没有任何按监听器统计连接数的出口**：`Service::run_endpoint` 那条 accept 循环
 把连接直接 spawn 出去，`TransportStack` 是 `pub(crate)`，外部够不到那一刻。
 枢衡要的是 `fulcrum_connections_total` / `fulcrum_connections_active{listen,entrypoint}`
@@ -851,6 +925,9 @@ self.body_bytes_sent += write_buf.len();
 
 ### 9. 没有动的一个：`daemonize`
 
+> ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 随 daemonize
+> 一起离开两把锁，`tools/supply-audit.py` 里那条豁免已删。下文是当时的权衡，留作出处。
+
 ★ **`daemonize` 原样保留，这是一个经过权衡的决定，不是遗漏。**
 
 它的问题同样是**失维**（RUSTSEC-2025-0069）而非陈旧——**没有更新的版本可升**。但与 `derivative` 不同，它做的是**特权丢弃**（`setuid` / `setgid` / `initgroups` / `chown_pid_file`），换掉它的三条路都不划算：
@@ -908,9 +985,13 @@ self.body_bytes_sent += write_buf.len();
 #    此前这里只 diff 了 pingora-core 一个目录，于是 pingora-runtime 的两个文件
 #    （它自己的结论段里明明列着）与 workspace Cargo.toml 结构上都看不见。
 #    「改了哪些文件」这种问题，判据的覆盖面必须等于被问的范围。
-git clone --depth 1 --branch 0.8.1 https://github.com/cloudflare/pingora /tmp/stock   # 719ef6c
+#    ★ 2026-09-24 更正：这里原先只列了 7 个 crate，**漏了 G104 加回来的 pingora-boringssl** ——
+#      正是上面那句话说的形状，于是 §11 的改动文件结构上看不见。现在是 8 个。
+#    ⚠ 本机全局 core.autocrlf=true：在 Windows 上导出上游树必须 `-c core.autocrlf=false`，
+#      否则导出的是 CRLF，每个文件都会被比成「有改动」。
+git clone --depth 1 --branch 0.9.0 https://github.com/cloudflare/pingora /tmp/stock   # 702f690
 for c in pingora-core pingora-error pingora-http pingora-pool \
-         pingora-runtime pingora-timeout pingora-rustls; do
+         pingora-runtime pingora-timeout pingora-rustls pingora-boringssl; do
   git --no-pager diff --no-index --stat "/tmp/stock/$c" "/w/vendor/pingora/$c"
 done
 git --no-pager diff --no-index --stat /tmp/stock/Cargo.toml /w/vendor/pingora/Cargo.toml
@@ -921,6 +1002,14 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 ```
 
 ### 结论
+
+> ★ **2026-09-24（相对 0.9.0）：14 个文件** —— workspace `Cargo.toml` · `pingora-core` 的 `Cargo.toml`、
+> `connectors/l4.rs`、`offload.rs`、`listeners/mod.rs`、`protocols/http/compression/mod.rs`、
+> `protocols/tls/boringssl_openssl/stream.rs`、`protocols/tls/digest.rs`、`services/listening.rs`、`upstreams/peer.rs` ·
+> `pingora-runtime` 的 `Cargo.toml`、`src/lib.rs` · `pingora-rustls` 的 `Cargo.toml`、`src/lib.rs`；
+> `pingora-error` / `pingora-http` / `pingora-pool` / `pingora-timeout` / `pingora-boringssl` 零改动。
+> 下面是 2026-08-14 相对 0.8.1 的那一版，留作出处（⚠ 那张表把 `upstreams/peer.rs` 记在 §2 下，应属 §3；
+> 到 0.8.1 后期它已经涨到 19 个文件）。
 
 **fork 相对官方原版共改动 12 个文件**（2026-08-14 用上面的命令逐 crate 实测）：
 
@@ -1057,10 +1146,26 @@ merge_base : faac65b0c2  ← 那是 0.8.0（2026-03-02）
 1. 取上游新 tag，比对本文件「改了什么」两节
 2. ★ **先看上游有没有已经自己抬了某几条**——`nix` 这一次就是白捡的
 3. 重做剩下的上界改动，逐个修调用点
-4. ★ **把 `pingora-core/Cargo.toml` 里三个没被 vendor 的 TLS 后端（openssl / boringssl / s2n）
-   连同 `[features]` 里对应三条一起删掉**——不删，任何直接对 vendor 树跑的 cargo 命令都会失败，
-   而构建时完全不显形（理由见该文件内的注释）
+4. ★ **把 `pingora-core/Cargo.toml` 里没被 vendor 的 TLS 后端（G104 之后只剩 openssl / s2n 两个）
+   连同 `[features]` 里对应两条一起删掉**——不删，任何直接对 vendor 树跑的 cargo 命令都会失败，
+   而构建时完全不显形（理由见该文件内的注释）。★ 0.9.0 起再加一组：`dial9*` 三个特性与
+   pingora-runtime 的两个可选依赖（理由见文首「rebase 到 0.9.0」一节）。
+   ★ 删完把源码里仍有 `cfg(feature = …)` 引用的那几个名字登记进 workspace 清单的 `check-cfg`
+   （现为 openssl / s2n / dial9 / dial9-worker-s3）—— 否则编得过，但每次编译刷 58 条警告，真的警告被淹掉
 5. ★ ★ **跑 `bash tests/m0/docker-run.sh`**（回归网 + M0，两层都要）
+
+★ ★ **2026-09-24 那次 rebase 补的四条**（每条都是当场踩出来的）：
+
+- **导出上游树用 `git -c core.autocrlf=false archive <tag>`**：本机全局 `autocrlf=true`，不加 `-c` 导出的是 CRLF。
+- **官方失败名单要重测**：在门禁同款容器（`fulcrum-build` 镜像 · `NET_ADMIN` · 192.0.2.0/24 DROP）里对官方新 tag 跑
+  `cargo test -p <8 个 crate> --features pingora-core/rustls --no-fail-fast`，按结果改 `tests/vendor/run.sh` 的
+  `EXPECTED_FAILURES`（两个方向都严：名单外的失败判红，名单里的「现在过了」也判红）。
+- **锁文件只增量补、逐个过怀疑期**：⛔ 不删锁重生成（那会把所有包挑到最新、绕过 G29 的 24 小时）。
+  ⚠ 根锁**不能**只跑一次 `cargo metadata` 做最小重解析：锁里钉着 path 版旧 pingora 时，cargo 会转去 crates.io
+  取**官方原版**旧版本（本次实测：官方 pingora-core 0.8.1 连同 prometheus 被拉回了依赖图）⇒ 要点名
+  `cargo update -p pingora-core -p pingora-http -p pingora-boringssl …`，再逐包核新增版本的发布时间。
+- **锁操作一律在构建镜像的一次性容器里跑**（G107）：宿主机跑 cargo 会留下 `target/.rustc_info.json`，
+  G107 那道「仓库里的 target/ 必须为空」当场拦。
 
 ★ ★ ★ **第 3 步有个必踩的坑，2026-08-12 就踩了一次**：**「改到编译通过」不等于「迁移做完了」。**
 `nix` 那一轮真正伤人的两条（`cmsg_space!` 的 `len` 语义、`.clear()` → `.fill(0)`）**编译器一个字都不会说**。
@@ -1093,6 +1198,8 @@ git -C <上游克隆> show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 ★ 这同时意味着：**下一个 tag 一发布，这几条上界改动就能归零**。
 ⚠ ⛔ 但别为此去 rebase 到 `main`：`0.8.1` 仍是最新 tag，而 `main` 与它**是 diverged 的**
 （2026-09-08 实测 ahead 190 / behind 8），本文件上文那条「别把 main 当成 tag + 更多」照旧成立。
+✅ **2026-09-24：兑现了** —— 0.9.0 发布（2026-09-09），本 fork 已 rebase 上去，那几条上界随之归零，见文首。
+⚠ 「别对齐 main」照旧成立：0.9.0 之后 main 又多了 5 个提交，本次一个都没捞。
 
 ★ **重做时先看上游有没有已经自己升了**——`nix` 与这两条都是白捡的。
 

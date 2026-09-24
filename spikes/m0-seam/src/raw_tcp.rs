@@ -54,9 +54,10 @@ async fn build_listener(
         return TcpListener::bind(bind).await;
     };
 
-    let mut table = table.lock().await;
+    // 0.9.0：ListenFds 换成 parking_lot 锁 ⇒ 守卫不许跨 `.await`，只在查表、登记两个瞬间持锁。
+    let inherited = table.lock().get(key).copied();
 
-    if let Some(&fd) = table.get(key) {
+    if let Some(fd) = inherited {
         // ── 继承路径：这一条走通，就等于证明了自建 TCP 监听器参与了 socket 移交
         log::info!("[raw-tcp] INHERITED fd={fd} for key={key}");
         // SAFETY: fd 由上一代进程经 SCM_RIGHTS 传来，此处接管其所有权，且不会被重复接管
@@ -89,7 +90,7 @@ async fn build_listener(
     // ── 首次启动路径：自己 bind，然后把 fd 放回表里，供下一代继承
     let listener = TcpListener::bind(bind).await?;
     let fd = listener.as_raw_fd();
-    table.add(key.to_string(), fd);
+    table.lock().add(key.to_string(), fd);
     log::info!("[raw-tcp] bound fresh on {bind}, registered fd={fd} as key={key}");
     Ok(listener)
 }
@@ -185,5 +186,11 @@ impl Service for TcpEchoService {
 
     fn name(&self) -> &str {
         "m0-raw-tcp"
+    }
+
+    /// pingora 0.9.0：声明本服务认领的 fd 表键 —— 于是 gen2 丢掉 raw-tcp 时，那个 fd 会被关掉
+    /// （`tests/m0/unclaimed.sh` 验的就是这件事）。⛔ 返回 `None` 会让整个进程的清理关闭。
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(vec![self.key.clone()])
     }
 }

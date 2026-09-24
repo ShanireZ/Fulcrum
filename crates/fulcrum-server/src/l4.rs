@@ -126,9 +126,11 @@ async fn build_listener(
         return TcpListener::bind(bind).await;
     };
 
-    let mut table = table.lock().await;
+    // ★ 0.9.0（上游 1d93711）：ListenFds 换成 parking_lot 锁 ⇒ 守卫不 Send、⛔ 不许跨 `.await`。
+    //   只在两个同步的瞬间持锁（查表、登记）；bind 期间不持锁 —— 每个服务的键独占，不需要按地址串行。
+    let inherited = table.lock().get(key).copied();
 
-    if let Some(&fd) = table.get(key) {
+    if let Some(fd) = inherited {
         info!("[l4] 继承了监听 fd={fd}（{key}）—— 升级窗口内这个端口没有重新 bind 过");
         // SAFETY: fd 由上一代经 SCM_RIGHTS 传来，此处接管其所有权，且同一个键只取用一次。
         //
@@ -155,7 +157,7 @@ async fn build_listener(
 
     let listener = TcpListener::bind(bind).await?;
     let fd = listener.as_raw_fd();
-    table.add(key.to_string(), fd);
+    table.lock().add(key.to_string(), fd);
     info!("[l4] 监听 {bind}（TCP 透传），fd={fd} 已登记为 {key}，下一代继承得到");
     Ok(listener)
 }
@@ -330,7 +332,9 @@ thread_local! {
 fn peek_ctx() -> Option<&'static SslContext> {
     static CTX: OnceLock<Option<SslContext>> = OnceLock::new();
     CTX.get_or_init(|| {
-        let mut b = match SslContextBuilder::new(SslMethod::tls_server()) {
+        // ★ boring 5 删了 `SslMethod::tls_server()` ⇒ 用 `tls()`；这个 ctx 只经 `SslStream::accept()` 用，
+        //   而 accept 自己把 SSL 设成服务端模式 ⇒ 行为不变。
+        let mut b = match SslContextBuilder::new(SslMethod::tls()) {
             Ok(b) => b,
             Err(e) => {
                 error!("[l4] 建不出预读用的 SSL_CTX：{e}");
@@ -807,6 +811,13 @@ impl Service for TcpProxyService {
     fn name(&self) -> &str {
         &self.name
     }
+
+    /// pingora 0.9.0（上游 `f82478a`）：新一代据此关掉「没有任何服务认领」的继承 fd。
+    /// ⚠ 必须是 fd 表的**键**（带前缀），⛔ 不是 bind 地址 —— 写成地址，新一代会先关掉自己要继承的
+    ///   那个 fd；不实现（缺省 `None`）会让**整个进程**的清理静默关闭。钉在单测 `*_服务声明的正是它的_fd_表键`。
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(vec![self.fd_key.clone()])
+    }
 }
 // ══════════════════════════════════════════════════════════════════════════
 // UDP 透传（M2 批 B）
@@ -1008,9 +1019,11 @@ async fn build_udp_listener(
         return UdpSocket::bind(bind).await;
     };
 
-    let mut table = table.lock().await;
+    // ★ 0.9.0（上游 1d93711）：ListenFds 换成 parking_lot 锁 ⇒ 守卫不 Send、⛔ 不许跨 `.await`。
+    //   只在两个同步的瞬间持锁（查表、登记）；bind 期间不持锁 —— 每个服务的键独占，不需要按地址串行。
+    let inherited = table.lock().get(key).copied();
 
-    if let Some(&fd) = table.get(key) {
+    if let Some(fd) = inherited {
         info!("[l4] 继承了 UDP 监听 fd={fd}（{key}）—— 升级窗口内这个端口没有重新 bind 过");
         // SAFETY: fd 由上一代经 SCM_RIGHTS 传来，此处接管其所有权，且同一个键只取用一次。
         // ★ ManuallyDrop 的理由与 TCP 那一份完全相同：提前析构会 `close(fd)`，
@@ -1032,7 +1045,7 @@ async fn build_udp_listener(
 
     let sock = UdpSocket::bind(bind).await?;
     let fd = sock.as_raw_fd();
-    table.add(key.to_string(), fd);
+    table.lock().add(key.to_string(), fd);
     info!("[l4] 监听 {bind}（UDP 透传），fd={fd} 已登记为 {key}，下一代继承得到");
     Ok(sock)
 }
@@ -1257,6 +1270,13 @@ impl Service for UdpProxyService {
     fn name(&self) -> &str {
         &self.name
     }
+
+    /// pingora 0.9.0（上游 `f82478a`）：新一代据此关掉「没有任何服务认领」的继承 fd。
+    /// ⚠ 必须是 fd 表的**键**（带前缀），⛔ 不是 bind 地址 —— 写成地址，新一代会先关掉自己要继承的
+    ///   那个 fd；不实现（缺省 `None`）会让**整个进程**的清理静默关闭。钉在单测 `*_服务声明的正是它的_fd_表键`。
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(vec![self.fd_key.clone()])
+    }
 }
 
 /// ClientHello 预读的单测。**全部脱网**：客户端那一半也走内存传输。
@@ -1298,7 +1318,7 @@ mod peek_tests {
 
     /// 用 **BoringSSL 自己**造一个真的 ClientHello 出来。
     fn real_client_hello(sni: Option<&str>, alpn: &[&[u8]]) -> Vec<u8> {
-        let mut b = SslContextBuilder::new(SslMethod::tls_client()).expect("建不出客户端 ctx");
+        let mut b = SslContextBuilder::new(SslMethod::tls()).expect("建不出客户端 ctx");
         // ★ 我们永远不回一个字节，所以校验根本走不到；关掉只是别让它去找信任库。
         b.set_verify(SslVerifyMode::NONE);
         let ctx = b.build();
@@ -1527,5 +1547,62 @@ mod udp_session_tests {
             t.admit(peer(2), "b", t0 + Duration::from_secs(60)),
             UdpAdmit::Ok
         );
+    }
+}
+
+/// ★ ★ pingora 0.9.0（上游 `f82478a`）：新一代据 `Service::listen_addresses()` 关掉
+/// 「没有任何服务认领」的继承 fd。**任何一个**服务返回 `None`（pingora 的缺省实现）⇒
+/// **整个进程**的清理静默关闭；返回的若是 bind 地址而不是 fd 表的键 ⇒ 新一代会先把
+/// 自己要继承的那个 fd 关掉。⇒ 两种错都**编译器不报、日志不提**，只能在这里钉住。
+#[cfg(test)]
+mod listen_addresses_tests {
+    use super::*;
+
+    fn shared() -> Arc<SharedRuntime> {
+        let o = fulcrum_config::compile_str(
+            "t.Fulcrumfile",
+            "http://a.com {\n  respond 200 \"ok\"\n}\n",
+        );
+        let cfg = o.config.expect("编得过");
+        SharedRuntime::new(Arc::new(
+            fulcrum_runtime::Runtime::build(&cfg).expect("建得出"),
+        ))
+    }
+
+    #[test]
+    fn tcp_服务声明的正是它的_fd_表键() {
+        let s = TcpProxyService::new(
+            shared(),
+            "tcp://127.0.0.1:19001",
+            "127.0.0.1:19001".to_string(),
+            false,
+            crate::conn_stats::ConnRegistry::new(),
+        );
+        assert_eq!(
+            s.listen_addresses(),
+            Some(vec![s.fd_key.clone()]),
+            "L4 TCP 服务必须声明它的 fd 表键（缺省的 None 会关掉整个进程的清理）"
+        );
+        assert_eq!(
+            s.fd_key, "fulcrum-l4-tcp:127.0.0.1:19001",
+            "fd 表键的形状变了 —— 继承那一侧与 listen_addresses 必须一起改"
+        );
+    }
+
+    #[test]
+    fn udp_服务声明的正是它的_fd_表键() {
+        let s = UdpProxyService::new(
+            shared(),
+            "udp://127.0.0.1:19002",
+            "127.0.0.1:19002".to_string(),
+            false,
+            crate::conn_stats::ConnRegistry::new(),
+        );
+        assert_eq!(
+            s.listen_addresses(),
+            Some(vec![s.fd_key.clone()]),
+            "L4 UDP 服务必须声明它的 fd 表键（缺省的 None 会关掉整个进程的清理）"
+        );
+        assert_eq!(s.fd_key, "fulcrum-l4-udp:127.0.0.1:19002");
     }
 }

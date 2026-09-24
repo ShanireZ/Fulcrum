@@ -28,16 +28,16 @@ sources:
 |---|---|---|
 | **构建镜像编不出 musl 产物** | 实测：Debian trixie 只有 `musl-gcc`（C），没有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ✅ **已由 G131 结案**（曾挂号 D21）：口径 = Alpine 原生 + qemu 跑 aarch64。✅ qemu 那一趟的耗时已量到：`ShanireHomePC` 2026-09-05 冷建 **18m07s**、`ShanirePCX` 2026-09-06 冷建 **34m05s**（⚠ 近两倍，**机器本地**，⛔ 别互相照抄）。✅ **曾挂号 D24 的「何时跑 aarch64」已由 `G144` 结案 = 候选 ②**：只在 `Cargo.lock` 或那三张钉 rustc 的 Dockerfile 变化时跑。⚠ binfmt 是**机器本地状态**，两台开发机现在都装了 |
 | **产物里真的链接了哪几套 TLS** | 依赖图里只有一套（`cargo tree -e all --target all` 为空） | ✅ **已由 G138 结案**（曾挂号 D23）：判据挂在 musl 静态产物上，`tests/ci/tls-linkage.sh` 取数 + `tests/musl/product.sh` 判**符号表**。⛔ 不判 `strings` —— `rustls` 那 4 次全来自纯类型 crate `rustls_pki_types`，靠 Rust v0 名字修饰的长度前缀（`_6rustls` ≠ `_16rustls_pki_types`）才分得开 |
-| **`bind()` 攥着全局 `ListenFds` 锁**（本仓 vendor 的 0.8.1 里） | `ListenerEndpoint::listen` 先 `fds_table.lock().await` 再在**持锁状态下** `bind()`，而 `bind_tcp` 重试 30 次 × 1 秒 ⇒ 一个被占端口把整把锁停住 30 秒，**所有还没拿到锁的监听器一起起不来**（2026-08-28 实测：现场报的是另一个端口起不来）| ✅ **上游 `main` 已修**（`1d9371191`，2026-03-25：`ListenFds` 换 `parking_lot::Mutex` + 按地址的异步锁）。⏳ 但上游最新 release 仍是 **0.8.1**（＝本仓 vendor 的那个）⇒ **下一次 rebase 时随之解除**。⚠ 上游修法新增 `flurry` 依赖 ⇒ 「现在就 backport」要先过供应链门，不是顺手的事 |
-| **上游 `listen_addresses()` 落地后的接线** | 上游 main 上有一条尚未发版的改动：给 `Service` 加 `listen_addresses()`，用来在换代后关掉没人认领的 fd | ⏳ rebase 上去之后，**枢衡的每一个自建 `Service` 都要显式实现它**。⚠ 它带默认实现（返回 `None` = 关掉清理）⇒ **漏实现不会有任何编译错误**，而一个服务没实现就会关掉整个进程的清理 |
 
 # ✅ 已解除的
 
 | 接缝 | 结论 |
 |---|---|
 | 自建 Service 挂载 · socket 移交（认领路径） | ✅ M0 实测：三类服务并挂，自建 TCP/UDP 监听器的 fd 经 `SCM_RIGHTS` 传到第二代 → [M0 接缝验证](/verification/m0-seam.md) |
-| 未被认领的继承 fd 会怎样 | ✅ 已复现并有常设判据 → [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh)，见下 |
-| 移交来的监听 fd 没有 `FD_CLOEXEC` | ✅ 由 **G38** 在 fork 里修掉（包 `OwnedFd` + `MSG_CMSG_CLOEXEC`），并已投上游（[pingora#959](https://github.com/cloudflare/pingora/issues/959) → [#960](https://github.com/cloudflare/pingora/pull/960)）。★ 上游走批量重放，**「PR 被 close」是成功不是拒绝** —— 看改动有没有进 `main` |
+| 未被认领的继承 fd 会怎样 | ✅ **已修**（2026-09-24，pingora 0.9.0 的 `f82478a` + 枢衡与 spike 的每个自建服务都实现了 `listen_addresses()`）。常设判据 [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) 从「复现坏行为」反写成「验修复」：第二代关掉那个 fd、老一代退出后端口拒连、不再传给第三代；反证实测：任一服务返回 `None` ⇒ 它当场红。见下 |
+| **`bind()` 攥着全局 `ListenFds` 锁**（vendor 0.8.1 时） | ✅ **2026-09-24 随 rebase 到 0.9.0 解除**：上游 `1d9371191` 把 `ListenFds` 换成 `parking_lot::Mutex` + 按地址的异步锁（`flurry` 随之进依赖图，过了供应链门）。⚠ 锁换成同步锁之后守卫不许跨 `.await` ⇒ 产品三处 + spike 三处取用改成短持锁 |
+| **`listen_addresses()` 的接线** | ✅ **2026-09-24 接上**：`fulcrum-server` 的 L4 TCP / L4 UDP / QUIC 三个自建服务返回各自的 **fd 表键**（⛔ 不是 bind 地址 —— 那会让新一代先关掉自己要继承的 fd），由单测 `*_服务声明的正是它的_fd_表键` 钉住（先红后绿）。⚠ 它带默认实现（返回 `None` = 关掉**整个进程**的清理），**漏实现不会有任何编译错误** —— 这正是要单测的原因 |
+| 移交来的监听 fd 没有 `FD_CLOEXEC` | ✅ 由 **G38** 在 fork 里修掉（包 `OwnedFd` + `MSG_CMSG_CLOEXEC`），并已投上游（[pingora#959](https://github.com/cloudflare/pingora/issues/959) → [#960](https://github.com/cloudflare/pingora/pull/960)）。★ 上游走批量重放，**「PR 被 close」是成功不是拒绝** —— 看改动有没有进 `main`。✅ **上游 0.9.0 已含（`b2b35fd`），fork 里那处改动 2026-09-24 归零**；M1 `[7/9]` 的三条断言照旧留着（上游单测看不到 fork+exec 的逐代累加）|
 | 两个入口能否共用同一份挑证书实现 | ✅ **不是被验证通过，是被取消了前提**：G104 换到 BoringSSL 之后共用的不再是 `ResolvesServerCert`，而是同一个 `select_certificate_callback` → [TLS](/architecture/tls.md) |
 | BoringSSL 与 musl 静态链接 | ✅ 已通过 → [musl + BoringSSL 静态链接](/verification/musl-boringssl.md)。⚠ 卡点不在 musl 也不在 BoringSSL，在构建宿主 —— 换来了上面那条构建宿主口径（曾挂号 D21，✅ 已由 G131 结案）|
 | systemd 下的零停机升级 | ✅ 由 M1 通过，★ 但推翻了 G31 的一半 → [M1 spike #1](/verification/m1-systemd.md) |
@@ -48,6 +48,9 @@ sources:
 # 三条要带走的结论
 
 ## 未被认领的 fd 会保持 LISTEN 并把连接吞掉，而它只在老一代退出之后才显形
+
+> ✅ **2026-09-24 起这是已修掉的行为**（pingora 0.9.0 + 各服务声明 `listen_addresses()`）：新一代会关掉它，
+> 老一代退出后端口拒连。下面是 0.8.1 时的现象与教训，留作出处 —— ★「先等第一代退出再探」这条判据写法照旧有效。
 
 第二代不挂某个监听器时，那个 fd 仍被继承、仍在 LISTEN：TCP 三次握手**照常成功**，请求
 发出去之后**超时无回应**，并且逐代传递。

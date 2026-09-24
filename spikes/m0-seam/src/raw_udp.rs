@@ -53,9 +53,10 @@ async fn build_socket(
         return UdpSocket::bind(bind).await;
     };
 
-    let mut table = table.lock().await;
+    // 0.9.0：ListenFds 换成 parking_lot 锁 ⇒ 守卫不许跨 `.await`，只在查表、登记两个瞬间持锁。
+    let inherited = table.lock().get(key).copied();
 
-    if let Some(&fd) = table.get(key) {
+    if let Some(fd) = inherited {
         log::info!("[raw-udp] INHERITED fd={fd} for key={key}");
         // SAFETY: 同 raw_tcp——fd 由上一代经 SCM_RIGHTS 传来，此处接管所有权且只接管一次。
         // ★ ManuallyDrop 的理由完全同 raw_tcp：提前析构 = close(fd)，而表里那条记录还在。
@@ -77,7 +78,7 @@ async fn build_socket(
 
     let sock = UdpSocket::bind(bind).await?;
     let fd = sock.as_raw_fd();
-    table.add(key.to_string(), fd);
+    table.lock().add(key.to_string(), fd);
     log::info!("[raw-udp] bound fresh on {bind}, registered fd={fd} as key={key}");
     Ok(sock)
 }
@@ -140,5 +141,10 @@ impl Service for UdpEchoService {
 
     fn name(&self) -> &str {
         "m0-raw-udp"
+    }
+
+    /// pingora 0.9.0：声明本服务认领的 fd 表键（理由同 raw_tcp）。
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(vec![self.key.clone()])
     }
 }

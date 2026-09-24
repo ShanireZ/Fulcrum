@@ -1,6 +1,6 @@
 [package]
 name = "pingora-runtime"
-version = "0.8.1"
+version = "0.9.0"
 authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
 license = "Apache-2.0"
 edition = "2021"
@@ -16,11 +16,21 @@ Multithreaded Tokio runtime with the option of disabling work stealing.
 name = "pingora_runtime"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
+# ★ 枢衡 fork §1：上游 0.8，抬到 0.10（调用点在 src/lib.rs，见 FORK.md §2）。
 rand = "0.10"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 once_cell = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
 thread_local = "1"
+log = { workspace = true }
+# ★ 枢衡 fork（2026-09-24，0.9.0 起）：上游这里还有两个可选依赖 dial9-tokio-telemetry 与 aws-sdk-s3，
+#   连同下面 [features] 里的 dial9 三条一起删。vendor 锁会记下成员 crate 的全部可选依赖，
+#   而 aws-sdk-s3 的默认特性会把 aws-lc-rs 拉进锁里 ⇒ supply_gates.rs 门 1 当场红。见 FORK.md。
+#   源码里 #[cfg(feature = "dial9…")] 的分支原样保留，永远不会被点亮。
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "net"] }
@@ -28,3 +38,6 @@ tokio = { workspace = true, features = ["io-util", "net"] }
 [[bench]]
 name = "hello"
 harness = false
+
+[features]
+default = []

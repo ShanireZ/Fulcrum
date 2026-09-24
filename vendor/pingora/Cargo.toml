@@ -24,10 +24,22 @@ bytes = "1.0"
 educe = "0.7.6"
 http = "1"
 log = "0.4"
-h2 = ">=0.4.11"
+futures = "0.3"
+h2 = ">=0.4.16"
 once_cell = "1"
 lru = "0.18.2"
 ahash = ">=0.8.9"
+
+[workspace.lints.rust]
+# ★ 枢衡 fork（2026-09-24）：第二行是 fork 从 pingora-core 的 [features] 里删掉、而源码里仍有
+#   #[cfg(feature = "…")] 分支的特性名（openssl / s2n：没被 vendor 的 TLS 后端；dial9 两条：见
+#   pingora-core/Cargo.toml 那段）。不登记的话每次编译刷出 58 条 unexpected_cfgs，真的警告会被淹掉。
+#   ⚠ 这里只是「已知的值」，不是「声明了特性」：`--features s2n` 仍当场报「没有这个特性」，这正是想要的。
+#   ⚠ dial9-cpu-profiling 源码里没有 cfg 引用，故意不列。
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(tokio_unstable)',
+  'cfg(feature, values("openssl", "s2n", "dial9", "dial9-worker-s3"))',
+] }
 
 [profile.bench]
 debug = true

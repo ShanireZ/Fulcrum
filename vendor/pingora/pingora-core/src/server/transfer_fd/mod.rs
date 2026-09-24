@@ -20,12 +20,12 @@ use nix::sys::socket::{self, AddressFamily, Backlog, RecvMsg, SockFlag, SockType
 #[cfg(target_os = "linux")]
 use nix::sys::stat;
 use nix::{Error, NixPath};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::io::{IoSlice, IoSliceMut};
 #[cfg(target_os = "linux")]
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::io::RawFd;
 #[cfg(target_os = "linux")]
 use std::{thread, time};
@@ -50,6 +50,10 @@ impl Fds {
 
     pub fn get(&self, bind: &str) -> Option<&RawFd> {
         self.map.get(bind)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 
     pub fn serialize(&self) -> (Vec<String>, Vec<RawFd>) {
@@ -82,6 +86,29 @@ impl Fds {
         let keys = deserialize_vec_string(&de_buf[..bytes])?;
         self.deserialize(keys, fds);
         Ok(())
+    }
+
+    /// Close and remove inherited listening fds whose bind addresses are absent from `keep`.
+    ///
+    /// An unclaimed `SO_REUSEPORT` socket remains active without an acceptor and can black-hole
+    /// connections. Removing it also prevents it from being transferred to the next process.
+    /// Returns the addresses removed from the table.
+    #[cfg(unix)]
+    pub fn close_unclaimed(&mut self, keep: &HashSet<String>) -> Vec<String> {
+        let mut closed = Vec::new();
+        self.map.retain(|bind, fd| {
+            if keep.contains(bind) {
+                return true;
+            }
+            if let Err(e) = nix::unistd::close(*fd) {
+                log::warn!(
+                    "Failed to close orphaned inherited listening socket fd {fd} ({bind}): {e}"
+                );
+            }
+            closed.push(bind.clone());
+            false
+        });
+        closed
     }
 }
 
@@ -134,8 +161,8 @@ where
     /* sock is created before we change user, need to give permission */
     stat::fchmodat(
         // SAFETY: AT_FDCWD is a well-defined POSIX sentinel constant used by *at() syscalls
-        // to mean "relative to the current working directory". It is not a real descriptor and
-        // is never closed, so borrowing it for the duration of this call is sound.
+        // to indicate the current working directory. It is not a real file descriptor and does
+        // not require ownership or lifetime guarantees.
         unsafe { BorrowedFd::borrow_raw(libc::AT_FDCWD) },
         path,
         stat::Mode::from_bits_truncate(0o666),
@@ -160,23 +187,20 @@ where
             return Err(e);
         }
     };
-    // 枢衡改动 ①：accept 出来的这个连接**从来没有被关掉**（上游 0.8.1 与 main 均如此）。
-    // 下面只 close 了 listen_fd，而这个 fd 是裸 RawFd，没有 Drop，于是**每完成一次优雅升级
-    // 就永久泄漏一个已连接的 unix socket**（实测：gen1 无、gen2 有一个 St=03 CONNECTED 的
-    // /run/…/upgrade.sock）。包成 OwnedFd 交给 Drop，顺带覆盖下面 `cmsgs()?` 的提前返回路径。
+
+    // The accepted connection is only needed for this transfer. Take ownership of it so
+    // that it is closed on every path out of this function, including the early return
+    // from `cmsgs()?` below; otherwise every graceful upgrade leaks one unix socket.
     //
-    // SAFETY: `fd` 由 accept(2) 返回，此处是它唯一的所有者——上游代码此后既不 close 也不
-    // 转移它（正是本改动要修的泄漏），因此接管所有权不会造成 double-close。
-    let conn = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: `fd` was just returned by accept(2) and is not owned or closed anywhere else.
+    let conn = unsafe { OwnedFd::from_raw_fd(fd) };
 
     let mut io_vec = [IoSliceMut::new(payload); 1];
     let mut cmsg_buf = nix::cmsg_space!([RawFd; MAX_FDS]);
-    // 枢衡改动 ②：`MSG_CMSG_CLOEXEC`。经 SCM_RIGHTS 收来的监听 fd 原本**没有 FD_CLOEXEC**，
-    // 而枢衡的升级是「老进程 fork+exec 下一代」（systemd 要求新进程落在同一 cgroup 内），
-    // 于是从第三代起每个监听 socket 会被 2 个 fd 指着，并逐代累加。
-    // ★ 更要紧的是：继承进来的那一份**不在 pingora 的 fd 表里**，上游 `listen_addresses()`
-    //   那套「关掉未被认领的 fd」的清理**够不到它**。
-    // 用 MSG_CMSG_CLOEXEC 而不是收完再 fcntl：后者在多线程进程里与 fork 之间有竞态窗口。
+    // MSG_CMSG_CLOEXEC sets FD_CLOEXEC on the received descriptors atomically. These
+    // listening sockets are kept for the rest of the process's lifetime, so without it any
+    // subprocess an application built on pingora execs inherits them, and can keep the
+    // port bound after the server itself is gone.
     let msg: RecvMsg<UnixAddr> = socket::recvmsg(
         conn.as_raw_fd(),
         &mut io_vec,
@@ -370,8 +394,11 @@ where
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
+    use std::os::fd::AsRawFd;
+
     use super::*;
     use log::{debug, error};
+    use nix::fcntl;
 
     fn init_log() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -438,9 +465,6 @@ mod tests {
             assert_eq!(1, buf[31]);
         });
 
-        // nix 0.31：socket() 返回 OwnedFd 而不是 RawFd。照 lib 侧的写法取裸值，
-        // 并让 dumb_fd 这个绑定活到调用之后——send_fds_to 不接管所有权，也不关它们
-        // （它只 close 自己内部的 send_fd），所以这里不会 double-close。
         let fds = vec![dumb_fd.as_raw_fd()];
         let buf: [u8; 128] = [1; 128];
         match send_fds_to(fds, &buf, "/tmp/pingora_fds_receive.sock", None) {
@@ -452,6 +476,90 @@ mod tests {
                 panic!()
             }
         }
+
+        child.join().unwrap();
+    }
+
+    /// How many fds in this process refer to a unix socket bound to `path`.
+    ///
+    /// Reads the socket inodes bound to `path` from /proc/net/unix, then scans
+    /// /proc/self/fd for descriptors pointing at them. Filtering by path keeps this
+    /// unaffected by unrelated descriptors opened by tests running in parallel.
+    fn unix_socket_fds_bound_to(path: &str) -> usize {
+        let unix = std::fs::read_to_string("/proc/net/unix").unwrap();
+        let inodes: HashSet<&str> = unix
+            .lines()
+            .filter_map(|line| {
+                let mut cols = line.split_whitespace();
+                let inode = cols.nth(6)?;
+                (cols.next() == Some(path)).then_some(inode)
+            })
+            .collect();
+        if inodes.is_empty() {
+            return 0;
+        }
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| {
+                target
+                    .to_str()
+                    .and_then(|t| t.strip_prefix("socket:["))
+                    .and_then(|t| t.strip_suffix(']'))
+                    .is_some_and(|inode| inodes.contains(inode))
+            })
+            .count()
+    }
+
+    #[test]
+    fn test_receive_does_not_leak_fds() {
+        init_log();
+        const SOCK: &str = "/tmp/pingora_fds_receive3.sock";
+
+        let dumb_fd = socket::socket(
+            AddressFamily::Unix,
+            SockType::Stream,
+            SockFlag::empty(),
+            None,
+        )
+        .unwrap();
+
+        // receiver need to start in another thread since it is blocking
+        let child = thread::spawn(move || {
+            let mut buf: [u8; 32] = [0; 32];
+            let (fds, _) = get_fds_from(SOCK, &mut buf, None).unwrap();
+            assert_eq!(1, fds.len());
+
+            // The received listener is kept for the lifetime of the process, so it must
+            // not be inherited by unrelated children across exec().
+            let flags = fcntl::fcntl(
+                // SAFETY: the fd was just received and stays open for this call.
+                unsafe { BorrowedFd::borrow_raw(fds[0]) },
+                fcntl::FcntlArg::F_GETFD,
+            )
+            .unwrap();
+            assert!(
+                fcntl::FdFlag::from_bits_truncate(flags).contains(fcntl::FdFlag::FD_CLOEXEC),
+                "fd received over SCM_RIGHTS is missing FD_CLOEXEC"
+            );
+
+            // The accepted connection is only needed during the transfer itself.
+            assert_eq!(
+                0,
+                unix_socket_fds_bound_to(SOCK),
+                "the accepted transfer socket was left open"
+            );
+
+            // Don't leak the descriptors this test just received.
+            for fd in fds {
+                // SAFETY: received over SCM_RIGHTS just above and not owned anywhere else.
+                drop(unsafe { OwnedFd::from_raw_fd(fd) });
+            }
+        });
+
+        let fds = vec![dumb_fd.as_raw_fd()];
+        let buf: [u8; 32] = [1; 32];
+        send_fds_to(fds, &buf, SOCK, None).unwrap();
 
         child.join().unwrap();
     }
@@ -468,8 +576,6 @@ mod tests {
             None,
         )
         .unwrap();
-        // 同上：Fds 存的是 RawFd，且它不持有所有权（没有 Drop，也不 close）。
-        // dumb_fd1 / dumb_fd2 活到函数结束，覆盖 send_to_sock 的整个过程。
         fds.add(key1.clone(), dumb_fd1.as_raw_fd());
         let key2 = "1.1.1.1:443".to_string();
         let dumb_fd2 = socket::socket(
@@ -506,9 +612,6 @@ mod tests {
         )
         .unwrap();
 
-        // nix 0.31：socket() 返回 OwnedFd 而不是 RawFd。照 lib 侧的写法取裸值，
-        // 并让 dumb_fd 这个绑定活到调用之后——send_fds_to 不接管所有权，也不关它们
-        // （它只 close 自己内部的 send_fd），所以这里不会 double-close。
         let fds = vec![dumb_fd.as_raw_fd()];
         let buf: [u8; 32] = [1; 32];
 
@@ -556,6 +659,79 @@ mod tests {
             elapsed.as_secs() < 4,
             "Expected less than 4 seconds, got {:?}",
             elapsed
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod close_unclaimed_tests {
+    use super::Fds;
+    use std::collections::HashSet;
+    use std::io::{ErrorKind, Read};
+    use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
+    use std::os::unix::net::UnixStream;
+
+    // Closure is observed by reading the other end of a socket pair, which
+    // reports end-of-file exactly when its peer is gone. Checking the descriptor
+    // *number* would be racy: numbers are process-wide and reassigned
+    // lowest-free-first, so a concurrent test in this binary can be handed the
+    // number just closed and make it valid again first. Observing ends are
+    // non-blocking, so a descriptor that wrongly stayed open fails an assertion
+    // rather than hanging.
+    //
+    // A second owning handle would turn a wrongly closed descriptor into an I/O
+    // safety abort of the whole binary, so `Fds` gets raw numbers.
+
+    #[test]
+    fn closes_only_unclaimed_fds() {
+        let (mut keep_peer, keep_local) = UnixStream::pair().unwrap();
+        let (mut drop_peer, drop_local) = UnixStream::pair().unwrap();
+        keep_peer.set_nonblocking(true).unwrap();
+        drop_peer.set_nonblocking(true).unwrap();
+        let keep_fd = keep_local.into_raw_fd();
+
+        let mut fds = Fds::new();
+        fds.add("127.0.0.1:80".to_string(), keep_fd);
+        fds.add("127.0.0.1:9090".to_string(), drop_local.into_raw_fd());
+
+        let keep: HashSet<String> = ["127.0.0.1:80".to_string()].into_iter().collect();
+        let closed = fds.close_unclaimed(&keep);
+
+        assert_eq!(closed, vec!["127.0.0.1:9090".to_string()]);
+        assert_eq!(*fds.get("127.0.0.1:80").unwrap(), keep_fd);
+        assert!(fds.get("127.0.0.1:9090").is_none());
+
+        // Dropping the map entry is not enough: the descriptor itself has to be
+        // closed, which is the leak this function exists to prevent.
+        assert!(
+            matches!(drop_peer.read(&mut [0u8; 1]), Ok(0)),
+            "the unclaimed descriptor was not closed"
+        );
+        assert!(
+            matches!(keep_peer.read(&mut [0u8; 1]), Err(e) if e.kind() == ErrorKind::WouldBlock),
+            "the claimed descriptor was closed"
+        );
+
+        // `Fds` does not close on drop.
+        // SAFETY: asserted open just above, and no other owner remains.
+        drop(unsafe { OwnedFd::from_raw_fd(keep_fd) });
+    }
+
+    #[test]
+    fn empty_keep_set_closes_everything() {
+        let (mut peer, local) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+
+        let mut fds = Fds::new();
+        fds.add("127.0.0.1:9090".to_string(), local.into_raw_fd());
+
+        let closed = fds.close_unclaimed(&HashSet::new());
+
+        assert_eq!(closed, vec!["127.0.0.1:9090".to_string()]);
+        assert!(fds.is_empty());
+        assert!(
+            matches!(peer.read(&mut [0u8; 1]), Ok(0)),
+            "the unclaimed descriptor was not closed"
         );
     }
 }

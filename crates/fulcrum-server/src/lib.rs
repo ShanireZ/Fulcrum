@@ -78,6 +78,7 @@ use fulcrum_runtime::{
 };
 use log::{debug, error, info, warn};
 use pingora_core::apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream};
+use pingora_core::connectors::ConnectorOptions;
 use pingora_core::connectors::http::Connector;
 use pingora_core::protocols::http::ServerSession;
 use pingora_core::server::ShutdownWatch;
@@ -328,12 +329,17 @@ impl FulcrumApp {
         http01: Arc<Http01Store>,
         cache: Arc<cache::CacheHandle>,
         alt_svc: Option<String>,
+        upstream_keepalive_pool: usize,
     ) -> FulcrumApp {
         FulcrumApp {
             rt,
             port,
             https,
-            connector: Connector::new(None),
+            // ★ pingora 0.9.0 把上游空闲连接池从「每个线程一个 LRU」改成「整进程一个分片的全局 LRU」，
+            //   `Connector::new(None)` 的缺省 128 从此是**整进程**的上限（0.8.1 时是每线程 128）。
+            //   上游自己在 `ConnectorOptions::from_server_conf` 里乘了线程数来保持原意 ⇒ 这里照做：
+            //   容量由调用方按「每线程池大小 × L7 线程数」给（owner 2026-09-24 拍板保持 0.8.1 的总量）。
+            connector: Connector::new(Some(ConnectorOptions::new(upstream_keepalive_pool))),
             http01,
             cache,
             alt_svc,
@@ -433,7 +439,9 @@ impl HttpServerApp for FulcrumApp {
 
         let persistent = HttpPersistentSettings::for_session(&session);
         match session.finish().await {
-            Ok(c) => c.map(|s| ReusedHttpStream::new(s, Some(persistent))),
+            // ★ pingora 0.9.0：`finish()` 返回 `ReusableHttpStream`（带着 pipelining 预读到的字节）⇒ 照上游
+            //   `apps/http_app.rs` 用 `from_reusable_stream`；⛔ 别写 `into_parts().0`，那会把预读的字节丢掉。
+            Ok(c) => c.map(|s| ReusedHttpStream::from_reusable_stream(s, persistent)),
             Err(e) => {
                 debug!("收尾失败：{e}");
                 None
@@ -2048,6 +2056,11 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
             http01.clone(),
             cache.clone(),
             alt_svc,
+            // 每线程池大小取 ServerConf 的值（缺省 128），乘 L7 线程数 ⇒ 与 0.8.1 的总容量相同。
+            server
+                .configuration
+                .upstream_keepalive_pool_size
+                .saturating_mul(threads_l7.max(1)),
         ));
         let kind = if is_tls { "https" } else { "http" };
         // ⚠ `H1Entry` 是为了让 h3 那一侧拿到**同一个** app 实例，理由见它的类型文档。
@@ -2059,9 +2072,10 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
         // ★ ★ **无条件挂，不看清单空不空** —— 有条件挂的话，一份后来才写上
         //   `proxy_protocol_from` 的配置做 `POST /load` 会**装得上、不报错、也不生效**（D19 那个形状）。
         // ★ 「挂了」不等于「会读字节」：清单空时 `trusts()` 恒 false，
-        //   而 fork 那侧在 false 时一个字节都不读。
+        //   而 `proxyproto` 的 `PreTlsProcess` 实现在 false 时一个字节都不读。
+        // ★ pingora 0.9.0 起走上游的 `set_pre_tls_callback`（fork 改动 12 只剩「明文端口也调」，见 FORK.md §12）。
         svc.endpoints()
-            .set_proxy_protocol(proxy_protocol_policy.clone());
+            .set_pre_tls_callback(proxy_protocol_policy.clone());
 
         let bind = format!("{}:{port}", opts.bind_host);
 

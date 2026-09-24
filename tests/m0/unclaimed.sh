@@ -3,13 +3,17 @@
 # 这个脚本在容器里跑（G26），退出码即结论。
 #
 # ★ 背景：M0 证明的是**认领成功**那条路（自建监听器能取到 fd、升级零中断）。
-#   上游 `f82478ae`（尚未发版）指出另一面：**没被认领的继承 fd 会黑洞化连接**。
+#   上游 `f82478ae` 指出另一面：**没被认领的继承 fd 会黑洞化连接**。
 #   见 docs/verification/open-seams.md。
 #
-# ★ ★ **本脚本验的是「当前（未修）行为」，因此它的绿是「坏行为已复现」。**
-#   等上游发布含 `listen_addresses()` 清理机制的版本、fork rebase 上去之后，
-#   这里的断言要**反过来写**（届时应当验「老 fd 确实被关掉了」）。
-#   到那天这个脚本会红——**那是它在正确地报告口径变了，不是它坏了。**
+# ★ ★ **口径 2026-09-24 反写（pingora 0.9.0 rebase）：本脚本现在验的是「修好了」。**
+#   上游 0.9.0 含 `f82478a`（新一代按各服务的 `listen_addresses()` 剪掉没人认领的继承 fd），
+#   而 spike 的三个服务都声明了键 ⇒ 判据是：第二代关掉那个 fd（上游那条 WARN）、
+#   老一代退出后端口**拒连**、它不再传给第三代。
+#   ⚠ 它守的最要紧的一条：**任何一个服务的 `listen_addresses()` 返回 `None`（pingora 的缺省）
+#     都会让整个进程的清理静默关闭** —— 编译器不报、日志不提。反证：让 raw_udp 返回 `None`
+#     ⇒ [4/6] 当场红（2026-09-24 实测）。
+#   ★ 此前（0.8.1）它验的是「坏行为已复现」：绿 = 孤儿 fd 保持 LISTEN、吞连接、逐代传递。
 #
 # 造法：gen2 用 `M0_DROP_RAW_TCP=1` 启动，模拟「配置里删掉了 raw-tcp 这个监听器」，
 # 于是 gen1 传来的 8081 那个 fd 没有任何服务去认领。
@@ -162,6 +166,9 @@ fi
 echo "  ✓ 我们这一代已注册 fd、端口在 LISTEN、回声正常（收到 '$OUT'）"
 
 echo "=== [3/6] 升级到第二代，但**丢掉** raw-tcp 服务 ==="
+# ★ error.log 是三代共用、追加写的 ⇒ 下面一律用「起下一代前后的计数增量」判，不用绝对值。
+INSPECT_KEY="\[fd-inspect\] entry key=m0-raw-tcp:$BIND_HOST:$PORT"
+INSPECT_BEFORE_GEN2=$(grep -c "$INSPECT_KEY" "$LOG" || true)
 kill -QUIT "$GEN1"
 M0_DROP_RAW_TCP=1 "$BIN/m0-seam" -c "$CONF" -d -u
 sleep 2
@@ -170,10 +177,7 @@ record_gen "$GEN2"
 echo "gen2 pid = $GEN2"
 [ "$GEN1" != "$GEN2" ] || fail "pid 没变，根本没换进程"
 
-echo "=== [4/6] 那个 fd 还在不在表里 ==="
-grep -q "\[fd-inspect\] entry key=m0-raw-tcp:$BIND_HOST:$PORT" "$LOG" \
-  || fail "第二代的 fd 表里没有 m0-raw-tcp 的条目——本轮的前提不成立"
-
+echo "=== [4/6] ★ 第二代把那个没人认领的 fd 关掉了（上游 0.9.0 f82478a）==="
 # ★ 判据锚在 pingora 自己打的启动顺序行上，而不是 spike 自证的那句 WARN——
 #   那句在 daemonize **之前**打，进的是启动 shell 的 stdout，不在 error.log 里。
 LAST_ORDER=$(grep "Starting services in dependency order" "$LOG" | tail -1)
@@ -181,9 +185,20 @@ echo "  第二代启动的服务：$LAST_ORDER"
 case "$LAST_ORDER" in
   *m0-raw-tcp*) fail "第二代并没有真的丢掉 raw-tcp 服务" ;;
 esac
-echo "  ✓ fd 仍在表里，而**没有任何服务认领它**"
 
-echo "=== [5/6] ★ 核心判据：连得上，但永远没有回应 ==="
+# ★ ★ 上游那条 WARN 在 daemonize **之后**、起服务之前打（bootstrap_services.rs），进 error.log。
+#   第一代是冷启动、没有继承任何 fd ⇒ 走到这里时这条 WARN 只可能来自第二代。
+grep -qF "Closed 1 inherited listening socket(s) not claimed by any service: [\"m0-raw-tcp:$BIND_HOST:$PORT\"]" "$LOG" \
+  || fail "第二代没有关掉那个没人认领的 fd（error.log 里没有上游那条 WARN）。
+       ★ 最常见的原因：某个服务的 listen_addresses() 返回了 None（pingora 的缺省实现）
+         ⇒ **整个进程**的清理被静默关闭 —— 编译器不报、日志也不提。"
+# ★ 交叉验证：第二代的 fd-inspect 在清理**之后**才起，它看到的表里不该再有这个键。
+INSPECT_AFTER_GEN2=$(grep -c "$INSPECT_KEY" "$LOG" || true)
+[ "$INSPECT_AFTER_GEN2" -eq "$INSPECT_BEFORE_GEN2" ] \
+  || fail "WARN 说关了，而第二代的 fd 表里仍有 m0-raw-tcp 的条目（计数 $INSPECT_BEFORE_GEN2 → $INSPECT_AFTER_GEN2）"
+echo "  ✓ 第二代关掉并移出了那个 fd（上游 WARN 在；fd 表计数 $INSPECT_BEFORE_GEN2 → $INSPECT_AFTER_GEN2，没有增长）"
+
+echo "=== [5/6] ★ 核心判据：老一代退出之后，这个端口**拒连**（⛔ 不再黑洞）==="
 # ★ ★ 必须先等第一代真正退出，否则测的是它而不是孤儿 socket。
 #   pingora 在发完 fd 后要硬等 CLOSE_TIMEOUT（5 秒，server/mod.rs:59）才广播停机，
 #   这段时间**两代都持有同一个监听 socket，而老一代照常 accept**。
@@ -195,32 +210,26 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 if kill -0 "$GEN1" 2>/dev/null; then
-  fail "第一代 40 秒还没退出，无法在干净状态下判断黑洞化"
+  fail "第一代 40 秒还没退出，无法在干净状态下判断端口是否已释放"
 fi
-echo "  ✓ 第一代已退出，现在 $PORT 上只剩第二代那个**没人认领**的 fd"
-if probe_connect "$PORT"; then
-  echo "  ✓ TCP 连接**成功建立**——孤儿 socket 仍在 LISTEN，内核照常完成三次握手"
-else
-  fail "连不上 $PORT。孤儿 fd 本应还持着这个端口；若这里连不上，说明行为已变（可能上游修复已生效），断言口径需要重写"
+echo "  ✓ 第一代已退出"
+# ★ 两套机制各判一次（与 [2/6] 同一个道理）：/proc 说没人 LISTEN，而且真连一次被拒。
+if port_listening "$PORT"; then
+  fail "第一代已退出，而 $PORT 仍在 LISTEN —— 那个没人认领的 fd 没被关掉（孤儿 socket 还在吞连接）"
 fi
-
 set +e
-probe_echo "$PORT" > "$RUN/echo.out" 2>/dev/null
+probe_connect "$PORT"
 RC=$?
 set -e
-if [ "$RC" -eq 124 ]; then
-  echo "  ✓ ★ 发出请求后**超时无回应**（exit 124）——这就是黑洞化"
-elif [ "$RC" -eq 0 ]; then
-  fail "居然收到了回应（'$(cat "$RUN/echo.out")'）。说明有人在 accept——与'未被认领'的前提矛盾"
-else
-  fail "既不是超时也不是回应，exit=$RC。行为与预期不同，需要人工看 $LOG"
+if [ "$RC" -eq 0 ]; then
+  fail "居然连上了 $PORT —— 还有人持着这个监听 socket（/proc 却说没人 LISTEN，需要人工看 $LOG）"
+elif [ "$RC" -eq 124 ]; then
+  fail "连接**超时**（exit 124）而不是被拒 —— 行为与预期不同，需要人工看 $LOG"
 fi
+echo "  ✓ $PORT 不在 LISTEN、连接被拒（exit $RC）—— 没人认领的 fd 已随老一代退出彻底消失，⛔ 不再黑洞"
 
-echo "=== [6/6] 它会不会继续传给第三代 ==="
-# ★ 用「起第三代前后的计数增量」判，不用绝对值：
-#   探查服务在别的服务注册 fd **之前**启动，所以第一代那次它看到的是空表——
-#   绝对计数会随服务启动顺序变化，增量不会。
-BEFORE=$(grep -c "\[fd-inspect\] entry key=m0-raw-tcp:$BIND_HOST:$PORT" "$LOG" || true)
+echo "=== [6/6] 它不会再传给第三代 ==="
+BEFORE=$(grep -c "$INSPECT_KEY" "$LOG" || true)
 kill -QUIT "$GEN2"
 M0_DROP_RAW_TCP=1 "$BIN/m0-seam" -c "$CONF" -d -u
 sleep 2
@@ -228,12 +237,12 @@ GEN3=$(cat "$RUN/m0.pid")
 record_gen "$GEN3"
 echo "gen3 pid = $GEN3"
 [ "$GEN2" != "$GEN3" ] || fail "pid 没变，第三代没起来"
-AFTER=$(grep -c "\[fd-inspect\] entry key=m0-raw-tcp:$BIND_HOST:$PORT" "$LOG" || true)
-[ "$AFTER" -gt "$BEFORE" ] \
-  || fail "第三代的 fd 表里没有那个孤儿条目（计数 $BEFORE → $AFTER，没有增长）"
-echo "  ✓ 孤儿 fd **被原样传给了第三代**（计数 $BEFORE → $AFTER）——它不会自己消失"
+AFTER=$(grep -c "$INSPECT_KEY" "$LOG" || true)
+[ "$AFTER" -eq "$BEFORE" ] \
+  || fail "第三代的 fd 表里又出现了 m0-raw-tcp 的条目（计数 $BEFORE → $AFTER）—— 它本该在第二代就被剪掉"
+echo "  ✓ 第三代收不到它（计数 $BEFORE → $AFTER）"
 
 echo
-echo "UNCLAIMED REPRODUCED —— 未被认领的继承 fd 保持 LISTEN、吞掉连接、并逐代传递。"
-echo "★ 这是**当前未修行为的复现**，不是回归。上游修复（listen_addresses()）发版后，"
-echo "  本脚本的断言要反过来写；届时它变红是口径变了，不是它坏了。见 docs/verification/open-seams.md。"
+echo "UNCLAIMED FIXED —— 未被认领的继承 fd 被新一代关掉：老一代退出后端口拒连，也不再逐代传递。"
+echo "★ 依赖两件事同时成立：上游 0.9.0 的 f82478a，与**每个**服务都声明了 listen_addresses()"
+echo "  （任何一个返回 None 都会让整个进程的清理静默关闭）。见 docs/verification/open-seams.md。"

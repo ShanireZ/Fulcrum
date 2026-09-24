@@ -259,23 +259,32 @@ echo
 
 # ── [5/5] 跑测试 ───────────────────────────────────────────────────────────
 #
-# ★ 判据不是「零失败」，是「与官方原版 0.8.1 的失败集合逐项相同」。
+# ★ 判据不是「零失败」，是「与官方原版 0.9.0 的失败集合逐项相同」。
 #
-# 这个容器里有 2 条测试**在官方原版上同样失败**，它们依赖容器外的行为，与 fork 无关。
+# 这个容器里会有测试**在官方原版上同样失败**（依赖容器外的行为，与 fork 无关）——
+# 0.8.1 时是 2 条；0.9.0 在同款容器里只剩下面「宿主机相关」那 1 条（见「名单的来历」）。
 # 硬要求零失败会让这道门**永远红**，而永远亮着的告警等于没有告警。
 #
 # ★ ★ 但也不能简单 --skip 掉：那样「某条环境性失败变成了真回归」和
 #   「环境修好了、该把它从名单里删掉」这两件事都会被吞掉。所以**双向比对**。
 #
-# 名单的来历（可重跑的对照实验）：
-#   git clone --depth 1 --branch 0.8.1 https://github.com/cloudflare/pingora   # 719ef6c
-#   cargo test -p pingora-core --lib
+# 名单的来历（可重跑的对照实验，2026-09-24 rebase 到 0.9.0 时重做）：
+#   git -c core.autocrlf=false archive 0.9.0 | tar -x      # 702f690；⚠ 本机全局 autocrlf=true，
+#                                                          #   不加 -c 会导出 CRLF、凭空多出失败
+#   在**本门同款容器**里（fulcrum-build 镜像 · NET_ADMIN · 192.0.2.0/24 DROP）：
+#   cargo test -p pingora-core -p pingora-error -p pingora-http -p pingora-pool \
+#     -p pingora-runtime -p pingora-timeout -p pingora-rustls -p pingora-boringssl \
+#     --features pingora-core/rustls --no-fail-fast
+#   ⇒ 19 个二进制，735 过 / 1 败 / 12 忽略；败的只有 `test_bind_to_port_range_on_connect`
+#     （下面 HOST_DEPENDENT_FAILURES 那条）。0.8.1 时名单里的
+#     `protocols::http::v2::server::test::test_req_header_no_eos_empty_data_with_eos`
+#     在 0.9.0 上**已通过** ⇒ 本名单清空。
 #
 # ★ ★ **「登记为环境性失败」是把问题挂起，不是把问题解决。** 名单里的每一条都欠着一次
 #   根因调查 —— `test_conn_timeout` 挂了很久，查出来是 Docker 默认网络会替
 #   `192.0.2.1`（RFC 5737 TEST-NET-1）应答，于是 1ms 的连接超时永远等不到；
 #   docker-run.sh 装一条 `iptables … -j DROP` 把它变成真丢包之后，这条测试就真的过了。
-EXPECTED_FAILURES="protocols::http::v2::server::test::test_req_header_no_eos_empty_data_with_eos"
+EXPECTED_FAILURES=""
 
 # ★ ★ ★ 第三类：**宿主机相关**的失败（CI 上线当天量出来的）。
 #
@@ -315,12 +324,16 @@ HOST_DEPENDENT_FAILURES="connectors::l4::tests::test_bind_to_port_range_on_conne
 #     **「新加的测试没让计数变化」是这类缺陷唯一会露头的地方**。
 #   ★ 判据本身不用改：失败集合是扫全部 `test ... FAILED` 行得来的，跨二进制天然成立。
 echo "=== [5/5] cargo test（vendor/pingora，8 个 crate + 集成测试 + 文档测试）==="
-echo "  ★ 已知环境性失败 1 条（在官方 0.8.1 上同样失败，见脚本注释）："
+echo "  ★ 已知环境性失败（在官方 0.9.0 上同样失败，见脚本注释；0.9.0 起为空）："
 # ★ 一行一条，**不靠词拆分**。这与 tests/m0/docker-run.sh 的 CRLF 门是**同一个缺陷**，
 #   那边上午修掉了，这边直到同日下午 shellcheck 上线才被揪出来——
 #   ★ 「修完一个形状要当场把同形的全扫一遍」，靠人眼扫是扫不干净的，得有工具。
+# ⚠ ⚠ 循环体必须写成 `if`，⛔ 不能写 `[ -n "$ef" ] && printf …`（2026-09-24 实付一次）：
+#   名单为空时 `printf '%s\n' ""` 仍给出一行空行 ⇒ 最后一次迭代的 `&&` 列表返回 1 ⇒ 整个循环返回 1
+#   ⇒ `set -e` 下脚本当场退出，门禁 RC=1 而一条测试都没跑。名单非空时它恰好不露头 ——
+#   与本文件末尾「这里必须用 if」是同一个形状。
 printf '%s\n' "$EXPECTED_FAILURES" | while IFS= read -r ef; do
-  [ -n "$ef" ] && printf '      %s\n' "$ef"
+  if [ -n "$ef" ]; then printf '      %s\n' "$ef"; fi
 done
 
 OUTFILE=${VENDOR_TEST_OUT:-/tmp/vendor-test.out}
@@ -433,6 +446,9 @@ echo
 #        ⛔ 本仓不改 vendor 去修它 —— 那是上游的缺陷，改了要自己背 rebase 成本。
 #      ⇒ **已报上游：`cloudflare/pingora#998`**（2026-09-08，含两份复现与逐档读数）。
 #        ⚠ 上游 `main`（`09696b5`）与 0.8.1 在这三个函数上**逐字相同** ⇒ 升 vendor 不会自动解决。
+#        ★ 2026-09-24 升到 0.9.0 时重核：形状**没变** —— `reused_stream` 仍是 `Arc::try_unwrap`，
+#          `release_stream` 仍把 `try_lock_owned()` 出来的第二个 Arc 交给 spawn 出去的 `idle_poll`；
+#          变的只有 `test_reusable_stream` 多了一个计数参数与一个 keepalive 回调 ⇒ #998 照旧成立。
 #        ★ 它与 `#967`（短读，本仓已用 `read_exact` 治掉）是**同一条测试的两个独立原因**，
 #          ⛔ 别把两者混成一件事。
 #
@@ -488,4 +504,4 @@ fi
 if [ -s /tmp/vendor-new.f ]; then fail "出现了官方原版上没有的失败"; fi
 if [ -s /tmp/vendor-gone.f ]; then fail "已知失败名单已过期，请更新"; fi
 
-echo "VENDOR TESTS PASSED —— 失败集合与官方原版 0.8.1 逐项相同（宿主机相关的那几条已单列），fork 没有引入新的回归。"
+echo "VENDOR TESTS PASSED —— 失败集合与官方原版 0.9.0 逐项相同（宿主机相关的那几条已单列），fork 没有引入新的回归。"

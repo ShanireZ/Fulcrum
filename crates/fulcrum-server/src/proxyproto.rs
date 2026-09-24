@@ -15,11 +15,11 @@
 //! |---|---|
 //! | [`fulcrum_runtime::proxyproto`] | v1/v2 **编解码**（纯逻辑，28 条单测）|
 //! | [`fulcrum_runtime::Runtime::trusts_proxy_protocol`] | **唯一**的信任判断入口 |
-//! | `pingora_core::listeners`（fork 改动 12）| 循环读 + 覆盖地址 |
-//! | **本模块** | 把上面三者接起来，**一行协议逻辑都没有** |
+//! | `pingora_core::listeners`（fork 改动 12，形状 B）| 只做一件事：上游的 pre-TLS 回调在**明文端口也调** |
+//! | **本模块** | 实现上游的 `PreTlsProcess`：循环读 + 把多读的字节还回去 + 覆盖地址，**一行协议逻辑都没有** |
 //!
-//! ★ 这个分法不是洁癖：`feed` 会在同一条连接上被反复调用，而
-//! **fork 里那段代码不认识 PROXY protocol 的任何一个字节** —— rebase 时它不会成为负担。
+//! ★ 2026-09-24（pingora 0.9.0）起，循环读与覆盖地址从 fork 搬到了这里：上游 0.9.0 自己加了
+//!   `PreTlsProcess` 接缝，只是只在 TLS 分支里调 ⇒ fork 只剩「挪到 TLS 分支之前」那几行，见 FORK.md §12。
 //!
 //! # ⚠ ⚠ 一条会被读错的语义：**清单内的来源不发头 ⇒ 关连接**
 //!
@@ -28,10 +28,17 @@
 //! 于是一条 `remote_ip 10.0.0.0/8` 规则会**命中它**。
 //! ⇒ 「可选」把一个显式的信任声明，变成一个**可以被对端单方面关掉的开关**。
 
+use async_trait::async_trait;
 use fulcrum_runtime::SharedRuntime;
 use fulcrum_runtime::proxyproto::{self, Verdict};
-use pingora_core::listeners::{ProxyProtocolPolicy, ProxyProtocolVerdict};
+use pingora_core::listeners::PreTlsProcess;
+use pingora_core::protocols::l4::socket::SocketAddr;
+use pingora_core::protocols::l4::stream::Stream as L4Stream;
+use pingora_core::protocols::{GetSocketDigest, SocketDigest};
+use pingora_core::{Error, ErrorType};
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 
 /// 挂到监听器上的策略。
 ///
@@ -69,28 +76,115 @@ impl std::fmt::Debug for HttpProxyProtocol {
     }
 }
 
-impl ProxyProtocolPolicy for HttpProxyProtocol {
+impl HttpProxyProtocol {
+    /// 这个对端在信任清单里吗？
+    ///
     /// ⚠ ⚠ `peer` 为 `None`（拿不到 inet 对端，例如 Unix domain socket）⇒ **不信任**。
     ///
     /// ★ 与「清单为空时恒 false」同一条纪律：**拿不到证据不等于证据成立**。
-    fn trusts(&self, peer: Option<&std::net::SocketAddr>) -> bool {
+    pub(crate) fn trusts(&self, peer: Option<&std::net::SocketAddr>) -> bool {
         match peer {
             Some(a) => self.rt.current().trusts_proxy_protocol(a.ip()),
             None => false,
         }
     }
+}
 
-    /// 纯翻译：`fulcrum_runtime::proxyproto::Verdict` → fork 那侧的同形枚举。
+/// 本模块的错误类型（原来在 fork 里，随读取逻辑一起搬过来）。
+const PROXY_PROTOCOL_ERR: ErrorType = ErrorType::Custom("ProxyProtocolError");
+
+/// 读 PROXY 头时缓冲区的**硬上界**。
+///
+/// ★ 它不是协议上界（那由 [`proxyproto::decode`] 自己的 `Invalid` 给：v1 ≤ 107 字节，
+/// v2 ≤ [`proxyproto::MAX_HEADER`]），而是**这个循环一定会停**的最后一道保证。
+/// ⚠ 经真实解码器走不到（`MAX_HEADER` 远小于它）—— 留着是防线，⛔ 不是判据。
+const PROXY_PROTOCOL_HARD_CAP: usize = 4096;
+
+#[async_trait]
+impl PreTlsProcess for HttpProxyProtocol {
+    /// 在 TLS 握手之前（明文端口：在 HTTP 解析之前）读掉一个 PROXY 头，并把对端地址换成它报的那个。
     ///
-    /// ★ 两个枚举**有意不共用一个类型**：共用就意味着 `pingora-core` 要依赖
-    /// `fulcrum-runtime`，而 fork 的改动面必须保持「只加接缝」。
-    fn feed(&self, buf: &[u8]) -> ProxyProtocolVerdict {
-        match proxyproto::decode(buf) {
-            Verdict::Need(n) => ProxyProtocolVerdict::Need(n),
-            Verdict::Done { client, consumed } => ProxyProtocolVerdict::Done { client, consumed },
-            Verdict::Invalid(why) => ProxyProtocolVerdict::Invalid(why.to_string()),
+    /// 返回 `Err` = **关掉这条连接**。⚠ 这与「不在清单里」有意相反：一个**在信任清单里**的
+    /// 对端发来坏头（或干脆不发完），说明配置或对端出了问题，而此时我们**已经吃掉了一部分字节、
+    /// 还原不回去** —— 把残缺的流交给上层只会把问题推远。
+    async fn process(&self, stream: &mut L4Stream) -> pingora_core::Result<()> {
+        let peer = stream
+            .get_socket_digest()
+            .and_then(|d| d.peer_addr().and_then(|a| a.as_inet().copied()));
+        if !self.trusts(peer.as_ref()) {
+            // ★ ★ 一个字节都不读，原样交给上层。
+            return Ok(());
+        }
+
+        let mut buf: Vec<u8> = Vec::with_capacity(64);
+        let mut chunk = [0u8; 256];
+        loop {
+            // ★ 先拿已有的字节问一次 —— `decode` 是纯函数，重复问不要钱。
+            match proxyproto::decode(&buf) {
+                Verdict::Done { client, consumed } => {
+                    // ★ ★ ★ **多读到的字节必须还回去。** TCP 是流，一次 read 很可能把
+                    //   PROXY 头与它后面的 ClientHello（或请求行）**一起**读回来。
+                    //   少了这一步，上层拿到的流就从半截开始 —— 而那不会有任何报错，
+                    //   只表现为「TLS 握手莫名其妙失败」。
+                    if consumed < buf.len() {
+                        stream.rewind(&buf[consumed..]);
+                    }
+                    if let Some(addr) = client {
+                        override_peer_addr(stream, addr);
+                    }
+                    return Ok(());
+                }
+                Verdict::Invalid(why) => {
+                    return Error::e_explain(
+                        PROXY_PROTOCOL_ERR,
+                        format!("bad PROXY header: {why}"),
+                    );
+                }
+                Verdict::Need(_) => {}
+            }
+
+            if buf.len() >= PROXY_PROTOCOL_HARD_CAP {
+                return Error::e_explain(
+                    PROXY_PROTOCOL_ERR,
+                    format!("PROXY header exceeded {PROXY_PROTOCOL_HARD_CAP} bytes"),
+                );
+            }
+
+            // ⚠ 这里**故意没有自己的超时**：pingora 的 `services/listening.rs` 已经把整个
+            //   `handshake()` 包在一个 60s 的 timeout 里，本回调就在 `handshake()` 里被调。
+            match stream.read(&mut chunk).await {
+                Ok(0) => {
+                    return Error::e_explain(
+                        PROXY_PROTOCOL_ERR,
+                        "peer closed the connection while we waited for its PROXY header",
+                    );
+                }
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) => {
+                    return Error::e_explain(PROXY_PROTOCOL_ERR, format!("read failed: {e}"));
+                }
+            }
         }
     }
+}
+
+/// 把这条连接的对端地址换成 PROXY 头报的那个。
+///
+/// # ⚠ ⚠ ★ 为什么是「换一整份 digest」而不是 `peer_addr.set(...)`
+///
+/// `SocketDigest.peer_addr` 是 `pub` 的 `OnceCell`，看起来 `set()` 一下就行 ——
+/// **而那行不通，因为它已经被填过了**：pingora 的 `services/listening.rs` 在
+/// `io.handshake()` **之前**调 `io.peer_addr()`（为了握手失败时那行日志里能带上地址），
+/// 而 `SocketDigest::peer_addr()` 是 `get_or_init`。
+/// ⇒ `OnceCell::set()` 到这一步必然返回 `Err`，**而它的返回值很容易被忽略**，
+///    于是「地址没换成」会是一次完全无声的失效。
+///
+/// ⇒ 换一整份。`local_addr` / `original_dst` 都会从**同一个 fd** 重新惰性派生，什么都不丢。
+fn override_peer_addr(stream: &mut L4Stream, client: std::net::SocketAddr) {
+    let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
+    // ★ 新造的 digest，这个 `set` 一定成功；写成 `let _ =` 是因为返回值确实无话可说。
+    let _ = digest.peer_addr.set(Some(SocketAddr::Inet(client)));
+    stream.set_socket_digest(digest);
 }
 
 #[cfg(test)]
@@ -154,33 +248,136 @@ mod tests {
         assert!(p.trusts(Some(&a)), "★ 换过配置之后必须立刻生效");
     }
 
-    #[test]
-    fn feed_把三种判决逐条翻过去() {
+    // ── `PreTlsProcess` 的实现（2026-09-24 从 fork 搬来的循环读 + 覆盖地址）─────────────
+    //
+    // ★ 夹具是**真的一对 TCP 连接**，⛔ 不是假流：「多读的字节还回去」（`rewind`）与
+    //   「换掉对端地址」都是 pingora `L4Stream` / `SocketDigest` 自己的行为，用替身测等于没测。
+    // ★ 头用真样本而不是自己造的形状 —— 夹具写错时，一个更宽的断言会让它悄悄通过。
+
+    // `GetSocketDigest` / `SocketDigest` / `AsRawFd` / `AsyncReadExt` 经 `use super::*` 拿到。
+    use tokio::io::AsyncWriteExt;
+
+    const V1: &[u8] = b"PROXY TCP4 192.0.2.7 10.0.0.1 56324 443\r\n";
+    const 后续: &[u8] = b"GET / HTTP/1.1\r\n";
+
+    fn 信任回环() -> Arc<HttpProxyProtocol> {
+        HttpProxyProtocol::new(rt_with("{\n  proxy_protocol_from 127.0.0.0/8\n}"))
+    }
+
+    /// 一对真的 TCP 连接：（服务端那头的 `L4Stream`，客户端那头）。
+    /// ★ 服务端那头**自己装上 `SocketDigest`**：监听器路径上 pingora 在 accept 时装，
+    ///   测试里不装的话 `get_socket_digest()` 是 `None`，信任判断根本拿不到对端地址。
+    async fn 一对连接() -> (L4Stream, tokio::net::TcpStream) {
+        let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = tokio::net::TcpStream::connect(ln.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = ln.accept().await.unwrap();
+        let fd = server.as_raw_fd();
+        let mut s = L4Stream::from(server);
+        s.set_socket_digest(SocketDigest::from_raw_fd(fd));
+        (s, client)
+    }
+
+    fn 对端(s: &L4Stream) -> Option<std::net::SocketAddr> {
+        s.get_socket_digest()
+            .and_then(|d| d.peer_addr().and_then(|a| a.as_inet().copied()))
+    }
+
+    /// `process()` 之后流里还剩什么：关掉客户端，读到 EOF。
+    async fn 剩下的(s: &mut L4Stream, client: tokio::net::TcpStream) -> Vec<u8> {
+        drop(client);
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).await.unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn 清单内的对端_读掉头_换掉对端地址_后面的字节一个不少() {
+        let p = 信任回环();
+        let (mut s, mut c) = 一对连接().await;
+        // ★ 一次写完：头与后续数据多半在**同一次** read 里回来 —— 正是「多读的必须还回去」那种情形。
+        c.write_all(&[V1, 后续].concat()).await.unwrap();
+        p.process(&mut s).await.expect("合法的头不该关连接");
+        assert_eq!(
+            对端(&s),
+            Some("192.0.2.7:56324".parse().unwrap()),
+            "对端地址没换成头里报的那个"
+        );
+        assert_eq!(
+            剩下的(&mut s, c).await,
+            后续,
+            "头后面的字节必须原样还回去（多读的要 rewind）"
+        );
+    }
+
+    #[tokio::test]
+    async fn 头分两次到达也能读完() {
+        let p = 信任回环();
+        let (mut s, mut c) = 一对连接().await;
+        let (前半, 后半) = V1.split_at(15);
+        let 写 = async {
+            c.write_all(前半).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            c.write_all(&[后半, 后续].concat()).await.unwrap();
+            c
+        };
+        let (结果, c) = tokio::join!(p.process(&mut s), 写);
+        结果.expect("分两次到达的合法头不该关连接");
+        assert_eq!(对端(&s), Some("192.0.2.7:56324".parse().unwrap()));
+        assert_eq!(剩下的(&mut s, c).await, 后续);
+    }
+
+    #[tokio::test]
+    async fn 清单内的对端发坏头_关连接() {
+        let p = 信任回环();
+        let (mut s, mut c) = 一对连接().await;
+        c.write_all(b"PROXY TCP4 not-an-ip 10.0.0.1 1 2\r\n")
+            .await
+            .unwrap();
+        assert!(p.process(&mut s).await.is_err(), "坏头必须关连接");
+    }
+
+    #[tokio::test]
+    async fn 清单内的对端没发完就断开_关连接() {
+        let p = 信任回环();
+        let (mut s, mut c) = 一对连接().await;
+        c.write_all(b"PROXY TCP4 ").await.unwrap();
+        c.shutdown().await.unwrap();
+        // ★ 清单内的来源不发完整的头 ⇒ 关连接（owner 拍板的口径，见模块头）；
+        //   ⛔ 不能退回用 socket 对端 —— 那个地址正是 LB 自己。
+        assert!(p.process(&mut s).await.is_err(), "头没发完就断开必须关连接");
+    }
+
+    #[tokio::test]
+    async fn unknown_头不换对端地址_后面的字节照样还回去() {
+        let p = 信任回环();
+        let (mut s, mut c) = 一对连接().await;
+        let 客户端地址 = c.local_addr().unwrap();
+        c.write_all(&[b"PROXY UNKNOWN\r\n".as_slice(), 后续].concat())
+            .await
+            .unwrap();
+        p.process(&mut s).await.expect("PROXY UNKNOWN 是合法的头");
+        // ★ `UNKNOWN` / `LOCAL` = 这条连接没有真实客户端 ⇒ 照旧用 socket 对端。
+        assert_eq!(对端(&s), Some(客户端地址), "UNKNOWN 头不该动对端地址");
+        assert_eq!(剩下的(&mut s, c).await, 后续, "UNKNOWN 头本身也要被读掉");
+    }
+
+    #[tokio::test]
+    async fn 清单外的对端_一个字节都不读() {
         let p = HttpProxyProtocol::new(rt_with(""));
-
-        // ⚠ 空输入：还判不出来。
-        assert!(matches!(p.feed(b""), ProxyProtocolVerdict::Need(_)));
-
-        // 一个真的 v1 头。★ 用真样本而不是自己造的形状 —— 夹具写错时，
-        //   一个更宽的断言会让它悄悄通过（本仓库为这件事付过账）。
-        let v1 = b"PROXY TCP4 192.0.2.7 10.0.0.1 56324 443\r\nGET / HTTP/1.1\r\n";
-        match p.feed(v1) {
-            ProxyProtocolVerdict::Done { client, consumed } => {
-                assert_eq!(
-                    client.map(|a| a.ip().to_string()).as_deref(),
-                    Some("192.0.2.7")
-                );
-                // ★ 断言 `consumed` 只吃掉头那一段 —— 多吃一个字节，
-                //   后面那个 `GET` 就废了，而那不会有任何报错。
-                assert_eq!(consumed, 41, "只该吃掉 PROXY 那一行（含 CRLF）");
-            }
-            other => panic!("v1 头应当判为 Done，实际 {other:?}"),
-        }
-
-        // 坏头。
-        assert!(matches!(
-            p.feed(b"PROXY TCP4 not-an-ip 10.0.0.1 1 2\r\n"),
-            ProxyProtocolVerdict::Invalid(_)
-        ));
+        let (mut s, mut c) = 一对连接().await;
+        let 客户端地址 = c.local_addr().unwrap();
+        let 全部 = [V1, 后续].concat();
+        c.write_all(&全部).await.unwrap();
+        p.process(&mut s).await.expect("清单外的对端不该被关");
+        assert_eq!(对端(&s), Some(客户端地址), "清单外的对端，地址必须原样不动");
+        // ★ ★ 「一个字节都不读」（⛔ 不是「读掉丢弃」）：v2 头的长度字段由攻击者控制，
+        //   「读掉丢弃」必须先解析那两个字节才知道丢多少，而「不读」完全不碰。
+        assert_eq!(
+            剩下的(&mut s, c).await,
+            全部,
+            "清单外的对端，本模块一个字节都不该读"
+        );
     }
 }

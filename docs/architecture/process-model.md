@@ -59,7 +59,7 @@ sources:
 
 | 项 | 落法 | 换来什么 |
 |---|---|---|
-| 特权丢弃 | systemd 的 `User=` / `Group=` | ★ `daemonize` 依赖整条删除，**RUSTSEC-2025-0069 归零**；特权丢弃交给比任何 crate 都更经得起审计的 systemd |
+| 特权丢弃 | systemd 的 `User=` / `Group=` | ★ `daemonize` 依赖整条删除，**RUSTSEC-2025-0069 归零**（✅ 2026-09-24 兑现：pingora 0.9.0 把它换成了 `daemonix`；后者仍在依赖图里，而枢衡恒 `daemon: false`、不走它）；特权丢弃交给比任何 crate 都更经得起审计的 systemd |
 | 日志 | stderr → journal | 不需要自己开日志文件、不需要 logrotate |
 | 目录 | `ConfigurationDirectory=` `/etc/fulcrum`<br>`StateDirectory=` `/var/lib/fulcrum`<br>`RuntimeDirectory=` `/run/fulcrum`<br>`CacheDirectory=` `/var/cache/fulcrum` | systemd 负责创建并按 `User=`/`Group=` 设权限。★ **但每一项都可被配置覆盖**——D8 的磁盘缓存要能挂到别的盘 |
 | PID 文件 | ⚠ **这一格已被 M1 spike #1 的实测部分推翻** —— 见下一节 | 原话是「`Type=notify` 下 systemd 自己跟踪 MainPID」，说的是 systemd 的 **`PIDFile=` 指令**不需要（那是对的，至今如此）。但它**不等于**「没有任何东西需要知道当前是哪一代」：`ExitType=cgroup` 之下 MainPID 在首次换代后归零，`ExecReload` 必须从一个**每代自写**的 pid 文件里找当前这一代 |

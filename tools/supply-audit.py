@@ -71,11 +71,9 @@ DEFAULT_TARGET = "x86_64-unknown-linux-gnu"
 # ★ 已登记并接受的公告：照常打印，但不改退出码。
 #   每一条都必须写清「为什么接受」和「出路在哪」——没有理由的条目等于偷偷降噪。
 ACCEPTED: dict[str, str] = {
-    "RUSTSEC-2025-0069": (
-        "daemonize 失维、无 CVE、无可升版本。它做的是特权丢弃，手写替代违反安全基线；"
-        "★ 出路是 G31——systemd Type=notify 前台运行后 conf.daemon 恒 false，"
-        "该依赖整个可以删掉。见 vendor/pingora/FORK.md 第 4 节。"
-    ),
+    # （2026-09-24）RUSTSEC-2025-0069（daemonize 失维）那条已撤：pingora 0.9.0 把 daemonize 换成了
+    #   daemonix，两把锁里都不再有它 ⇒ 它成了一条永远不命中的死条目（本脚本与 dep-check.py 的反向校验
+    #   都会报「应当删掉」）。⛔ 死条目不留：它与没有这条豁免在门上看不出区别，却会让人以为还在看着。
 }
 
 # Cargo.lock 的 [[package]] 块

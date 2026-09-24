@@ -155,12 +155,16 @@ could not be opened: Dynamic loading not supported"
    `ensure_patches_applied` 会 `git init` + `git apply` 打自己的补丁）。
    ★ 在仓库那张 Debian 镜像上撞不到这一条，因为 `rust:*-trixie` 自带 git；`rust:*-alpine` 不带。
    ⇒ **一条只在换基础镜像时才现形的构建依赖。**
+   ✅ 2026-09-24 随 rebase 升到 `boring-sys 5.2.0`：同一张 Alpine 构建镜像**一个包没增删**就编过了 ⇒ 这四样仍然够。
 
 2. ⚠ ⚠ **`boring` 不能按 G29「追新」写。** 实测 crates.io 上最新是 **5.2.0**，
    而 `quiche 0.29.3` 解出来的是 **4.22.0**（`cargo add` 当场提示
    `Adding boring v4.22.0 (available: v5.2.0)`）。照追新写一行 `boring = "5"`，
    cargo 会**同时**留下两份 boring，`SslContextBuilder` 同名却是两个类型 ——
    ★ 与根 `Cargo.toml` 里 `pingora-http` 那条 `[patch]` 注释记的是同一个形状。
+   ✅ 2026-09-24：`quiche 0.30.0` 把 boring 的区间放宽到 `>=4.19, <6`，探针随产品一起取 **5.2.0**
+   ⇒ 图里仍然只有一份 boring（`cargo tree -i boring` 实测；与产品那把锁的五个相关包版本逐个相同）。
+   ⚠ 规矩本身不变：写到 quiche 的区间**之外**，照样同时留下两份。
 
 3. **Debian trixie 没有 musl 的 C++ 编译器。** 实测 `musl-tools` 只装出
    `/usr/bin/musl-gcc` 与 `/usr/bin/musl-ldd`（C），**没有 `musl-g++`**；
@@ -168,7 +172,7 @@ could not be opened: Dynamic loading not supported"
    `boring-sys` 还会 `cargo:rustc-link-lib=stdc++`。
    ⇒ **仓库现有的那张构建镜像（`docker/Dockerfile.build`）按原样编不出 musl 产物。**
 
-4. `quiche 0.29.3` 的 default feature **就是** `boringssl-boring-crate`，
+4. `quiche 0.29.3` 的 default feature **就是** `boringssl-boring-crate`（0.30.0 仍是，读的是它的 `Cargo.toml` `[features]`），
    `Config::with_boring_ssl_ctx_builder` 走的正是它 —— G104 假定的那条路是通的，
    **而且现在是被编译器与一次真握手一起证过的**，不再只是读文档。
 
@@ -187,6 +191,11 @@ could not be opened: Dynamic loading not supported"
 | 二进制大小 | **3,191,224** 字节 | **2,951,168** 字节 |
 | 握手线程的栈 | 2,099,880 字节 | 2,099,864 字节 |
 | 构建方式 | Alpine 原生 | Alpine 原生 + **qemu 模拟**（本机无 aarch64 硬件）|
+
+✅ **2026-09-24 重跑**（随 rebase 升到 `quiche 0.30.0` + `boring 5.2.0`；`ARCHES=amd64`，**2 分 57 秒**，含反证）：
+x86_64 `INTERP=0 / NEEDED=0`、`static-pie linked`，二进制 **3,734,824** 字节（比上表 +543,600，约 +17%），
+握手线程的栈 2,099,864 字节；C1 / C2 / D 全过，反证照样在 scratch 里跑不起来。
+⏳ aarch64 那一格没重跑 —— 要等本机装好 binfmt（qemu）之后补。
 
 ★ **两边 `file(1)` 的措辞不一样（`static-pie` vs `statically`），而它们是同一件事**：
 `INTERP` 与 `NEEDED` 两个数都是 0。差别只是 x86_64 那份是位置无关的静态可执行文件。

@@ -38,7 +38,9 @@ sources:
 | 5 个直接依赖 | 全是最新 | 全是最新 |
 | Docker 基镜像 | `rust:1-bookworm`（Debian 12 oldstable）| **`rust:1-trixie`**（Debian 13，Rust 1.97.1）|
 
-**只剩 `daemonize` 一条**（RUSTSEC-2025-0069，失维、无 CVE、无可升版本）。★ **它是被权衡后保留的，不是漏掉的**——换掉它意味着手写特权丢弃代码，理由与出路见 [`FORK.md`](../../vendor/pingora/FORK.md) 第 7 节。
+**只剩 `daemonize` 一条**（RUSTSEC-2025-0069，失维、无 CVE、无可升版本）。★ **它是被权衡后保留的，不是漏掉的**——换掉它意味着手写特权丢弃代码，理由与出路见 [`FORK.md`](../../vendor/pingora/FORK.md) 第 9 节（此处原写「第 7 节」，不准）。
+✅ **2026-09-24：这一条也没了** —— fork rebase 到 pingora 0.9.0，上游自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`），两把锁里都不再有 `daemonize`，`tools/supply-audit.py` 的 `ACCEPTED` 随之清空。
+★ 同一次 rebase 新进依赖图的包：`flurry`（`ListenFds` 按地址的锁）、`seize`（flurry 的回收）、`dashmap` 5（连接池重写）、`daemonix`（unix 上无条件依赖；枢衡恒前台运行、不走它）。都过了 24 小时怀疑期；vendor 锁里另有一整棵 `dial9*` / `aws-sdk-s3` 可选依赖被 fork 主动裁掉（它会把 aws-lc-rs 带进锁，见 FORK.md 文首）。
 ⚠ ⚠ **此处原先链到 [待定清单](/governance/open-questions.md) 的 `D12`，那是过期的**（2026-09-08 更正）——
 `D12` 已结案（`G32`），而那份清单里**一个 D 号都没有**，链过去什么都看不到。
 ★ 与本页下文那句「它已经不在待定清单里了」原本是**同一份文件里自相矛盾的两句**。★ 此后 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 迁走**，不再在名单上。
@@ -202,7 +204,7 @@ OSV.dev 对全部 176 包的查询结果：
 |---|---|---|---|
 | **RUSTSEC-2026-0253** | `lru` 0.16.4 | memory-corruption（UAF）| ★ 当时**不可达**，见下；✅ **现已修掉** |
 | **RUSTSEC-2024-0437** | `protobuf` 2.28.0 | DoS（栈溢出）| ★ 当时**不可达**，见下；✅ **现已修掉** |
-| RUSTSEC-2025-0069 | `daemonize` 0.5.0 | 失维 | 无 CVE；★ 「追最新」不适用——**没有更新的版本** |
+| RUSTSEC-2025-0069 | `daemonize` 0.5.0 | 失维 | 无 CVE；★ 「追最新」不适用——**没有更新的版本**。✅ **2026-09-24 已离开依赖图**（pingora 0.9.0 换成 `daemonix`）|
 | RUSTSEC-2024-0388 | `derivative` 2.2.0 | 失维 | ✅ **已修**——换成 `educe`，见上 |
 
 ## ★ 两条真漏洞为什么按当前实例化不可达

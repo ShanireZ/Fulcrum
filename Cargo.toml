@@ -41,7 +41,7 @@ pingora-boringssl = { path = "vendor/pingora/pingora-boringssl" }
 # ★ 下界抬到「实际锁定并跑过验证的那个版本」，不是随手写的旧值。
 #   G29 不设上界，Cargo 会自己往上跳；下界的意义是记录「这个版本我们验过」。
 [workspace.dependencies]
-pingora-core = ">=0.8.1"
+pingora-core = ">=0.9.0"
 async-trait = ">=0.1.92"
 # ★ `process` 是为 DNS-01 的 exec hook（G57）加的：那条路要起一个外部程序，
 #   而 `std::process` 是阻塞的——在巡检任务里同步等一个外部命令会占住整条 runtime 线程。
@@ -70,22 +70,23 @@ serde_json = ">=1.0.151"
 regex = ">=1.13.1"
 # 数据面直接用到的 pingora 类型与它们的底层类型。三条都已经在依赖图里
 # （pingora-core 拖进来的），这里只是把它们变成显式的直接依赖。
-pingora-http = ">=0.8.1"
+pingora-http = ">=0.9.0"
 bytes = ">=1.12.1"
 http = ">=1.5.0"
 # TLS 层：BoringSSL 的类型只经 pingora-boringssl 拿（见 crates/fulcrum-tls 的说明）。
-pingora-boringssl = ">=0.8.1"
+pingora-boringssl = ">=0.9.0"
 # HTTP/3 的传输层与语义层（**G103** 取 quiche，**G105** 语义层不自研）。
 #
 # ⚠ ⚠ **`default-features = false` 在这一条上是那条硬约束的执行者。**
 #   要的是 `boringssl-boring-crate`：它走 `boring` crate，于是与 `pingora-boringssl`
 #   **解到同一个 `boring`**，`SslContextBuilder` 才是同一个类型，G104 那句「两个入口共用
 #   同一个 `select_certificate_callback`」才机械成立。
-#   ★ 而它另有一个 `boringssl-vendored`，那条会让 quiche 自己从源码编一份 BoringSSL
-#   ⇒ 产物里就是**两套 BoringSSL**，「统一 BoringSSL」按字面读就成了假话。
+#   ⚠ 此处原先写「它另有一个 `boringssl-vendored`，会让 quiche 自己从源码编一份 BoringSSL」——
+#     **不成立**：0.29.3 与 0.30.0 的特性表里都没有这个名字（2026-09-24 查 crates.io）。
+#     约束本身不变：必须走 `boringssl-boring-crate`，产物里才只有一套 BoringSSL。
 #   ⚠ 守它的不是这段注释：`quiche` 在 `supply_gates.rs` 门 2 的名单里，漏写当场红；
 #     而「图里只有一个 boring」由门 5（读 `cargo tree`）守。
-quiche = { version = ">=0.29.3", default-features = false, features = [
+quiche = { version = ">=0.30.0", default-features = false, features = [
     "boringssl-boring-crate",
 ] }
 # ⚠ ★ **G111：`boring` 破例成为直接依赖**（纪律本是「BoringSSL 的类型只经
@@ -94,12 +95,13 @@ quiche = { version = ">=0.29.3", default-features = false, features = [
 #   `pingora-boringssl` 只 re-export 了 `error`/`hash`/`nid`/`pkey`/`ssl`/`x509`，够不到它。
 #   ★ 认证由 AEAD 的 tag 校验完成（常数时间比较在 BoringSSL 内部），我们这边一行密码学都不写。
 # · **那条纪律的目的是类型同一性，而它没有变**：图里三个 `boring` 消费者
-#   （`pingora-boringssl` / `quiche` / 本仓库）都是 `^4`，cargo 统一到同一个版本；
+#   （`pingora-boringssl` 要 `"5"`、`quiche` 0.30 接 `>=4.19, <6`、本仓库 `>=5.2.0`）都落在 5 上，
+#   cargo 统一到同一个版本（2026-09-24 起是 5.2.0；quiche 0.29 只接 `^4`，这正是它随 pingora 0.9.0 一起升的原因）；
 #   解成两份的话 `SslContextBuilder` 当场编不过。**目的由编译器执行，不由纪律执行。**
 # · **另两条路都更贵**：给 fork 加一行 re-export（每次 rebase 手工重贴）／走 `ssl_sys`
 #   裸 FFI（手写密码学 FFI，违反安全基线第 5 条）。
 # · **新增 0 个包**。
-boring = ">=4.22.0"
+boring = ">=5.2.0"
 # 连接 ID 与 Retry token 的随机源（M2 批 J）。
 #
 # ★ **新增 0 个包**：`rand 0.10.2` 本来就是 `pingora-core` 的 **normal** 依赖
