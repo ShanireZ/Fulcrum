@@ -534,7 +534,7 @@ impl FulcrumApp {
             write_with_headers(
                 session,
                 200,
-                Some(key_auth),
+                Some(Bytes::from(key_auth)),
                 vec![("Content-Type".into(), "application/octet-stream".into())],
             )
             .await;
@@ -587,8 +587,9 @@ impl FulcrumApp {
 
         match &routed.outcome {
             Outcome::Respond { status, body } => {
-                let text = body
-                    .map(|t| t.expand(&ctx, &resp_ctx(*status, None), &routed.captures, started));
+                let text = body.map(|t| {
+                    respond_body(t, &ctx, &resp_ctx(*status, None), &routed.captures, started)
+                });
                 write_simple(
                     session,
                     *status,
@@ -641,7 +642,7 @@ impl FulcrumApp {
                     started,
                     &mut extra,
                 );
-                write_with_headers(session, 200, Some(metrics::render()), extra).await;
+                write_with_headers(session, 200, Some(Bytes::from(metrics::render())), extra).await;
                 base
             }
             Outcome::NoRouteMatch => {
@@ -732,7 +733,7 @@ impl FulcrumApp {
                 let rc = resp_ctx(status, None);
                 let body = page
                     .body
-                    .map(|t| t.expand(ctx, &rc, &routed.captures, started));
+                    .map(|t| Bytes::from(t.expand(ctx, &rc, &routed.captures, started)));
                 write_simple(
                     session,
                     page.status,
@@ -1683,10 +1684,30 @@ fn apply_ops_to_request(
     }
 }
 
+/// `respond` 的正文。
+///
+/// ★ 整段都是字面量时**不拷**：返回的 `Bytes` 直接指着模板装载时建好的那一份
+///   （[`Template::shared_literal`]），每个请求只剩 `from_owner` 那一个几十字节的小分配。
+///   ⚠ 没让 `fulcrum-runtime` 直接存 `Bytes`（那样连小分配都没有）：要给它加 `bytes` 依赖、
+///   改 `Cargo.lock`，而 aarch64 那一格的触发集哈希的正是整份 `Cargo.lock`。
+/// 有占位符的照旧按请求展开。
+fn respond_body(
+    t: &Template,
+    ctx: &RequestCtx<'_>,
+    rc: &ResponseCtx<'_>,
+    caps: &[String],
+    now: SystemTime,
+) -> Bytes {
+    match t.shared_literal() {
+        Some(lit) => Bytes::from_owner(Arc::clone(lit)),
+        None => Bytes::from(t.expand(ctx, rc, caps, now)),
+    }
+}
+
 async fn write_simple(
     session: &mut Downstream<'_>,
     status: u16,
-    body: Option<String>,
+    body: Option<Bytes>,
     ops: &[&HeaderOpRt],
     ctx: &RequestCtx<'_>,
     started: SystemTime,
@@ -1700,7 +1721,7 @@ async fn write_simple(
 async fn write_with_headers(
     session: &mut Downstream<'_>,
     status: u16,
-    body: Option<String>,
+    bytes: Option<Bytes>,
     extra: Vec<(String, String)>,
 ) {
     let mut resp = match ResponseHeader::build(status, None) {
@@ -1710,7 +1731,6 @@ async fn write_with_headers(
             return;
         }
     };
-    let bytes = body.map(Bytes::from);
     let len = bytes.as_ref().map(|b| b.len()).unwrap_or(0);
     let _ = resp.insert_header("Content-Length", len.to_string());
     if bytes.is_some() {
@@ -2405,4 +2425,54 @@ acme-tls/1";
     process::spawn_readiness(server.watch_execution_phase(), opts.pid_file.clone());
 
     server.run_forever()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fulcrum_runtime::request::HeaderList;
+    use std::time::UNIX_EPOCH;
+
+    /// 只为给 [`respond_body`] 一个请求视图。
+    fn ctx<'a>(headers: &'a HeaderList<'a>) -> RequestCtx<'a> {
+        RequestCtx {
+            host: "a.example",
+            port: 80,
+            scheme: "http",
+            method: "GET",
+            path: "/",
+            query: "",
+            headers,
+            remote_ip: None,
+            remote_port: 0,
+        }
+    }
+
+    /// ★ 字面量正文**每个请求都不拷**：两次调用拿到的是同一块内存。
+    /// ⚠ 两份 `Bytes` 必须同时活着 —— 先放掉第一份的话，分配器很可能把同一个地址
+    ///   再发给第二份，于是一个每次都拷的实现也会让指针相等。
+    #[test]
+    fn 字面量正文两次调用指着同一块内存() {
+        let t = Template::parse("literal body, no placeholders");
+        let h = HeaderList(&[]);
+        let rc = ResponseCtx::default();
+        let a = respond_body(&t, &ctx(&h), &rc, &[], UNIX_EPOCH);
+        let b = respond_body(&t, &ctx(&h), &rc, &[], UNIX_EPOCH);
+        assert_eq!(&a[..], b"literal body, no placeholders");
+        assert_eq!(a.as_ptr(), b.as_ptr(), "字面量正文每个请求都新拷了一份");
+    }
+
+    /// 反方向：带占位符的正文照样按请求展开 —— ⛔ 不能被当成字面量存住第一次的结果。
+    #[test]
+    fn 带占位符的正文照样按请求展开() {
+        let t = Template::parse("method={method}");
+        let h = HeaderList(&[]);
+        let rc = ResponseCtx::default();
+        let mut c = ctx(&h);
+        let a = respond_body(&t, &c, &rc, &[], UNIX_EPOCH);
+        c.method = "POST";
+        let b = respond_body(&t, &c, &rc, &[], UNIX_EPOCH);
+        assert_eq!(&a[..], b"method=GET");
+        assert_eq!(&b[..], b"method=POST");
+    }
 }

@@ -10,6 +10,7 @@
 
 use crate::request::{RequestCtx, ResponseCtx};
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,8 @@ enum Seg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template {
     segs: Vec<Seg>,
+    /// 整段都是字面量时，那段字面量的一份**共享**副本（parse 时建一次，由 `segs` 派生）。
+    literal: Option<Arc<[u8]>>,
 }
 
 impl Template {
@@ -82,7 +85,13 @@ impl Template {
         if !lit.is_empty() {
             segs.push(Seg::Lit(lit));
         }
-        Template { segs }
+        let mut t = Template {
+            segs,
+            literal: None,
+        };
+        // ★ 「是不是纯字面量」只有 `as_literal` 一处说了算，这里照它派生，⛔ 不另写一遍。
+        t.literal = t.as_literal().map(|s| Arc::from(s.as_bytes()));
+        t
     }
 
     /// 完全没有占位符时返回那段字面量——调用方可以省掉一次分配。
@@ -92,6 +101,14 @@ impl Template {
             [Seg::Lit(s)] => Some(s),
             _ => None,
         }
+    }
+
+    /// 与 [`Template::as_literal`] 同一段字节，只是装载时就放进了 `Arc`。
+    ///
+    /// ★ 给数据面当响应正文用：拿它包成 `Bytes`，每个请求就不必再把字面量拷一遍
+    ///   （`respond` 那条路，2026-09-24 HTTP 层诊断的发现 2）。
+    pub fn shared_literal(&self) -> Option<&Arc<[u8]>> {
+        self.literal.as_ref()
     }
 
     /// 展开。
@@ -334,6 +351,19 @@ mod tests {
         assert_eq!(Template::parse("").as_literal(), Some(""));
         assert_eq!(Template::parse("{host}").as_literal(), None);
         assert_eq!(Template::parse("x{host}").as_literal(), None);
+    }
+
+    /// ★ 共享副本是**派生**出来的：它与 `as_literal` 必须逐字节相同、有无一致。
+    #[test]
+    fn 共享字面量与_as_literal_是同一段字节() {
+        for s in ["", "plain", "/static/a.css", "{{host}", "{host}", "x{host}"] {
+            let t = Template::parse(s);
+            assert_eq!(
+                t.shared_literal().map(|b| &b[..]),
+                t.as_literal().map(str::as_bytes),
+                "{s:?}"
+            );
+        }
     }
 
     #[test]
