@@ -692,16 +692,19 @@ impl FulcrumApp {
                 //   与 Caddy 一样，中间件裹在终结类外面。
                 //   ⚠ 而**预压缩旁文件优先**：那条路在 `files` 里面判，
                 //   判中了它会把这个 encoder 丢掉（旁文件已经是压好的）。
-                // ⏳ 过渡：先在这一支里克隆一份；`files` 改收只含它要的那几样的小结构之后就不必了。
-                let owned = hdr.clone();
-                let oh = ReqHeaders(&owned);
-                let ctx = facts.ctx(&oh);
-                let enc = encode::Encoder::new(encode::wanted(&routed), &owned);
-                match files::serve(session, &owned, fs, &effective_path, ctx.query, enc).await {
+                // ★ 在借用期内取好 `file_server` 要的全部东西（`FileReq` + `Encoder`），
+                //   之后这一支不再借请求头 ⇒ 下面才能把 `&mut session` 交出去（⛔ 不克隆）。
+                let enc = encode::Encoder::new(encode::wanted(&routed), hdr);
+                let freq = files::FileReq::from_header(hdr);
+                match files::serve(session, &freq, fs, &effective_path, &query, enc).await {
                     Ok(()) => base,
                     Err(status) => {
-                        self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
-                            .await
+                        // ★ 走到这里时一个字节都还没写（`files` 里所有 `Err(status)` 都在任何写之前返回，
+                        //   写出去的 405 / 304 / 416 / 正文都返回 `Ok`）⇒ 重新借一次请求头来算错误页（⛔ 不克隆）。
+                        let headers = ReqHeaders(session.session.req_header());
+                        let ctx = facts.ctx(&headers);
+                        let page = prepare_error(&rt, routed.site, status, &routed, &ctx, started);
+                        write_error_page(session, page).await
                     }
                 }
             }

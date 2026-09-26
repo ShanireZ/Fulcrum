@@ -119,6 +119,7 @@ use probe::Probe;
 use crate::Downstream;
 use bytes::Bytes;
 use fulcrum_runtime::FileServerRt;
+use http::{HeaderValue, Method};
 use log::{debug, warn};
 use pingora_http::{RequestHeader, ResponseHeader};
 use std::fs::Metadata;
@@ -128,6 +129,65 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 一次读多少。★ 64 KiB 是个**没有实测依据**的起点，写在这里是为了让它可被质疑。
 const CHUNK: usize = 64 * 1024;
+
+/// `file_server` 从请求里要的全部东西：方法 + 5 个头（**② 请求头不整份克隆**，2026-09-26）。
+///
+/// ★ 在写响应**之前**从借来的请求头里取出来 —— `HeaderValue` 的 clone 是 `Bytes` 的引用计数、不分配，
+///   标准方法的 `Method` clone 也不分配 ⇒ 数据面不必为 `files` 克隆一整份 `RequestHeader`。
+/// ⚠ 名单**只有这几样**：`files` 要读第 7 个头就得在这里加一格 ——
+///   这个模块里不再有 `&RequestHeader` 可查，编译器会逼着加。
+pub(crate) struct FileReq {
+    method: Method,
+    accept_encoding: Option<HeaderValue>,
+    if_none_match: Option<HeaderValue>,
+    if_modified_since: Option<HeaderValue>,
+    if_range: Option<HeaderValue>,
+    range: Option<HeaderValue>,
+}
+
+impl FileReq {
+    pub(crate) fn from_header(req: &RequestHeader) -> FileReq {
+        // ⚠ `HeaderMap::get` 取的是**第一个**同名头：同名头出现两次时后一个不看（单测钉住）。
+        let first = |name: &str| req.headers.get(name).cloned();
+        FileReq {
+            method: req.method.clone(),
+            accept_encoding: first("accept-encoding"),
+            if_none_match: first("if-none-match"),
+            if_modified_since: first("if-modified-since"),
+            if_range: first("if-range"),
+            range: first("range"),
+        }
+    }
+
+    fn method(&self) -> &str {
+        self.method.as_str()
+    }
+
+    fn accept_encoding(&self) -> Option<&str> {
+        text(&self.accept_encoding)
+    }
+
+    fn if_none_match(&self) -> Option<&str> {
+        text(&self.if_none_match)
+    }
+
+    fn if_modified_since(&self) -> Option<&str> {
+        text(&self.if_modified_since)
+    }
+
+    fn if_range(&self) -> Option<&str> {
+        text(&self.if_range)
+    }
+
+    fn range(&self) -> Option<&str> {
+        text(&self.range)
+    }
+}
+
+/// 头值当文本读：不是可见 ASCII（`to_str()` 失败）的当作没有这个头（单测钉住）。
+fn text(v: &Option<HeaderValue>) -> Option<&str> {
+    v.as_ref().and_then(|v| v.to_str().ok())
+}
 
 /// 发文件。
 ///
@@ -145,14 +205,14 @@ const CHUNK: usize = 64 * 1024;
 // ★ 收窄的是**没人在用的那一半可见性**：本 crate 之外一处调用都没有。
 pub(crate) async fn serve(
     session: &mut Downstream<'_>,
-    req: &RequestHeader,
+    req: &FileReq,
     fs: &FileServerRt,
     url_path: &str,
     query: &str,
     encoder: Option<crate::encode::Encoder>,
 ) -> Result<(), u16> {
     // ── 1. 方法 ────────────────────────────────────────────────────────────
-    let method = req.method.as_str();
+    let method = req.method();
     let head_only = match method {
         "GET" => false,
         "HEAD" => true,
@@ -450,14 +510,14 @@ struct Repr<'a> {
 /// 而那次 `stat` 本来就要做（要拿它的大小与 mtime）。
 async fn pick_sidecar(
     fs: &FileServerRt,
-    req: &RequestHeader,
+    req: &FileReq,
     full: &Path,
     meta: &Metadata,
 ) -> Option<(PathBuf, Metadata, &'static str)> {
     if fs.precompressed.is_empty() {
         return None;
     }
-    let accept = header(req, "accept-encoding")?;
+    let accept = req.accept_encoding()?;
     let base_mtime = meta.modified().ok();
     // ★ 按**客户端的**顺序走，不是按配置的顺序 ——
     //   `Accept-Encoding` 里的顺序是客户端的偏好，而那是它的事不是我们的。
@@ -507,7 +567,7 @@ async fn pick_sidecar(
 /// 8–11 步：选表示 → 头 → 条件请求 → Range → 发送。
 async fn send_file(
     session: &mut Downstream<'_>,
-    req: &RequestHeader,
+    req: &FileReq,
     fs: &FileServerRt,
     // ★ ★ 「哪个文件」与「它的 metadata / 字节」现在是**同一个值**带来的
     //   ⇒ ⛔ 不再有一个能与 metadata 各说各话的独立 `full` 参数。
@@ -552,9 +612,9 @@ async fn send_file(
     //
     // ★ 次序照 RFC 9110 §13.2.2：`If-None-Match` **优先**，
     //   它在场时 `If-Modified-Since` 一个字都不看。
-    let fresh = match header(req, "if-none-match") {
+    let fresh = match req.if_none_match() {
         Some(inm) => etag.as_deref().is_some_and(|e| if_none_match_hit(inm, e)),
-        None => match (header(req, "if-modified-since"), mtime) {
+        None => match (req.if_modified_since(), mtime) {
             (Some(ims), Some(mt)) => match (httpdate::parse(ims), unix_secs(mt)) {
                 // ⚠ 比的是**秒**：`Last-Modified` 本来就只有秒精度，
                 //   拿纳秒去比会让「同一秒内的文件」永远不新鲜。
@@ -575,11 +635,11 @@ async fn send_file(
     // ── 10. Range ─────────────────────────────────────────────────────────
     //
     // `If-Range` 不匹配 ⇒ **忽略 Range**、回 200 全量（RFC 9110 §13.1.5）。
-    let range_ok = match header(req, "if-range") {
+    let range_ok = match req.if_range() {
         None => true,
         Some(ir) => if_range_matches(ir, &etag, mtime),
     };
-    let verdict = match (range_ok, header(req, "range")) {
+    let verdict = match (range_ok, req.range()) {
         (true, Some(r)) => range::parse(r, len),
         _ => range::RangeVerdict::Ignore,
     };
@@ -938,10 +998,6 @@ fn if_range_matches(value: &str, etag: &Option<String>, mtime: Option<SystemTime
     }
 }
 
-fn header<'a>(req: &'a RequestHeader, name: &str) -> Option<&'a str> {
-    req.headers.get(name).and_then(|v| v.to_str().ok())
-}
-
 async fn write_head(session: &mut Downstream<'_>, status: u16, extra: Vec<(String, String)>) {
     write_head_encoded(session, status, extra, &mut None).await;
 }
@@ -979,6 +1035,28 @@ async fn write_head_encoded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ `FileReq` 的三条取值口径（② 请求头不整份克隆）：
+    ///   同名头取**第一个**、`to_str()` 不过的当作没有、没带的就是没有。
+    #[test]
+    fn file_req_取第一个同名头_坏值当作没有() {
+        let mut req = RequestHeader::build("HEAD", b"/a.txt", None).unwrap();
+        req.append_header("Range", "bytes=0-1").unwrap();
+        req.append_header("Range", "bytes=5-9").unwrap();
+        req.append_header(
+            "If-None-Match",
+            HeaderValue::from_bytes(b"\"\xff\"").unwrap(),
+        )
+        .unwrap();
+        req.append_header("Accept-Encoding", "gzip, br").unwrap();
+        let f = FileReq::from_header(&req);
+        assert_eq!(f.method(), "HEAD");
+        assert_eq!(f.range(), Some("bytes=0-1"));
+        assert_eq!(f.if_none_match(), None);
+        assert_eq!(f.accept_encoding(), Some("gzip, br"));
+        assert_eq!(f.if_modified_since(), None);
+        assert_eq!(f.if_range(), None);
+    }
 
     // ── If-None-Match ────────────────────────────────────────────────────
     #[test]
