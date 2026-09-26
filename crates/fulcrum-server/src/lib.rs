@@ -287,6 +287,40 @@ impl std::ops::DerefMut for Downstream<'_> {
     }
 }
 
+/// 一次请求在路由与写响应之间反复要用的几个事实 —— 都不借请求头（**② 请求头不整份克隆**）。
+///
+/// ★ 头视图**不在里面**：同一次请求要对着不同的头视图各建一个 [`RequestCtx`] ——
+///   借 `session` 里那一份（`respond` 一类、`file_server`），或反代自己克隆的那一份。
+///   ⚠ 反过来「先建一个带空头的 ctx 再改 `headers`」是个陷阱：那个空头 ctx 一旦被直接拿去展开，
+///   `{header.X}` 就静静地变成空串 —— 正是 `tests/serve/run.sh` 第 11 节守的那种回归。
+#[derive(Clone, Copy)]
+struct ReqFacts<'a> {
+    host: &'a str,
+    port: u16,
+    scheme: &'static str,
+    method: &'a str,
+    path: &'a str,
+    query: &'a str,
+    remote_ip: Option<IpAddr>,
+    remote_port: u16,
+}
+
+impl<'a> ReqFacts<'a> {
+    fn ctx(self, headers: &'a (dyn Headers + Sync)) -> RequestCtx<'a> {
+        RequestCtx {
+            host: self.host,
+            port: self.port,
+            scheme: self.scheme,
+            method: self.method,
+            path: self.path,
+            query: self.query,
+            headers,
+            remote_ip: self.remote_ip,
+            remote_port: self.remote_port,
+        }
+    }
+}
+
 /// 一次请求的只读视图，打包传给转发路径。
 ///
 /// ★ clippy 的 `too_many_arguments` 在这里说得对：八个参数里有四个是
@@ -473,34 +507,36 @@ impl FulcrumApp {
         //   ⚠ 每阶段各取一次的话，一次发生在请求中途的全量 load 会让**同一个请求**
         //   按旧配置路由、按新配置转发——G8 明令禁止的「部分生效」。
         let rt = self.rt.current();
-        // ── 1. 把 Pingora 的请求头翻成 RequestCtx ──────────────────────────
+        // ── 1. 请求头：**借**，⛔ 不整份克隆（② 请求头不整份克隆，2026-09-26）─────────
         //
-        // ★ ★ **请求头先克隆一份**。原本想零拷贝地借用 `session.req_header()`，
-        //   但那个借用要活到整次请求结束（匹配器可能查任意一个头），
-        //   而写响应需要 `&mut session` —— 借用检查器当场把这条路堵死。
-        //   ⚠ 这不是 borrow checker 在挑刺：转发时本来就要把请求头**改一份**
-        //   发给上游（`header_up`），所以这一份克隆下面还要再用一次，并不白花。
-        let req = session.req_header().clone();
+        // ★ 按**字段**借（`session.session`），⛔ 不经 `Deref`：借的只是那一个字段，
+        //   于是下面照样能写 `session.record`。
+        // ⚠ 写响应要 `&mut session`，而请求头就在 `session` 里 ⇒ 每条分支都**先算后写**：
+        //   借用期内把要写的东西算完（`Prepared` / `ErrorPage` / `FileReq`），放掉借用再写。
+        //   ★ 反代是唯一的例外：它边写边读请求头（`header_down` 的 `{header.X}` 要等上游回来才展开），
+        //   所以它在自己那一支里克隆一份 —— 就是这里原来那一次，挪过去了。
+        let hdr: &RequestHeader = session.session.req_header();
+        // ⚠ 这一行照旧经 `Deref` 借整个 `session`：它是**共享**借用、当场就还，与上面按字段借的 `hdr` 共存得了。
         let (remote_ip, remote_port) = client_addr(session);
-        let headers = ReqHeaders(&req);
-        let host_raw = host_of(&req);
+        let host_raw = host_of(hdr);
         // Host 里可能带端口（`a.com:8443`）——站点索引只认主机名。
         let host = host_raw.split(':').next().unwrap_or("").to_string();
-        let path = req.uri.path().to_string();
-        let query = req.uri.query().unwrap_or("").to_string();
-        let method = req.method.as_str().to_string();
+        let path = hdr.uri.path().to_string();
+        let query = hdr.uri.query().unwrap_or("").to_string();
+        let method = hdr.method.as_str().to_string();
 
-        let ctx = RequestCtx {
+        let facts = ReqFacts {
             host: &host,
             port: self.port,
             scheme: if self.https { "https" } else { "http" },
             method: &method,
             path: &path,
             query: &query,
-            headers: &headers,
             remote_ip,
             remote_port,
         };
+        let headers = ReqHeaders(hdr);
+        let ctx = facts.ctx(&headers);
 
         // ── 访问日志：请求那一半（**M2 批 L 第 ② 步**）────────────────────
         //
@@ -564,7 +600,8 @@ impl FulcrumApp {
                 "<other>"
             };
             metrics::NO_SITE_MATCH_TOTAL.inc(&[label]);
-            write_simple(session, status, None, &[], &ctx, started).await;
+            let p = prepare_simple(status, None, &[], &ctx, started);
+            write_prepared(session, p).await;
             return OUTCOME_NO_SITE_MATCH;
         };
 
@@ -590,15 +627,8 @@ impl FulcrumApp {
                 let text = body.map(|t| {
                     respond_body(t, &ctx, &resp_ctx(*status, None), &routed.captures, started)
                 });
-                write_simple(
-                    session,
-                    *status,
-                    text,
-                    &routed.response_headers,
-                    &ctx,
-                    started,
-                )
-                .await;
+                let p = prepare_simple(*status, text, &routed.response_headers, &ctx, started);
+                write_prepared(session, p).await;
                 base
             }
             Outcome::Redirect { to, code } => {
@@ -647,8 +677,8 @@ impl FulcrumApp {
             }
             Outcome::NoRouteMatch => {
                 let status = rt.defaults.no_route_match;
-                self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
-                    .await
+                let page = prepare_error(&rt, routed.site, status, &routed, &ctx, started);
+                write_error_page(session, page).await
             }
             // ── 自研静态文件（M2 批 F）─────────────────────────────────────
             //
@@ -662,8 +692,12 @@ impl FulcrumApp {
                 //   与 Caddy 一样，中间件裹在终结类外面。
                 //   ⚠ 而**预压缩旁文件优先**：那条路在 `files` 里面判，
                 //   判中了它会把这个 encoder 丢掉（旁文件已经是压好的）。
-                let enc = encode::Encoder::new(encode::wanted(&routed), &req);
-                match files::serve(session, &req, fs, &effective_path, ctx.query, enc).await {
+                // ⏳ 过渡：先在这一支里克隆一份；`files` 改收只含它要的那几样的小结构之后就不必了。
+                let owned = hdr.clone();
+                let oh = ReqHeaders(&owned);
+                let ctx = facts.ctx(&oh);
+                let enc = encode::Encoder::new(encode::wanted(&routed), &owned);
+                match files::serve(session, &owned, fs, &effective_path, ctx.query, enc).await {
                     Ok(()) => base,
                     Err(status) => {
                         self.write_error(&rt, session, routed.site, status, &routed, &ctx, started)
@@ -679,9 +713,14 @@ impl FulcrumApp {
             //   而 `file_server` 的字节已经在本机磁盘上、再存一份内存是净亏。
             //   ★ 写在别处时装载日志会说出来（`log_load_summary`），不是静默忽略。
             Outcome::Proxy(target) => {
+                // ★ 反代边写边读请求头（`header_down` 的 `{header.X}` 要等上游回来才展开）
+                //   ⇒ 它克隆一份 —— 就是 `serve_one` 开头原来那一次，挪到这里（次数没变）。
+                let owned = hdr.clone();
+                let oh = ReqHeaders(&owned);
+                let ctx = facts.ctx(&oh);
                 let view = ReqView {
                     ctx: &ctx,
-                    downstream_req: &req,
+                    downstream_req: &owned,
                     effective_path: &effective_path,
                     started,
                 };
@@ -704,6 +743,9 @@ impl FulcrumApp {
     }
 
     /// 错误响应。优先用站点的 `handle_errors`。
+    ///
+    /// ⚠ 只有 `ctx` 借的**不是** `session` 里那份头时才能调它（今天只有反代那一支）；
+    ///   `NoRouteMatch` 与 `file_server` 出错那两条用拆开的 [`prepare_error`] + [`write_error_page`]。
     // ⚠ clippy 说它 8 个参数太多。这里放行而不是硬拆：其中 7 个本来就是
     //   「同一次请求的不同侧面」，而 `rt` 是批 9 加的**配置快照** ——
     //   把它塞进 `Routed` 或 `ReqView` 会让那两个类型多背一份生命周期，
@@ -723,40 +765,12 @@ impl FulcrumApp {
         started: SystemTime,
     ) -> OutcomeName {
         // ★ 进到这里就意味着这一条最终是**错误页** —— 无论它原本要去哪。
-        //   ⚠ ⚠ 它是**返回值**而不是往 `Record` 上写一笔：调用点有三处，
-        //   而「第四处随时会出现」（G110 那次的原话）—— 返回值那种写法下，
+        //   ⚠ ⚠ 它是**返回值**而不是往 `Record` 上写一笔：调用点不止一处，
+        //   而「下一处随时会出现」（G110 那次的原话）—— 返回值那种写法下，
         //   新调用点**不处理这个值就编不过**，而副作用那种写法下它只是少一行。
-        match rt.error_page(site) {
-            Some(page) => {
-                // ★ `handle_errors` 块内 `{status}` 指的是**原始**错误码，
-                //   不是它自己那条 respond 的码——否则那个占位符毫无用处。
-                let rc = resp_ctx(status, None);
-                let body = page
-                    .body
-                    .map(|t| Bytes::from(t.expand(ctx, &rc, &routed.captures, started)));
-                write_simple(
-                    session,
-                    page.status,
-                    body,
-                    &routed.response_headers,
-                    ctx,
-                    started,
-                )
-                .await;
-            }
-            None => {
-                write_simple(
-                    session,
-                    status,
-                    None,
-                    &routed.response_headers,
-                    ctx,
-                    started,
-                )
-                .await;
-            }
-        }
-        OUTCOME_ERROR
+        //   ★ 拆成「算 / 写」两半之后这条照旧：`OUTCOME_ERROR` 只从 [`write_error_page`] 出来。
+        let page = prepare_error(rt, site, status, routed, ctx, started);
+        write_error_page(session, page).await
     }
 
     /// 带缓存的转发。出错时返回该回给下游的状态码。
@@ -1704,18 +1718,71 @@ fn respond_body(
     }
 }
 
-async fn write_simple(
-    session: &mut Downstream<'_>,
+/// 一条待写的简单响应 —— 就是 [`write_with_headers`] 收的那三样（**② 请求头不整份克隆**）。
+///
+/// ★ 把「算」与「写」拆开的理由：算要借请求头（`ctx`），写要 `&mut session`，
+///   而请求头就在 `session` 里 ⇒ 两件事不能同时进行；先算完、放掉借用、再写。
+struct Prepared {
+    status: u16,
+    body: Option<Bytes>,
+    extra: Vec<(String, String)>,
+}
+
+/// 算：站点的 `header` 指令按这条响应展开。
+fn prepare_simple(
     status: u16,
     body: Option<Bytes>,
     ops: &[&HeaderOpRt],
     ctx: &RequestCtx<'_>,
     started: SystemTime,
-) {
+) -> Prepared {
     let mut extra = Vec::new();
     let rc = resp_ctx(status, None);
     collect_ops(ops.iter().copied(), ctx, &rc, &[], started, &mut extra);
-    write_with_headers(session, status, body, extra).await;
+    Prepared {
+        status,
+        body,
+        extra,
+    }
+}
+
+/// 写：交给 [`write_with_headers`]。
+async fn write_prepared(session: &mut Downstream<'_>, p: Prepared) {
+    write_with_headers(session, p.status, p.body, p.extra).await;
+}
+
+/// 算好的错误页。★ `#[must_use]`：拿到它就得交给 [`write_error_page`]，
+/// 而 `outcome = error` 只从那里出来 —— 与拆开之前「`write_error` 的返回值逼着处理」同一条纪律。
+#[must_use]
+struct ErrorPage(Prepared);
+
+/// 错误页：算。优先用站点的 `handle_errors`。
+fn prepare_error(
+    rt: &Runtime,
+    site: &SiteRt,
+    status: u16,
+    routed: &Routed<'_>,
+    ctx: &RequestCtx<'_>,
+    started: SystemTime,
+) -> ErrorPage {
+    ErrorPage(match rt.error_page(site) {
+        Some(page) => {
+            // ★ `handle_errors` 块内 `{status}` 指的是**原始**错误码，
+            //   不是它自己那条 respond 的码——否则那个占位符毫无用处。
+            let rc = resp_ctx(status, None);
+            let body = page
+                .body
+                .map(|t| Bytes::from(t.expand(ctx, &rc, &routed.captures, started)));
+            prepare_simple(page.status, body, &routed.response_headers, ctx, started)
+        }
+        None => prepare_simple(status, None, &routed.response_headers, ctx, started),
+    })
+}
+
+/// 错误页：写。⚠ 进到这里就意味着这一条最终是**错误页** —— `outcome` 从这里出来。
+async fn write_error_page(session: &mut Downstream<'_>, page: ErrorPage) -> OutcomeName {
+    write_prepared(session, page.0).await;
+    OUTCOME_ERROR
 }
 
 async fn write_with_headers(
