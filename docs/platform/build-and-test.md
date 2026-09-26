@@ -145,7 +145,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 | ★ **lint** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `shellcheck` | 见下 |
 | ★ **枢衡自己的 crate 测试** | [`tests/unit/run.sh`](../../tests/unit/run.sh) | `cargo test --workspace --locked --no-fail-fast` 全绿，**且条数不低于下界**，见下 |
 | **fork 回归网** | [`tests/vendor/run.sh`](../../tests/vendor/run.sh) | ★ 不是「零失败」，而是**失败集合与官方原版 0.8.1 逐项相同**（现为 2 条）。⚠ 它**依赖容器能上公网**，见下 |
-| ★ **数据面端到端** | [`tests/serve/run.sh`](../../tests/serve/run.sh) | 真流量走完路由 → 转发 → `rewrite` → `header_up` → 重定向 → 421 → **回落三向**（501 / 转发 / 502）→ keep-alive |
+| ★ **数据面端到端** | [`tests/serve/run.sh`](../../tests/serve/run.sh) | 真流量走完路由 → 转发 → `rewrite` → `header_up` → 重定向 → 421 → **回落三向**（501 / 转发 / 502）→ keep-alive → 一个约 4 KiB 的响应只许一个数据段（写缓冲，G155）|
 | ★ **L4 面端到端** | [`tests/l4/run.sh`](../../tests/l4/run.sh) | TCP/UDP 透传、SNI/ALPN 分流（**不终止 TLS**，字节原样重放）、PROXY protocol 的收与发、★ **换代时 L4 长连接不断**（自建监听器参与 socket 移交）|
 | ★ **静态文件端到端** | [`tests/files/run.sh`](../../tests/files/run.sh) | 索引 / 尾斜杠 301 / browse / ETag+304 / 单段 Range / MIME；★ 它有一条别处都没有的判据：**路径穿越与 `hide` 清单** —— 那两样坏掉时服务完全正常，只是多发了几个文件 |
 | ★ **HTTP 缓存端到端** | [`tests/cache/run.sh`](../../tests/cache/run.sh) | RFC 9111 语义：命中/回源、`no-store`/`private`/`Set-Cookie` 不存、兜底 `ttl`、`Vary` 两分支共存、请求侧 CC、`purge`、防惊群。★ 最贵的一条：**带 `Authorization` 的响应不许发给别人** |

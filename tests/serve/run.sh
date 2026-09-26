@@ -318,6 +318,13 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
     handle /selfloop/* {
         reverse_proxy 127.0.0.1:PROXY_PORT
     }
+    # ★ 第 10 节（写缓冲，G155）的两条：正文是下面 sed 现填的 4096 / 32768 个字母。
+    handle /wbuf/4k {
+        respond 200 "WBUF_4K"
+    }
+    handle /wbuf/32k {
+        respond 200 "WBUF_32K"
+    }
     handle {
         respond 200 root
     }
@@ -329,7 +336,14 @@ http://only.example:NAMED_PORT {
 
 secure.example:TLS_PORT {
     tls TLS_CRT TLS_KEY
-    respond 200 secure-ok
+    # ★ 第 10 节（写缓冲，G155）：TLS 记录在写缓冲之上 ⇒ 这条量的是「头与正文两个记录也一次发出」。
+    #   ⚠ 原来那句 `respond 200 secure-ok` 挪进了兜底 `handle`，`/` 的行为一个字节没变（9a 守着）。
+    handle /wbuf/4k {
+        respond 200 "WBUF_4K"
+    }
+    handle {
+        respond 200 secure-ok
+    }
 }
 CONF
 
@@ -361,6 +375,11 @@ printf 'self-built-file-server\n' > "$WORK/www/static/x"
 # 路径里有斜杠，用 | 当分隔符
 sed -i "s|TLS_CRT|$WORK/tls.crt|; s|TLS_KEY|$WORK/tls.key|; s|ADMIN_SOCK|$ADMIN_SOCK|; s|WWW_ROOT|$WORK/www|" \
   "$WORK/proxy.Fulcrumfile"
+# ★ 第 10 节（写缓冲，G155）的两份正文：4096 与 32768 个字母，现造。
+#   ⚠ 只用字母：它们要原样塞进 `respond` 的引号里，还要过一遍 sed。
+BODY_4K=$(head -c 4096 /dev/zero | tr '\0' 'w')
+BODY_32K=$(head -c 32768 /dev/zero | tr '\0' 'W')
+sed -i "s/WBUF_4K/$BODY_4K/g; s/WBUF_32K/$BODY_32K/" "$WORK/proxy.Fulcrumfile"
 
 # ── ★ ★ ★ 会变的域名：给「后台重解析」准备夹具（批 10）──────────────────────
 #
@@ -588,6 +607,143 @@ case "$NOSNI_SUBJ" in
   *secure.example*) ok "不带 SNI 的握手拿到 default_sni 那张证书（$NOSNI_SUBJ）" ;;
   *) fail "不带 SNI 期望拿到 secure.example 那张证书，实际：${NOSNI_SUBJ:-（一张都没拿到，多半是握手被拒）}" ;;
 esac
+
+# ── 10) ★ ★ ★ 一个约 4 KiB 的响应只许一个数据段：L7 写缓冲（G155）──────────────
+#
+# ★ 起因（2026-09-24 HTTP 层诊断的发现 1）：pingora 给接入连接的写缓冲缺省只有 1460 字节
+#   ⇒ 头 + 约 4 KiB 正文的响应被拆成**两次 send、两个 TCP 段**（头先被冲出去、正文再写穿），
+#   而 nginx / haproxy 都是一次。修法在 `crates/fulcrum-server/src/lib.rs` 的 L7 监听那段。
+# ★ 读法：客户端读**自己那条** socket 的 `TCP_INFO`，数它收到了几个带数据的段
+#   （`tcpi_data_segs_in`）。环回上一次 send 就是一个段（MSS 远大于这里的正文）
+#   ⇒ 读数是确定的，不用压测。
+# ★ 同一条连接先发一次预热，只量第二个响应：TLS 的握手与会话票据都落在预热那一次里。
+# ★ ★ 内置反证：32 KiB 的正文比写缓冲大 ⇒ 修好之后照样「先冲头、再写穿」，两个段。
+#   ⇒ 它证明这把尺子在修好之后**仍然看得见两个段** —— 一个恒报 1 的读法会让它红。
+#   ⚠ 写缓冲哪天调到 32 KiB 以上，这一条会红：那时把它的正文调到比缓冲大，⛔ 别删。
+cat > "$WORK/segs.py" <<'PY'
+#!/usr/bin/env python3
+"""只服务于 tests/serve/run.sh 的第 10 节：同一条 keep-alive 连接上发两次同一个请求，
+打印「第二个响应让客户端收到了几个带数据的 TCP 段」与「它的正文字节数」。
+⚠ 读不到、读不懂就当场非零退出——不猜、不吞。"""
+import socket
+import ssl
+import struct
+import sys
+
+# `struct tcp_info`（include/uapi/linux/tcp.h）里要用的两格：
+#   tcpi_bytes_received  u64 @ 128 —— 只用来自证偏移没读错（明文时必须等于实际读到的字节数）
+#   tcpi_data_segs_in    u32 @ 152 —— 收到的带数据的段（Linux 4.6 起才有）
+OFF_BYTES_RECEIVED = 128
+OFF_DATA_SEGS_IN = 152
+
+
+def tcp_info(sock):
+    raw = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 256)
+    if len(raw) < OFF_DATA_SEGS_IN + 4:
+        sys.exit(f"TCP_INFO 只有 {len(raw)} 字节，读不到 tcpi_data_segs_in")
+    (received,) = struct.unpack_from("<Q", raw, OFF_BYTES_RECEIVED)
+    (data_segs,) = struct.unpack_from("<I", raw, OFF_DATA_SEGS_IN)
+    return received, data_segs
+
+
+def read_response(sock):
+    """读完一个带 Content-Length 的响应：返回（状态码，正文字节数，从 socket 读到的总字节数）。"""
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = sock.recv(65536)
+        if not chunk:
+            sys.exit("响应头还没读完，连接就断了")
+        buf += chunk
+    head, _, body = buf.partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    status = int(lines[0].split()[1])
+    length = None
+    for line in lines[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            length = int(value.strip())
+    if length is None:
+        sys.exit("响应没有 Content-Length —— 这一节只量带 Content-Length 的响应")
+    total = len(buf)
+    while len(body) < length:
+        chunk = sock.recv(65536)
+        if not chunk:
+            sys.exit(f"正文只读到 {len(body)}/{length} 字节，连接就断了")
+        body += chunk
+        total += len(chunk)
+    if len(body) != length:
+        sys.exit(f"读到的正文比 Content-Length 多：{len(body)} > {length}")
+    return status, length, total
+
+
+def main():
+    host, port, path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+    sni = sys.argv[4] if len(sys.argv) > 4 else None
+    sock = socket.create_connection((host, port), timeout=5)
+    if sni:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        # ⚠ wrap 之后原来那个 socket 对象就脱手了；TCP_INFO 从 SSLSocket 上取（同一个 fd）。
+        sock = ctx.wrap_socket(sock, server_hostname=sni)
+    request = f"GET {path} HTTP/1.1\r\nHost: {sni or host}\r\n\r\n".encode()
+
+    # 预热：TLS 的握手与会话票据都落在这一次里，⛔ 不计。
+    sock.sendall(request)
+    status, _, _ = read_response(sock)
+    if status != 200:
+        sys.exit(f"预热那一次拿到 {status}，期望 200")
+
+    before_bytes, before_segs = tcp_info(sock)
+    sock.sendall(request)
+    status, length, total = read_response(sock)
+    after_bytes, after_segs = tcp_info(sock)
+    if status != 200:
+        sys.exit(f"第二次拿到 {status}，期望 200")
+    # ★ 自证：明文时 bytes_received 的增量必须正好等于这次从 socket 读到的字节数
+    #   ⇒ 两个偏移没读错。TLS 时线上多了记录头与认证标签，对不上是正常的，不判。
+    if not sni and after_bytes - before_bytes != total:
+        sys.exit(
+            f"TCP_INFO 自证失败：bytes_received 增量 {after_bytes - before_bytes}"
+            f" ≠ 实际读到 {total}（struct tcp_info 的偏移读错了？）"
+        )
+    print(after_segs - before_segs, length)
+
+
+try:
+    main()
+except (OSError, ssl.SSLError) as e:
+    sys.exit(f"{type(e).__name__}: {e}")
+PY
+
+# 量一次、判一次。★ 先核打到的是不是那条路由：落到兜底 `handle` 的话正文只有几个字节，
+#   而小响应本来就是一个段 ⇒ 不核这一条，路由写错时这一节照样全绿。
+# ⚠ 量不出来（python3 非零退出）就算红，⛔ 不跳过。
+expect_segs() {
+  local what=$1 want_len=$2 min=$3 max=$4
+  shift 4
+  local out segs len want_txt
+  if ! out=$(python3 "$WORK/segs.py" "$@" 2>"$WORK/segs.err"); then
+    fail "$what：量不出来 —— $(cat "$WORK/segs.err")"
+    return 0
+  fi
+  read -r segs len <<<"$out"
+  if [ "$len" != "$want_len" ]; then
+    fail "$what：正文 $len 字节，期望 $want_len —— 没打到那条路由"
+    return 0
+  fi
+  want_txt="恰好 $min 个"
+  [ -n "$max" ] || want_txt="至少 $min 个"
+  if [ "$segs" -ge "$min" ] && { [ -z "$max" ] || [ "$segs" -le "$max" ]; }; then
+    ok "$what：$len 字节的正文 → $segs 个带数据的段"
+  else
+    fail "$what：$len 字节的正文 → $segs 个带数据的段，期望$want_txt"
+  fi
+}
+
+expect_segs "明文 GET /wbuf/4k" 4096 1 1 "$HOST" "$PROXY_PORT" /wbuf/4k
+expect_segs "HTTPS GET /wbuf/4k（TLS 在写缓冲之上）" 4096 1 1 "$HOST" "$TLS_PORT" /wbuf/4k secure.example
+expect_segs "明文 GET /wbuf/32k（内置反证：正文比写缓冲大）" 32768 2 "" "$HOST" "$PROXY_PORT" /wbuf/32k
 
 # ── ★ ★ ★ 域名上游（批 10）──────────────────────────────────────────────────
 #
@@ -1831,4 +1987,4 @@ if [ "$FAILS" -ne 0 ]; then
   cat "$WORK/upstream.log" >&2
   exit 1
 fi
-echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2）。"
+echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段）。"

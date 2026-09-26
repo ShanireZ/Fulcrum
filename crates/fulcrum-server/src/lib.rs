@@ -80,6 +80,7 @@ use log::{debug, error, info, warn};
 use pingora_core::apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream};
 use pingora_core::connectors::ConnectorOptions;
 use pingora_core::connectors::http::Connector;
+use pingora_core::listeners::{L4BufferSettings, ListenerConfig};
 use pingora_core::protocols::http::ServerSession;
 use pingora_core::server::ShutdownWatch;
 use pingora_core::upstreams::peer::HttpPeer;
@@ -90,6 +91,20 @@ use std::time::SystemTime;
 
 /// keep-alive 空闲窗口。★ 停机时会被改成 `None`（不续），让连接自然收敛。
 const KEEPALIVE_SECS: u64 = 60;
+
+/// L7 数据面监听（明文与 TLS）给接入连接的缓冲：**写 16 KiB**，读仍用 pingora 的缺省（64 KiB）。
+///
+/// ★ pingora 缺省的写缓冲只有 1460 字节，而 h1 写响应是先把头 `write_all` 进缓冲、再写正文
+///   ⇒ 「缓冲里的 + 这次的」一超过容量，头就先被冲出去、正文再写穿
+///   ⇒ 头 + 约 4 KiB 正文的响应是**两次 send、两个 TCP 段**（nginx / haproxy 是一次）。
+///   16 KiB 让头 + 正文不超过约 16 KiB 的响应一次发出；更大的仍然先冲头（`G155`）。
+/// ⚠ 代价：写缓冲在建连时整块分配 ⇒ 每条连接多约 15 KiB；分几段写的 `Content-Length`
+///   正文最多在缓冲里多攒 16 KiB 才发（chunked 与读到关闭的正文每写必 flush，不受影响）。
+/// ★ 守它的是 `tests/serve/run.sh` 第 10 节：客户端读 `TCP_INFO`，数带数据的段。
+const L7_L4_BUFFER: L4BufferSettings = L4BufferSettings {
+    read: None,
+    write: Some(16 * 1024),
+};
 
 /// `&RequestHeader` 的 [`Headers`] 适配器。零拷贝。
 struct ReqHeaders<'a>(&'a RequestHeader);
@@ -2121,7 +2136,13 @@ acme-tls/1";
                     info!(
                         "监听 {bind}（HTTPS，按 SNI 动态挑证书，ALPN: h2 / http/1.1 / acme-tls/1）"
                     );
-                    svc.add_tls_with_settings(&bind, None, settings);
+                    // ★ 与 `add_tls_with_settings(&bind, None, settings)` 只差写缓冲
+                    //   （pingora 里那个函数就是这一句去掉 `.l4_buffer(…)`），理由见 [`L7_L4_BUFFER`]。
+                    svc.add_listener(
+                        ListenerConfig::tcp(&bind)
+                            .tls(settings)
+                            .l4_buffer(L7_L4_BUFFER),
+                    );
                 }
                 Err(e) => {
                     error!("建不出 TLS 监听设置：{e}");
@@ -2130,7 +2151,8 @@ acme-tls/1";
             }
         } else {
             info!("监听 {bind}（HTTP）");
-            svc.add_tcp(&bind);
+            // ★ 与 `add_tcp(&bind)` 只差写缓冲，理由见 [`L7_L4_BUFFER`]。
+            svc.add_listener(ListenerConfig::tcp(&bind).l4_buffer(L7_L4_BUFFER));
         }
         // ★ L7 数据面的线程数（G35 / G140）。⚠ 这是**逐 service** 的覆盖，
         //   `Service::threads()` 返回 `Some` 时 pingora 就不看全局 `conf.threads` 了。
