@@ -334,6 +334,19 @@ http://only.example:NAMED_PORT {
     respond 200 named-only
 }
 
+# ★ 第 11 节（② 请求头不整份克隆）：错误页里的 `{header.X}` 必须取**原始**请求头。
+#   页里带 `{path}`，是为了让两条错误的正文互不相同（两者的错误码恰好都是 404）。
+http://errs.example:NAMED_PORT {
+    handle /static/* {
+        file_server {
+            root WWW_ROOT
+        }
+    }
+    handle_errors {
+        respond 418 "{status} {path} probe={header.X-Probe}"
+    }
+}
+
 secure.example:TLS_PORT {
     tls TLS_CRT TLS_KEY
     # ★ 第 10 节（写缓冲，G155）：TLS 记录在写缓冲之上 ⇒ 这条量的是「头与正文两个记录也一次发出」。
@@ -744,6 +757,24 @@ expect_segs() {
 expect_segs "明文 GET /wbuf/4k" 4096 1 1 "$HOST" "$PROXY_PORT" /wbuf/4k
 expect_segs "HTTPS GET /wbuf/4k（TLS 在写缓冲之上）" 4096 1 1 "$HOST" "$TLS_PORT" /wbuf/4k secure.example
 expect_segs "明文 GET /wbuf/32k（内置反证：正文比写缓冲大）" 32768 2 "" "$HOST" "$PROXY_PORT" /wbuf/32k
+
+# ── 11) ★ ★ 错误页里的 `{header.X}` 取的是**原始**请求头（② 请求头不整份克隆）──────
+#
+# ★ 起因：错误页那一路的请求头改成「借 session 里那一份」之后（`NoRouteMatch` 直接借，
+#   `file_server` 出错后重新借一次），一个「错误页拿到空头 / 拿错了头」的回归在别的门里全绿 ——
+#   在它之前没有任何一道门在错误页里用 `{header.X}`。
+# ★ ① 先证明这个站点的 `/static/*` 真的落到 `file_server` —— ② 才能说是「file_server 出错之后」那一路。
+ERRS="http://$HOST:$NAMED_PORT"
+expect_status "errs.example GET /static/x（/static/* 落到 file_server）" 200 "$(probe "$ERRS/static/x" errs.example)"
+expect_body "errs.example GET /static/x" "self-built-file-server"
+probe_errs() {
+  run_curl -s -o "$WORK/body" -w '%{http_code}' --max-time 5 \
+    -H "Host: errs.example" -H "X-Probe: p1" "$ERRS$1"
+}
+expect_status "errs.example GET /static/missing（file_server 出错 → 错误页）" 418 "$(probe_errs /static/missing)"
+expect_body "errs.example GET /static/missing" "404 /static/missing probe=p1"
+expect_status "errs.example GET /nothing（NoRouteMatch → 错误页）" 418 "$(probe_errs /nothing)"
+expect_body "errs.example GET /nothing" "404 /nothing probe=p1"
 
 # ── ★ ★ ★ 域名上游（批 10）──────────────────────────────────────────────────
 #
@@ -1987,4 +2018,4 @@ if [ "$FAILS" -ne 0 ]; then
   cat "$WORK/upstream.log" >&2
   exit 1
 fi
-echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段）。"
+echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段 / 错误页取原始请求头）。"
