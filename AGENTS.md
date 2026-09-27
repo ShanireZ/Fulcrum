@@ -1,6 +1,6 @@
 # AGENTS.md — 枢衡 Fulcrum
 
-> Read [workspace rules](../AGENTS.md) and [dev_guide](../Docs/dev_guide.md) on entry; only Claude imports the latter via the root shim.
+> Read [workspace rules](../AGENTS.md) on entry; do not assume they were loaded automatically.
 
 ## Authorities and boundaries
 
