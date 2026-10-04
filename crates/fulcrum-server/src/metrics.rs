@@ -1,4 +1,4 @@
-//! Prometheus 指标：进程级注册表 + text exposition 的**自研**渲染器（**M2 批 M**，G117）。
+//! Prometheus 指标：进程级注册表（按线程分片，G156）+ text exposition 的**自研**渲染器（**M2 批 M**，G117）。
 //!
 //! 指标清单、每一格的基数上界与端点形态定稿在
 //! [`docs/architecture/observability.md`](../../../docs/architecture/observability.md)
@@ -43,7 +43,7 @@
 //!
 //! # ★ ★ ★ 一个族的数只有两种来处，由声明表里的 [`Source`] 定死
 //!
-//! **① 事件点记账（[`Source::Event`]）** —— 发生一次就往进程级注册表里加一笔，
+//! **① 事件点记账（[`Source::Event`]）** —— 发生一次就往本线程那一片注册表里加一笔，
 //! 渲染只是把数抄出来：
 //!
 //! | 族 | 取数点 |
@@ -70,6 +70,26 @@
 //! ⚠ 代价说在明处：读数是**抓取那一刻**的瞬时值，两次抓取之间发生过什么看不见。
 //! 对「在途数」「还有多久到期」这类量而言那本来就是全部真相。
 //!
+//! # ★ ★ 注册表按线程分片（G156）
+//!
+//! 每条请求收尾都要写两笔（TLS 三笔），写路径因此是**请求路径**：它不许拿全进程共用的锁，
+//! 也不许在稳态下分配。
+//!
+//! | | 怎么做 |
+//! |---|---|
+//! | 片 | 事件点那一类的注册表分成 **64 片**（[`SHARDS`]，写死），每片按 128 字节对齐（防 false sharing）；线程第一次写时轮流领一个片号，之后一直写这一片 ⇒ 锁只有自己用 |
+//! | gauge | **不分片**，单独一张全局表（[`GAUGES`]）：「最后一次写赢」在多片之间没有定义，而产品里没有在事件点写的 gauge |
+//! | 键 | [`LabelKey`]：能拿写入方手里的 `&[&str]` 直接**借用查找** ⇒ 一条 series 只在第一次出现时分配 |
+//! | 断言 | 族类型与标签个数的 `assert!` 在**拿锁之前**判 ⇒ 断言失败的 panic 不毒化任何一片 |
+//! | 渲染 | [`merged_events`] **逐片**锁、合并、放锁，再交给 `render_into` ⇒ 输出与一张表时逐字节相同 |
+//!
+//! ⚠ 两处与「一张表」不同的语义，写在明处：
+//! - 一次抓取**不是全进程的原子快照**：各片在各自被合并的那一刻一致。★ 对外可见的一致性没有变差 ——
+//!   同一条请求的 `requests_total` 与 `duration` 本来就是两次写，一次抓取本来就可能落在两次之间。
+//! - 直方图的 `_sum` 由各片的和相加，浮点加法顺序不同 ⇒ **末位可能有差**；单线程写入时逐字节相同。
+//!
+//! ★ 内存：series 数（基数）不变，每条 series 在写过它的片里各存一份，最多 64 份。
+//!
 //! # ⚠ 公开面是 `pub` 而不是 `pub(crate)`
 //!
 //! ★ 不是「对外暴露」的意思：本 crate `publish = false`，`pub` 的作用域就是同一个
@@ -80,10 +100,12 @@ use fulcrum_runtime::SharedRuntime;
 use fulcrum_tls::SniResolver;
 use log::warn;
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{self, AtomicUsize};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 族的类型。★ 它同时定死两件事：`# TYPE` 那一行怎么写，以及这个族**能被怎么写入**。
@@ -115,7 +137,7 @@ impl Kind {
 /// 那种错的表现是**同一条 series 的值忽大忽小**，而两边各自都言之凿凿。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// **事件点记账**：发生一次就往进程级注册表里加一笔。
+    /// **事件点记账**：发生一次就往本线程那一片注册表里加一笔（G156）。
     Event,
     /// **抓取时问活体**：进程级注册表里永远没有它的数，[`render`] 那一刻现问。
     Live,
@@ -657,19 +679,86 @@ impl Default for Registry {
     }
 }
 
-/// 进程级注册表。形状照 [`crate::access_log`] 里那张文件句柄表（`OnceLock<Mutex<…>>`）。
-fn registry() -> &'static Mutex<Registry> {
-    static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(Registry::default()))
+/// 事件点那一类的注册表分几片（G156）。
+///
+/// ★ 写死，⛔ 不按核数算：上界与机器无关，判据好写。写线程多于片数时几个线程共用一片 ——
+///   仍然正确，只是那几片回到有人争。今天的写线程（L7 / L4 / QUIC / 管理面与后台几组
+///   runtime 的线程）正常远少于 64。
+const SHARDS: usize = 64;
+
+/// 一片 = 一张注册表 + 一把**只有领了这一片的线程用**的锁。
+///
+/// ⚠ ⚠ 对齐到 128 字节：相邻两片的锁落在同一条缓存行上，两个核各写各的片也会把那条行
+///   来回抢（false sharing）—— 等于把分片要消灭的跨核争用换个地方带回来。
+///   128 而不是 64：x86 的相邻行预取按 128 字节成对拉。
+#[repr(align(128))]
+struct Shard(Mutex<Registry>);
+
+static SHARD_TABLE: [Shard; SHARDS] = [const { Shard(Mutex::new(Registry::new())) }; SHARDS];
+
+/// gauge **不分片**：「最后一次写赢」在多片之间没有定义，而产品里没有在事件点写的
+/// gauge（活体族在抓取时现建的临时表里写）⇒ 它不在请求路径上，单独一张全局小表即可。
+static GAUGES: Mutex<Registry> = Mutex::new(Registry::new());
+
+static NEXT_SHARD: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// 本线程领到的片号；`usize::MAX` = 还没领。const 初始化、无析构 ⇒ 取值不分配。
+    static MY_SHARD: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 
-/// 拿着那把锁做一件事。
+/// 本线程写哪一片：第一次写时轮流领一个，之后一直是它。
+///
+/// ⚠ `try_with` 失败 = 线程正在拆 TLS（别的 thread-local 的析构里还在写指标）：
+///   不缓存，直接再领一个 —— 那一笔照样记得上，只是落在哪一片无所谓。
+fn my_shard() -> usize {
+    let take = || NEXT_SHARD.fetch_add(1, atomic::Ordering::Relaxed) % SHARDS;
+    MY_SHARD
+        .try_with(|c| {
+            let i = c.get();
+            if i != usize::MAX {
+                return i;
+            }
+            let i = take();
+            c.set(i);
+            i
+        })
+        .unwrap_or_else(|_| take())
+}
+
+/// 锁一片（或 gauge 表）。
 ///
 /// ⚠ 锁中毒时接着用里面那份数据（与 `access_log` 逐字同一口径）：**指标少几格，
 /// 也不该把请求路径带崩** —— 观测面的失效不许升级成数据面的失效。
-fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> T {
-    let mut g = registry().lock().unwrap_or_else(|p| p.into_inner());
-    f(&mut g)
+fn lock_tolerant(m: &'static Mutex<Registry>) -> MutexGuard<'static, Registry> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// 抓取时：把各片与 gauge 表合并成一张临时表。
+///
+/// ⚠ ⚠ **任何时刻只握一片**：锁一片、合并、放锁，再下一片。同时握两片就是给片排出了
+///   一个锁序，而那个顺序没有任何东西在守（写路径只握自己那一片，测试钩子按下标顺序握）。
+/// ★ 代价写在明处：这份表**不是全进程的原子快照**，各片在各自被合并的那一刻一致。
+fn merged_events() -> Registry {
+    let mut merged = Registry::new();
+    for s in &SHARD_TABLE {
+        merged.merge_from(&lock_tolerant(&s.0));
+    }
+    merged.merge_from(&lock_tolerant(&GAUGES));
+    merged
+}
+
+/// 只给测试用：按下标顺序握住除 `keep` 以外的所有片，再握 gauge 表。
+#[cfg(test)]
+fn lock_all_but(keep: usize) -> Vec<MutexGuard<'static, Registry>> {
+    let mut guards: Vec<_> = SHARD_TABLE
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != keep)
+        .map(|(_, s)| lock_tolerant(&s.0))
+        .collect();
+    guards.push(lock_tolerant(&GAUGES));
+    guards
 }
 
 /// [`Source::Live`] 那几个族**去问谁**。
@@ -863,19 +952,19 @@ impl Family {
     pub fn inc_by(&self, labels: &[&str], n: u64) {
         // ★ 先在锁外判：断言失败的 panic 不该毒化任何一把锁（锁里的方法会再判一次）。
         self.check(Kind::Counter, labels);
-        with_registry(|r| r.inc_by(self, labels, n));
+        lock_tolerant(&SHARD_TABLE[my_shard()].0).inc_by(self, labels, n);
     }
 
-    /// 直接写一个 gauge 读数。
+    /// 直接写一个 gauge 读数。⚠ 写的是全局 gauge 表，不分片（见 [`GAUGES`]）。
     pub fn set(&self, labels: &[&str], v: f64) {
         self.check(Kind::Gauge, labels);
-        with_registry(|r| r.set(self, labels, v));
+        lock_tolerant(&GAUGES).set(self, labels, v);
     }
 
     /// 记一次观测。
     pub fn observe(&self, labels: &[&str], v: f64) {
         self.check(Kind::Histogram, labels);
-        with_registry(|r| r.observe(self, labels, v));
+        lock_tolerant(&SHARD_TABLE[my_shard()].0).observe(self, labels, v);
     }
 
     /// 把两条契约**当场判死**：族的类型，与标签的个数。
@@ -916,6 +1005,15 @@ impl Hist {
         self.sum += v;
         self.count += 1;
     }
+
+    /// 把另一片里同一条 series 的读数并进来：逐桶、`sum`、`count` 各自相加。
+    fn add(&mut self, other: &Hist) {
+        for (a, b) in self.per_bucket.iter_mut().zip(&other.per_bucket) {
+            *a += b;
+        }
+        self.sum += other.sum;
+        self.count += other.count;
+    }
 }
 
 /// ★ 三个写方法同一个形状：族名那一层用 `&'static str` 作键（`entry` 不分配），
@@ -954,9 +1052,40 @@ impl Registry {
         }
     }
 
+    /// 抓取时把另一张表并进来（[`merged_events`] 用）：计数相加；直方图逐桶、`sum`、`count`
+    /// 相加；gauge 覆盖（只有全局 gauge 表里有 gauge，并进来的时候目标里还没有）。
+    /// ★ 这里克隆键是正当的：它只在抓取时跑，不在请求路径上。
+    /// ⚠ `_sum` 由各片的和相加 ⇒ 浮点加法顺序与「一张表从头加到尾」不同，末位可能有差；
+    ///   单线程写入时只有一片有数，结果逐字节相同。
+    fn merge_from(&mut self, other: &Registry) {
+        for (name, series) in &other.counters {
+            let m = self.counters.entry(*name).or_default();
+            for (k, v) in series {
+                *m.entry(k.clone()).or_default() += v;
+            }
+        }
+        for (name, series) in &other.histograms {
+            let m = self.histograms.entry(*name).or_default();
+            for (k, h) in series {
+                match m.get_mut(k) {
+                    Some(t) => t.add(h),
+                    None => {
+                        m.insert(k.clone(), h.clone());
+                    }
+                }
+            }
+        }
+        for (name, series) in &other.gauges {
+            let m = self.gauges.entry(*name).or_default();
+            for (k, v) in series {
+                m.insert(k.clone(), *v);
+            }
+        }
+    }
+
     /// 把 `families` 这张声明表按顺序渲染进 `out`。
     ///
-    /// `self` 是进程级注册表（[`Source::Event`] 那一类的数），
+    /// `self` 是 [`Source::Event`] 那一类的数（抓取时由 [`merged_events`] 从各片合并而来），
     /// `live` 是这一次抓取现问出来的那份临时表（[`Source::Live`] 那一类）。
     ///
     /// ★ 收一张表当参数、而不是直接读 `FAMILIES`：单测因此可以拿一张**小表**
@@ -1105,9 +1234,10 @@ fn escape_into(v: &str, out: &mut String) {
 
 /// 抓取时那一坨文本（Prometheus text exposition，`version=0.0.4`）。
 ///
-/// ⚠ 整个渲染过程握着注册表那把锁：一次抓取是分钟级的事，而请求路径上的写是微秒级的。
-/// ★ ★ **问活体那一步在拿锁之前**：`Upstream::inflight()` 与 `SniResolver::expiries()`
-/// 各有自己的锁，而在注册表这把锁里面去拿别人的锁，就是把两把锁排出了一个顺序 ——
+/// ★ 事件点那一类的数由 [`merged_events`] **逐片**合并而来：每一片只在合并它的那一下被锁住，
+/// 请求路径上的写最多被挡一片的合并时长，⛔ 不是整个渲染过程。格式化在任何锁之外。
+/// ★ ★ **问活体那一步在拿任何注册表锁之前**：`Upstream::inflight()` 与 `SniResolver::expiries()`
+/// 各有自己的锁，而在注册表的锁里面去拿别人的锁，就是把两把锁排出了一个顺序 ——
 /// 而那个顺序**没有任何东西在守**。
 pub fn render() -> String {
     let live = match live().get() {
@@ -1115,8 +1245,9 @@ pub fn render() -> String {
         // ⚠ 没登记 ⇒ 那几个族只出 HELP/TYPE、不出样本（`build_info` 除外，它不需要活体源）。
         None => snapshot(&LiveSources::default()),
     };
+    let events = merged_events();
     let mut out = String::with_capacity(4096);
-    with_registry(|r| r.render_into(&FAMILIES, &live, &mut out));
+    events.render_into(&FAMILIES, &live, &mut out);
     out
 }
 
@@ -1692,14 +1823,182 @@ mod tests {
         // ★ 整体以换行收尾 —— exposition 的最后一行也得是一行。
         assert!(out.ends_with('\n'));
 
-        let 全局按测试表渲染 = with_registry(|r| {
-            let mut s = String::new();
-            render_events(r, &T, &mut s);
-            s
-        });
+        let 合并后 = merged_events();
+        let mut 全局按测试表渲染 = String::new();
+        render_events(&合并后, &T, &mut 全局按测试表渲染);
         assert!(
             全局按测试表渲染.contains("\nt_ready 1\n"),
             "{全局按测试表渲染}"
+        );
+    }
+
+    // ── 注册表按线程分片（G156）────────────────────────────────────────────
+    //
+    // ⚠ 下面几条走**真的**进程级片表，标签值都只在本条里出现 ⇒ 别的测试并行写进来的数
+    //   落在别的 series 上，不会混进断言。
+
+    /// 渲染结果里取一条计数行的值；还没出现过就是 0。
+    fn 计数行的值(out: &str, 前缀: &str) -> u64 {
+        out.lines()
+            .find_map(|l| l.strip_prefix(前缀))
+            .map(|v| v.parse().expect("计数行的值不是整数"))
+            .unwrap_or(0)
+    }
+
+    /// ★ ★ ★ 请求路径上没有全进程共用的锁：别的 63 片与 gauge 表全被握住时，
+    /// 一个线程照样写得进自己那一片。⚠ 一个「多拿了一把共用锁」的写路径在这里会卡住
+    /// —— 那正是分片要消灭的东西，而输出上它与正确的实现一模一样。
+    #[test]
+    fn 写入不碰别的片也不碰任何全进程的锁() {
+        let req = ["<lock-test>", "metrics", "2xx", "HTTP/1.1"];
+        let dur = ["<lock-test>", "metrics"];
+        let (to_main, from_b) = std::sync::mpsc::channel::<usize>();
+        let (go, wait_go) = std::sync::mpsc::channel::<()>();
+        let b = std::thread::spawn(move || {
+            REQUESTS_TOTAL.inc(&req);
+            REQUEST_DURATION_SECONDS.observe(&dur, 0.25);
+            to_main.send(my_shard()).unwrap();
+            wait_go.recv().unwrap();
+            for _ in 0..1000 {
+                REQUESTS_TOTAL.inc(&req);
+                REQUEST_DURATION_SECONDS.observe(&dur, 0.25);
+            }
+            to_main.send(usize::MAX).unwrap();
+        });
+        let shard = from_b.recv().unwrap();
+        let guards = lock_all_but(shard);
+        go.send(()).unwrap();
+        let done = from_b.recv_timeout(std::time::Duration::from_secs(10));
+        drop(guards);
+        b.join().unwrap();
+        assert!(
+            done.is_ok(),
+            "握住别的 63 片与 gauge 表时，另一个线程写不进自己那一片（写路径上有一把共用的锁）"
+        );
+    }
+
+    /// ★ 写线程多于片数（几个线程共用一片）、同时有人在抓：计数仍然精确，
+    /// 相邻两次抓取里同一条计数不减少，最后一次抓到的恰好是总数。
+    #[test]
+    fn 多于片数的线程并发写_边写边抓_合计精确() {
+        const THREADS: usize = SHARDS + 16;
+        const ROUNDS: u64 = 250;
+        const 计数前缀: &str = "fulcrum_requests_total{site=\"<shard-test>\",outcome=\"metrics\",status_class=\"2xx\",proto=\"HTTP/1.1\"} ";
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut last = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let v = 计数行的值(&render(), 计数前缀);
+                    assert!(v >= last, "相邻两次抓取里计数减少了：{last} → {v}");
+                    last = v;
+                }
+            })
+        };
+        let writers: Vec<_> = (0..THREADS)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..ROUNDS {
+                        REQUESTS_TOTAL.inc(&["<shard-test>", "metrics", "2xx", "HTTP/1.1"]);
+                        REQUEST_DURATION_SECONDS.observe(&["<shard-test>", "metrics"], 0.5);
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap();
+
+        let out = render();
+        let 总数 = THREADS as u64 * ROUNDS;
+        assert_eq!(计数行的值(&out, 计数前缀), 总数, "{out}");
+        let d = "{site=\"<shard-test>\",outcome=\"metrics\"";
+        for line in [
+            format!("fulcrum_request_duration_seconds_count{d}}} {总数}"),
+            format!("fulcrum_request_duration_seconds_sum{d}}} {}", 总数 / 2),
+            format!("fulcrum_request_duration_seconds_bucket{d},le=\"0.5\"}} {总数}"),
+            format!("fulcrum_request_duration_seconds_bucket{d},le=\"0.25\"}} 0"),
+        ] {
+            assert!(out.lines().any(|l| l == line), "没找到：{line}\n{out}");
+        }
+    }
+
+    /// ★ 合并对输出透明：同一批事件拆给两片写再合并，与一片直写，渲染逐字节相同。
+    /// 观测值取二进制可精确表示的数 ⇒ `_sum` 不受加法顺序影响，这里可以要求逐字节。
+    #[test]
+    fn 同一批事件分到两片合并与一片直写_渲染逐字节相同() {
+        let mut a = Registry::new();
+        let mut b = Registry::new();
+        let mut c = Registry::new();
+        a.inc_by(T_REQUESTS, &["a.example", "files"], 2);
+        b.inc_by(T_REQUESTS, &["a.example", "files"], 3);
+        b.inc_by(T_REQUESTS, &["b.example", "reverse_proxy"], 1);
+        a.observe(T_LATENCY, &["/x"], 0.5);
+        b.observe(T_LATENCY, &["/x"], 0.25);
+        b.observe(T_LATENCY, &["/x"], 3.0);
+        b.set(T_READY, &[], 1.0);
+
+        c.inc_by(T_REQUESTS, &["a.example", "files"], 5);
+        c.inc_by(T_REQUESTS, &["b.example", "reverse_proxy"], 1);
+        c.observe(T_LATENCY, &["/x"], 0.5);
+        c.observe(T_LATENCY, &["/x"], 0.25);
+        c.observe(T_LATENCY, &["/x"], 3.0);
+        c.set(T_READY, &[], 1.0);
+
+        let mut merged = Registry::new();
+        merged.merge_from(&a);
+        merged.merge_from(&b);
+        let mut s1 = String::new();
+        render_events(&merged, &T, &mut s1);
+        let mut s2 = String::new();
+        render_events(&c, &T, &mut s2);
+        assert!(
+            s2.contains("t_latency_seconds_count{route=\"/x\"} 3\n"),
+            "{s2}"
+        );
+        assert_eq!(s1, s2, "合并两片的渲染与一片直写不一样");
+    }
+
+    /// ★ 标签对不上的 panic 发生在**拿锁之前** ⇒ 不毒化任何一片；同一线程接着写照常。
+    #[test]
+    fn 标签对不上的_panic_不毒化任何片() {
+        let shard = std::thread::spawn(|| {
+            let r = std::panic::catch_unwind(|| REQUESTS_TOTAL.inc(&["只给了一个"]));
+            assert!(r.is_err(), "标签个数不对却没有 panic");
+            REQUESTS_TOTAL.inc(&["<poison-test>", "metrics", "2xx", "HTTP/1.1"]);
+            my_shard()
+        })
+        .join()
+        .unwrap();
+        assert!(!SHARD_TABLE[shard].0.is_poisoned(), "第 {shard} 片被毒化了");
+        assert!(!GAUGES.is_poisoned(), "gauge 表被毒化了");
+        assert!(
+            render().contains(
+                "fulcrum_requests_total{site=\"<poison-test>\",outcome=\"metrics\",status_class=\"2xx\",proto=\"HTTP/1.1\"} 1\n"
+            ),
+            "panic 之后同一线程写的那一笔没记上"
+        );
+    }
+
+    /// ★ 线程拆 TLS 的时候还在写（别的 thread-local 的析构里写指标）：不 panic、数记得上。
+    #[test]
+    fn 线程退出时析构里写指标也记得上() {
+        struct WriteOnExit;
+        impl Drop for WriteOnExit {
+            fn drop(&mut self) {
+                NO_SITE_MATCH_TOTAL.inc(&["<tls-teardown>"]);
+            }
+        }
+        thread_local! {
+            static ON_EXIT: WriteOnExit = const { WriteOnExit };
+        }
+        std::thread::spawn(|| ON_EXIT.with(|_| {})).join().unwrap();
+        assert!(
+            render().contains("fulcrum_no_site_match_total{host=\"<tls-teardown>\"} 1\n"),
+            "线程退出时析构里写的那一笔没记上"
         );
     }
 
