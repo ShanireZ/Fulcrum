@@ -97,9 +97,14 @@ const KEEPALIVE_SECS: u64 = 60;
 /// ★ pingora 缺省的写缓冲只有 1460 字节，而 h1 写响应是先把头 `write_all` 进缓冲、再写正文
 ///   ⇒ 「缓冲里的 + 这次的」一超过容量，头就先被冲出去、正文再写穿
 ///   ⇒ 头 + 约 4 KiB 正文的响应是**两次 send、两个 TCP 段**（nginx / haproxy 是一次）。
-///   16 KiB 让头 + 正文不超过约 16 KiB 的响应一次发出；更大的仍然先冲头（`G155`）。
-/// ⚠ 代价：写缓冲在建连时整块分配 ⇒ 每条连接多约 15 KiB；分几段写的 `Content-Length`
-///   正文最多在缓冲里多攒 16 KiB 才发（chunked 与读到关闭的正文每写必 flush，不受影响）。
+///   16 KiB 让**带 `Content-Length`** 且头 + 正文不超过约 16 KiB 的响应一次发出；更大的仍然先冲头。
+///   ⚠ 没有 `Content-Length` 的响应（chunked、`encode` 压缩后、读到关闭）写完头就 flush，
+///   缓冲多大都还是 ≥ 2 次 send（`G155`）。
+/// ⚠ 代价：写缓冲在建连时整块分配 ⇒ 每条连接多约 15 KiB；分几段写的 `Content-Length` 正文
+///   攒满约 16 KiB 或写完最后一段才发，**响应头也一起等**（带 CL 的头本来就不 flush）
+///   ⇒ 反代一个先发头和不到 16 KiB 正文、然后停住的上游时，客户端在停顿结束前**连状态行都
+///   收不到，而且没有时间上限**（改前的门槛约 1.4 KiB）。分几段写 CL 正文的只有反代分支
+///   （含缓存未命中回源）；chunked 与读到关闭的正文每写必 flush，不受影响。
 /// ★ 守它的是 `tests/serve/run.sh` 第 10 节：客户端读 `TCP_INFO`，数带数据的段。
 const L7_L4_BUFFER: L4BufferSettings = L4BufferSettings {
     read: None,
@@ -287,7 +292,7 @@ impl std::ops::DerefMut for Downstream<'_> {
     }
 }
 
-/// 一次请求在路由与写响应之间反复要用的几个事实 —— 都不借请求头（**② 请求头不整份克隆**）。
+/// 一次请求在路由与写响应之间反复要用的几个事实 —— 都不借请求头（**HTTP 层诊断发现 2 · 请求头不整份克隆**）。
 ///
 /// ★ 头视图**不在里面**：同一次请求要对着不同的头视图各建一个 [`RequestCtx`] ——
 ///   借 `session` 里那一份（`respond` 一类、`file_server`），或反代自己克隆的那一份。
@@ -507,7 +512,7 @@ impl FulcrumApp {
         //   ⚠ 每阶段各取一次的话，一次发生在请求中途的全量 load 会让**同一个请求**
         //   按旧配置路由、按新配置转发——G8 明令禁止的「部分生效」。
         let rt = self.rt.current();
-        // ── 1. 请求头：**借**，⛔ 不整份克隆（② 请求头不整份克隆，2026-09-26）─────────
+        // ── 1. 请求头：**借**，⛔ 不整份克隆（HTTP 层诊断发现 2 · 请求头不整份克隆，2026-09-26）─────────
         //
         // ★ 按**字段**借（`session.session`），⛔ 不经 `Deref`：借的只是那一个字段，
         //   于是下面照样能写 `session.record`。
@@ -768,8 +773,8 @@ impl FulcrumApp {
         started: SystemTime,
     ) -> OutcomeName {
         // ★ 进到这里就意味着这一条最终是**错误页** —— 无论它原本要去哪。
-        //   ⚠ ⚠ 它是**返回值**而不是往 `Record` 上写一笔：调用点不止一处，
-        //   而「下一处随时会出现」（G110 那次的原话）—— 返回值那种写法下，
+        //   ⚠ ⚠ 它是**返回值**而不是往 `Record` 上写一笔：写错误页的调用点不止一处
+        //   （[`write_error_page`] 今天有三处），而「下一处随时会出现」（G110 那次的原话）—— 返回值那种写法下，
         //   新调用点**不处理这个值就编不过**，而副作用那种写法下它只是少一行。
         //   ★ 拆成「算 / 写」两半之后这条照旧：`OUTCOME_ERROR` 只从 [`write_error_page`] 出来。
         let page = prepare_error(rt, site, status, routed, ctx, started);
@@ -1721,10 +1726,13 @@ fn respond_body(
     }
 }
 
-/// 一条待写的简单响应 —— 就是 [`write_with_headers`] 收的那三样（**② 请求头不整份克隆**）。
+/// 一条待写的简单响应 —— 就是 [`write_with_headers`] 收的那三样（**HTTP 层诊断发现 2 · 请求头不整份克隆**）。
 ///
 /// ★ 把「算」与「写」拆开的理由：算要借请求头（`ctx`），写要 `&mut session`，
 ///   而请求头就在 `session` 里 ⇒ 两件事不能同时进行；先算完、放掉借用、再写。
+/// ★ `#[must_use]`：算出来却没写出去，这条请求就一个字节都不发、状态记成 0 —— 拆开之前
+///   `write_simple(..)` 返回 future，忘了 `.await` 会被 lint 抓到；拆开之后要靠这一行。
+#[must_use]
 struct Prepared {
     status: u16,
     body: Option<Bytes>,

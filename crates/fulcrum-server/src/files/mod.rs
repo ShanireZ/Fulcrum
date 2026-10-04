@@ -130,10 +130,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 一次读多少。★ 64 KiB 是个**没有实测依据**的起点，写在这里是为了让它可被质疑。
 const CHUNK: usize = 64 * 1024;
 
-/// `file_server` 从请求里要的全部东西：方法 + 5 个头（**② 请求头不整份克隆**，2026-09-26）。
+/// `file_server` 从请求里要的全部东西：方法 + 5 个头（**HTTP 层诊断发现 2 · 请求头不整份克隆**，2026-09-26）。
 ///
-/// ★ 在写响应**之前**从借来的请求头里取出来 —— `HeaderValue` 的 clone 是 `Bytes` 的引用计数、不分配，
-///   标准方法的 `Method` clone 也不分配 ⇒ 数据面不必为 `files` 克隆一整份 `RequestHeader`。
+/// ★ 在写响应**之前**从借来的请求头里取出来 ⇒ 数据面不必为 `files` 克隆一整份 `RequestHeader`。
+///   h1 上 `HeaderValue` 是从共享读缓冲切出来的 `Bytes`，clone 只增引用计数、不分配；
+///   ⚠ h2（HPACK 解出的字面量）与 h3（`append_header` 收的是 `Vec`）的头值是可提升的 `Bytes`，
+///   第一次 clone 会分配一个小 `Shared` —— 仍比整份克隆少。标准方法的 `Method` clone 不分配。
 /// ⚠ 名单**只有这几样**：`files` 要读第 7 个头就得在这里加一格 ——
 ///   这个模块里不再有 `&RequestHeader` 可查，编译器会逼着加。
 pub(crate) struct FileReq {
@@ -1036,7 +1038,7 @@ async fn write_head_encoded(
 mod tests {
     use super::*;
 
-    /// ★ `FileReq` 的三条取值口径（② 请求头不整份克隆）：
+    /// ★ `FileReq` 的三条取值口径（HTTP 层诊断发现 2 · 请求头不整份克隆）：
     ///   同名头取**第一个**、`to_str()` 不过的当作没有、没带的就是没有。
     #[test]
     fn file_req_取第一个同名头_坏值当作没有() {

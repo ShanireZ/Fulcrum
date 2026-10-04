@@ -334,7 +334,7 @@ http://only.example:NAMED_PORT {
     respond 200 named-only
 }
 
-# ★ 第 11 节（② 请求头不整份克隆）：错误页里的 `{header.X}` 必须取**原始**请求头。
+# ★ 第 11 节（HTTP 层诊断发现 2 · 请求头不整份克隆）：错误页里的 `{header.X}` 必须取**原始**请求头。
 #   页里带 `{path}`，是为了让两条错误的正文互不相同（两者的错误码恰好都是 404）。
 http://errs.example:NAMED_PORT {
     handle /static/* {
@@ -714,7 +714,8 @@ def main():
     if status != 200:
         sys.exit(f"第二次拿到 {status}，期望 200")
     # ★ 自证：明文时 bytes_received 的增量必须正好等于这次从 socket 读到的字节数
-    #   ⇒ 两个偏移没读错。TLS 时线上多了记录头与认证标签，对不上是正常的，不判。
+    #   ⇒ 128 那个偏移没读错、struct 布局对得上。⚠ 152（data_segs_in）没有单独自证，
+    #   写错时主要靠 32 KiB 那条反证兜。TLS 时线上多了记录头与认证标签，对不上是正常的，不判。
     if not sni and after_bytes - before_bytes != total:
         sys.exit(
             f"TCP_INFO 自证失败：bytes_received 增量 {after_bytes - before_bytes}"
@@ -758,7 +759,7 @@ expect_segs "明文 GET /wbuf/4k" 4096 1 1 "$HOST" "$PROXY_PORT" /wbuf/4k
 expect_segs "HTTPS GET /wbuf/4k（TLS 在写缓冲之上）" 4096 1 1 "$HOST" "$TLS_PORT" /wbuf/4k secure.example
 expect_segs "明文 GET /wbuf/32k（内置反证：正文比写缓冲大）" 32768 2 "" "$HOST" "$PROXY_PORT" /wbuf/32k
 
-# ── 11) ★ ★ 错误页里的 `{header.X}` 取的是**原始**请求头（② 请求头不整份克隆）──────
+# ── 11) ★ ★ 错误页里的 `{header.X}` 取的是**原始**请求头（HTTP 层诊断发现 2 · 请求头不整份克隆）──────
 #
 # ★ 起因：错误页那一路的请求头改成「借 session 里那一份」之后（`NoRouteMatch` 直接借，
 #   `file_server` 出错后重新借一次），一个「错误页拿到空头 / 拿错了头」的回归在别的门里全绿 ——
