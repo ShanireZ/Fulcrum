@@ -709,8 +709,10 @@ thread_local! {
 
 /// 本线程写哪一片：第一次写时轮流领一个，之后一直是它。
 ///
-/// ⚠ `try_with` 失败 = 线程正在拆 TLS（别的 thread-local 的析构里还在写指标）：
-///   不缓存，直接再领一个 —— 那一笔照样记得上，只是落在哪一片无所谓。
+/// ⚠ `try_with` 失败 = `MY_SHARD` 自己已经被拆了。今天它是无析构的 `Cell`，在有原生 TLS 的
+///   目标上永远不会被拆 ⇒ 这一支今天走不到；它防的是 `MY_SHARD` 将来换成带析构的类型 ——
+///   那时它可能先于别的 thread-local 被拆，而那些 thread-local 的析构里还会写指标。
+///   走到这一支时不缓存，直接再领一个：那一笔照样记得上，落在哪一片无所谓。
 fn my_shard() -> usize {
     let take = || NEXT_SHARD.fetch_add(1, atomic::Ordering::Relaxed) % SHARDS;
     MY_SHARD
@@ -1968,6 +1970,10 @@ mod tests {
         let shard = std::thread::spawn(|| {
             let r = std::panic::catch_unwind(|| REQUESTS_TOTAL.inc(&["只给了一个"]));
             assert!(r.is_err(), "标签个数不对却没有 panic");
+            // ★ gauge 走的是另一把锁（全局 gauge 表）⇒ 它那条路也要真的 panic 一次，
+            //   下面「gauge 表没被毒化」那条断言才红得起来。`T_READY` 声明了 0 个标签。
+            let g = std::panic::catch_unwind(|| T_READY.set(&["多给了一个"], 1.0));
+            assert!(g.is_err(), "gauge 标签个数不对却没有 panic");
             REQUESTS_TOTAL.inc(&["<poison-test>", "metrics", "2xx", "HTTP/1.1"]);
             my_shard()
         })
@@ -1984,6 +1990,11 @@ mod tests {
     }
 
     /// ★ 线程拆 TLS 的时候还在写（别的 thread-local 的析构里写指标）：不 panic、数记得上。
+    ///
+    /// ⚠ 顺序是承重的：先摸 `ON_EXIT`（它的析构先登记）、**再**写一笔（`MY_SHARD` 后初始化）。
+    ///   TLS 析构按登记的逆序跑 ⇒ 一旦 `MY_SHARD` 换成带析构的类型，它会先于 `ON_EXIT` 被拆，
+    ///   而 `ON_EXIT` 的析构里那一笔就得走 [`my_shard`] 的兜底分支 —— 删了兜底（`try_with` 换成
+    ///   `with`）就在 TLS 析构里 panic、进程 abort，本条红。今天 `MY_SHARD` 无析构，本条守的是那次改动。
     #[test]
     fn 线程退出时析构里写指标也记得上() {
         struct WriteOnExit;
@@ -1995,7 +2006,12 @@ mod tests {
         thread_local! {
             static ON_EXIT: WriteOnExit = const { WriteOnExit };
         }
-        std::thread::spawn(|| ON_EXIT.with(|_| {})).join().unwrap();
+        std::thread::spawn(|| {
+            ON_EXIT.with(|_| {});
+            NO_SITE_MATCH_TOTAL.inc(&["<tls-teardown-pre>"]);
+        })
+        .join()
+        .unwrap();
         assert!(
             render().contains("fulcrum_no_site_match_total{host=\"<tls-teardown>\"} 1\n"),
             "线程退出时析构里写的那一笔没记上"
