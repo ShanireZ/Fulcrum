@@ -79,6 +79,8 @@ use fulcrum_acme::AcmeManager;
 use fulcrum_runtime::SharedRuntime;
 use fulcrum_tls::SniResolver;
 use log::warn;
+use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -520,6 +522,7 @@ pub fn label_or_unknown(v: &str) -> &str {
 }
 
 /// 一条直方图 series。
+#[derive(Clone)]
 struct Hist {
     /// 与 `BUCKETS` 等长的**非累积**计数：一次观测只碰一格。
     /// ★ 累积放到渲染时算 —— 观测在请求路径上（一次二分 + 一次自增），
@@ -540,15 +543,118 @@ impl Default for Hist {
     }
 }
 
+/// 注册表里**一组标签值**（G156）。
+///
+/// ★ ★ 它存在的唯一理由是**借用查找**：写入方手里是 `&[&str]`，而键若是 `Vec<String>`，
+///   就只能拿一个 `Vec<String>` 去查 ⇒ 每次写都得先分配一份键、查到了再扔掉（每请求 8 次）。
+///   本类型实现 `Borrow<dyn LabelView>`，`&[&str]` 也实现 [`LabelView`] ⇒ 直接拿 `&[&str]` 查，
+///   只有这条 series **第一次**出现时才分配。
+/// ⚠ 派生的 `Ord` 是切片的字典序（与 `Vec<String>` 的序逐条相同）—— 渲染顺序就是这个序。
+///   [`LabelView`] 那一侧的 `Ord` 必须与它一致（`Borrow` 的契约），由单测
+///   `标签键的序与_vec_string_一致_借用查找也命中` 钉住。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LabelKey(Box<[Box<str>]>);
+
+impl LabelKey {
+    fn from_labels(labels: &[&str]) -> LabelKey {
+        LabelKey(labels.iter().map(|s| Box::from(*s)).collect())
+    }
+
+    fn as_slice(&self) -> &[Box<str>] {
+        &self.0
+    }
+}
+
+/// 「一组标签值」的只读视图：[`LabelKey`] 与写入方手里的 `&[&str]` 共用它来比较。
+///
+/// ⚠ 实现在 `&[&str]`（引用类型）上而不是 `[&str]` 上：`&[&str]` 转不成 `&dyn` ——
+///   切片本身不定长。调用方写 `&labels as &dyn LabelView`（`labels: &[&str]`）。
+trait LabelView {
+    fn width(&self) -> usize;
+    fn value(&self, i: usize) -> &str;
+}
+
+impl LabelView for LabelKey {
+    fn width(&self) -> usize {
+        self.0.len()
+    }
+
+    fn value(&self, i: usize) -> &str {
+        &self.0[i]
+    }
+}
+
+impl LabelView for &[&str] {
+    fn width(&self) -> usize {
+        self.len()
+    }
+
+    fn value(&self, i: usize) -> &str {
+        self[i]
+    }
+}
+
+/// ⚠ ⚠ **必须与切片的字典序逐条相同**：先逐元素比，前缀相同再比宽度。
+///   「先比宽度」读起来同样合理，而它会让借用查找在宽度不同的键之间静静地查不到
+///   （同一个族的键宽度相同，所以真表里一时看不出来 —— 判据里有意放了宽度不同的样本）。
+impl Ord for dyn LabelView + '_ {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let n = self.width().min(other.width());
+        for i in 0..n {
+            match self.value(i).cmp(other.value(i)) {
+                Ordering::Equal => {}
+                o => return o,
+            }
+        }
+        self.width().cmp(&other.width())
+    }
+}
+
+impl PartialOrd for dyn LabelView + '_ {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for dyn LabelView + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for dyn LabelView + '_ {}
+
+impl<'a> Borrow<dyn LabelView + 'a> for LabelKey {
+    fn borrow(&self) -> &(dyn LabelView + 'a) {
+        self
+    }
+}
+
 /// 注册表：**族名 → 这个族下的每一组标签值 → 读数**。
 ///
 /// ★ 三种族各一张表，而不是一张 `BTreeMap<…, 枚举>`：这样「按 gauge 写一个 counter」
 /// 在结构上就落不进同一格，渲染时也不必写一条永远走不到的 `unreachable` 臂。
-#[derive(Default)]
 struct Registry {
-    counters: BTreeMap<&'static str, BTreeMap<Vec<String>, u64>>,
-    gauges: BTreeMap<&'static str, BTreeMap<Vec<String>, f64>>,
-    histograms: BTreeMap<&'static str, BTreeMap<Vec<String>, Hist>>,
+    counters: BTreeMap<&'static str, BTreeMap<LabelKey, u64>>,
+    gauges: BTreeMap<&'static str, BTreeMap<LabelKey, f64>>,
+    histograms: BTreeMap<&'static str, BTreeMap<LabelKey, Hist>>,
+}
+
+impl Registry {
+    /// `const` 版的空表：静态初始化要用（`Default` 不是 `const`）。
+    const fn new() -> Registry {
+        Registry {
+            counters: BTreeMap::new(),
+            gauges: BTreeMap::new(),
+            histograms: BTreeMap::new(),
+        }
+    }
+}
+
+impl Default for Registry {
+    fn default() -> Registry {
+        Registry::new()
+    }
 }
 
 /// 进程级注册表。形状照 [`crate::access_log`] 里那张文件句柄表（`OnceLock<Mutex<…>>`）。
@@ -755,23 +861,28 @@ impl Family {
     /// +n。★ 有 `inc_by` 是因为有些事件天生成批（一次清理清掉了 N 条缓存条目），
     /// 而循环 N 次 `inc` 要多拿 N 次锁。
     pub fn inc_by(&self, labels: &[&str], n: u64) {
+        // ★ 先在锁外判：断言失败的 panic 不该毒化任何一把锁（锁里的方法会再判一次）。
+        self.check(Kind::Counter, labels);
         with_registry(|r| r.inc_by(self, labels, n));
     }
 
     /// 直接写一个 gauge 读数。
     pub fn set(&self, labels: &[&str], v: f64) {
+        self.check(Kind::Gauge, labels);
         with_registry(|r| r.set(self, labels, v));
     }
 
     /// 记一次观测。
     pub fn observe(&self, labels: &[&str], v: f64) {
+        self.check(Kind::Histogram, labels);
         with_registry(|r| r.observe(self, labels, v));
     }
 
-    /// 把一组标签值变成注册表里的键，**顺便把两条契约当场判死**。
+    /// 把两条契约**当场判死**：族的类型，与标签的个数。
     ///
     /// ⚠ 两条都用 `assert!` 而不是 `debug_assert!`：见本文件顶部那一节。
-    fn key(&self, want: Kind, labels: &[&str]) -> Vec<String> {
+    /// ★ 它不再顺手造键：键只在一条 series 第一次出现时才造（[`LabelKey`]）。
+    fn check(&self, want: Kind, labels: &[&str]) {
         assert!(
             self.kind == want,
             "指标族 `{}` 是 {}，不能按 {} 写入",
@@ -788,44 +899,59 @@ impl Family {
             self.labels,
             labels.len()
         );
-        labels.iter().map(|s| s.to_string()).collect()
     }
 }
 
-impl Registry {
-    fn inc_by(&mut self, f: &Family, labels: &[&str], n: u64) {
-        let k = f.key(Kind::Counter, labels);
-        *self
-            .counters
-            .entry(f.name)
-            .or_default()
-            .entry(k)
-            .or_default() += n;
-    }
-
-    fn set(&mut self, f: &Family, labels: &[&str], v: f64) {
-        let k = f.key(Kind::Gauge, labels);
-        self.gauges.entry(f.name).or_default().insert(k, v);
-    }
-
-    fn observe(&mut self, f: &Family, labels: &[&str], v: f64) {
-        let k = f.key(Kind::Histogram, labels);
-        let h = self
-            .histograms
-            .entry(f.name)
-            .or_default()
-            .entry(k)
-            .or_default();
+impl Hist {
+    /// 记一次观测。
+    fn record(&mut self, v: f64) {
         // ⚠ 桶的语义是 `le`（**小于等于**）：观测值正好落在某个边界上时归**那一格**，
         //   不是下一格。`partition_point` 给的正是第一个 `bound >= v` 的下标。
         let i = BUCKETS.partition_point(|b| *b < v);
-        if let Some(c) = h.per_bucket.get_mut(i) {
+        if let Some(c) = self.per_bucket.get_mut(i) {
             *c += 1;
         }
         // ★ 超出最大桶的观测**不进任何一格**，但照样进 `sum` 与 `count` ——
         //   `le="+Inf"` 那一格就是靠 `count` 出来的，两者因此恒等。
-        h.sum += v;
-        h.count += 1;
+        self.sum += v;
+        self.count += 1;
+    }
+}
+
+/// ★ 三个写方法同一个形状：族名那一层用 `&'static str` 作键（`entry` 不分配），
+/// 标签那一层先拿 `&[&str]` **借用查找**，查不到才造一份 [`LabelKey`] 插进去
+/// ⇒ 一条 series 只在第一次出现时分配。
+impl Registry {
+    fn inc_by(&mut self, f: &Family, labels: &[&str], n: u64) {
+        f.check(Kind::Counter, labels);
+        let m = self.counters.entry(f.name).or_default();
+        if let Some(c) = m.get_mut(&labels as &dyn LabelView) {
+            *c += n;
+        } else {
+            m.insert(LabelKey::from_labels(labels), n);
+        }
+    }
+
+    fn set(&mut self, f: &Family, labels: &[&str], v: f64) {
+        f.check(Kind::Gauge, labels);
+        let m = self.gauges.entry(f.name).or_default();
+        if let Some(g) = m.get_mut(&labels as &dyn LabelView) {
+            *g = v;
+        } else {
+            m.insert(LabelKey::from_labels(labels), v);
+        }
+    }
+
+    fn observe(&mut self, f: &Family, labels: &[&str], v: f64) {
+        f.check(Kind::Histogram, labels);
+        let m = self.histograms.entry(f.name).or_default();
+        if let Some(h) = m.get_mut(&labels as &dyn LabelView) {
+            h.record(v);
+        } else {
+            let mut h = Hist::default();
+            h.record(v);
+            m.insert(LabelKey::from_labels(labels), h);
+        }
     }
 
     /// 把 `families` 这张声明表按顺序渲染进 `out`。
@@ -852,13 +978,13 @@ impl Registry {
             match f.kind {
                 Kind::Counter => {
                     for (labels, v) in r.counters.get(f.name).into_iter().flatten() {
-                        write_series(out, f.name, f.labels, labels, None);
+                        write_series(out, f.name, f.labels, labels.as_slice(), None);
                         let _ = writeln!(out, " {v}");
                     }
                 }
                 Kind::Gauge => {
                     for (labels, v) in r.gauges.get(f.name).into_iter().flatten() {
-                        write_series(out, f.name, f.labels, labels, None);
+                        write_series(out, f.name, f.labels, labels.as_slice(), None);
                         out.push(' ');
                         write_f64(out, *v);
                         out.push('\n');
@@ -870,19 +996,37 @@ impl Registry {
                         let mut cum = 0u64;
                         for (bound, n) in BUCKETS.iter().zip(&h.per_bucket) {
                             cum += n;
-                            write_series(out, &bucket, f.labels, labels, Some(&format!("{bound}")));
+                            write_series(
+                                out,
+                                &bucket,
+                                f.labels,
+                                labels.as_slice(),
+                                Some(&format!("{bound}")),
+                            );
                             let _ = writeln!(out, " {cum}");
                         }
                         // ⚠ `+Inf` 那一格写的是 `count` 而**不是** `cum`：超出最大桶的观测
                         //   不在任何一格里，两者本来就不相等，而「`+Inf` 恒等于 `_count`」
                         //   是格式的要求 ⇒ 让它们共用同一个数，别去凑。
-                        write_series(out, &bucket, f.labels, labels, Some("+Inf"));
+                        write_series(out, &bucket, f.labels, labels.as_slice(), Some("+Inf"));
                         let _ = writeln!(out, " {}", h.count);
-                        write_series(out, &format!("{}_sum", f.name), f.labels, labels, None);
+                        write_series(
+                            out,
+                            &format!("{}_sum", f.name),
+                            f.labels,
+                            labels.as_slice(),
+                            None,
+                        );
                         out.push(' ');
                         write_f64(out, h.sum);
                         out.push('\n');
-                        write_series(out, &format!("{}_count", f.name), f.labels, labels, None);
+                        write_series(
+                            out,
+                            &format!("{}_count", f.name),
+                            f.labels,
+                            labels.as_slice(),
+                            None,
+                        );
                         let _ = writeln!(out, " {}", h.count);
                     }
                 }
@@ -917,7 +1061,7 @@ fn write_series(
     out: &mut String,
     name: &str,
     label_names: &[&str],
-    values: &[String],
+    values: &[Box<str>],
     le: Option<&str>,
 ) {
     // ⚠ 个数对不上在**写入那一刻**已经 panic 过了（`Family::key`）。这里是渲染路径，
@@ -1443,6 +1587,65 @@ mod tests {
     fn 族的类型对不上时也就地_panic() {
         let mut r = Registry::default();
         r.set(T_REQUESTS, &["a.example", "files"], 1.0);
+    }
+
+    /// ★ ★ 新键的序就是渲染顺序（族内 series 按标签值排序）⇒ 它必须与旧键
+    /// `Vec<String>` 的序**逐条相同**；而借用查找要成立，借用视图与键两两比较的
+    /// 结果也必须逐对相同（`Borrow` 的契约 —— 违反了不会报错，只会查不到）。
+    /// ⚠ 样本里有意放了宽度不同的几条：只有它们分得开「先比宽度、再逐元素比」那种写错法。
+    #[test]
+    fn 标签键的序与_vec_string_一致_借用查找也命中() {
+        let samples: Vec<Vec<&str>> = vec![
+            vec!["a"],
+            vec!["a", "b"],
+            vec!["b"],
+            vec![""],
+            vec!["a.example", "x"],
+            vec!["a.examplf"],
+            vec!["<none>"],
+            vec!["<other>"],
+            vec!["<unknown>"],
+            vec!["中", "a"],
+            vec!["Z"],
+        ];
+
+        let mut by_vec: Vec<Vec<String>> = samples
+            .iter()
+            .map(|s| s.iter().map(|v| v.to_string()).collect())
+            .collect();
+        by_vec.sort();
+        let mut by_key: Vec<LabelKey> = samples.iter().map(|s| LabelKey::from_labels(s)).collect();
+        by_key.sort();
+        let by_key_as_vec: Vec<Vec<String>> = by_key
+            .iter()
+            .map(|k| k.as_slice().iter().map(|v| v.to_string()).collect())
+            .collect();
+        assert_eq!(by_key_as_vec, by_vec, "新键的序与 Vec<String> 的序不同");
+
+        // ⚠ `LabelView` 实现在 `&[&str]`（引用类型）上 ⇒ 先绑成 `&[&str]` 再取引用转 `&dyn`。
+        for a in &samples {
+            for b in &samples {
+                let (av, bv): (&[&str], &[&str]) = (&a[..], &b[..]);
+                assert_eq!(
+                    LabelKey::from_labels(av).cmp(&LabelKey::from_labels(bv)),
+                    (&av as &dyn LabelView).cmp(&bv as &dyn LabelView),
+                    "借用视图与键的比较结果不同：{av:?} vs {bv:?}"
+                );
+            }
+        }
+
+        let mut m: BTreeMap<LabelKey, usize> = BTreeMap::new();
+        for (i, s) in samples.iter().enumerate() {
+            m.insert(LabelKey::from_labels(s), i);
+        }
+        for (i, s) in samples.iter().enumerate() {
+            let sv: &[&str] = &s[..];
+            assert_eq!(
+                m.get(&sv as &dyn LabelView),
+                Some(&i),
+                "借用查找没命中：{sv:?}"
+            );
+        }
     }
 
     #[test]
