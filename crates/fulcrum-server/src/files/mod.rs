@@ -224,8 +224,8 @@ pub(crate) async fn serve(
                 session,
                 405,
                 vec![
-                    ("Allow".into(), "GET, HEAD".into()),
-                    ("Content-Length".into(), "0".into()),
+                    ("Allow", HeaderValue::from_static("GET, HEAD")),
+                    ("Content-Length", HeaderValue::from_static("0")),
                 ],
             )
             .await;
@@ -289,15 +289,10 @@ pub(crate) async fn serve(
                 to.push_str(query);
             }
             debug!("file_server：目录缺尾斜杠 → 301 {to}");
-            write_head(
-                session,
-                301,
-                vec![
-                    ("Location".into(), to),
-                    ("Content-Length".into(), "0".into()),
-                ],
-            )
-            .await;
+            let mut head = Head::with_capacity(2);
+            push_dynamic(&mut head, "Location", to);
+            head.push(("Content-Length", HeaderValue::from_static("0")));
+            write_head(session, 301, head).await;
             return Ok(());
         }
         // 按 index 顺序找。
@@ -617,7 +612,9 @@ async fn send_file(
     let ctype = repr.ctype;
     let mtime = repr.meta.modified().ok();
     let etag = etag_of(repr.meta);
-    let last_mod = mtime.and_then(httpdate::format_imf);
+    // ★ 比较用的 `&str` 视图：ETag 是自己写出来的引号 + 十六进制，`to_str` 必过。
+    let etag_str = etag.as_ref().and_then(|e| e.to_str().ok());
+    let last_mod = mtime.and_then(last_modified_value);
     let full = repr.path;
 
     // ── 9. 条件请求 ───────────────────────────────────────────────────────
@@ -625,7 +622,7 @@ async fn send_file(
     // ★ 次序照 RFC 9110 §13.2.2：`If-None-Match` **优先**，
     //   它在场时 `If-Modified-Since` 一个字都不看。
     let fresh = match req.if_none_match() {
-        Some(inm) => etag.as_deref().is_some_and(|e| if_none_match_hit(inm, e)),
+        Some(inm) => etag_str.is_some_and(|e| if_none_match_hit(inm, e)),
         None => match (req.if_modified_since(), mtime) {
             (Some(ims), Some(mt)) => match (httpdate::parse(ims), unix_secs(mt)) {
                 // ⚠ 比的是**秒**：`Last-Modified` 本来就只有秒精度，
@@ -637,10 +634,10 @@ async fn send_file(
         },
     };
     if fresh {
-        let mut extra = vec![];
-        push_validators(&mut extra, &etag, &last_mod);
+        let mut head = Head::with_capacity(2);
+        push_validators(&mut head, etag, last_mod);
         debug!("file_server：条件请求命中 → 304（{}）", full.display());
-        write_head(session, 304, extra).await;
+        write_head(session, 304, head).await;
         return Ok(());
     }
 
@@ -649,7 +646,7 @@ async fn send_file(
     // `If-Range` 不匹配 ⇒ **忽略 Range**、回 200 全量（RFC 9110 §13.1.5）。
     let range_ok = match req.if_range() {
         None => true,
-        Some(ir) => if_range_matches(ir, &etag, mtime),
+        Some(ir) => if_range_matches(ir, etag_str, mtime),
     };
     let verdict = match (range_ok, req.range()) {
         (true, Some(r)) => range::parse(r, len),
@@ -659,13 +656,12 @@ async fn send_file(
     let (status, start, end) = match verdict {
         range::RangeVerdict::Unsatisfiable => {
             debug!("file_server：Range 不可满足 → 416（{}）", full.display());
-            let mut extra = vec![
-                ("Content-Range".into(), range::unsatisfiable_header(len)),
-                ("Content-Length".into(), "0".into()),
-                ("Accept-Ranges".into(), "bytes".into()),
-            ];
-            push_validators(&mut extra, &etag, &last_mod);
-            write_head(session, 416, extra).await;
+            let mut head = Head::with_capacity(5);
+            push_dynamic(&mut head, "Content-Range", range::unsatisfiable_header(len));
+            head.push(("Content-Length", HeaderValue::from_static("0")));
+            head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
+            push_validators(&mut head, etag, last_mod);
+            write_head(session, 416, head).await;
             return Ok(());
         }
         range::RangeVerdict::Single { start, end } => (206, start, end),
@@ -675,30 +671,31 @@ async fn send_file(
     };
     let body_len = if len == 0 { 0 } else { end - start + 1 };
 
-    let mut extra = vec![
-        ("Content-Type".into(), ctype.to_string()),
-        ("Content-Length".into(), body_len.to_string()),
-        ("Accept-Ranges".into(), "bytes".into()),
-    ];
-    push_validators(&mut extra, &etag, &last_mod);
+    // ★ 顺序就是上线的顺序（大小写表与值表按插入次序配对），⛔ 别重排。
+    let mut head = Head::with_capacity(8);
+    head.push(("Content-Type", HeaderValue::from_static(ctype)));
+    head.push(("Content-Length", HeaderValue::from(body_len)));
+    head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
+    push_validators(&mut head, etag, last_mod);
     if status == 206 {
-        extra.push((
-            "Content-Range".into(),
+        push_dynamic(
+            &mut head,
+            "Content-Range",
             range::content_range(start, end, len),
-        ));
+        );
     }
     // ★ 预压缩旁文件：宣布编码，并按 RFC 9110 补 `Vary`。
     //   ⚠ 少了 `Vary`，下游任何一层缓存都会把这份 br 的字节发给不认 br 的客户端。
     if let Some(algo) = repr.encoding {
-        extra.push(("Content-Encoding".into(), algo.to_string()));
-        extra.push(("Vary".into(), "Accept-Encoding".into()));
+        head.push(("Content-Encoding", HeaderValue::from_static(algo)));
+        head.push(("Vary", HeaderValue::from_static("Accept-Encoding")));
     }
 
     // ⚠ ⚠ **206 不现压**：`Content-Range` 说的是**这个表示**的字节区间，
     //   而现压会把字节整个换掉 —— 两者放在同一个响应里必然对不上。
     //   ★ 预压缩那条路不受影响：旁文件本身就是那个表示，区间是它自己的。
     let mut encoder = if status == 206 { None } else { encoder };
-    write_head_encoded(session, status, extra, &mut encoder).await;
+    write_head_encoded(session, status, head, &mut encoder).await;
 
     // ── 11. 发送 ──────────────────────────────────────────────────────────
     if head_only || body_len == 0 {
@@ -848,8 +845,11 @@ async fn browse(
         session,
         200,
         vec![
-            ("Content-Type".into(), "text/html; charset=utf-8".into()),
-            ("Content-Length".into(), bytes.len().to_string()),
+            (
+                "Content-Type",
+                HeaderValue::from_static("text/html; charset=utf-8"),
+            ),
+            ("Content-Length", HeaderValue::from(bytes.len())),
         ],
         &mut encoder,
     )
@@ -944,14 +944,54 @@ fn url_escape_into(out: &mut String, s: &str) {
 /// 这个窗口里，ETag 不变 ⇒ 客户端永远拿旧的。纳秒把这个窗口关掉。
 /// ⚠ 代价：文件系统若只记到秒（有的 tmpfs / 网络盘如此），纳秒位恒为 0，
 /// 于是这条 ETag 退化成 nginx 那一档 —— 不会更差，但也不会更好。
-fn etag_of(meta: &Metadata) -> Option<String> {
+fn etag_of(meta: &Metadata) -> Option<HeaderValue> {
     let nanos = meta
         .modified()
         .ok()?
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_nanos();
-    Some(format!("\"{nanos:x}-{:x}\"", meta.len()))
+    etag_value(nanos, meta.len())
+}
+
+/// `"<nanos 十六进制>-<len 十六进制>"`，写在栈上、⛔ 不走 `fmt`（10-05）。
+/// ★ 与旧写法 `format!("\"{nanos:x}-{len:x}\"")` 逐字节相同由单测钉着 —— ETag 一变，
+///   每个客户端与中间缓存手上的副本就一次性全部失效。
+/// u128 最多 32 位十六进制、u64 最多 16 位 ⇒ 加两个引号一个连字符共 51 字节。
+fn etag_value(nanos: u128, len: u64) -> Option<HeaderValue> {
+    let mut buf = [0u8; 51];
+    buf[0] = b'"';
+    let mut n = 1;
+    n += put_hex(&mut buf[n..], nanos);
+    buf[n] = b'-';
+    n += 1;
+    n += put_hex(&mut buf[n..], u128::from(len));
+    buf[n] = b'"';
+    n += 1;
+    HeaderValue::from_bytes(&buf[..n]).ok()
+}
+
+/// 小写十六进制、无前导零（`0` 写成 `0`）—— 与 `{:x}` 同一个口径。回写了几位。
+fn put_hex(out: &mut [u8], v: u128) -> usize {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let n = (128 - v.leading_zeros() as usize).div_ceil(4).max(1);
+    let mut x = v;
+    for b in out[..n].iter_mut().rev() {
+        *b = DIGITS[(x & 0xf) as usize];
+        x >>= 4;
+    }
+    n
+}
+
+/// `Last-Modified`。早于 1970 的时刻回 `None`（同 [`httpdate::format_imf`]，不假装它是 epoch）。
+fn last_modified_value(mtime: SystemTime) -> Option<HeaderValue> {
+    let secs = unix_secs(mtime)?;
+    let mut buf = [0u8; httpdate::IMF_LEN];
+    if httpdate::write_imf_secs(secs, &mut buf) {
+        HeaderValue::from_bytes(&buf).ok()
+    } else {
+        HeaderValue::try_from(httpdate::format_imf_secs(secs)).ok()
+    }
 }
 
 fn unix_secs(t: SystemTime) -> Option<i64> {
@@ -960,16 +1000,13 @@ fn unix_secs(t: SystemTime) -> Option<i64> {
         .map(|d| d.as_secs() as i64)
 }
 
-fn push_validators(
-    extra: &mut Vec<(String, String)>,
-    etag: &Option<String>,
-    last: &Option<String>,
-) {
+/// ★ 按值收：每条路径只推一次、推完不再用 ⇒ ⛔ 不必 `clone`。
+fn push_validators(head: &mut Head, etag: Option<HeaderValue>, last: Option<HeaderValue>) {
     if let Some(e) = etag {
-        extra.push(("ETag".into(), e.clone()));
+        head.push(("ETag", e));
     }
     if let Some(l) = last {
-        extra.push(("Last-Modified".into(), l.clone()));
+        head.push(("Last-Modified", l));
     }
 }
 
@@ -996,7 +1033,7 @@ fn strip_weak(s: &str) -> &str {
 /// 弱 ETag 的含义是「语义等价但字节可能不同」，而 Range 要的正是**字节**。
 /// ★ 拿弱 ETag 去放行一次 Range，客户端会把两个版本的字节拼在一起 ——
 /// 而拼出来的文件既不报错也不是任何一个版本。
-fn if_range_matches(value: &str, etag: &Option<String>, mtime: Option<SystemTime>) -> bool {
+fn if_range_matches(value: &str, etag: Option<&str>, mtime: Option<SystemTime>) -> bool {
     let v = value.trim();
     if v.starts_with('"') {
         return matches!(etag, Some(e) if e == v);
@@ -1010,8 +1047,24 @@ fn if_range_matches(value: &str, etag: &Option<String>, mtime: Option<SystemTime
     }
 }
 
-async fn write_head(session: &mut Downstream<'_>, status: u16, extra: Vec<(String, String)>) {
-    write_head_encoded(session, status, extra, &mut None).await;
+/// 要发的响应头：名是**字面量**，值已经是 `HeaderValue`（10-05 · 构响应头不再每个头分配几次）。
+///
+/// ⚠ ⚠ 名必须是 `&'static str` **字面量**，⛔ 不用 `http::header::ETAG` 一类常量，也 ⛔ 不把
+/// `ResponseHeader::build` 换成 `build_no_case`：pingora 的标题化表
+/// （`pingora-http` 的 `titled_header_name_str`）里**没有** `ETag` / `Last-Modified` / `Content-Range` / `Vary`，
+/// 那两种写法都会让它们以**小写**上线。判据：`tests/files/run.sh` 里逐行钉头名的那一条。
+type Head = Vec<(&'static str, HeaderValue)>;
+
+/// 动态的值（来自请求、或格式化出来的）：转不成合法头值就**不发这个头** ——
+/// 与旧写法 `let _ = resp.insert_header(..)` 失败即跳过是同一个处置。
+fn push_dynamic(head: &mut Head, name: &'static str, value: String) {
+    if let Ok(v) = HeaderValue::try_from(value) {
+        head.push((name, v));
+    }
+}
+
+async fn write_head(session: &mut Downstream<'_>, status: u16, head: Head) {
+    write_head_encoded(session, status, head, &mut None).await;
 }
 
 /// 同上，但让压缩层看一眼这个头（**M2 批 I**）。
@@ -1023,7 +1076,7 @@ async fn write_head(session: &mut Downstream<'_>, status: u16, extra: Vec<(Strin
 async fn write_head_encoded(
     session: &mut Downstream<'_>,
     status: u16,
-    extra: Vec<(String, String)>,
+    head: Head,
     encoder: &mut Option<crate::encode::Encoder>,
 ) {
     let mut resp = match ResponseHeader::build(status, None) {
@@ -1033,8 +1086,8 @@ async fn write_head_encoded(
             return;
         }
     };
-    for (k, v) in &extra {
-        let _ = resp.insert_header(k.clone(), v);
+    for (k, v) in head {
+        let _ = resp.insert_header(k, v);
     }
     if let Some(enc) = encoder.as_mut() {
         enc.header_filter(&mut resp, crate::encode::status_has_no_body(status));
@@ -1079,6 +1132,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// ★ ETag 手写十六进制（10-05 · 构响应头不走 `fmt`）：必须与旧写法
+    ///   `format!("\"{nanos:x}-{len:x}\"")` **逐字节相同** —— ETag 变了，等于让每个客户端与
+    ///   中间缓存手上的副本一次性全部失效。
+    #[test]
+    fn etag_手写十六进制与_format_逐字节相同() {
+        let samples: [(u128, u64); 9] = [
+            (0, 0),
+            (1, 1),
+            (15, 16),
+            (0x18db_824f_d09e_aa84, 0x1000),
+            (1_759_632_556_123_456_789, 4096),
+            (0xab_cdef, 0),
+            (1 << 64, 255),
+            (u128::from(u64::MAX), u64::MAX),
+            (u128::MAX, u64::MAX),
+        ];
+        for (nanos, len) in samples {
+            let want = format!("\"{nanos:x}-{len:x}\"");
+            let got = etag_value(nanos, len).expect("只有引号、连字符与十六进制");
+            assert_eq!(got.as_bytes(), want.as_bytes(), "nanos={nanos} len={len}");
+        }
+    }
+
+    /// ★ `HeaderValue::from_static` 遇到非法字符会**在请求路径上 panic**（以前的写法只是静默少一个头）
+    ///   ⇒ 喂给它的固定值逐个钉住。mime 表那一半在 `mime.rs` 的同名单测里。
+    #[test]
+    fn 喂给_from_static_的固定值都是合法头值() {
+        for (algo, _) in SIDECAR_EXT {
+            assert!(HeaderValue::from_str(algo).is_ok(), "{algo}");
+        }
+        for v in [
+            "GET, HEAD",
+            "0",
+            "bytes",
+            "Accept-Encoding",
+            "text/html; charset=utf-8",
+        ] {
+            assert!(HeaderValue::from_str(v).is_ok(), "{v}");
+        }
+    }
+
     /// ★ `FileReq` 的三条取值口径（HTTP 层诊断发现 2 · 请求头不整份克隆）：
     ///   同名头取**第一个**、`to_str()` 不过的当作没有、没带的就是没有。
     #[test]
@@ -1120,13 +1214,13 @@ mod tests {
     //   而统一之后弱 ETag 会放行 Range，客户端拼出一个两个版本混在一起的文件。
     #[test]
     fn if_range_用强比较_弱_etag_一律不匹配() {
-        let e = Some("\"abc\"".to_string());
-        assert!(if_range_matches("\"abc\"", &e, None));
+        let e = Some("\"abc\"");
+        assert!(if_range_matches("\"abc\"", e, None));
         assert!(
-            !if_range_matches("W/\"abc\"", &e, None),
+            !if_range_matches("W/\"abc\"", e, None),
             "弱 ETag 不该放行 Range"
         );
-        assert!(!if_range_matches("\"other\"", &e, None));
+        assert!(!if_range_matches("\"other\"", e, None));
     }
 
     #[test]
@@ -1134,15 +1228,15 @@ mod tests {
         let t = UNIX_EPOCH + std::time::Duration::from_secs(784_111_777);
         assert!(if_range_matches(
             "Sun, 06 Nov 1994 08:49:37 GMT",
-            &None,
+            None,
             Some(t)
         ));
         assert!(!if_range_matches(
             "Sun, 06 Nov 1994 08:49:38 GMT",
-            &None,
+            None,
             Some(t)
         ));
-        assert!(!if_range_matches("not a date", &None, Some(t)));
+        assert!(!if_range_matches("not a date", None, Some(t)));
     }
 
     // ── 目录列表 ──────────────────────────────────────────────────────────

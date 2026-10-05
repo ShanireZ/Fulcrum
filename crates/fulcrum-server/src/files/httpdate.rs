@@ -52,6 +52,49 @@ pub fn format_imf_secs(secs: i64) -> String {
     )
 }
 
+/// IMF-fixdate 的定长（年份四位时）：`Sun, 06 Nov 1994 08:49:37 GMT` 恒为 29 字节。
+pub const IMF_LEN: usize = 29;
+
+/// 同 [`format_imf_secs`]，但写进调用方给的定长缓冲、⛔ 不走 `fmt`、不分配
+/// （10-05 · `file_server` 每个响应都要一个 `Last-Modified`）。
+///
+/// 年份不在 0000–9999 时写不进 29 字节 ⇒ 回 `false`，调用方回落到 [`format_imf_secs`]
+/// （那一版照 `{:04}` 写出五位年，字节与以前一样）。
+/// ★ 两版逐字节相同由单测 `定长写法与_format_那一版逐字节相同` 钉着。
+pub fn write_imf_secs(secs: i64, out: &mut [u8; IMF_LEN]) -> bool {
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    if !(0..=9999).contains(&y) {
+        return false;
+    }
+    // 1970-01-01 是星期四 ⇒ 偏移 3（表里 Mon 是 0）。
+    let dow = (days + 3).rem_euclid(7) as usize;
+    out[0..3].copy_from_slice(DAY_NAMES[dow].as_bytes());
+    out[3..5].copy_from_slice(b", ");
+    put_decimal(&mut out[5..7], d);
+    out[7] = b' ';
+    out[8..11].copy_from_slice(MONTH_NAMES[(m - 1) as usize].as_bytes());
+    out[11] = b' ';
+    put_decimal(&mut out[12..16], y as u32);
+    out[16] = b' ';
+    put_decimal(&mut out[17..19], (tod / 3600) as u32);
+    out[19] = b':';
+    put_decimal(&mut out[20..22], ((tod % 3600) / 60) as u32);
+    out[22] = b':';
+    put_decimal(&mut out[23..25], (tod % 60) as u32);
+    out[25..29].copy_from_slice(b" GMT");
+    true
+}
+
+/// 定宽、左补零的十进制（宽度 = `out.len()`）。
+fn put_decimal(out: &mut [u8], mut v: u32) {
+    for b in out.iter_mut().rev() {
+        *b = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+}
+
 /// 解析三种 HTTP 日期，返回 unix 秒。用系统时钟当"现在"。
 pub fn parse(s: &str) -> Option<i64> {
     let now = SystemTime::now()
@@ -317,6 +360,38 @@ mod tests {
             assert_eq!(days_from_civil(y, m, d), days, "{y}-{m:02}-{d:02} 对不上");
             days += 97;
         }
+    }
+
+    /// ★ 写进定长缓冲的那一版（10-05 · 构响应头不走 `fmt`）必须与 [`format_imf_secs`]
+    ///   （`format!` 那一版，RFC 的例子钉着它）**逐字节相同**。
+    ///   扫 1970–9999 年：素数步长让每一步落在不同的日、月、闰年与时分秒上；外加几个边界。
+    #[test]
+    fn 定长写法与_format_那一版逐字节相同() {
+        const LAST: i64 = 253_402_300_799; // 9999-12-31T23:59:59Z
+        let mut buf = [0u8; IMF_LEN];
+        let mut n = 0;
+        let mut secs = 0i64;
+        while secs <= LAST {
+            assert!(write_imf_secs(secs, &mut buf), "secs={secs}");
+            assert_eq!(
+                std::str::from_utf8(&buf).unwrap(),
+                format_imf_secs(secs),
+                "secs={secs}"
+            );
+            secs += 9_999_991;
+            n += 1;
+        }
+        assert!(n > 25_000, "扫的点数 {n}");
+        for s in [0, 59, 3_599, 86_399, 86_400, 951_782_400, EXPECT, LAST] {
+            assert!(write_imf_secs(s, &mut buf), "secs={s}");
+            assert_eq!(
+                std::str::from_utf8(&buf).unwrap(),
+                format_imf_secs(s),
+                "secs={s}"
+            );
+        }
+        // 年份超出四位：定长写不下 ⇒ 回 false，调用方回落到 `format!` 那一版（字节照旧）。
+        assert!(!write_imf_secs(LAST + 1, &mut buf));
     }
 
     #[test]

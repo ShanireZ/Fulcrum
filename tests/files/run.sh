@@ -266,6 +266,19 @@ expect_header_absent() {
     fail "$what 不该有 $name 头，实际「$got」"; fi
 }
 
+# ★ ★ 头名的**大小写与顺序**逐行钉死（2026-10-05，构响应头不再走 String 之后加的）。
+#   ⚠ 上面的 `hdr` 按大小写不敏感取值 ⇒ 判不出「`ETag` 以 `etag` 上线」这一族回归；
+#   而 pingora 的标题化表里没有 `ETag` / `Last-Modified` —— 有人把 `files/mod.rs` 的
+#   `ResponseHeader::build` 换成 `build_no_case`，或把头名换成 `http::header::ETAG` 一类常量，
+#   它们就以小写上线。⇒ 那一族**只有这一格**判得到。
+#   只比名字：值由别的断言判，`Date` 每秒都变。
+expect_header_names() {
+  local what=$1 want=$2 got
+  got=$(tr -d '\r' < "$WORK/hdr" | sed -n '2,$p' | sed '/^$/d' | cut -d: -f1 | paste -sd' ' -)
+  if [ "$got" = "$want" ]; then ok "$what 的头名逐个原样：$got"; else
+    fail "$what 的头名（大小写 + 顺序）期望「$want」，实际「$got」"; fi
+}
+
 expect_bytes() {
   local what=$1 want=$2 got
   got=$(stat -c '%s' "$WORK/body")
@@ -280,6 +293,7 @@ expect_status "GET /a.txt" 200 "$(probe "$BASE/a.txt")"
 expect_body   "GET /a.txt" "plain-text-file"
 expect_header "GET /a.txt" "Content-Type" "text/plain; charset=utf-8"
 expect_header "GET /a.txt" "Accept-Ranges" "bytes"
+expect_header_names "GET /a.txt" "Content-Type Content-Length Accept-Ranges ETag Last-Modified Date Connection"
 # ★ G90 那张小表真的被查了：css 与无扩展名各一条。
 expect_status "GET /style.css" 200 "$(probe "$BASE/style.css")"
 expect_header "GET /style.css" "Content-Type" "text/css; charset=utf-8"

@@ -135,6 +135,15 @@ mod tests {
         }
     }
 
+    /// ★ `file_server` 用 `HeaderValue::from_static` 发这张表里的值（10-05 · 构响应头不再分配），
+    ///   而 `from_static` 遇到非法字符会**在请求路径上 panic** ⇒ 每个值连同缺省值都钉住。
+    #[test]
+    fn 表里每个值都是合法头值() {
+        for (ext, ty) in TABLE.iter().chain(std::iter::once(&("（缺省）", DEFAULT))) {
+            assert!(http::HeaderValue::from_str(ty).is_ok(), ".{ext} → {ty}");
+        }
+    }
+
     #[test]
     fn 表里每一条都真的查得到() {
         for (ext, ty) in TABLE {
