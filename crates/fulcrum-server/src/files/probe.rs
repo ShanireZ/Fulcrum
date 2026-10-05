@@ -8,6 +8,7 @@
 //! ⇒ 它必须住在子模块里：父模块 `files` 够不到子模块的私有字段。
 //! ⛔ **别把它并回 `mod.rs`**，那会让下面两条不变式在一次无害的重构里静默失效。
 
+use bytes::Bytes;
 use std::fs::Metadata;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -29,7 +30,9 @@ use std::path::{Path, PathBuf};
 pub(super) struct Probe {
     path: PathBuf,
     meta: Metadata,
-    bytes: Option<Vec<u8>>,
+    /// ★ `Bytes` 而不是 `Vec<u8>`：发送时按区间 `slice` 出去只增引用计数，
+    ///   ⛔ 不再把读进来的字节整份再拷一遍（HTTP 层诊断 10-05 · 正文那次拷贝）。
+    bytes: Option<Bytes>,
 }
 
 impl Probe {
@@ -47,7 +50,7 @@ impl Probe {
         let bytes = if meta.is_file() && meta.len() <= inline_limit {
             let mut buf = Vec::with_capacity(meta.len() as usize);
             match f.read_to_end(&mut buf) {
-                Ok(_) => Some(buf),
+                Ok(_) => Some(Bytes::from(buf)),
                 Err(_) => None,
             }
         } else {
@@ -91,7 +94,7 @@ impl Probe {
         Some(Self {
             path,
             meta,
-            bytes: Some(buf),
+            bytes: Some(Bytes::from(buf)),
         })
     }
 
@@ -120,9 +123,9 @@ impl Probe {
     /// ★ ★ 这是不变式 ② 的落点：发送那一步问的是「要发的**那个表示**的字节在不在
     /// 手上」，⇒ 预压缩旁文件永远问不到，自动走分块路径。
     /// ⛔ 别加一个不带路径的 `bytes()` —— 那等于把这道门重新交回给调用方的记性。
-    pub(super) fn bytes_for(&self, p: &Path) -> Option<&[u8]> {
+    pub(super) fn bytes_for(&self, p: &Path) -> Option<&Bytes> {
         if p == self.path {
-            self.bytes.as_deref()
+            self.bytes.as_ref()
         } else {
             None
         }
@@ -283,7 +286,7 @@ mod tests {
                 let (p, body) = t.file(&format!("f{len}.bin"), len);
                 let slow = Probe::open_blocking(p.clone(), LIMIT).unwrap();
                 assert_eq!(
-                    slow.bytes_for(&p),
+                    slow.bytes_for(&p).map(|b| &b[..]),
                     Some(&body[..]),
                     "慢路径本来就该带全字节（len={len}，根={root:?}）"
                 );
@@ -302,7 +305,7 @@ mod tests {
                             "len={len}，根={root:?}"
                         );
                         assert_eq!(
-                            fast.bytes_for(&p),
+                            fast.bytes_for(&p).map(|b| &b[..]),
                             Some(&body[..]),
                             "len={len}，根={root:?}"
                         );
@@ -408,7 +411,7 @@ mod tests {
                  而在 probe_file 这一层是**正确性**：这个根上没有别的路拿得到字节",
             );
             assert_eq!(
-                probe.bytes_for(&p),
+                probe.bytes_for(&p).map(|b| &b[..]),
                 Some(&body[..]),
                 "回落回来了却没带上字节（根={root:?}）"
             );

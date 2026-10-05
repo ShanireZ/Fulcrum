@@ -434,23 +434,33 @@ async fn probe_file(p: &Path) -> Option<Probe> {
 /// ★ 逻辑与 [`stream_body`] 的循环体逐条对应，只是数据源换了 —— ⚠ 压缩那两条
 /// 陷阱（空块不能带 `last=false`、压缩时最后一块也不能标 `last`）在这里**一字不改**
 /// 地成立，⛔ 别因为「只有一块」就把它们省掉。
+/// 预取那一份里的 `[start, start+count)`；区间覆盖不到回 `None`。
+///
+/// ★ `slice` 只增引用计数，交出去的仍是 [`Probe`] 读进来的那块内存 ——
+///   ⛔ 别换回 `Bytes::copy_from_slice`：内容一样，只是每个请求白拷一遍（判据见同名单测）。
+fn body_slice(bytes: &Bytes, start: u64, count: u64) -> Option<Bytes> {
+    let s = usize::try_from(start).ok()?;
+    let e = s.checked_add(usize::try_from(count).ok()?)?;
+    if e > bytes.len() {
+        return None;
+    }
+    Some(bytes.slice(s..e))
+}
+
 async fn send_bytes(
     session: &mut Downstream<'_>,
-    bytes: &[u8],
+    bytes: &Bytes,
     start: u64,
     count: u64,
     encoder: &mut Option<crate::encode::Encoder>,
 ) {
-    let s = start as usize;
-    let e = s + count as usize;
     // ⚠ 防御：预取的那一份必须真的覆盖这个区间。⛔ 覆盖不到就断掉，
     //   与 `stream_body` 里「文件比 Content-Length 说的短」同一个处置。
-    if e > bytes.len() {
+    let Some(raw) = body_slice(bytes, start, count) else {
         warn!("file_server：预取的字节比要发的区间短（头已发出）");
         let _ = session.write_response_body(Bytes::new(), true).await;
         return;
-    }
-    let raw = Bytes::copy_from_slice(&bytes[s..e]);
+    };
     let out = match encoder.as_mut() {
         Some(en) => en.body_filter(Some(&raw), false),
         None => None,
@@ -1037,6 +1047,37 @@ async fn write_head_encoded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ 正文不另拷一份（HTTP 层诊断 10-05）：交给 `write_response_body` 的那块 `Bytes`
+    ///   必须**指着 Probe 读进来的那块内存**。⚠ 只比内容判不出这件事 —— 拷一份内容也相同。
+    #[test]
+    fn body_slice_指着探测读进来的那块内存_不另拷一份() {
+        let d = std::env::temp_dir().join(format!("fulcrum-body-slice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("f.bin");
+        let body: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&p, &body).unwrap();
+        // 慢路径在任何文件系统上都带字节；快路径带回来的是同一个字段。
+        let probe = Probe::open_blocking(p.clone(), CHUNK as u64).unwrap();
+        let held = probe.bytes_for(&p).expect("4 KiB 在内联界之内");
+        for (start, count) in [(0u64, 4096u64), (100, 200), (4095, 1)] {
+            let out = body_slice(held, start, count).expect("区间在内");
+            let (s, e) = (start as usize, (start + count) as usize);
+            assert_eq!(&out[..], &body[s..e], "start={start} count={count}");
+            assert_eq!(
+                out.as_ptr(),
+                held[s..].as_ptr(),
+                "start={start} count={count}：另拷了一份"
+            );
+        }
+        assert!(
+            body_slice(held, 4000, 97).is_none(),
+            "越界必须回 None（头已发出，调用方只能断连）"
+        );
+        assert!(body_slice(held, u64::MAX, 1).is_none(), "溢出也是越界");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// ★ `FileReq` 的三条取值口径（HTTP 层诊断发现 2 · 请求头不整份克隆）：
     ///   同名头取**第一个**、`to_str()` 不过的当作没有、没带的就是没有。
