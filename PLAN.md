@@ -347,6 +347,11 @@ open / fstat / sendfile / close ⇒ 方案 ③ 省掉的是 nginx 在对拍里�
 ③ 方案 ③ 的设计稿倾向缺省关闭，而对拍配置不加调优（[`bench/conf/fulcrum.Fulcrumfile`](bench/conf/fulcrum.Fulcrumfile)）
 ⇒ 照现口径，方案 ③ 做完 M3 读数一格不动；要它动就得同时改对拍口径（枢衡开不开、nginx 配不配 `open_file_cache`），那是另一次拍板。
 HTTP 层同时压着本组三类 `FAIL`，方案 ③ 只惠及静态吞吐一类。设计稿的四处待拍板原样留着、⛔ 不作废。
+⏳ **HTTP 层这一步的进度**（owner 2026-10-05 拍的三项，都在开发机上做、⛔ 都不是性能声明）：
+✅ 文件那条路枢衡自己的用户态先修两项 —— 正文不另拷一份（`c8a89d0`）、构响应头不再每个头分配（`5824b3f`），
+发出去的字节一个不变（改前改后 19 种请求逐字节对照；头名大小写由 `tests/files/run.sh` 新断言钉死）·
+✅ `env.json` 起记 CPU 拓扑（`host.cpu_topology`，`3e2cd2b`；诊断字段、不判合格性）·
+⏳ 下一次窗口加一趟 HTTP 层分账诊断（不是 M3 读数），回答「同一份二进制，合格宿主上 `respond` ÷ nginx 静态为什么比开发机低一截」。
 
 ### M4 · 发布 ⏳ 未开工
 
