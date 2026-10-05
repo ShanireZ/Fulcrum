@@ -1,0 +1,7 @@
+GET /payload.bin HTTP/1.1
+accept: */*
+accept-encoding: gzip, compress, deflate, br
+user-agent: oha/1.15.0
+connection: close
+host: 127.0.0.1:9960
+
