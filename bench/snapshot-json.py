@@ -38,6 +38,54 @@ def read_sysctls(names: str) -> dict:
     return out
 
 
+def parse_cpu_list(spec: str):
+    """`0-1` / `0,2` / `2-3,6` → 逻辑 CPU 号的列表；写法不认识回 None（⛔ 不猜）。"""
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        a, dash, b = part.partition("-")
+        if dash:
+            if not (a.isdigit() and b.isdigit()) or int(a) > int(b):
+                return None
+            out.extend(range(int(a), int(b) + 1))
+        elif part.isdigit():
+            out.append(int(part))
+        else:
+            return None
+    return out
+
+
+def cpu_topology(siblings_raw: str, server: str, load: str):
+    """`<cpu>=<thread_siblings_list>` 一行一条 → `host.cpu_topology`（2026-10-05，诊断、⛔ 不判）。
+
+    物理核用它的超线程兄弟集合当名字（`/sys` 原样的写法，如 `0-1`）。
+    ★ `shared_cores` 非空 = 被测与压测端**共用物理核**（超线程兄弟互抢执行单元）。
+    ⚠ 一行都读不到 ⇒ None（「没记到」，⛔ 不是「没有超线程」）；
+      亲和没给、写法不认识、或指到不存在的 CPU ⇒ 那一组记 None（⛔ 不猜）。
+    """
+    siblings = {}
+    for line in siblings_raw.splitlines():
+        cpu, sep, sib = line.partition("=")
+        if sep and cpu.strip().isdigit() and sib.strip():
+            siblings[int(cpu.strip())] = sib.strip()
+    if not siblings:
+        return None
+
+    def cores(spec):
+        cpus = parse_cpu_list(spec) if spec else None
+        if cpus is None or any(c not in siblings for c in cpus):
+            return None
+        return sorted({siblings[c] for c in cpus}, key=lambda s: parse_cpu_list(s) or [])
+
+    s, ld = cores(server), cores(load)
+    return {
+        "thread_siblings": {str(c): siblings[c] for c in sorted(siblings)},
+        "server_cores": s,
+        "load_cores": ld,
+        "shared_cores": None if s is None or ld is None else [c for c in s if c in ld],
+    }
+
+
 disqualifiers = [line for line in env("SNAP_DISQ").splitlines() if line.strip()]
 
 snapshot = {
@@ -58,6 +106,10 @@ snapshot = {
         "mem_total_kb": maybe_int(env("SNAP_MEM_KB")),
         # 空字符串表示**没有**把被测与负载生成器钉到不相交的核上。
         "cpu_affinity": env("SNAP_AFFINITY") or None,
+        # 上面那两组落在哪几个**物理核**上、有没有共用（见 `cpu_topology` 的文档注释）。
+        "cpu_topology": cpu_topology(
+            env("SNAP_CPU_SIBLINGS"), env("SNAP_SERVER_CPUS"), env("SNAP_LOAD_CPUS")
+        ),
     },
     # ⚠ 容器有自己的 netns ⇒ 这些多半是**容器的**值，不是宿主的。
     #   记它们是为了可追溯，⛔ 它们不参与合格性判定（见 env-snapshot.sh 那段注释）。

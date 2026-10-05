@@ -725,6 +725,50 @@ else
   ok "C21 oha 发出的请求里带着 Connection: close（抓到的原文在 raw/short-connection-throughput/oha-request.txt）"
 fi
 
+# ── C22：CPU 拓扑必须落在原始数据里（2026-10-05；诊断字段，⛔ 不进合格性判定）──────
+#
+# ★ 起因：合格宿主与开发机诊断台上，同一份二进制、同一个亲和量到的比例差得很远，
+#   而两台机器上被测与压测端各落在哪几个**物理核**上从来没记过（开发机上 `0-1` 是
+#   同一个物理核的两个超线程）⇒ 跨机器读数时少了一条口径，⛔ 别靠谁记得。
+# 本条两半，缺一半都不够：
+#   ① A 那一趟真跑出来的 `env.json` 里 `thread_siblings` 记到了（采集真的接上了）；
+#   ② 判断本身判得动：两份合成快照必须各红一次 —— A 那一趟**没设亲和**，
+#      ⇒ 「设了亲和却没算出两组核」那一半只有合成的喂得到。
+c22_check() {
+  python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+host = d.get("host") or {}
+t = host.get("cpu_topology")
+if not t or not t.get("thread_siblings"):
+    print("快照里没有 host.cpu_topology.thread_siblings —— 被测与压测端落在哪几个物理核上说不出来"); sys.exit(1)
+if host.get("cpu_affinity") and (t.get("server_cores") is None or t.get("load_cores") is None):
+    print("设了亲和（%s）却没算出两组核：%r" % (host["cpu_affinity"], t)); sys.exit(1)
+print("%d 个逻辑 CPU 的超线程兄弟都记到；被测核 %s · 压测核 %s · 共用 %s" % (
+    len(t["thread_siblings"]), t.get("server_cores"), t.get("load_cores"), t.get("shared_cores")))
+' "$1"
+}
+echo "── C22 CPU 拓扑必须落在原始数据里 ──"
+if c22_check "$OUT/env.json" > /tmp/bench-c22.txt 2>&1; then
+  ok "C22 $(cat /tmp/bench-c22.txt)"
+else
+  bad "C22 $(cat /tmp/bench-c22.txt)"
+fi
+python3 -c '
+import json
+json.dump({"host": {"cpu_affinity": None}}, open("/tmp/bench-c22-neg-none.json", "w"))
+json.dump({"host": {"cpu_affinity": "server=0-1 load=2-3", "cpu_topology": {
+    "thread_siblings": {"0": "0-1", "1": "0-1"}, "server_cores": None,
+    "load_cores": ["2-3"], "shared_cores": None}}}, open("/tmp/bench-c22-neg-cores.json", "w"))
+'
+for neg in /tmp/bench-c22-neg-none.json /tmp/bench-c22-neg-cores.json; do
+  if c22_check "$neg" > /dev/null 2>&1; then
+    bad "C22 判断判不动：$(basename "$neg") 是缺了拓扑的合成快照，它却判绿"
+  else
+    ok "C22 反向：$(basename "$neg") 如期判红"
+  fi
+done
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"

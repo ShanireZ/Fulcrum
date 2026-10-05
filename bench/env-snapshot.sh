@@ -136,6 +136,19 @@ if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
   AFFINITY="server=${BENCH_SERVER_CPUS} load=${BENCH_LOAD_CPUS}"
 fi
 
+# CPU 拓扑：每个逻辑 CPU 的超线程兄弟（2026-10-05 加；诊断，⛔ 不判合格性）。
+# ★ 上面那条亲和只说「两组核不相交」，说不出两组是否**共用物理核**（超线程兄弟互抢执行单元）——
+#   开发机上 `0-1` 就是同一个物理核的两个超线程，而合格宿主的拓扑在此之前一次都没记过
+#   ⇒ 两台机器上同一个亲和量到的比例不同时，少了这一格就说不清是不是口径不同。
+# ⚠ 读不到就一行都不写（快照里记 null = 「没记到」，⛔ 不是「没有超线程」）。
+CPU_SIBLINGS=""
+for f in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do
+  [ -r "$f" ] || continue
+  cpu=${f#/sys/devices/system/cpu/cpu}
+  CPU_SIBLINGS="${CPU_SIBLINGS}${cpu%%/*}=$(cat "$f")
+"
+done
+
 # ── 站点根落在哪种文件系统上（口径的一部分，⛔ 不是元数据）─────────────────
 #
 # ★ ★ ★ 枢衡的静态文件路径先在本线程上试一次 `preadv2(RWF_NOWAIT)`，而
@@ -198,7 +211,8 @@ export SNAP_KERNEL="$KERNEL" SNAP_NPROC="$NPROC" SNAP_LOAD1="$LOAD1" \
   SNAP_ATTEST="$ATTEST" SNAP_SUBJECTS="$SUBJECTS" SNAP_FULCRUM="$FULCRUM_VER" \
   SNAP_FULCRUM_SHA="$FULCRUM_SHA" SNAP_FULCRUM_BUILD_ID="$FULCRUM_BUILD_ID" \
   SNAP_DISQ="$DISQ" SNAP_QUALIFIED="$QUALIFIED" SNAP_SYSCTLS="$SYSCTLS" \
-  SNAP_AFFINITY="$AFFINITY" \
+  SNAP_AFFINITY="$AFFINITY" SNAP_CPU_SIBLINGS="$CPU_SIBLINGS" \
+  SNAP_SERVER_CPUS="${BENCH_SERVER_CPUS:-}" SNAP_LOAD_CPUS="${BENCH_LOAD_CPUS:-}" \
   SNAP_DECLARED_CONTAINER="$DECLARED" SNAP_DECLARED_HOST="$DECLARED_HOST" \
   SNAP_HOST_KV="$HOST_KV" SNAP_NOFILE="$NOFILE" SNAP_NOFILE_DECLARED="$BENCH_NOFILE" \
   SNAP_OUT="$OUT" \
