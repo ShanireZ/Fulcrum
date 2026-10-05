@@ -505,6 +505,30 @@ impl HttpServerApp for FulcrumApp {
 }
 
 impl FulcrumApp {
+    /// 一次请求的「事实」，**全部借自 `hdr`**（HTTP 层诊断 10-05 · 请求路径上的字符串分配）。
+    ///
+    /// ★ 单独一个函数，是因为同一次请求要对着**不同的那份请求头**各取一次：
+    ///   `serve_one` 开头借 `session` 里那份；反代借它自己克隆的那份；`file_server` 出错后重新借一次 ——
+    ///   后两处都要跨过「写响应」（那要 `&mut session`），不能沿用开头那份借用。
+    fn facts_of<'a>(
+        &self,
+        hdr: &'a RequestHeader,
+        remote_ip: Option<IpAddr>,
+        remote_port: u16,
+    ) -> ReqFacts<'a> {
+        ReqFacts {
+            // Host 里可能带端口（`a.com:8443`）——站点索引只认主机名。
+            host: host_of(hdr).split(':').next().unwrap_or(""),
+            port: self.port,
+            scheme: if self.https { "https" } else { "http" },
+            method: hdr.method.as_str(),
+            path: hdr.uri.path(),
+            query: hdr.uri.query().unwrap_or(""),
+            remote_ip,
+            remote_port,
+        }
+    }
+
     pub(crate) async fn serve_one(&self, session: &mut Downstream<'_>) -> OutcomeName {
         let started = SystemTime::now();
         // ★ ★ **整次请求的配置快照，只在这里取一次。**
@@ -523,38 +547,23 @@ impl FulcrumApp {
         let hdr: &RequestHeader = session.session.req_header();
         // ⚠ 这一行照旧经 `Deref` 借整个 `session`：它是**共享**借用、当场就还，与上面按字段借的 `hdr` 共存得了。
         let (remote_ip, remote_port) = client_addr(session);
-        let host_raw = host_of(hdr);
-        // Host 里可能带端口（`a.com:8443`）——站点索引只认主机名。
-        let host = host_raw.split(':').next().unwrap_or("").to_string();
-        let path = hdr.uri.path().to_string();
-        let query = hdr.uri.query().unwrap_or("").to_string();
-        let method = hdr.method.as_str().to_string();
-
-        let facts = ReqFacts {
-            host: &host,
-            port: self.port,
-            scheme: if self.https { "https" } else { "http" },
-            method: &method,
-            path: &path,
-            query: &query,
-            remote_ip,
-            remote_port,
-        };
+        // ★ host / path / query / method 四样都**借**请求头、⛔ 不 `to_string`（HTTP 层诊断 10-05）。
+        //   ⚠ 代价是它们的借用不能跨过「写响应」：`respond` 一类本来就先算后写；
+        //   要跨过去的两支（`file_server` 出错后算错误页、反代）各自重新借（见 [`Self::facts_of`]）。
+        let facts = self.facts_of(hdr, remote_ip, remote_port);
+        let ReqFacts {
+            host,
+            path,
+            query,
+            method,
+            ..
+        } = facts;
         let headers = ReqHeaders(hdr);
         let ctx = facts.ctx(&headers);
 
-        // ── 访问日志：请求那一半（**M2 批 L 第 ② 步**）────────────────────
+        // ── 访问日志：请求那一半里每请求都要的两格（**M2 批 L 第 ② 步**）──────
         //
-        // ★ `uri` 取的是**原始**请求目标（`rewrite` 之前）—— 契约里写死的。
-        //   ⚠ 取 `effective_path` 的话，一条 `rewrite` 会让日志说出一个
-        //   **客户端从没请求过**的地址，而排障时那是最误导人的一种。
-        session.record.method = method.clone();
-        session.record.host = host.clone();
-        session.record.uri = if query.is_empty() {
-            path.clone()
-        } else {
-            format!("{path}?{query}")
-        };
+        // ★ method / host / uri / site 四格**路由之后、站点配了 `log` 才填**（见下面「站点那一半」）。
         session.record.remote_ip = remote_ip;
         session.record.remote_port = remote_port;
 
@@ -565,7 +574,7 @@ impl FulcrumApp {
         //   现场看到的只是「CA 说验不过」，配置里没有任何一行看得出问题。
         // ★ 表空的时候（没开自动签发、或已经签完摘掉了）这里什么都不接，
         //   请求原样落回路由：**有没有 ACME 不改变数据面的任何一条行为**。
-        if let Some(key_auth) = self.http01.answer(&path) {
+        if let Some(key_auth) = self.http01.answer(path) {
             debug!("HTTP-01 应答 {path}");
             // ⚠ 它在路由**之前**，所以没有站点、也没有站点的 `log` 配置
             //   ⇒ 这一条记不进访问日志（与 421 同一个形状 —— 那是 D26，
@@ -616,16 +625,28 @@ impl FulcrumApp {
         //   五个分支里各写一行。⇒ 将来加一种终结方式时，
         //   `outcome_name` 的穷尽匹配会**编不过**，而那正是契约里
         //   「`outcome` 是闭集」那句话的落法。
-        session.record.site = Some(routed.site.name.clone());
+        // ★ `site_addr` 每请求都要（指标的 `site` 标签）；它是 `Arc<str>`，克隆不分配。
         session.record.site_addr = Some(routed.site_addr.clone());
         session.record.target = routed.site.log.clone();
+        // ★ ★ method / host / uri / site 四格**只有 `to_json_line` 读**，而站点没配 `log` 时那一行根本不写
+        //   ⇒ 只在配了 `log` 时才填（HTTP 层诊断 10-05：照填等于每请求白分配四次）。值与以前逐字相同。
+        // ★ `uri` 取的是**原始**请求目标（`rewrite` 之前）—— 契约里写死的。
+        //   ⚠ 取 `effective_path` 的话，一条 `rewrite` 会让日志说出一个
+        //   **客户端从没请求过**的地址，而排障时那是最误导人的一种。
+        if session.record.target.is_some() {
+            session.record.method = method.to_owned();
+            session.record.host = host.to_owned();
+            session.record.uri = if query.is_empty() {
+                path.to_owned()
+            } else {
+                format!("{path}?{query}")
+            };
+            session.record.site = Some(routed.site.name.clone());
+        }
         let base = outcome_name(&routed.outcome);
 
-        // 改写过的路径要带给上游。
-        let effective_path = routed
-            .rewritten_path
-            .clone()
-            .unwrap_or_else(|| path.clone());
+        // 改写过的路径要带给上游。★ 没改写时借 `path`，⛔ 不克隆。
+        let effective_path: &str = routed.rewritten_path.as_deref().unwrap_or(path);
 
         match &routed.outcome {
             Outcome::Respond { status, body } => {
@@ -701,13 +722,18 @@ impl FulcrumApp {
                 //   之后这一支不再借请求头 ⇒ 下面才能把 `&mut session` 交出去（⛔ 不克隆）。
                 let enc = encode::Encoder::new(encode::wanted(&routed), hdr);
                 let freq = files::FileReq::from_header(hdr);
-                match files::serve(session, &freq, fs, &effective_path, &query, enc).await {
+                // ⚠ 下面要把 `&mut session` 交出去，而 `effective_path` / `query` 可能借着 session 里的请求头
+                //   ⇒ 这一支各拿一份自有的（`query` 为空时不分配）。
+                let url_path = effective_path.to_owned();
+                let query = query.to_owned();
+                match files::serve(session, &freq, fs, &url_path, &query, enc).await {
                     Ok(()) => base,
                     Err(status) => {
                         // ★ 走到这里时一个字节都还没写（`files` 里所有 `Err(status)` 都在任何写之前返回，
                         //   写出去的 405 / 304 / 416 / 正文都返回 `Ok`）⇒ 重新借一次请求头来算错误页（⛔ 不克隆）。
-                        let headers = ReqHeaders(session.session.req_header());
-                        let ctx = facts.ctx(&headers);
+                        let hdr = session.session.req_header();
+                        let headers = ReqHeaders(hdr);
+                        let ctx = self.facts_of(hdr, remote_ip, remote_port).ctx(&headers);
                         let page = prepare_error(&rt, routed.site, status, &routed, &ctx, started);
                         write_error_page(session, page).await
                     }
@@ -725,11 +751,12 @@ impl FulcrumApp {
                 //   ⇒ 它克隆一份 —— 就是 `serve_one` 开头原来那一次，挪到这里（次数没变）。
                 let owned = hdr.clone();
                 let oh = ReqHeaders(&owned);
-                let ctx = facts.ctx(&oh);
+                // ★ 这一支要跨过写响应还在用请求的各项 ⇒ 改借这份克隆（⛔ 不再借 session 里那份）。
+                let ctx = self.facts_of(&owned, remote_ip, remote_port).ctx(&oh);
                 let view = ReqView {
                     ctx: &ctx,
                     downstream_req: &owned,
-                    effective_path: &effective_path,
+                    effective_path: routed.rewritten_path.as_deref().unwrap_or(owned.uri.path()),
                     started,
                 };
                 let r = match routed.cache {
@@ -1562,14 +1589,15 @@ fn store_if_allowed(
 }
 
 /// 取 Host：h1 看 `Host` 头，h2 看 `:authority`（Pingora 会把它填进 uri）。
-fn host_of(req: &RequestHeader) -> String {
+/// ★ 借请求头、⛔ 不分配（HTTP 层诊断 10-05 · 请求路径上的字符串分配）。
+fn host_of(req: &RequestHeader) -> &str {
     if let Some(v) = req.headers.get("host")
         && let Ok(s) = v.to_str()
         && !s.is_empty()
     {
-        return s.to_string();
+        return s;
     }
-    req.uri.host().unwrap_or("").to_string()
+    req.uri.host().unwrap_or("")
 }
 
 /// 把一个 [`Outcome`] 翻成访问日志契约里那个**闭集**的取值。
