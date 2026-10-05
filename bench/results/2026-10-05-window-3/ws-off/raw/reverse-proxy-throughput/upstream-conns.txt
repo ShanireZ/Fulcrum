@@ -1,0 +1,4 @@
+fulcrum 0.95
+caddy 1.59
+haproxy 0.68
+nginx 1.38

@@ -1,0 +1,36 @@
+# 枢衡对拍判定
+# 环境快照：env.json
+
+## reverse-proxy-throughput
+VERDICT: FAIL
+  该类最强者：nginx = 13710.6578
+  门槛（最强者 × 0.9，G19「不劣于 10%」）：12339.5920
+  枢衡：7095.8917
+  全部读数：
+    caddy 4390.4304
+    fulcrum 7095.8917
+    haproxy 12269.3004
+    nginx 13710.6578
+
+## short-connection-throughput
+VERDICT: FAIL
+  该类最强者：haproxy = 15709.7588
+  门槛（最强者 × 0.9，G19「不劣于 10%」）：14138.7829
+  枢衡：11172.4953
+  全部读数：
+    caddy 11850.0244
+    fulcrum 11172.4953
+    haproxy 15709.7588
+    nginx 15671.5644
+
+## static-throughput
+VERDICT: FAIL
+  该类最强者：nginx = 55396.4287
+  门槛（最强者 × 0.9，G19「不劣于 10%」）：49856.7858
+  枢衡：21619.4120
+  全部读数：
+    caddy 11247.2570
+    fulcrum 21619.4120
+    haproxy 50849.4379
+    nginx 55396.4287
+
