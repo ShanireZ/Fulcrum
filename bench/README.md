@@ -369,8 +369,8 @@ SONAME 同名而 **Debian 包名不同**（bookworm 的 `libssl3` 在 trixie 叫
 | 类 | 形状 | 状态 |
 |---|---|---|
 | [`case/static-throughput.sh`](case/static-throughput.sh) | 四家各服务同一个固定资源 | ✅ 已在合格宿主出过数（`FAIL`）|
-| [`case/reverse-proxy-throughput.sh`](case/reverse-proxy-throughput.sh) | 四家各作反代，转发到**同一个常驻源站** | ⏳ 脚本与判据就绪，**一个数字都还没有** |
-| [`case/short-connection-throughput.sh`](case/short-connection-throughput.sh) | 四家各从**内存**回同一份正文，**每个请求一条新连接、服务端先关** | ⏳ 脚本与判据就绪，**一个数字都还没有** |
+| [`case/reverse-proxy-throughput.sh`](case/reverse-proxy-throughput.sh) | 四家各作反代，转发到**同一个常驻源站** | ✅ 已在合格宿主出过数（`FAIL`；窗口二那组上游复用没对齐，窗口三那组对齐了）|
+| [`case/short-connection-throughput.sh`](case/short-connection-throughput.sh) | 四家各从**内存**回同一份正文，**每个请求一条新连接、服务端先关** | ✅ 已在合格宿主出过数（`FAIL`，窗口三）|
 
 ⏳ 还没有脚本的类：TLS 握手 · L4 转发 · 缓存命中 · 长连接。
 
