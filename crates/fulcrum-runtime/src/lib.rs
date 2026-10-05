@@ -1182,9 +1182,11 @@ pub struct SiteRt {
 #[derive(Debug)]
 pub struct Runtime {
     sites: Vec<SiteRt>,
-    /// `(host, port) → (站点下标, 命中的地址在该站点 `addresses` 里的下标)`。
+    /// `port → host（小写）→ (站点下标, 命中的地址在该站点 `addresses` 里的下标)`。
     /// ⚠ 后一项是 G121 的全部落点 —— 见 [`SiteRt::addresses`]。
-    exact: BTreeMap<(String, u16), (usize, usize)>,
+    /// ★ 按端口分两层而不是 `(String, u16)` 一个键：查找时直接拿 `&str` 查，
+    ///   ⛔ 不必为了拼键每请求克隆一次 Host（判据 `tests/route_alloc.rs`）。
+    exact: BTreeMap<u16, BTreeMap<String, (usize, usize)>>,
     /// `(".example.com", port, 站点下标, 命中的地址下标)`，**按后缀长度降序**。
     wildcard: Vec<(String, u16, usize, usize)>,
     /// `port → (站点下标, 命中的地址下标)`，来自 `:8080` 这种不带主机名的地址。
@@ -2014,7 +2016,7 @@ impl Runtime {
     fn build_graph(cfg: &StructuredConfig) -> Result<Runtime, Vec<BuildError>> {
         let mut errors: Vec<BuildError> = Vec::new();
         let mut sites = Vec::new();
-        let mut exact = BTreeMap::new();
+        let mut exact: BTreeMap<u16, BTreeMap<String, (usize, usize)>> = BTreeMap::new();
         let mut wildcard: Vec<(String, u16, usize, usize)> = Vec::new();
         let mut catch_all = BTreeMap::new();
         let mut listen: BTreeMap<u16, bool> = BTreeMap::new();
@@ -2093,7 +2095,9 @@ impl Runtime {
                     let suffix = a.host.trim_start_matches('*').to_string();
                     wildcard.push((suffix, a.port, si, ai));
                 } else if exact
-                    .insert((a.host.to_ascii_lowercase(), a.port), (si, ai))
+                    .entry(a.port)
+                    .or_default()
+                    .insert(a.host.to_ascii_lowercase(), (si, ai))
                     .is_some()
                 {
                     errors.push(BuildError::new(
@@ -2621,8 +2625,14 @@ impl Runtime {
     /// G121 要指标标签取「实际匹配到的那条地址字面量」而不是站点的第一条地址，
     /// 这个下标是那条字面量的唯一来源。
     pub fn resolve_site(&self, host: &str, port: u16) -> Option<(usize, SiteMatch, usize)> {
-        let h = host.to_ascii_lowercase();
-        if let Some(&(i, ai)) = self.exact.get(&(h.clone(), port)) {
+        // ★ 已是小写（绝大多数请求）就直接借，⛔ 不为「转小写」白分配一次（判据 `tests/route_alloc.rs`）。
+        let h: Cow<'_, str> = if host.bytes().any(|b| b.is_ascii_uppercase()) {
+            Cow::Owned(host.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(host)
+        };
+        let h: &str = &h;
+        if let Some(&(i, ai)) = self.exact.get(&port).and_then(|by_host| by_host.get(h)) {
             return Some((i, SiteMatch::Exact, ai));
         }
         for (suffix, p, i, ai) in &self.wildcard {
@@ -2633,7 +2643,7 @@ impl Runtime {
             //   现场是一次握手失败，配置里没有一行看得出问题。
             //   ★ 判据只有一份，就在 `fulcrum_config::host`：两边都调它，
             //   **分家变成结构上做不到的事**，而不是靠一条契约测试碰巧发现。
-            if *p == port && wildcard_covers(suffix, &h) {
+            if *p == port && wildcard_covers(suffix, h) {
                 return Some((*i, SiteMatch::Wildcard, *ai));
             }
         }
