@@ -8,7 +8,7 @@
 # ★ ★ **判据挂在方法上，不只挂在结果上**：一张新证书出现在盘上，可能来自「按 ARI 续期」，
 #   也可能来自「旧的没读出来于是重签」。所以同时钉三样：① 日志里那句
 #   `该续期了：CA 的 ARI 建议窗口已经开始`（**谁下的决定**）、② 证书**序列号变了**、
-#   ③ 续期那一趟**又走了一遍 DNS-01**。
+#   ③ 续期那一趟的挑战**按 CA 的选择走对了**（CA 新建授权就重解 DNS-01，复用有效授权就不解）。
 #
 # 单独一个场景 + 单独一套端口 + 单独一个 pebble 实例：短寿命证书会污染同一个 CA 下的其它
 #   断言（run.sh 有好几条依赖「刚签完的证书还早得很」）。共用一个 CA 等于让两个场景互相设定前提。
@@ -133,9 +133,11 @@ acme_write_pebble_config "$DIR_PORT" "$MGMT_PORT" "$HTTP_PORT" "$PEBBLE_TLSALPN_
   "\"profiles\": { \"default\": { \"description\": \"short-lived\", \"validityPeriod\": $VALIDITY } },"
 acme_start_challtestsrv "$DNS_PORT" "$CTS_MGMT_PORT"
 # ★ ★ `PEBBLE_AUTHZREUSE=0`：pebble 默认有 50% 概率复用上一次的授权，
-#   那样**续期那一趟根本不走挑战**，下面那条「续期时又验了一遍 DNS-01」会变成掷硬币。
-#   ⚠ 关掉它换来的是判据确定，而不是把一条真实路径藏起来——授权复用是 CA 侧的优化，
-#   与「枢衡会不会重新解一次挑战」无关。
+#   那样**续期那一趟根本不走挑战**，「续期时又验了一遍 DNS-01」那一支就只有一半的趟次判得到。
+#   ⚠ ⚠ 设成 0 也**不是**「永不复用」，而是每趟 1/100（pebble 的差一，原文见下面判据四）
+#   ⇒ 判据四**不靠这一行**决定走哪一支，而是从 CA 的日志读出这一趟走了哪一支、再按那一支判；
+#   这一行只让「续期重解挑战」那一支成为常态（99/100），每趟门禁几乎都真的判到它。
+#   授权复用是 CA 侧的优化，与「枢衡在需要时会不会重新解一次挑战」无关。
 acme_start_pebble "$DNS_PORT" 0
 
 wait_port "$DIR_PORT" || {
@@ -369,16 +371,47 @@ else
   fail "新证书的 notBefore 没有前进（$NOT_BEFORE_1 → $NOT_BEFORE_2）"
 fi
 
-# ★ ★ 判据四：**续期那一趟又走了一遍 DNS-01**。
-#   `PEBBLE_AUTHZREUSE=0` 之后 CA 不会复用授权，所以挑战必须重解一次。
-#   ⚠ 少了这一条，一个「续期时不去改 TXT」的实现会在真实 CA 上间歇性失败，
+# ★ ★ 判据四：**续期那一趟的挑战按 CA 的选择走对了** —— CA 新建了授权就必须重解 DNS-01，
+#   CA 复用了有效授权就不许重解。
+#   ⚠ 少了「必须重解」那一支，一个「续期时不去改 TXT」的实现会在真实 CA 上间歇性失败，
 #   而在授权还没过期的窗口里看起来完全正常。
-if grep -qF "的 TXT 已在全部 1 台权威 NS 上可见" "$WORK/gen2.log"; then
-  ok "续期那一趟重新写了 TXT 并重新确认可见（G58 对续期同样成立）"
-else
-  fail "续期那一趟没有「向权威 NS 确认 TXT 可见」——挑战可能被跳过了"
-  grep -i 'TXT\|DNS-01' "$WORK/gen2.log" >&2 || true
-fi
+#   ⚠ ⚠ **走哪一支由 CA 定，⛔ 不由 `PEBBLE_AUTHZREUSE=0` 保证**：pebble v2.10.1 `wfe/wfe.go`
+#   新建授权的条件是 `authz == nil || rand.Intn(100) > wfe.authzReusePercent`，抽到 0 时
+#   `0 > 0` 为假 ⇒ 照样复用，每趟 1/100（`-1` 过不了它的值域检查、回落到缺省 50，绕不开）。
+#   2026-10-05 全量门禁真碰上了一次：续期那单没新建授权、没有 `POST /chalZ/`，枢衡如实没去重解，
+#   而当时的判据只认「CA 不会复用」，于是判红 —— 红的是判据的前提，不是产品。
+#   ★ 分支信号取 CA 自己的话：pebble 每**新建**一份授权打一句
+#   `There are now N authorizations in the db`，复用时一句不打 ⇒ 第一单之后 N = 1，
+#   续期那单新建了就是 2、复用了就仍是 1。
+#   ⛔ 不许改成「复用就跳过」或「复用就重跑」：两支都判，每一支判的是枢衡在那一支下该做的事。
+#   ★ 错判那一支也逃不掉：CA 新建了授权而枢衡没解，订单到不了 ready，上面判据二先红。
+# ⚠ `|| true` 不能省：一句都没有时 grep 退 1，`pipefail` + `set -e` 会让整个脚本在这里静默退出，
+#   走不到下面那条「分支信号本身不成立」。
+AUTHZ_COUNT=$(grep -aoE 'There are now [0-9]+ authorizations in the db' "$WORK/pebble.log" |
+  tail -1 | awk '{print $4}' || true)
+TXT_CONFIRMED=$(grep -cF "的 TXT 已在全部 1 台权威 NS 上可见" "$WORK/gen2.log" || true)
+case "${AUTHZ_COUNT:-0}" in
+  2)
+    if [ "$TXT_CONFIRMED" -ge 1 ]; then
+      ok "续期那单 CA 新建了授权，枢衡重新写了 TXT 并重新确认可见（G58 对续期同样成立）"
+    else
+      fail "续期那单 CA 新建了授权，枢衡却没有「向权威 NS 确认 TXT 可见」——挑战可能被跳过了"
+      grep -i 'TXT\|DNS-01' "$WORK/gen2.log" >&2 || true
+    fi
+    ;;
+  1)
+    if [ "$TXT_CONFIRMED" -eq 0 ]; then
+      ok "续期那单 CA 复用了有效授权（pebble 在 AUTHZREUSE=0 时仍有 1/100），枢衡如实没有重解挑战"
+    else
+      fail "续期那单 CA 复用了有效授权，枢衡却又确认了 ${TXT_CONFIRMED} 次 TXT —— 不需要挑战时也去解了"
+      grep -i 'TXT\|DNS-01' "$WORK/gen2.log" >&2 || true
+    fi
+    ;;
+  *)
+    fail "pebble 报的授权总数是「${AUTHZ_COUNT:-（一句都没有）}」，期望 1（续期复用）或 2（续期新建）—— 分支信号本身不成立"
+    grep -aF 'authorizations in the db' "$WORK/pebble.log" >&2 || true
+    ;;
+esac
 
 # ★ ★ 判据五：**装上去了**，不只是写到盘上。走真的 TLS 握手，从线上取序列号。
 #   ⚠ 「盘上换了一张」与「客户端拿到的是新的那张」是两件事：
@@ -445,4 +478,4 @@ if [ "$FAILS" -ne 0 ]; then
   exit 1
 fi
 echo "ACME RENEW TESTS PASSED —— 通配符证书由**跑着的**枢衡按 CA 的 ARI 自己续了一次："
-echo "  等到窗口才动、序列号真的变了、续期那一趟重新解了一遍 DNS-01、续完热装进了握手。"
+echo "  等到窗口才动、序列号真的变了、续期那一趟的挑战按 CA 的选择走对了、续完热装进了握手。"

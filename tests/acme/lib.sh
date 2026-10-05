@@ -470,6 +470,8 @@ acme_start_challtestsrv() {
 # 第二个参数是可选的 `PEBBLE_AUTHZREUSE`（百分比）。续期场景把它设成 0，
 # ⚠ 否则 pebble 有 50% 的概率复用上一次的授权，于是**续期那一趟根本不走挑战**——
 #   一条「续期时 TXT 又写了一遍」的断言会变成掷硬币。
+# ⚠ ⚠ 0 也**不是**「永不复用」，而是 1/100（pebble 的差一，原文见 renew.sh 判据四）⇒
+#   那条断言不靠这个参数，而是按 CA 日志里这一趟走了哪一支来判。
 acme_start_pebble() {
   local dns_port=$1 authz_reuse=${2:-}
   local -a env_args=(PEBBLE_VA_NOSLEEP=1 "PEBBLE_WFE_NONCEREJECT=${NONCE_REJECT:-5}")
