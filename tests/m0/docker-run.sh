@@ -16,10 +16,11 @@
 #
 #   LINT=0 跳过 lint；M1_TESTS=0 跳过 M1 的 systemd 场景；BENCH_TESTS=0 跳过对拍那一格。
 #
-#   HOST_SELFTESTS=0 跳过宿主机侧那串自测；VOL_REPORT=0 跳过遗留卷报告；
-#   COMPILE_SHELLCHECK=0 让 COMPILE 那一格不跑 shellcheck。
-#     ★ 这三个是 pre-push 门用的（G158），由 tests/ci/pre-push.sh 按被推的提交显式赋值；
+#   HOST_SELFTESTS=auto 宿主机侧那串自测只在门的脚本或宿主工具变了时才跑（G159）；
+#   VOL_REPORT=0 跳过遗留卷报告；COMPILE_SHELLCHECK=0 让 COMPILE 那一格不跑 shellcheck。
+#     ★ 这三个是 pre-push 门用的（G158 / G159），由 tests/ci/pre-push.sh 显式赋值；
 #       ⛔ 完整门禁不该带着它们跑 —— 带了就不是完整门禁。
+#     ⛔ 宿主机自测**没有「无条件跳过」这一档**：除 `auto` 以外的任何值都照跑。
 #
 # ★ M1 的 systemd 场景跑在**另一个容器**里（systemd 当 PID 1），由本脚本在最后调用
 #   tests/m1/systemd-run.sh 驱动；单独跑用 `bash tests/m1/systemd-run.sh`。
@@ -44,9 +45,96 @@ VOL_LOCK_LIB="$REPO_UNIX/tests/lib/vol-lock.sh"
 # shellcheck source=tests/lib/vol-lock.sh
 . "$VOL_LOCK_LIB"
 
-# ★ 下面每一条宿主机侧自测都经由它调：`HOST_SELFTESTS=0` 时一条都不跑（G158）。
-#   只给 pre-push 门用 —— 这些自测验的是门自己的机器，完整门禁每趟照跑；默认照旧每次都跑。
-host_selftest() { [ "${HOST_SELFTESTS:-1}" = "0" ] || "$@"; }
+# ── 宿主机自测：这一趟跑不跑（G158 → G159）────────────────────────────────────
+#
+# 下面那串自测喂的都是**合成输入**，结论只取决于两样东西：门自己的脚本，与宿主机上的
+# shell 工具。⇒ 两样都没变时，上一次通过的结论今天仍然成立。
+# ★ G158 让 pre-push 无条件跳过它们，代价是「门的机器坏了要等下一趟完整门禁」——
+#   而**改坏它的那一刻**（改 `vol-lock.sh`、换 Git for Windows）恰恰最该当场证。
+#   ⇒ G159 改成：`HOST_SELFTESTS=auto` 时，本工作树有一份**同一指纹**的通过记录才跳过。
+#
+# ★ 指纹 = 本脚本 + `tests/lib/` 下全部 `.sh` 的内容 + 宿主工具身份
+#   （`BASH_VERSION` · `uname -sr`（MSYS 运行时）· `git --version` —— Git for Windows
+#   的版本号，自测用到的 tr / sha256sum / cygpath / mkdir 都随它一起分发）。
+#   ★ 用 `tests/lib/` 整个目录而不是点名 `vol-lock.sh`：往后多一个 lib 时不会安静地漏掉；
+#     多算进来的文件只会让自测多跑几次，方向是安全的。
+# ★ 记录放在 `git rev-parse --git-path` 下：只属于本机、本工作树，不进仓库，
+#   也不进工作树（行尾检查与 target 扫描都看不见它）。
+# ★ ★ 记录**只由一次真跑通过的自测写下**（与 G144 的验证记录同一条：生成器复现不出来的
+#   记录与编造的无法区分）；**要跑就先撤掉旧记录**，任何一条红 ⇒ 下一趟没有记录可用。
+# ⚠ 剩下的盲区写在明处：① 指纹没覆盖到的环境变化（同一 Git for Windows 版本下单独换了
+#   某个工具）；② 判「对不对得上」的这两个函数自己坏成「恒答对得上」时，pre-push 会一直
+#   跳过 —— 那一种只有完整门禁看得见（默认模式不问记录、每趟照跑，并跑下面那条自测）。
+host_selftest_fp() {   # host_selftest_fp <文件>...：算不出（读不到文件、没有 sha256sum）就返回非 0
+  local f
+  for f in "$@"; do [ -r "$f" ] || return 1; done
+  {
+    printf 'bash=%s\nuname=%s\ngit=%s\n' "$BASH_VERSION" "$(uname -sr 2>&1)" "$(git --version 2>&1)"
+    for f in "$@"; do
+      printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "${f#"$REPO_UNIX"/}"
+    done
+  } | sha256sum | cut -d' ' -f1
+}
+host_selftest_stamp_ok() {   # <记录文件> <指纹>：记录里的指纹与之逐字相同才答 0
+  [ -n "$2" ] && [ -f "$1" ] && [ "$(sed -n 's/^fp=//p' "$1")" = "$2" ]
+}
+host_selftest_stamp_write() {   # <记录文件> <指纹>：先写临时文件再 mv，读的一方看不到半份
+  local tmp="$1.tmp.$$"
+  printf 'fp=%s\nat=%s\n' "$2" "$(date '+%Y-%m-%d %H:%M:%S')" > "$tmp" && mv -f "$tmp" "$1"
+}
+
+# ⚠ 算不出指纹 / 拿不到记录路径 ⇒ 照跑，也不写记录 —— 「没能判断」不算「不必跑」。
+# ⚠ 两个路径都写成 `"$REPO_UNIX"/…`（引号收在变量后面）**不是风格**：`msys-argv-guard.sh`
+#   把本文件里每一处「变量名紧跟斜杠再到 .sh」都推导成「本门会调起的脚本」并整份扫它的 git argv；
+#   这里只是拿文件算哈希、不调起它，写成那种形状会让本文件把自己算进去（2026-10-06 实测误报 3 处）。
+HOST_SELFTEST_FP=$(host_selftest_fp "$REPO_UNIX"/tests/m0/docker-run.sh "$REPO_UNIX"/tests/lib/*.sh) \
+  || HOST_SELFTEST_FP=""
+HOST_SELFTEST_STAMP=$(git -C "$REPO_UNIX" rev-parse --path-format=absolute \
+                        --git-path fulcrum-host-selftest.ok 2>/dev/null) || HOST_SELFTEST_STAMP=""
+RUN_HOST_SELFTESTS=1
+if [ "${HOST_SELFTESTS:-1}" = "auto" ]; then
+  if [ -n "$HOST_SELFTEST_STAMP" ] && host_selftest_stamp_ok "$HOST_SELFTEST_STAMP" "$HOST_SELFTEST_FP"; then
+    RUN_HOST_SELFTESTS=0
+    echo "[docker-run] 宿主机自测：本工作树 $(sed -n 's/^at=//p' "$HOST_SELFTEST_STAMP") 对同一份输入通过过 ⇒ 本趟跳过（G159）"
+  else
+    echo "[docker-run] 宿主机自测：门的脚本或宿主工具变了（或本工作树还没有通过记录）⇒ 本趟照跑（G159）"
+  fi
+fi
+if [ "$RUN_HOST_SELFTESTS" = 1 ] && [ -n "$HOST_SELFTEST_STAMP" ]; then
+  rm -f "$HOST_SELFTEST_STAMP"
+fi
+host_selftest() { [ "$RUN_HOST_SELFTESTS" = "0" ] || "$@"; }
+
+# ★ 上面那套判据自己的自测：两个方向都有（该变的变、不该变的不变；该认的认、不该认的不认）。
+#   ⚠ 它本身也经由 host_selftest 调 —— 改它就是改本脚本，指纹随之变，下一趟必跑；
+#     而「判据坏成恒答对得上」那一种，由默认模式（完整门禁）每趟照跑它来兜。
+selftest_host_selftest_stamp() {
+  local d rc=0 a b c v
+  d=$(mktemp -d)
+  printf 'x\n' > "$d/one.sh"
+  printf 'y\n' > "$d/two.sh"
+  a=$(host_selftest_fp "$d/one.sh" "$d/two.sh") || a=""
+  b=$(host_selftest_fp "$d/one.sh" "$d/two.sh") || b=""
+  v=$(BASH_VERSION="selftest-other"; host_selftest_fp "$d/one.sh" "$d/two.sh") || v=""
+  printf 'x \n' > "$d/one.sh"
+  c=$(host_selftest_fp "$d/one.sh" "$d/two.sh") || c=""
+  { [ -n "$a" ] && [ "$a" = "$b" ]; } || { echo "★ 同一份输入两次算出不同的指纹（或算不出来）" >&2; rc=1; }
+  [ "$a" != "$c" ] || { echo "★ 输入文件改了一个字节，指纹没变 —— pre-push 会拿旧记录跳过自测" >&2; rc=1; }
+  [ "$a" != "$v" ] || { echo "★ 宿主工具身份变了，指纹没变" >&2; rc=1; }
+  ! host_selftest_fp "$d/one.sh" "$d/missing.sh" >/dev/null 2>&1 \
+    || { echo "★ 输入文件读不到时仍给出了指纹" >&2; rc=1; }
+  ! host_selftest_stamp_ok "$d/stamp" "$a" || { echo "★ 没有记录时答「对得上」" >&2; rc=1; }
+  host_selftest_stamp_write "$d/stamp" "$a"
+  host_selftest_stamp_ok "$d/stamp" "$a" || { echo "★ 刚写下的记录读回来对不上" >&2; rc=1; }
+  ! host_selftest_stamp_ok "$d/stamp" "$c" || { echo "★ 指纹不同也答「对得上」" >&2; rc=1; }
+  ! host_selftest_stamp_ok "$d/stamp" "" || { echo "★ 空指纹答「对得上」" >&2; rc=1; }
+  rm -rf "$d"
+  [ "$rc" -eq 0 ] || {
+    echo "  宿主机自测记录的判据自测未通过 —— pre-push「跳过宿主机自测」一律不可信。" >&2
+    exit 1
+  }
+}
+host_selftest selftest_host_selftest_stamp
 
 # ★ 行尾前置检查 —— **必须放在 `export MSYS_NO_PATHCONV=1` 之前**。
 #
@@ -476,6 +564,13 @@ selftest_gate_lock() {
   }
 }
 host_selftest selftest_gate_lock
+
+# ★ 走到这里 ⇔ 上面十条宿主机自测这一趟真的全跑过、全过了（任何一条红都已 `exit 1`）
+#   ⇒ 这时才写通过记录（G159）。写不成不判红：下一趟 pre-push 只是照跑自测，不影响本趟判定。
+if [ "$RUN_HOST_SELFTESTS" = 1 ] && [ -n "$HOST_SELFTEST_STAMP" ] && [ -n "$HOST_SELFTEST_FP" ]; then
+  host_selftest_stamp_write "$HOST_SELFTEST_STAMP" "$HOST_SELFTEST_FP" \
+    || echo "⚠ 宿主机自测的通过记录没写成（$HOST_SELFTEST_STAMP）—— 下一趟 pre-push 会照跑自测。" >&2
+fi
 
 # 不依赖 git 的兜底扫描：先一次性判「整棵树有没有 CR」（一遍就够，常见情况到此为止），
 # 有才逐个找是哪些文件（这时候慢一点无所谓，因为已经要人来看了）。

@@ -17,7 +17,7 @@ Narrow it with one `*_ONLY=1`:
 | flag | scenario |
 |---|---|
 | `BUILD_ONLY` / `LINT_ONLY` | build only · `fmt` + `clippy -D warnings` + `shellcheck` only |
-| `COMPILE_ONLY` | `shellcheck` + compile, **all targets**, zero tests run — what the `pre-push` hook uses. The hook adds `COMPILE_SHELLCHECK=0` when the pushed range changes no `*.sh` / `*shellcheckrc` / `docker/Dockerfile.build`, plus `HOST_SELFTESTS=0 VOL_REPORT=0` (G158); the full gate never sets these. ⚠ `BUILD_ONLY` is not the same thing: `cargo build --release` never compiles test targets |
+| `COMPILE_ONLY` | `shellcheck` + compile, **all targets**, zero tests run — what the `pre-push` hook uses. The hook adds `COMPILE_SHELLCHECK=0` when the pushed range changes no `*.sh` / `*shellcheckrc` / `docker/Dockerfile.build`, plus `VOL_REPORT=0` (G158) and `HOST_SELFTESTS=auto`, which skips the host self-tests only when this worktree holds a pass record for the same fingerprint of the gate scripts and host tools (G159); the full gate never sets these, and no value skips the self-tests unconditionally. ⚠ `BUILD_ONLY` is not the same thing: `cargo build --release` never compiles test targets |
 | `UNIT_ONLY` | Fulcrum's own crate tests |
 | `VENDOR_ONLY` | the fork regression net (**first gate after a rebase**) |
 | `SERVE_ONLY` | data plane end-to-end, real traffic |

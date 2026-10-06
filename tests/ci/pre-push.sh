@@ -44,6 +44,9 @@
 #   · shellcheck 扫的仍是**工作树**，跳不跳由被推的提交决定 ⇒ 被推的提交没碰 `.sh`、
 #     而工作树里躺着一个未提交的坏 `.sh` 时，本门放行（那个 `.sh` 不在这次推送里）。
 #   · 门自己的机器坏了（卷名推导、锁、字节探针）时，本门不再当场发现，要等下一趟完整门禁。
+#     ⇒ **已由 G159 收窄**（同日）：宿主机自测改成按指纹跑 —— 门的脚本（`docker-run.sh`、
+#       `tests/lib/*.sh`）或宿主工具（bash / MSYS 运行时 / Git for Windows）一变，本门当场照跑；
+#       都没变且本工作树有同一指纹的通过记录才跳过。判据与盲区写在 `docker-run.sh` 那一段。
 # ★ 判据钉在 `--self-check`（合成仓库，两个方向都有），挂在完整门禁的 lint 那一格；
 #   ⛔ 不在 pre-push 路径上跑 —— 那正是本条要省的那一类开销。
 # ⛔ 三个开关**不由调用方给**：本脚本按判据显式赋值后传下去，环境里带进来的同名变量盖不过它们。
@@ -219,14 +222,14 @@ if [ "$RUN_SC" = 1 ]; then
 else
   echo "[pre-push] 本次跳过 shellcheck —— 被推的提交没碰 *.sh / *shellcheckrc / docker/Dockerfile.build。"
 fi
-echo '[pre-push] 宿主机自测与遗留卷报告留给完整门禁（HOST_SELFTESTS=0 VOL_REPORT=0）。'
+echo '[pre-push] 宿主机自测按指纹决定跑不跑（HOST_SELFTESTS=auto）；遗留卷报告留给完整门禁（VOL_REPORT=0）。'
 
 # ⚠ 走的是 `docker-run.sh` 的 `COMPILE_ONLY` 那一格，⛔ 不自己拼 `docker run`：
 #   构建镜像、target 卷名、那把「同一棵树只许跑一次」的锁、行尾字节探针、两道文档门 ——
 #   全部只有一份推导（`tests/lib/vol-lock.sh` + `docker-run.sh`）。
 #   ★ 各写一遍的失效形态是**安静地指向另一个卷**，而那时门测的是别人家的读数。
-# ★ 三个开关在这里**显式赋值**，环境里带进来的同名变量盖不过它们（G158）。
-if COMPILE_ONLY=1 COMPILE_SHELLCHECK="$RUN_SC" HOST_SELFTESTS=0 VOL_REPORT=0 \
+# ★ 三个开关在这里**显式赋值**，环境里带进来的同名变量盖不过它们（G158 / G159）。
+if COMPILE_ONLY=1 COMPILE_SHELLCHECK="$RUN_SC" HOST_SELFTESTS=auto VOL_REPORT=0 \
      bash "$REPO/tests/m0/docker-run.sh"; then
   if [ "$RUN_SC" = 1 ]; then
     echo "[pre-push] ✓ shellcheck 与编译（含全部测试目标）都过了 —— 放行。"
