@@ -86,6 +86,7 @@ boring 5 默认开后量子密钥交换 · quiche 0.30 · HTTP/1 / HTTP/2 入口
 ## 改了什么
 
 ★ **改动的意图严格限定为「放宽版本上界 + 随之而来的调用点适配」。**
+（这句是建 fork 时的口径；此后由 owner 逐条拍进来的另外三类 —— 加能力、缺陷修复、`G157` 的语义不变的性能改动 —— 各自写在本节对应的条目里。）
 
 ⚠ ★ ★ **但「没有行为变更」这句话，2026-08-12 建立本 fork 时写下来是错的**：`nix` 那一轮实际引入了一条真回归（见下面第 2 节），它在 2026-08-13 补上回归网的当天被逮到并修好。
 **教训不是「当时不够小心」，是「当时没有能发现它的东西」**——编译过、M0 七跑全绿，而那条 bug 一直在。
@@ -923,6 +924,50 @@ self.body_bytes_sent += write_buf.len();
 ⏳ **投不投上游等 rebase 读过上游 `main` 之后再判**（G122 已定）——
 上游 `main` 已把 `prometheus` 整条删掉，口味未知。
 
+### ★ ★ ★ 16. 一类新改动：请求路径上三处语义不变的开销（2026-10-06，G157）
+
+⚠ **本条开了一个新类别：只为性能、对枢衡看得见的行为一个不变。** 此前的类别是版本上界与调用点适配（§1–§7）、
+加能力（11 / 12 / 14 / 15）、缺陷修复（13）。本类与它们一样要**随 rebase 重放**；收进来的门槛是「语义不变」——
+改了行为的（请求头 / 响应头保留大小写的表、keep-alive 等下一条请求时的计时器）⛔ 不在本条，各要一处设计、另拍。
+
+**起因**：M3 的 HTTP 层诊断（`PLAN.md` §7 M3）。开发机上的裸 pingora 诊断台对 fork 里的候选逐个做单变量试验
+（每个变体一份副本、只差一处补丁；计数口径 = 每请求的用户指令数与分配次数，⛔ 不是性能声明，读数不入库，`G139`），
+owner 2026-10-06 按推荐先拍这三处。
+
+#### 改了什么：**两个文件，加一个测试文件**
+
+| | 文件 | 改了什么 | 为什么语义不变 |
+|---|---|---|---|
+| ① | `src/protocols/l4/stream.rs` | `poll_read` / `poll_write` / `poll_flush` / `poll_write_vectored` 之后**不再记等待计时**（每次各读一两次时钟）。`AccumulatedDuration` 与两个 getter 原样留着（少改上游的行），`total` 恒为零 | 那两个 getter（`get_read_pending_time` / `get_write_pending_time`）在枢衡与本 fork 的 8 个 crate 里**没有任何读者**，只有 trait 实现；恒为零也正是 trait 缺省值 |
+| ② | `src/protocols/http/v1/server.rs` | `read_request` 的 256 个头槽位**不先填**，改走 `httparse::Request::parse_with_uninit_headers` | 读过 httparse 1.10.1 的源码：`parse` = `parse_with_config(缺省配置)` → `parse_with_config_and_uninit_headers`，与 uninit 入口是**同一个解析器、同一份缺省配置**；差别只在没解析完时 `req.headers` 留什么，而 `read_request` 在那两种情况下不读它 |
+| ③ | 同上 | 头偏移写进**栈上**的槽位（新函数 `populate_header_refs`，规则与 `common.rs` 的 `populate_headers` 相同），不再每条请求分配一个 `Vec<KVRef>` | 同一组偏移，只是放的地方不同；`populate_headers` 原样留给 `client.rs` |
+| — | `tests/fulcrum_read_request_alloc.rs`（新文件）| ③ 的分配次数判据，见下 | |
+
+⚠ ② 只改缺省那条路：`patched_http1` 那条照上游（先填后 `parse_unchecked`）。**该特性在本 fork 本来就编不过** ——
+crates.io 的 httparse 1.10.1 没有 `parse_unchecked`（那是 Cloudflare 自己那份 httparse 的方法），改前改后一样。
+
+**量了多少**（开发机，200 连接 × 200000 条，三轮中位；⛔ 不是性能声明）：裸 pingora 每请求用户指令 ① −374 · ② −770 · ③ −250，
+三处合计约 −1.4k（约 −5%）；malloc ③ −1（25 → 24）；`clock_gettime` ① −2。用这份 fork 本身重编的复核（同一台诊断台、同一口径）：
+用户指令 −1315（200 连接）/ −1388（1 条连接），都是 −4.7%；malloc −1、`clock_gettime` −2 逐位吻合；内核指令在噪声里。
+
+#### 守卫（都长在 fork 自己的测试里，`tests/vendor/run.sh` 照跑）
+
+| 判据 | 守什么 | 反证（注入写在 vendor 的副本上、挂到同一路径编，⛔ 没碰工作树）|
+|---|---|---|
+| `l4/stream.rs` 的 `枢衡改动16_读等待不再计时` | 一次真的挂起过约 50 ms 的读之后，`get_read_pending_time()` 仍是零；自带「这次读确实等过」的自证 | `poll_read` 里那一行等待计时加回去 ⇒ **只红它** |
+| `v1/server.rs` 的 `枢衡改动16_头数正好到上限时逐个对得上_多一个就拒` | 头数恰好 `MAX_HEADERS` 时 256 个头的名与值逐个对得上（② ③ 两处栈上槽位都用满）；多一个照上游拒（`InvalidHTTPHeader`）| 给 httparse 少递一个槽位 ⇒ **只红它**（256 个被拒）；`populate_header_refs` 漏掉最后一个 ⇒ 红它（另一条的「3 个头」断言也跟着红）|
+| `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动16_读请求头不再为偏移单独分配` | 一条普通请求一次读完时，`read_request` 一共分配 **8** 次（三次独立编译都是 8；里面有读缓冲、请求头、头表与保留大小写的表等，⚠ 组成没有逐项拆）；单独一个测试二进制、只数本线程；自带「分配器真的在数」的自证 | ③ 那两处换回上游原样 ⇒ **只红它**，「分配了 9 次（期望 8）」|
+
+四次注入每次都有 `Compiling pingora-core` 为证（副本在容器里先 touch，绕开 mtime 陷阱）。
+
+⚠ 第三条数的是**整个** `read_request`：rebase 后上游自己增减了分配也会红 —— 那时先核是谁动的，再改期望值，⛔ 别为了绿直接改数。
+跨两次读才完整的请求头、URI 转义后重解析（②③ 都要重新进那个循环），上游自己的测试（`read_2_buf` 等、`escaped_uri_*`）已覆盖。
+
+#### 归零条件
+
+② ③ 与 ① 都不依赖枢衡，是给上游提 PR 的候选；⏳ 提不提是对外动作，owner 定。在那之前是**要跟着 rebase 的常年成本**：
+三处都是小补丁，① 的四处删除最容易在冲突里被合掉 —— 那时第一条判据会红。
+
 ### 9. 没有动的一个：`daemonize`
 
 > ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 随 daemonize
@@ -1003,6 +1048,9 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ### 结论
 
+> ★ **2026-10-06（改动 16）：17 个文件** —— 下面那 14 个，加 `pingora-core` 的 `protocols/http/v1/server.rs`、
+> `protocols/l4/stream.rs` 与新增的 `tests/fulcrum_read_request_alloc.rs`（用上面的命令对 `0.9.0` 实测，`702f690`）。
+>
 > ★ **2026-09-24（相对 0.9.0）：14 个文件** —— workspace `Cargo.toml` · `pingora-core` 的 `Cargo.toml`、
 > `connectors/l4.rs`、`offload.rs`、`listeners/mod.rs`、`protocols/http/compression/mod.rs`、
 > `protocols/tls/boringssl_openssl/stream.rs`、`protocols/tls/digest.rs`、`services/listening.rs`、`upstreams/peer.rs` ·

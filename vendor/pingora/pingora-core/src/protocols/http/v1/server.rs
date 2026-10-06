@@ -331,9 +331,14 @@ impl HttpSession {
 
             // Use loop as GOTO to retry escaped request buffer, not a real loop
             loop {
+                // ★ 枢衡改动 16 ②：头槽位不先填一遍（256 × 32 字节，每条请求都要付），交给 httparse 的
+                //   uninit 入口；它与 `parse` 走的是同一个解析器、同一份缺省配置。patched_http1 那条路照上游原样。
+                #[cfg(not(feature = "patched_http1"))]
+                let mut headers = [const { std::mem::MaybeUninit::uninit() }; MAX_HEADERS];
+                #[cfg(feature = "patched_http1")]
                 let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-                let mut req = httparse::Request::new(&mut headers);
-                let parsed = parse_req_buffer(&mut req, &buf);
+                let mut req = httparse::Request::new(&mut []);
+                let parsed = parse_req_buffer(&mut req, &buf, &mut headers);
                 match parsed {
                     HeaderParseState::Complete(s) => {
                         self.raw_header = Some(BufRef(0, s));
@@ -344,10 +349,10 @@ impl HttpSession {
                         // `KVRef`s to record the offset of each piece of data, drop `req`, convert
                         // buf, the do the 0 copy update
                         let base = buf.as_ptr() as usize;
-                        let mut header_refs = Vec::<KVRef>::with_capacity(req.headers.len());
-                        // Note: req.headers has the correct number of headers
-                        // while header_refs doesn't as it is still empty
-                        let _num_headers = populate_headers(base, &mut header_refs, req.headers);
+                        // ★ 枢衡改动 16 ③：偏移记在栈上（不先填），不再每条请求分配一个 Vec。
+                        let mut header_refs =
+                            [const { std::mem::MaybeUninit::<KVRef>::uninit() }; MAX_HEADERS];
+                        let num_headers = populate_header_refs(base, &mut header_refs, req.headers);
 
                         let mut request_header = Box::new(RequestHeader::build(
                             req.method.unwrap_or(""),
@@ -382,7 +387,9 @@ impl HttpSession {
                         };
                         let buf = buf.freeze();
 
-                        for header in header_refs {
+                        for header in &header_refs[..num_headers] {
+                            // SAFETY（枢衡改动 16 ③）：`populate_header_refs` 写满了前 `num_headers` 个。
+                            let header = unsafe { header.assume_init_ref() };
                             let header_name = header.get_name_bytes(&buf);
                             let header_name = header_name.into_case_header_name();
                             let value_bytes = header.get_value_bytes(&buf);
@@ -1793,24 +1800,40 @@ fn escape_illegal_request_line(buf: &BytesMut) -> Option<BytesMut> {
     }
 }
 
+/// ★ 枢衡改动 16 ②：一个头槽位。缺省走 httparse 的 uninit 入口；patched_http1 那条路照上游，先填后解析。
+#[cfg(not(feature = "patched_http1"))]
+type HeaderSlot<'buf> = std::mem::MaybeUninit<httparse::Header<'buf>>;
+#[cfg(feature = "patched_http1")]
+type HeaderSlot<'buf> = httparse::Header<'buf>;
+
 #[inline]
-fn parse_req_buffer<'buf>(
-    req: &mut httparse::Request<'_, 'buf>,
+fn parse_req_buffer<'h, 'buf>(
+    req: &mut httparse::Request<'h, 'buf>,
     buf: &'buf [u8],
+    headers: &'h mut [HeaderSlot<'buf>],
 ) -> HeaderParseState {
     use httparse::Result;
 
     #[cfg(feature = "patched_http1")]
-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
+    fn parse<'h, 'buf>(
+        req: &mut httparse::Request<'h, 'buf>,
+        buf: &'buf [u8],
+        headers: &'h mut [HeaderSlot<'buf>],
+    ) -> Result<usize> {
+        req.headers = headers;
         req.parse_unchecked(buf)
     }
 
     #[cfg(not(feature = "patched_http1"))]
-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
-        req.parse(buf)
+    fn parse<'h, 'buf>(
+        req: &mut httparse::Request<'h, 'buf>,
+        buf: &'buf [u8],
+        headers: &'h mut [HeaderSlot<'buf>],
+    ) -> Result<usize> {
+        req.parse_with_uninit_headers(buf, headers)
     }
 
-    let res = match parse(req, buf) {
+    let res = match parse(req, buf, headers) {
         Ok(s) => s,
         Err(e) => {
             return HeaderParseState::Invalid(e);
@@ -1820,6 +1843,30 @@ fn parse_req_buffer<'buf>(
         httparse::Status::Complete(s) => HeaderParseState::Complete(s),
         _ => HeaderParseState::Partial,
     }
+}
+
+/// ★ 枢衡改动 16 ③：与 `common.rs` 的 `populate_headers` 同一套规则（跳过空名），只是写进调用方栈上的
+/// 槽位而不是一个新分配的 `Vec`。返回写了几个 —— 前这么多个槽位都已初始化。
+#[inline]
+fn populate_header_refs(
+    base: usize,
+    refs: &mut [std::mem::MaybeUninit<KVRef>],
+    headers: &[httparse::Header],
+) -> usize {
+    let mut n = 0;
+    for header in headers.iter() {
+        if !header.name.is_empty() {
+            // 下标越界会 panic（不会越界写）；`headers.len()` 不超过槽位数，见调用处。
+            refs[n].write(KVRef::new(
+                header.name.as_ptr() as usize - base,
+                header.name.len(),
+                header.value.as_ptr() as usize - base,
+                header.value.len(),
+            ));
+            n += 1;
+        }
+    }
+    n
 }
 
 #[inline]
@@ -2253,6 +2300,35 @@ mod tests_stream {
         let mut http_stream = HttpSession::new(Box::new(mock_io));
         let res = http_stream.read_request().await;
         assert_eq!(&InvalidHTTPHeader, res.unwrap_err().etype());
+    }
+
+    /// ★ 枢衡改动 16 ② ③ 的判据（G157）：两处栈上槽位（不先填）恰好用满时 —— 头数正好是
+    /// `MAX_HEADERS` —— 每个头的名与值都对得上；多一个就照上游拒绝。
+    /// 跨两次读才完整的请求头、URI 转义后重解析，上游自己的测试（`read_2_buf` 等、`escaped_uri_*`）已覆盖。
+    #[tokio::test]
+    async fn 枢衡改动16_头数正好到上限时逐个对得上_多一个就拒() {
+        init_log();
+        for (count, accept) in [(MAX_HEADERS, true), (MAX_HEADERS + 1, false)] {
+            let mut input = b"GET / HTTP/1.1\r\n".to_vec();
+            for i in 0..count {
+                input.extend_from_slice(format!("X-H{i}: v{i}\r\n").as_bytes());
+            }
+            input.extend_from_slice(b"\r\n");
+            let mock_io = Builder::new().read(&input).build();
+            let mut http_stream = HttpSession::new(Box::new(mock_io));
+            let res = http_stream.read_request().await;
+            if !accept {
+                assert_eq!(&InvalidHTTPHeader, res.unwrap_err().etype(), "{count} 个头");
+                continue;
+            }
+            assert_eq!(input.len(), res.unwrap().unwrap(), "{count} 个头");
+            let headers = &http_stream.req_header().headers;
+            assert_eq!(count, headers.len());
+            for i in 0..count {
+                let v = headers.get(format!("x-h{i}")).map(|v| v.as_bytes());
+                assert_eq!(Some(format!("v{i}").as_bytes()), v, "第 {i} 个头");
+            }
+        }
     }
 
     async fn build_upgrade_req(upgrade: &str, conn: &str) -> HttpSession {

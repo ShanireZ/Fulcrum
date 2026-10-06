@@ -761,7 +761,7 @@ impl AsyncRead for Stream {
         } else {
             Pin::new(&mut self.stream_mut()).poll_read(cx, buf)
         };
-        self.read_pending_time.poll_time(&result);
+        // ★ 枢衡改动 16 ①：这里（及下面三处写）原来每次都记一笔等待计时，见 `AccumulatedDuration`。
         self.rx_ts = self.stream().get_ref().rx_ts;
         result
     }
@@ -773,19 +773,15 @@ impl AsyncWrite for Stream {
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let result = if self.buffer_write {
+        if self.buffer_write {
             Pin::new(&mut self.stream_mut()).poll_write(cx, buf)
         } else {
             Pin::new(&mut self.stream_mut().get_mut()).poll_write(cx, buf)
-        };
-        self.write_pending_time.poll_write_time(&result, buf.len());
-        result
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        let result = Pin::new(&mut self.stream_mut()).poll_flush(cx);
-        self.write_pending_time.poll_time(&result);
-        result
+        Pin::new(&mut self.stream_mut()).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -797,16 +793,11 @@ impl AsyncWrite for Stream {
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        let total_size = bufs.iter().fold(0, |acc, s| acc + s.len());
-
-        let result = if self.buffer_write {
+        if self.buffer_write {
             Pin::new(&mut self.stream_mut()).poll_write_vectored(cx, bufs)
         } else {
             Pin::new(&mut self.stream_mut().get_mut()).poll_write_vectored(cx, bufs)
-        };
-
-        self.write_pending_time.poll_write_time(&result, total_size);
-        result
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -818,12 +809,18 @@ impl AsyncWrite for Stream {
     }
 }
 
+/// ★ 枢衡改动 16 ①（G157）：上游在每次 `poll_read` / `poll_write` / `poll_flush` /
+/// `poll_write_vectored` 之后都记一笔等待计时（等待开始、结束各读一次时钟），只为
+/// `get_read_pending_time` / `get_write_pending_time`。枢衡与本 fork 的 8 个 crate 里**没有任何读者**
+/// ⇒ 那四处调用删掉了，这里的结构与两个 getter 原样留着（少改上游的行），`total` 恒为零。
+/// 判据：本文件 `mod tests` 的 `枢衡改动16_读等待不再计时`。
 #[derive(Debug)]
 struct AccumulatedDuration {
     total: Duration,
     last_start: Option<Instant>,
 }
 
+#[allow(dead_code)] // ★ 枢衡改动 16 ①：除 `new` 外都没有调用者了，见上。
 impl AccumulatedDuration {
     fn new() -> Self {
         AccumulatedDuration {
@@ -1045,5 +1042,34 @@ mod tests {
         let mut buffer = vec![];
         stream.read_to_end(&mut buffer).await.unwrap();
         assert_eq!(buffer, message[2..]);
+    }
+
+    /// ★ 枢衡改动 16 ① 的判据（G157）：一次**真的等过**的读之后，读等待时间仍是零。
+    /// 上游会把那段等待（这里约 50 ms）记进 `get_read_pending_time()` ⇒ 改动被 rebase 合掉时这里红。
+    /// 写那一侧（`poll_write` / `poll_flush` / `poll_write_vectored`）与读同一处改动、一起删，
+    /// 写挂起要先灌满对端缓冲才造得出来 ⇒ 只钉读这一侧。
+    #[tokio::test]
+    async fn 枢衡改动16_读等待不再计时() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let mut stream: Stream = ours.into();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            theirs.write_all(b"x").await.unwrap();
+            theirs
+        });
+        let mut buf = [0u8; 1];
+        let started = Instant::now();
+        stream.read_exact(&mut buf).await.unwrap();
+        let _theirs = writer.await.unwrap();
+        // 自证：这次读确实挂起过（否则下面的零说明不了任何事）。
+        assert!(
+            started.elapsed() >= Duration::from_millis(40),
+            "这次读没有等 —— 判据失效"
+        );
+        assert_eq!(
+            stream.get_read_pending_time(),
+            Duration::ZERO,
+            "读等待又在计时了：枢衡改动 16 ① 被合掉了？见 FORK.md 改动 16"
+        );
     }
 }
