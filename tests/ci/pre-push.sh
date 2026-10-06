@@ -29,6 +29,25 @@
 #   会把这道门从秒级拖成分钟级，而**门变慢正是它被 `--no-verify` 绕过的起点**）。
 # ⚠ 仍然不拦的：`fmt` 差异、clippy 告警、以及所有测试。那三格归完整门禁。
 #
+# ## ⚠ ⚠ 2026-10-06（G158）：`shellcheck` 改成**看被推的提交**再决定跑不跑
+#
+# 起因是一次实测：热缓存、干净工作树，三趟 33–61s，而网络本身只占约 2s。
+# 最慢的一项正是 `shellcheck`（54 个脚本一次全扫，15–33s），而它每一趟都跑，
+# 不管被推的提交碰没碰 `.sh`；容器外的宿主机自测与遗留卷报告又占 13–20s
+# （Git Bash 每次 fork 几十毫秒，约 2000 条命令）。⇒ owner 拍板两条：
+#   ① 被推的提交**净改动**碰到 `*.sh` · `*shellcheckrc` · `docker/Dockerfile.build`
+#      （钉着 shellcheck 版本）之一才跑 shellcheck。判不出来的一律照跑：远端还没有这个引用、
+#      远端那一端本地没有、`git diff` 本身失败 —— 「没能判断」不算「不需要」。
+#   ② 调 `docker-run.sh` 时关掉宿主机自测与遗留卷报告。它们验的是门自己的机器与磁盘账，
+#      完整门禁每趟照跑。
+# ⚠ 代价写在明处：
+#   · shellcheck 扫的仍是**工作树**，跳不跳由被推的提交决定 ⇒ 被推的提交没碰 `.sh`、
+#     而工作树里躺着一个未提交的坏 `.sh` 时，本门放行（那个 `.sh` 不在这次推送里）。
+#   · 门自己的机器坏了（卷名推导、锁、字节探针）时，本门不再当场发现，要等下一趟完整门禁。
+# ★ 判据钉在 `--self-check`（合成仓库，两个方向都有），挂在完整门禁的 lint 那一格；
+#   ⛔ 不在 pre-push 路径上跑 —— 那正是本条要省的那一类开销。
+# ⛔ 三个开关**不由调用方给**：本脚本按判据显式赋值后传下去，环境里带进来的同名变量盖不过它们。
+#
 # ## ⚠ ⚠ 已知盲区：它量的是**工作树**，不是被推的那几笔
 #
 # `pre-push` 跑在工作树上。工作树干净时工作树 ≡ `HEAD`，而 owner 批量推时正是这种情形
@@ -46,6 +65,114 @@
 #    那是一次**显式**的、看得见的动作。
 set -euo pipefail
 
+# ── 被推的这一段会不会改变 shellcheck 的结论（G158）──────────────────────────
+#
+# 返回 0 = 要跑，stdout 说出理由（被碰到的路径，或为什么判不出来）；返回 1 = 不必跑。
+# ★ 比的是两端的**树**（`git diff <远端> <本地>`），⛔ 不是逐笔看提交：中间加了又删掉的 `.sh`
+#   不改变被推那一端的内容，而 shellcheck 只看内容。远端不是祖先（强推）时这样比照样对。
+# ★ 三类路径都承重：`*.sh` 是被扫的对象；`*shellcheckrc` 改规则；`docker/Dockerfile.build`
+#   钉着 shellcheck 的版本 —— 后两者一个 `.sh` 都不碰，也能让同一批脚本的结论变红。
+SC_PATHSPEC=('*.sh' '*shellcheckrc' 'docker/Dockerfile.build')
+shellcheck_trigger() {
+  local remote_sha=$1 local_sha=$2 changed
+  case "$remote_sha" in
+    *[!0]*) ;;
+    *) echo "远端还没有这个引用，没有可比的基线"; return 0 ;;
+  esac
+  if ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+    echo "远端那一端（${remote_sha:0:12}）本地没有，比不了 —— fetch 之后才判得出来"
+    return 0
+  fi
+  if ! changed=$(git diff --name-only --no-renames "$remote_sha" "$local_sha" -- "${SC_PATHSPEC[@]}"); then
+    echo "git diff 没能比出结果"
+    return 0
+  fi
+  [ -n "$changed" ] || return 1
+  printf '%s\n' "$changed"
+}
+
+# ── `--self-check`：拿一棵答案已知的合成仓库钉住上面那条判据 ──────────────────
+#
+# ★ 两个方向都要有：恒答「要跑」的坏判据会让「不必跑」那几条红，恒答「不必跑」的
+#   会让「要跑」那几条红 —— 只有一个方向的自测，对另一种坏法零判别力。
+# ★ 挂在完整门禁 lint 那一格（容器里跑）；⛔ 不在 pre-push 路径上跑。
+selftest_shellcheck_trigger() (
+  d=$(mktemp -d)
+  trap 'rm -rf "$d"' EXIT
+  cd "$d"
+  export GIT_AUTHOR_NAME=selftest GIT_AUTHOR_EMAIL=selftest@invalid \
+         GIT_COMMITTER_NAME=selftest GIT_COMMITTER_EMAIL=selftest@invalid
+  git -c init.defaultBranch=main init -q .
+  git config core.autocrlf false
+  git config commit.gpgsign false
+  snap() { git add -A && git commit -q -m "$1" && git rev-parse HEAD; }
+
+  mkdir -p src tests/x docker docs
+  printf 'a\n' > src/a.rs
+  printf '#!/bin/sh\n' > tests/x/run.sh
+  printf 'FROM x\n' > docker/Dockerfile.build
+  base=$(snap base)
+  printf 'b\n' > src/a.rs
+  rs_only=$(snap rs-only)
+  printf 'echo\n' >> tests/x/run.sh
+  sh_mod=$(snap sh-mod)
+  printf 'x\n' > docs/x.sh.md
+  printf 'x\n' > tests/x/run.sh.bak
+  lookalike=$(snap lookalike)
+  git rm -q tests/x/run.sh
+  sh_del=$(snap sh-del)
+  printf 'FROM y\n' > docker/Dockerfile.build
+  dockerfile=$(snap dockerfile)
+  printf 'disable=SC2086\n' > .shellcheckrc
+  rcfile=$(snap rcfile)
+  mkdir -p tests/y/deep
+  printf '#!/bin/sh\n' > tests/y/deep/n.sh
+  added=$(snap added)
+  git rm -q tests/y/deep/n.sh
+  net_zero=$(snap net-zero)
+  zero=$(printf '%040d' 0)
+  unknown=$(printf 'de%038d' 0)   # 一个本地没有的 sha
+
+  n=0
+  rc=0
+  # expect <yes|no> <说明> <远端> <本地> [理由里必须整行出现的路径]
+  expect() {
+    local want=$1 label=$2 out got
+    n=$((n + 1))
+    if out=$(shellcheck_trigger "$3" "$4" </dev/null); then got=yes; else got=no; fi
+    if [ "$got" != "$want" ]; then
+      echo "★ $label：期望 $want，实得 $got（${out:-无输出}）" >&2
+      rc=1
+      return 0
+    fi
+    if [ -n "${5:-}" ] && ! printf '%s\n' "$out" | grep -qxF -- "$5"; then
+      echo "★ $label：判对了，但理由里没点名 $5（实得：$out）" >&2
+      rc=1
+    fi
+  }
+  expect no  "只改 .rs"                            "$base"       "$rs_only"
+  expect yes "改了一个 .sh"                        "$rs_only"    "$sh_mod"     tests/x/run.sh
+  expect yes "多笔里有一笔改了 .sh"                "$base"       "$sh_mod"     tests/x/run.sh
+  expect no  "名字里带 .sh 但不以它结尾"           "$sh_mod"     "$lookalike"
+  expect yes "删掉一个 .sh"                        "$lookalike"  "$sh_del"     tests/x/run.sh
+  expect yes "改了钉 shellcheck 版本的 Dockerfile" "$sh_del"     "$dockerfile" docker/Dockerfile.build
+  expect yes "加了 .shellcheckrc"                  "$dockerfile" "$rcfile"     .shellcheckrc
+  expect yes "两层深的新 .sh"                      "$rcfile"     "$added"      tests/y/deep/n.sh
+  expect no  "加了又删掉（净改动为零）"            "$rcfile"     "$net_zero"
+  expect yes "远端还没有这个引用"                  "$zero"       "$net_zero"
+  expect yes "远端那一端本地没有"                  "$unknown"    "$net_zero"
+  if [ "$rc" != 0 ]; then
+    echo "  ⇒ 判据自测未通过 —— pre-push 门「跳不跳 shellcheck」一律不可信。" >&2
+    exit 1
+  fi
+  echo "[pre-push --self-check] ✓ $n 条全过（「要跑」与「不必跑」两个方向都有）"
+)
+
+if [ "${1:-}" = "--self-check" ]; then
+  selftest_shellcheck_trigger
+  exit 0
+fi
+
 REPO="$(git rev-parse --show-toplevel)"
 
 # ── 这一次到底有没有代码往外送 ─────────────────────────────────────────────
@@ -55,11 +182,19 @@ REPO="$(git rev-parse --show-toplevel)"
 # ⇒ 只有**全部**都是删除（或一行都没有）才跳过；只要有一行是真推送就照编。
 # ★ 判「全 0」不比长度：sha1 是 40 位、sha256 是 64 位，写死长度的写法会在换算法那天
 #   **静默地把删除当成推送**（多编一次，不致命）或反过来 —— 用「有没有非 0 字符」判。
+# ★ 同一趟顺手按 `shellcheck_trigger` 判跑不跑 shellcheck：任何一行要跑，这一趟就跑。
 HAS_CONTENT=0
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
+RUN_SC=0
+SC_WHY=""
+while read -r local_ref local_sha _remote_ref remote_sha; do
   case "$local_sha" in
     *[!0]*) HAS_CONTENT=1 ;;
+    *) continue ;;
   esac
+  if why=$(shellcheck_trigger "$remote_sha" "$local_sha" </dev/null); then
+    RUN_SC=1
+    SC_WHY+="    ${local_ref}："$'\n'"$(printf '%s\n' "$why" | sed 's/^/      /')"$'\n'
+  fi
 done
 if [ "$HAS_CONTENT" = 0 ]; then
   echo "[pre-push] 这一次只有删除、没有代码往外送 —— 跳过本门。"
@@ -68,23 +203,36 @@ fi
 
 # ── 说清楚这一趟量的是什么 ─────────────────────────────────────────────────
 if [ -n "$(git status --porcelain)" ]; then
-  echo "⚠ 工作树不干净 ⇒ **本次量的是工作树，不是你正在推的那几笔。**" >&2
+  echo "⚠ 工作树不干净 ⇒ **本次编译与 shellcheck 量的是工作树，不是你正在推的那几笔。**" >&2
   echo "  未提交的改动可能正好补上了被推那一笔的窟窿，而这道门看不见这件事。" >&2
-  echo "  要它守得住被推的状态，就在工作树干净时推。" >&2
+  echo "  （跑不跑 shellcheck 倒是按被推的提交判的。）要它守得住被推的状态，就在工作树干净时推。" >&2
 fi
 
-# ⚠ ⚠ 这两行**必须单引号**：双引号里的反引号是**命令替换** —— 写成双引号的话，
+# ⚠ ⚠ 这几行**必须单引号**：双引号里的反引号是**命令替换** —— 写成双引号的话，
 #   bash 会真的去跑那条 cargo 命令，而 Rust 在这台宿主上不许跑（G107）。
 #   ★ 写这个文件时当场踩了一次；`shellcheck` 的 SC2006 也守得住，但别指望它兜底。
-echo '[pre-push] shellcheck + 只编译、不跑测试（shellcheck-all.sh && cargo test --no-run --workspace --all-targets）——'
+echo '[pre-push] 只编译、不跑测试（cargo test --no-run --workspace --all-targets）；被推的提交动了 .sh 才先跑 shellcheck（G158）——'
 echo '           判据是一句话：**静态上就站不住的树不许离开这台机器**。'
+if [ "$RUN_SC" = 1 ]; then
+  echo "[pre-push] 本次跑 shellcheck —— 被推的提交碰到了它判得到的东西："
+  printf '%s' "$SC_WHY"
+else
+  echo "[pre-push] 本次跳过 shellcheck —— 被推的提交没碰 *.sh / *shellcheckrc / docker/Dockerfile.build。"
+fi
+echo '[pre-push] 宿主机自测与遗留卷报告留给完整门禁（HOST_SELFTESTS=0 VOL_REPORT=0）。'
 
 # ⚠ 走的是 `docker-run.sh` 的 `COMPILE_ONLY` 那一格，⛔ 不自己拼 `docker run`：
 #   构建镜像、target 卷名、那把「同一棵树只许跑一次」的锁、行尾字节探针、两道文档门 ——
 #   全部只有一份推导（`tests/lib/vol-lock.sh` + `docker-run.sh`）。
 #   ★ 各写一遍的失效形态是**安静地指向另一个卷**，而那时门测的是别人家的读数。
-if COMPILE_ONLY=1 bash "$REPO/tests/m0/docker-run.sh"; then
-  echo "[pre-push] ✓ shellcheck 与编译（含全部测试目标）都过了 —— 放行。"
+# ★ 三个开关在这里**显式赋值**，环境里带进来的同名变量盖不过它们（G158）。
+if COMPILE_ONLY=1 COMPILE_SHELLCHECK="$RUN_SC" HOST_SELFTESTS=0 VOL_REPORT=0 \
+     bash "$REPO/tests/m0/docker-run.sh"; then
+  if [ "$RUN_SC" = 1 ]; then
+    echo "[pre-push] ✓ shellcheck 与编译（含全部测试目标）都过了 —— 放行。"
+  else
+    echo "[pre-push] ✓ 编译（含全部测试目标）过了 —— 放行（本次没跑 shellcheck，理由见上）。"
+  fi
   exit 0
 fi
 

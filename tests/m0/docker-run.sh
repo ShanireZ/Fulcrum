@@ -6,7 +6,7 @@
 # 一次只开一个 `<X>_ONLY=1` 只跑那一格；`<X>_TESTS=0` 跳过那一格：
 #
 #   BUILD · LINT · UNIT · VENDOR             构建 · fmt+clippy+shellcheck · 自研 crate 测试 · fork 回归网
-#   COMPILE                                  shellcheck + 编译（含全部测试目标）、一条测试都不跑 —— pre-push 门用的那一格
+#   COMPILE                                  shellcheck + 编译（含全部测试目标）、一条测试都不跑 —— pre-push 门用的那一格（G158：shellcheck 按被推的提交决定跑不跑）
 #   SERVE · L4 · FILES · CACHE · CACHEDISK   数据面 · L4 面 · 静态文件 · 缓存 · 缓存磁盘后端
 #   ENCODE · H3 · PP · LOG                   压缩 · HTTP/3 · PROXY protocol（HTTP 面）· 访问日志
 #   METRICS · RELAY                          Prometheus 指标 · QUIC 跨进程转交
@@ -15,6 +15,11 @@
 #   BENCH                                    对拍流水线与判据（M3 第一刀，⛔ 不出性能数字）
 #
 #   LINT=0 跳过 lint；M1_TESTS=0 跳过 M1 的 systemd 场景；BENCH_TESTS=0 跳过对拍那一格。
+#
+#   HOST_SELFTESTS=0 跳过宿主机侧那串自测；VOL_REPORT=0 跳过遗留卷报告；
+#   COMPILE_SHELLCHECK=0 让 COMPILE 那一格不跑 shellcheck。
+#     ★ 这三个是 pre-push 门用的（G158），由 tests/ci/pre-push.sh 按被推的提交显式赋值；
+#       ⛔ 完整门禁不该带着它们跑 —— 带了就不是完整门禁。
 #
 # ★ M1 的 systemd 场景跑在**另一个容器**里（systemd 当 PID 1），由本脚本在最后调用
 #   tests/m1/systemd-run.sh 驱动；单独跑用 `bash tests/m1/systemd-run.sh`。
@@ -38,6 +43,10 @@ REPO_UNIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VOL_LOCK_LIB="$REPO_UNIX/tests/lib/vol-lock.sh"
 # shellcheck source=tests/lib/vol-lock.sh
 . "$VOL_LOCK_LIB"
+
+# ★ 下面每一条宿主机侧自测都经由它调：`HOST_SELFTESTS=0` 时一条都不跑（G158）。
+#   只给 pre-push 门用 —— 这些自测验的是门自己的机器，完整门禁每趟照跑；默认照旧每次都跑。
+host_selftest() { [ "${HOST_SELFTESTS:-1}" = "0" ] || "$@"; }
 
 # ★ 行尾前置检查 —— **必须放在 `export MSYS_NO_PATHCONV=1` 之前**。
 #
@@ -78,7 +87,7 @@ selftest_byte_probes() {
     exit 1
   }
 }
-selftest_byte_probes
+host_selftest selftest_byte_probes
 
 # ── 「现在是不是某个 `*_ONLY` 模式」──────────────────────────────────────────
 #
@@ -113,7 +122,7 @@ selftest_only_mode() {
     exit 1
   }
 }
-selftest_only_mode
+host_selftest selftest_only_mode
 
 # ── ★ ★ 卷名推导的自测 ──────────────────────────────────────────────────────
 #
@@ -139,7 +148,7 @@ selftest_target_vol() {
     exit 1
   }
 }
-selftest_target_vol
+host_selftest selftest_target_vol
 
 # ── ★ ★ 「这个卷还有没有主人」的自测 ────────────────────────────────────────
 #
@@ -189,7 +198,7 @@ selftest_tree_state() {
     exit 1
   }
 }
-selftest_tree_state
+host_selftest selftest_tree_state
 
 # ── ★ ★ ★ 「同一棵树只该有一个标签」的自测 ──────────────────────────────────
 #
@@ -237,7 +246,7 @@ selftest_tree_unstage() {
     exit 1
   }
 }
-selftest_tree_unstage
+host_selftest selftest_tree_unstage
 
 # ── ★ ★ 「同一棵树在两个 shell 下只有一个标签」的自测 ───────────────────────
 #
@@ -273,7 +282,7 @@ selftest_tree_canon() {
     exit 1
   }
 }
-selftest_tree_canon
+host_selftest selftest_tree_canon
 
 # ── ★ ★ 「哪些不属于本树的卷可以给删除命令」的自测 ──────────────────────────
 #
@@ -319,7 +328,7 @@ selftest_vol_verdict() {
     exit 1
   }
 }
-selftest_vol_verdict
+host_selftest selftest_vol_verdict
 
 # ── ★ ★ ★ 「本门管不着的那些卷」的自测 ────────────────────────────────────
 #
@@ -386,7 +395,7 @@ fulcrum-musl-alpine-target" ] \
     exit 1
   }
 }
-selftest_unattributed_vols
+host_selftest selftest_unattributed_vols
 
 # ── ★ ★ 门禁互斥的自测 ──────────────────────────────────────────────────────
 #
@@ -466,7 +475,7 @@ selftest_gate_lock() {
     exit 1
   }
 }
-selftest_gate_lock
+host_selftest selftest_gate_lock
 
 # 不依赖 git 的兜底扫描：先一次性判「整棵树有没有 CR」（一遍就够，常见情况到此为止），
 # 有才逐个找是哪些文件（这时候慢一点无所谓，因为已经要人来看了）。
@@ -693,20 +702,6 @@ VOL_EXISTED=0
 docker volume inspect "$TARGET_VOL" >/dev/null 2>&1 && VOL_EXISTED=1
 fulcrum_target_vol_create "$TARGET_VOL" "$REPO_UNIX"
 
-# 旧卷不自动删（可能还想回退），但要说出来——不然它们会无声地占满磁盘。
-#
-# ⚠ ⚠ **只劝人删「本树的」旧卷。** 带上树标签之后，`fulcrum-target-*` 里躺着的多数是
-#   **别的工作树正在用的卷**；照旧一股脑列成「旧卷」并附上 `docker volume rm`，
-#   那就成了一条教人去刨别人工作树的提示 —— 而受害者那边只会看到一次莫名的全量重编。
-#   判据是后缀：`-<本树标签>` 结尾的才是本树的。
-ALL_VOLS=$(docker volume ls -q --filter name=fulcrum-target || true)
-MINE_STALE=$(printf '%s\n' "$ALL_VOLS" | grep -- "-${TREE_TAG}\$" | grep -v "^${TARGET_VOL}\$" || true)
-OTHER_VOLS=$(printf '%s\n' "$ALL_VOLS" | grep -v -- "-${TREE_TAG}\$" | grep -v '^$' || true)
-if [ -n "$MINE_STALE" ]; then
-  echo "[docker-run] 这棵树另有 $(printf '%s\n' "$MINE_STALE" | wc -l) 个旧的 target 卷（对应更早的构建镜像），确认不再回退就删："
-  printf '%s\n' "$MINE_STALE" | sed 's/^/      docker volume rm /'
-fi
-
 # ★ ★ 新建的那一次**当场自证** label 真的写进去了、而且读回来就是这棵树。
 #   ⚠ 少了这一条，label 悄悄没写成的后果是：下面那条回收路对每个卷都答「不明」，
 #     于是它什么也不做，而现象只是「磁盘怎么还在涨」—— 没有一行字会说出原因。
@@ -720,130 +715,153 @@ if [ "$VOL_EXISTED" = 0 ]; then
   }
 fi
 
-# ★ ★ **「别的树的卷不给删除命令」解决了误删，没解决磁盘。** 工作树用完就删，
-#   它们的卷不会跟着走 —— 一个约 6GB，而卷名后缀是哈希、反推不回路径，
-#   于是**没有任何东西说得出哪些已经没有主人了**。
-#   ⇒ 按 label 记着的那棵树现在还在不在，把「不属于本树」再分成两半：
-#     主人已经不在 ⇒ 给删除命令（删了碰不到任何人）；
-#     主人还在、或读不到 label ⇒ 照旧只报数、不给命令。
-#   ⚠ 「读不到 label」有意归后一半：加这条规则之前留下的卷读不出主人，
-#     而「没能检查」不算「检查通过」。
-# ★ ★ 形状判据（`fulcrum_vol_shape`）**这一轮可不可信，当场自证**：拿本树自己那个
-#   真名字去问。`fulcrum_tree_tag` 在既没有 sha256sum 也没有 git 的宿主上会退到
-#   另一种标签，那时当代的名字会被判成「旧代」—— ⛔ 那正是它最容易删错的一轮。
-#   ⇒ 自证不过就把整条规则关掉（退回原来的保守行为），**并且说出来**。
-if [ "$(fulcrum_vol_shape "$TARGET_VOL")" = current ]; then
-  SHAPE_OK=1
-else
-  SHAPE_OK=0
-  echo "⚠ 本树的卷名（$TARGET_VOL）不符合当代形状 —— 这台宿主上 fulcrum_tree_tag 多半" >&2
-  echo "  退到了兜底标签。⇒ 「今天的推导造不出这个名字」这条规则本轮**整条关掉**，" >&2
-  echo "  旧命名代的卷会退回「不明」那一半（不判红，但别以为它在工作）。" >&2
-fi
+# ── 遗留卷报告（下面三个桶）：`VOL_REPORT=0` 时整段不跑（G158）─────────────────
+#
+# ★ 只给 pre-push 门用：这一段答的是「磁盘上躺着哪些旧卷、能不能删」，⛔ 不判红，
+#   与「这棵树站不站得住」无关；而它是宿主机侧最贵的一段（`docker system df -v`
+#   一条就 1.4–1.9s）。完整门禁每趟照跑，默认照旧。
+# ⚠ 上面那条「新建的卷当场自证 label」**有意留在这段之外**：它只在卷是本趟新建时
+#   才花一次 inspect，而新建那一趟错过了，就再没有哪一趟会验它。
+if [ "${VOL_REPORT:-1}" = "1" ]; then
+  # 旧卷不自动删（可能还想回退），但要说出来——不然它们会无声地占满磁盘。
+  #
+  # ⚠ ⚠ **只劝人删「本树的」旧卷。** 带上树标签之后，`fulcrum-target-*` 里躺着的多数是
+  #   **别的工作树正在用的卷**；照旧一股脑列成「旧卷」并附上 `docker volume rm`，
+  #   那就成了一条教人去刨别人工作树的提示 —— 而受害者那边只会看到一次莫名的全量重编。
+  #   判据是后缀：`-<本树标签>` 结尾的才是本树的。
+  ALL_VOLS=$(docker volume ls -q --filter name=fulcrum-target || true)
+  MINE_STALE=$(printf '%s\n' "$ALL_VOLS" | grep -- "-${TREE_TAG}\$" | grep -v "^${TARGET_VOL}\$" || true)
+  OTHER_VOLS=$(printf '%s\n' "$ALL_VOLS" | grep -v -- "-${TREE_TAG}\$" | grep -v '^$' || true)
+  if [ -n "$MINE_STALE" ]; then
+    echo "[docker-run] 这棵树另有 $(printf '%s\n' "$MINE_STALE" | wc -l) 个旧的 target 卷（对应更早的构建镜像），确认不再回退就删："
+    printf '%s\n' "$MINE_STALE" | sed 's/^/      docker volume rm /'
+  fi
 
-if [ -n "$OTHER_VOLS" ]; then
-  mapfile -t OTHER_LIST <<< "$OTHER_VOLS"
-  # 一趟 inspect 问完。★ 卷名在前、路径在最后一段：`IFS='|' read` 把剩下的整段都给
-  #   最后一个变量 ⇒ 路径里真有 `|` 也只是这一行显示得难看，不会把卷名读错、
-  #   进而给出一条删错卷的命令。
-  OTHER_META=$(docker volume inspect --format "{{.Name}}|{{index .Labels \"$FULCRUM_TREE_LABEL\"}}" \
-                 "${OTHER_LIST[@]}" 2>/dev/null || true)
-  ORPHAN_VOLS=()
-  ORPHAN_WHY=()
-  KEEP_VOLS=()
-  while IFS='|' read -r vol tree; do
-    [ -n "$vol" ] || continue
-    if [ "$(fulcrum_vol_verdict "$vol" "$tree" "$SHAPE_OK")" = orphan ]; then
-      ORPHAN_VOLS+=("$vol")
-      # ★ 把**凭哪条规则**判的写在命令旁边：两条规则的证据强度不同，
-      #   而人是照着这行去按删除键的。
-      if [ -n "$tree" ]; then
-        ORPHAN_WHY+=("工作树已不在：$tree")
+  # ★ ★ **「别的树的卷不给删除命令」解决了误删，没解决磁盘。** 工作树用完就删，
+  #   它们的卷不会跟着走 —— 一个约 6GB，而卷名后缀是哈希、反推不回路径，
+  #   于是**没有任何东西说得出哪些已经没有主人了**。
+  #   ⇒ 按 label 记着的那棵树现在还在不在，把「不属于本树」再分成两半：
+  #     主人已经不在 ⇒ 给删除命令（删了碰不到任何人）；
+  #     主人还在、或读不到 label ⇒ 照旧只报数、不给命令。
+  #   ⚠ 「读不到 label」有意归后一半：加这条规则之前留下的卷读不出主人，
+  #     而「没能检查」不算「检查通过」。
+  # ★ ★ 形状判据（`fulcrum_vol_shape`）**这一轮可不可信，当场自证**：拿本树自己那个
+  #   真名字去问。`fulcrum_tree_tag` 在既没有 sha256sum 也没有 git 的宿主上会退到
+  #   另一种标签，那时当代的名字会被判成「旧代」—— ⛔ 那正是它最容易删错的一轮。
+  #   ⇒ 自证不过就把整条规则关掉（退回原来的保守行为），**并且说出来**。
+  if [ "$(fulcrum_vol_shape "$TARGET_VOL")" = current ]; then
+    SHAPE_OK=1
+  else
+    SHAPE_OK=0
+    echo "⚠ 本树的卷名（$TARGET_VOL）不符合当代形状 —— 这台宿主上 fulcrum_tree_tag 多半" >&2
+    echo "  退到了兜底标签。⇒ 「今天的推导造不出这个名字」这条规则本轮**整条关掉**，" >&2
+    echo "  旧命名代的卷会退回「不明」那一半（不判红，但别以为它在工作）。" >&2
+  fi
+
+  if [ -n "$OTHER_VOLS" ]; then
+    mapfile -t OTHER_LIST <<< "$OTHER_VOLS"
+    # 一趟 inspect 问完。★ 卷名在前、路径在最后一段：`IFS='|' read` 把剩下的整段都给
+    #   最后一个变量 ⇒ 路径里真有 `|` 也只是这一行显示得难看，不会把卷名读错、
+    #   进而给出一条删错卷的命令。
+    OTHER_META=$(docker volume inspect --format "{{.Name}}|{{index .Labels \"$FULCRUM_TREE_LABEL\"}}" \
+                   "${OTHER_LIST[@]}" 2>/dev/null || true)
+    ORPHAN_VOLS=()
+    ORPHAN_WHY=()
+    KEEP_VOLS=()
+    while IFS='|' read -r vol tree; do
+      [ -n "$vol" ] || continue
+      if [ "$(fulcrum_vol_verdict "$vol" "$tree" "$SHAPE_OK")" = orphan ]; then
+        ORPHAN_VOLS+=("$vol")
+        # ★ 把**凭哪条规则**判的写在命令旁边：两条规则的证据强度不同，
+        #   而人是照着这行去按删除键的。
+        if [ -n "$tree" ]; then
+          ORPHAN_WHY+=("工作树已不在：$tree")
+        else
+          ORPHAN_WHY+=("读不到 label，且今天的推导造不出这个名字")
+        fi
       else
-        ORPHAN_WHY+=("读不到 label，且今天的推导造不出这个名字")
+        KEEP_VOLS+=("$vol")
       fi
-    else
-      KEEP_VOLS+=("$vol")
+    done <<< "$OTHER_META"
+    ORPHAN_N=${#ORPHAN_VOLS[@]}
+    KEEP_N=${#KEEP_VOLS[@]}
+    # ⚠ ⚠ **「读不到」不许变成「没这回事」。** `inspect` 整批失败时上面两个计数都是 0，
+    #   于是这一段一个字都不打 —— 而它取代的是 a4cc2b5 那句**无条件**的报数，
+    #   ⇒ 「另有 N 个卷不属于这棵树」这句话会安静地消失。
+    #   把对不上的那些一律并进「不给命令」的那一半（保守方向），并说出发生过。
+    OTHER_TOTAL=$(printf '%s\n' "$OTHER_VOLS" | wc -l)
+    UNREAD_N=$((OTHER_TOTAL - ORPHAN_N - KEEP_N))
+    if [ "$UNREAD_N" -gt 0 ]; then
+      echo "⚠ 有 $UNREAD_N 个 target 卷的 label 没读到（docker volume inspect 没给出这几行）——" >&2
+      echo "  它们一律按「还有人要」算，不进下面那份删除清单。" >&2
+      KEEP_N=$((KEEP_N + UNREAD_N))
     fi
-  done <<< "$OTHER_META"
-  ORPHAN_N=${#ORPHAN_VOLS[@]}
-  KEEP_N=${#KEEP_VOLS[@]}
-  # ⚠ ⚠ **「读不到」不许变成「没这回事」。** `inspect` 整批失败时上面两个计数都是 0，
-  #   于是这一段一个字都不打 —— 而它取代的是 a4cc2b5 那句**无条件**的报数，
-  #   ⇒ 「另有 N 个卷不属于这棵树」这句话会安静地消失。
-  #   把对不上的那些一律并进「不给命令」的那一半（保守方向），并说出发生过。
-  OTHER_TOTAL=$(printf '%s\n' "$OTHER_VOLS" | wc -l)
-  UNREAD_N=$((OTHER_TOTAL - ORPHAN_N - KEEP_N))
-  if [ "$UNREAD_N" -gt 0 ]; then
-    echo "⚠ 有 $UNREAD_N 个 target 卷的 label 没读到（docker volume inspect 没给出这几行）——" >&2
-    echo "  它们一律按「还有人要」算，不进下面那份删除清单。" >&2
-    KEEP_N=$((KEEP_N + UNREAD_N))
+
+    # ★ ★ **把体积说出来，不只报个数。** 2026-09-04 实测：本机 10 个无主卷共约 92GB，
+    #   而当时这里只会说「另有 N 个卷」—— 一个个数读起来无关痛痒，一串 GB 不是。
+    #   ⚠ `docker system df -v` 比 `docker volume ls` 贵得多（实测 1.4–1.9s vs 0.34s）
+    #   ⇒ 只在**真有东西要报**的时候问一次；两个桶都空就一次都不问。
+    #   ⚠ ⚠ 量不到时打「未量到」，⛔ 绝不打 0 —— 「读不到」不许变成「没这回事」。
+    VOL_SIZES=""
+    if [ "$ORPHAN_N" -gt 0 ] || [ "$KEEP_N" -gt 0 ]; then
+      VOL_SIZES=$(fulcrum_vol_sizes)
+    fi
+    # ★ 实现搬进了 `vol-lock.sh`（`fulcrum_vol_size_of`），因为下面第三个桶也要用它 ——
+    #   两处各写一遍的失效形态不是报错，是有一天两边对「没量到」给出不同的说法。
+    #   ⚠ 顺带修掉一处：原来的 `grep -F -- "$want|"` 是**子串**匹配，
+    #   `x-fulcrum-cargo|…` 那一行会被 `fulcrum-cargo` 认领 ⇒ 一个卷报上另一个卷的体积。
+    vol_size_of() { fulcrum_vol_size_of "$VOL_SIZES" "$1"; }
+
+    if [ "$ORPHAN_N" -gt 0 ]; then
+      echo "[docker-run] 另有 $ORPHAN_N 个 target 卷判定为**无主**，删了碰不到任何人："
+      for i in "${!ORPHAN_VOLS[@]}"; do
+        printf '      docker volume rm %s   # %s，%s\n' \
+          "${ORPHAN_VOLS[$i]}" "$(vol_size_of "${ORPHAN_VOLS[$i]}")" "${ORPHAN_WHY[$i]}"
+      done
+    fi
+    if [ "$KEEP_N" -gt 0 ]; then
+      echo "[docker-run] 另有 $KEEP_N 个 target 卷**不属于这棵工作树**，且判不出是不是无主的："
+      for vol in "${KEEP_VOLS[@]}"; do
+        printf '             %s   %s\n' "$vol" "$(vol_size_of "$vol")"
+      done
+      echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
+      echo "             ⚠ 但体积写在这里 —— 这一半只进不出，2026-09-04 它悄悄涨到过 92GB。"
+    fi
   fi
 
-  # ★ ★ **把体积说出来，不只报个数。** 2026-09-04 实测：本机 10 个无主卷共约 92GB，
-  #   而当时这里只会说「另有 N 个卷」—— 一个个数读起来无关痛痒，一串 GB 不是。
-  #   ⚠ `docker system df -v` 比 `docker volume ls` 贵得多（实测 1.4–1.9s vs 0.34s）
-  #   ⇒ 只在**真有东西要报**的时候问一次；两个桶都空就一次都不问。
-  #   ⚠ ⚠ 量不到时打「未量到」，⛔ 绝不打 0 —— 「读不到」不许变成「没这回事」。
-  VOL_SIZES=""
-  if [ "$ORPHAN_N" -gt 0 ] || [ "$KEEP_N" -gt 0 ]; then
-    VOL_SIZES=$(fulcrum_vol_sizes)
+  # ── ★ ★ ★ 第三个桶：本门**管不着**的卷（只报，⛔ 不给删除命令）──────────────
+  #
+  # 上面两个桶都只在**扫描集内**说话，而扫描集是个**子串**筛子；三族卷从它下面漏过去过，
+  # 而**三族全部是人工发现的**，门禁一次都没帮上忙（成因、白名单纪律、以及为什么
+  # 「放宽 filter」治不了第三族，都在 `vol-lock.sh` 的 `FULCRUM_FOREIGN_VOL_PREFIXES` 那一段）。
+  # ⇒ 这里改成**无 filter** 地列一遍全机卷，减掉本门管辖内的、以及说得出属主的，剩下的报出来。
+  #
+  # ⚠ ⚠ **只报名字与体积，⛔ 一律不给删除命令。** 本门对它们的属主一无所知 ——
+  #   给命令等于拿一句「我不知道这是谁的」去劝人删，那比不报更坏。
+  # ★ 噪音账：稳态下这个桶是空的，**一行都不打**；真出现一个 `pingora-up994-target` 才打一行。
+  #   ⚠ ⚠ **具体读数有意不写在这里** —— 它逐机而异，抄在代码注释里就是一份会过期又没人核的值。
+  #   唯一一处在 `docs/platform/build-and-test.md`「噪音账」那一行。
+  #   ★ 这不是洁癖：本条第一版把它抄了**三处**，而三处的数是错的（别人家/匿名写成 11/6，
+  #     实际 10/7）—— **和恰好仍是 0**，于是它自洽、没有任何门看得见。
+  # ⚠ 那个贵的量具沿用上面同一条纪律：`fulcrum_vol_sizes`（`docker system df -v`，
+  #   开发机 A 上实测 1.4–1.9s）**只在真有东西要报时问一次**，桶空就一次都不问。
+  ALL_MACHINE_VOLS=$(docker volume ls -q || true)
+  # 本门管辖内 = 本树活卷 + 有意共享的 registry 卷 + 扫描集里的全部（上面两个桶已经处置过）。
+  GATE_SCOPE=$(printf '%s\n%s\n%s\n' "$TARGET_VOL" fulcrum-cargo "$ALL_VOLS")
+  UNATTRIBUTED=$(fulcrum_unattributed_vols "$ALL_MACHINE_VOLS" "$GATE_SCOPE")
+  if [ -n "$UNATTRIBUTED" ]; then
+    UNATTR_N=$(printf '%s\n' "$UNATTRIBUTED" | wc -l)
+    UNATTR_SIZES=$(fulcrum_vol_sizes)
+    echo "[docker-run] 另有 $UNATTR_N 个卷，本门**管不着、也说不出属于谁**："
+    while read -r vol; do
+      [ -n "$vol" ] || continue
+      printf '             %s   %s\n' "$vol" "$(fulcrum_vol_size_of "$UNATTR_SIZES" "$vol")"
+    done <<< "$UNATTRIBUTED"
+    echo "             ⛔ 有意不给删除命令：本门不知道它们的属主。判据只能是人工的三条 ——"
+    echo "                「仓库里零引用 + 没有任何容器引用 + 找不到那棵检出」（09-04/05 三次都是这么判的）。"
+    echo "             ★ 若查实是别的项目的，把前缀加进 tests/lib/vol-lock.sh 的"
+    echo "                FULCRUM_FOREIGN_VOL_PREFIXES —— ⛔ 只放别人家的，别拿它消音（纪律写在那份清单头上）。"
   fi
-  # ★ 实现搬进了 `vol-lock.sh`（`fulcrum_vol_size_of`），因为下面第三个桶也要用它 ——
-  #   两处各写一遍的失效形态不是报错，是有一天两边对「没量到」给出不同的说法。
-  #   ⚠ 顺带修掉一处：原来的 `grep -F -- "$want|"` 是**子串**匹配，
-  #   `x-fulcrum-cargo|…` 那一行会被 `fulcrum-cargo` 认领 ⇒ 一个卷报上另一个卷的体积。
-  vol_size_of() { fulcrum_vol_size_of "$VOL_SIZES" "$1"; }
-
-  if [ "$ORPHAN_N" -gt 0 ]; then
-    echo "[docker-run] 另有 $ORPHAN_N 个 target 卷判定为**无主**，删了碰不到任何人："
-    for i in "${!ORPHAN_VOLS[@]}"; do
-      printf '      docker volume rm %s   # %s，%s\n' \
-        "${ORPHAN_VOLS[$i]}" "$(vol_size_of "${ORPHAN_VOLS[$i]}")" "${ORPHAN_WHY[$i]}"
-    done
-  fi
-  if [ "$KEEP_N" -gt 0 ]; then
-    echo "[docker-run] 另有 $KEEP_N 个 target 卷**不属于这棵工作树**，且判不出是不是无主的："
-    for vol in "${KEEP_VOLS[@]}"; do
-      printf '             %s   %s\n' "$vol" "$(vol_size_of "$vol")"
-    done
-    echo "             有意不给删除命令：删掉别人正在用的那一个，只会让那棵树莫名其妙地全量重编。"
-    echo "             ⚠ 但体积写在这里 —— 这一半只进不出，2026-09-04 它悄悄涨到过 92GB。"
-  fi
-fi
-
-# ── ★ ★ ★ 第三个桶：本门**管不着**的卷（只报，⛔ 不给删除命令）──────────────
-#
-# 上面两个桶都只在**扫描集内**说话，而扫描集是个**子串**筛子；三族卷从它下面漏过去过，
-# 而**三族全部是人工发现的**，门禁一次都没帮上忙（成因、白名单纪律、以及为什么
-# 「放宽 filter」治不了第三族，都在 `vol-lock.sh` 的 `FULCRUM_FOREIGN_VOL_PREFIXES` 那一段）。
-# ⇒ 这里改成**无 filter** 地列一遍全机卷，减掉本门管辖内的、以及说得出属主的，剩下的报出来。
-#
-# ⚠ ⚠ **只报名字与体积，⛔ 一律不给删除命令。** 本门对它们的属主一无所知 ——
-#   给命令等于拿一句「我不知道这是谁的」去劝人删，那比不报更坏。
-# ★ 噪音账：稳态下这个桶是空的，**一行都不打**；真出现一个 `pingora-up994-target` 才打一行。
-#   ⚠ ⚠ **具体读数有意不写在这里** —— 它逐机而异，抄在代码注释里就是一份会过期又没人核的值。
-#   唯一一处在 `docs/platform/build-and-test.md`「噪音账」那一行。
-#   ★ 这不是洁癖：本条第一版把它抄了**三处**，而三处的数是错的（别人家/匿名写成 11/6，
-#     实际 10/7）—— **和恰好仍是 0**，于是它自洽、没有任何门看得见。
-# ⚠ 那个贵的量具沿用上面同一条纪律：`fulcrum_vol_sizes`（`docker system df -v`，
-#   开发机 A 上实测 1.4–1.9s）**只在真有东西要报时问一次**，桶空就一次都不问。
-ALL_MACHINE_VOLS=$(docker volume ls -q || true)
-# 本门管辖内 = 本树活卷 + 有意共享的 registry 卷 + 扫描集里的全部（上面两个桶已经处置过）。
-GATE_SCOPE=$(printf '%s\n%s\n%s\n' "$TARGET_VOL" fulcrum-cargo "$ALL_VOLS")
-UNATTRIBUTED=$(fulcrum_unattributed_vols "$ALL_MACHINE_VOLS" "$GATE_SCOPE")
-if [ -n "$UNATTRIBUTED" ]; then
-  UNATTR_N=$(printf '%s\n' "$UNATTRIBUTED" | wc -l)
-  UNATTR_SIZES=$(fulcrum_vol_sizes)
-  echo "[docker-run] 另有 $UNATTR_N 个卷，本门**管不着、也说不出属于谁**："
-  while read -r vol; do
-    [ -n "$vol" ] || continue
-    printf '             %s   %s\n' "$vol" "$(fulcrum_vol_size_of "$UNATTR_SIZES" "$vol")"
-  done <<< "$UNATTRIBUTED"
-  echo "             ⛔ 有意不给删除命令：本门不知道它们的属主。判据只能是人工的三条 ——"
-  echo "                「仓库里零引用 + 没有任何容器引用 + 找不到那棵检出」（09-04/05 三次都是这么判的）。"
-  echo "             ★ 若查实是别的项目的，把前缀加进 tests/lib/vol-lock.sh 的"
-  echo "                FULCRUM_FOREIGN_VOL_PREFIXES —— ⛔ 只放别人家的，别拿它消音（纪律写在那份清单头上）。"
 fi
 
 # ★ ★ ★ 这里的花括号**不是风格，是判据本身**（实测的一次假绿）。
@@ -929,6 +947,10 @@ LINT_CMD="$LINT_CMD && bash tests/acme/self-check.sh"
 #   分家，只会在那一次才露出来 —— 2026-09-24 就是：它比 [2/5] 更严，把三个合法的包误报成对不上。
 #   ⚠ 不出网、不跑 cargo，只喂合成输入；python3 用的是构建镜像里那一份。
 LINT_CMD="$LINT_CMD && python3 tools/dep-check.py --self-check"
+# ★ pre-push 门「被推的提交碰没碰 `.sh`」那条判据（G158）。挂在 lint 这一格，理由同上：
+#   pre-push 路径为了快**有意不跑**它，而判据一旦坏成「恒答不必跑」，那道门就安静地
+#   不再看 shell —— 只能由完整门禁替它守着。⚠ 只建一棵合成 git 仓库，不碰 docker、不出网。
+LINT_CMD="$LINT_CMD && bash tests/ci/pre-push.sh --self-check"
 
 if [ "${VENDOR_ONLY:-0}" = "1" ]; then
   # 只跑 fork 回归网。它不依赖 spike 二进制，所以连构建都跳过。
@@ -968,7 +990,16 @@ elif [ "${COMPILE_ONLY:-0}" = "1" ]; then
   # ★ ★ `shellcheck` 放在**前面**：它几秒就出结果，而编译要十几秒起 ⇒ shell 写错时立刻说。
   # ⚠ ⚠ 那对花括号**不是风格**：见本文件下方那段「`&&` 与 `||` 同优先级左结合」的实测假绿。
   #   本格今天没有 `||`，但把回落绑死在链上是这里的既定纪律，⛔ 别顺手拆掉。
-  CMD='{ bash tests/ci/shellcheck-all.sh && cargo test --no-run --workspace --all-targets; }'
+  #
+  # ★ ★ 2026-10-06（G158）：`COMPILE_SHELLCHECK=0` 时本格只编译。pre-push 门按被推的提交
+  #   判这个值（碰到 `*.sh` / `*shellcheckrc` / `docker/Dockerfile.build` 才是 1）——
+  #   起因是实测 shellcheck 一项 15–33s，是这道门里最慢的，而多数推送一个 `.sh` 都不碰。
+  #   判据与自测在 `tests/ci/pre-push.sh`；默认（不给这个变量）照旧跑 shellcheck。
+  if [ "${COMPILE_SHELLCHECK:-1}" = "0" ]; then
+    CMD='{ cargo test --no-run --workspace --all-targets; }'
+  else
+    CMD='{ bash tests/ci/shellcheck-all.sh && cargo test --no-run --workspace --all-targets; }'
+  fi
 elif [ "${SERVE_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/serve/run.sh"
 elif [ "${L4_ONLY:-0}" = "1" ]; then
