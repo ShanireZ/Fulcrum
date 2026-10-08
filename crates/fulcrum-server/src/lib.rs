@@ -49,6 +49,8 @@ pub mod dns;
 pub mod encode;
 pub mod files;
 pub mod health;
+/// keep-alive 空闲窗口：每条连接一个计时器、跨请求带着走（G160）。
+mod keepalive;
 /// L4 面（M2 批 A：TCP，批 B：UDP）：自建监听器 + socket 移交。
 pub mod l4;
 /// Prometheus 指标（M2 批 M）：进程级注册表 + text exposition 的自研渲染器（G117）。
@@ -89,7 +91,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// keep-alive 空闲窗口。★ 停机时会被改成 `None`（不续），让连接自然收敛。
+/// keep-alive 空闲窗口：从开始等下一条请求到它的请求头读完，**合计**这么久（G160，见 [`keepalive`]）。
+/// ★ 停机时会被改成 `None`（不续），让连接自然收敛。
 const KEEPALIVE_SECS: u64 = 60;
 
 /// L7 数据面监听（明文与 TLS）给接入连接的缓冲：**写 16 KiB**，读仍用 pingora 的缺省（64 KiB）。
@@ -458,6 +461,24 @@ impl quic::h3_conn::H3RequestHandler for FulcrumApp {
     }
 }
 
+/// `keepalive` 只拿得到这几样（G160）；⛔ 不含写响应 —— 响应只从 [`Downstream`] 出（G110）。
+impl keepalive::Conn for ServerSession {
+    fn keepalive(&self) -> Option<u64> {
+        self.get_keepalive()
+    }
+    fn set_keepalive(&mut self, secs: Option<u64>) {
+        ServerSession::set_keepalive(self, secs)
+    }
+    fn take_carried(&mut self) -> Option<Box<dyn std::any::Any + Send + Sync>> {
+        self.take_connection_user_context()
+    }
+    fn read_request(
+        &mut self,
+    ) -> impl std::future::Future<Output = pingora_core::Result<bool>> + Send {
+        ServerSession::read_request(self)
+    }
+}
+
 #[async_trait]
 impl HttpServerApp for FulcrumApp {
     async fn process_new_http(
@@ -465,7 +486,9 @@ impl HttpServerApp for FulcrumApp {
         mut session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        match session.read_request().await {
+        // ★ keep-alive 的空闲计时由 `keepalive` 接管（G160）：每条连接一个计时器，跨请求带着走。
+        let (read, idle_timer) = keepalive::read_request(&mut session).await;
+        match read {
             Ok(true) => {}
             Ok(false) => {
                 debug!("读不到请求头");
@@ -491,7 +514,8 @@ impl HttpServerApp for FulcrumApp {
             out.serve(self).await;
         }
 
-        let persistent = HttpPersistentSettings::for_session(&session);
+        let mut persistent = HttpPersistentSettings::for_session(&session);
+        keepalive::carry(&mut persistent, idle_timer);
         match session.finish().await {
             // ★ pingora 0.9.0：`finish()` 返回 `ReusableHttpStream`（带着 pipelining 预读到的字节）⇒ 照上游
             //   `apps/http_app.rs` 用 `from_reusable_stream`；⛔ 别写 `into_parts().0`，那会把预读的字节丢掉。

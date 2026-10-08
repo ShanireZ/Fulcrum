@@ -71,3 +71,6 @@ serde_json = { workspace = true }
 # 只给判据用：QUIC 握手要一张证书，而这里的客户端那一半也是真的 quiche。
 # ★ 新增 0 个包：rcgen 早就在依赖图里（instant-acme 拉的，见根清单）。
 rcgen = { workspace = true }
+# 只给判据用：`keepalive` 的单测要暂停的 tokio 时间（`start_paused`），60 秒的空闲窗口才能毫秒级跑完。
+# ★ 新增 0 个包：`test-util` 只开 tokio 自己的 `rt` / `sync` / `time`；发布构建不带 dev 依赖 ⇒ 产物不受影响。
+tokio = { workspace = true, features = ["test-util"] }
