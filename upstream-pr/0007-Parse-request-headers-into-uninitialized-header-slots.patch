@@ -1,0 +1,139 @@
+From f2d07f5768be8edad7aad141729a068785b1776e Mon Sep 17 00:00:00 2001
+From: Shanire <shanire86@gmail.com>
+Date: Thu, 8 Oct 2026 20:38:26 +0800
+Subject: [PATCH 1/2] Parse request headers into uninitialized header slots
+
+HttpSession::read_request() fills MAX_HEADERS (256) httparse::EMPTY_HEADER
+slots before every parse attempt (8 KiB of stores on 64-bit targets, again
+after every partial read), although httparse overwrites each slot it hands
+back and never reads the others.
+
+Request::parse_with_uninit_headers() runs the same parser with the same
+default ParserConfig as Request::parse(): both end up in
+parse_with_config_and_uninit_headers(). They differ only in what req.headers
+holds when the result is not Complete, and read_request() does not look at
+req in that case. Use it, so the slots no longer need initializing.
+
+The patched_http1 path keeps initialized slots for parse_unchecked().
+
+Add a test that exactly MAX_HEADERS headers are all parsed with the right
+values and that one more is still rejected.
+
+Signed-off-by: Shanire <shanire86@gmail.com>
+---
+ pingora-core/src/protocols/http/v1/server.rs | 72 +++++++++++++++++---
+ 1 file changed, 64 insertions(+), 8 deletions(-)
+
+diff --git a/pingora-core/src/protocols/http/v1/server.rs b/pingora-core/src/protocols/http/v1/server.rs
+index 71c7a2a..c3738bb 100644
+--- a/pingora-core/src/protocols/http/v1/server.rs
++++ b/pingora-core/src/protocols/http/v1/server.rs
+@@ -331,9 +331,14 @@ impl HttpSession {
+ 
+             // Use loop as GOTO to retry escaped request buffer, not a real loop
+             loop {
++                // httparse writes every header it parses into these slots, so they do not have
++                // to be initialized on each parse attempt.
++                #[cfg(not(feature = "patched_http1"))]
++                let mut headers = [const { std::mem::MaybeUninit::uninit() }; MAX_HEADERS];
++                #[cfg(feature = "patched_http1")]
+                 let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
+-                let mut req = httparse::Request::new(&mut headers);
+-                let parsed = parse_req_buffer(&mut req, &buf);
++                let mut req = httparse::Request::new(&mut []);
++                let parsed = parse_req_buffer(&mut req, &buf, &mut headers);
+                 match parsed {
+                     HeaderParseState::Complete(s) => {
+                         self.raw_header = Some(BufRef(0, s));
+@@ -1793,24 +1798,43 @@ fn escape_illegal_request_line(buf: &BytesMut) -> Option<BytesMut> {
+     }
+ }
+ 
++/// A slot for one request header to be parsed into.
++///
++/// `Request::parse_with_uninit_headers` runs the same parser with the same default config as
++/// `Request::parse`; it only skips requiring the slots to be initialized beforehand.
++#[cfg(not(feature = "patched_http1"))]
++type HeaderSlot<'buf> = std::mem::MaybeUninit<httparse::Header<'buf>>;
++#[cfg(feature = "patched_http1")]
++type HeaderSlot<'buf> = httparse::Header<'buf>;
++
+ #[inline]
+-fn parse_req_buffer<'buf>(
+-    req: &mut httparse::Request<'_, 'buf>,
++fn parse_req_buffer<'h, 'buf>(
++    req: &mut httparse::Request<'h, 'buf>,
+     buf: &'buf [u8],
++    headers: &'h mut [HeaderSlot<'buf>],
+ ) -> HeaderParseState {
+     use httparse::Result;
+ 
+     #[cfg(feature = "patched_http1")]
+-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
++    fn parse<'h, 'buf>(
++        req: &mut httparse::Request<'h, 'buf>,
++        buf: &'buf [u8],
++        headers: &'h mut [HeaderSlot<'buf>],
++    ) -> Result<usize> {
++        req.headers = headers;
+         req.parse_unchecked(buf)
+     }
+ 
+     #[cfg(not(feature = "patched_http1"))]
+-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
+-        req.parse(buf)
++    fn parse<'h, 'buf>(
++        req: &mut httparse::Request<'h, 'buf>,
++        buf: &'buf [u8],
++        headers: &'h mut [HeaderSlot<'buf>],
++    ) -> Result<usize> {
++        req.parse_with_uninit_headers(buf, headers)
+     }
+ 
+-    let res = match parse(req, buf) {
++    let res = match parse(req, buf, headers) {
+         Ok(s) => s,
+         Err(e) => {
+             return HeaderParseState::Invalid(e);
+@@ -2255,6 +2279,38 @@ mod tests_stream {
+         assert_eq!(&InvalidHTTPHeader, res.unwrap_err().etype());
+     }
+ 
++    #[tokio::test]
++    async fn read_max_headers() {
++        init_log();
++        // `MAX_HEADERS` headers use every header slot and must all come back with the right
++        // values; one more is rejected.
++        for (count, accepted) in [(MAX_HEADERS, true), (MAX_HEADERS + 1, false)] {
++            let mut input = b"GET / HTTP/1.1\r\n".to_vec();
++            for i in 0..count {
++                input.extend_from_slice(format!("X-H{i}: v{i}\r\n").as_bytes());
++            }
++            input.extend_from_slice(b"\r\n");
++            let mock_io = Builder::new().read(&input).build();
++            let mut http_stream = HttpSession::new(Box::new(mock_io));
++            let res = http_stream.read_request().await;
++            if !accepted {
++                assert_eq!(
++                    &InvalidHTTPHeader,
++                    res.unwrap_err().etype(),
++                    "{count} headers"
++                );
++                continue;
++            }
++            assert_eq!(input.len(), res.unwrap().unwrap(), "{count} headers");
++            let headers = &http_stream.req_header().headers;
++            assert_eq!(count, headers.len());
++            for i in 0..count {
++                let value = headers.get(format!("x-h{i}")).map(|v| v.as_bytes());
++                assert_eq!(Some(format!("v{i}").as_bytes()), value, "header {i}");
++            }
++        }
++    }
++
+     async fn build_upgrade_req(upgrade: &str, conn: &str) -> HttpSession {
+         let input = format!("GET / HTTP/1.1\r\nHost: pingora.org\r\nUpgrade: {upgrade}\r\nConnection: {conn}\r\n\r\n");
+         let mock_io = Builder::new().read(input.as_bytes()).build();
+-- 
+2.56.0.windows.1
+

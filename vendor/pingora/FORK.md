@@ -938,7 +938,7 @@ owner 2026-10-06 按推荐先拍这三处。
 
 | | 文件 | 改了什么 | 为什么语义不变 |
 |---|---|---|---|
-| ① | `src/protocols/l4/stream.rs` | `poll_read` / `poll_write` / `poll_flush` / `poll_write_vectored` 之后**不再记等待计时**（每次各读一两次时钟）。`AccumulatedDuration` 与两个 getter 原样留着（少改上游的行），`total` 恒为零 | 那两个 getter（`get_read_pending_time` / `get_write_pending_time`）在枢衡与本 fork 的 8 个 crate 里**没有任何读者**，只有 trait 实现；恒为零也正是 trait 缺省值 |
+| ① | `src/protocols/l4/stream.rs` | `poll_read` / `poll_write` / `poll_flush` / `poll_write_vectored` 之后**不再记等待计时**（原来每次都调一次计时，读钟只在挂起的起止：转为挂起时一次、挂起后就绪时一次）。`AccumulatedDuration` 与两个 getter 原样留着（少改上游的行），`total` 恒为零 | 那两个 getter（`get_read_pending_time` / `get_write_pending_time`）在枢衡与本 fork 的 8 个 crate 里**没有任何读者**，只有 trait 实现；恒为零也正是 trait 缺省值 |
 | ② | `src/protocols/http/v1/server.rs` | `read_request` 的 256 个头槽位**不先填**，改走 `httparse::Request::parse_with_uninit_headers` | 读过 httparse 1.10.1 的源码：`parse` = `parse_with_config(缺省配置)` → `parse_with_config_and_uninit_headers`，与 uninit 入口是**同一个解析器、同一份缺省配置**；差别只在没解析完时 `req.headers` 留什么，而 `read_request` 在那两种情况下不读它 |
 | ③ | 同上 | 头偏移写进**栈上**的槽位（新函数 `populate_header_refs`，规则与 `common.rs` 的 `populate_headers` 相同），不再每条请求分配一个 `Vec<KVRef>` | 同一组偏移，只是放的地方不同；`populate_headers` 原样留给 `client.rs` |
 | — | `tests/fulcrum_read_request_alloc.rs`（新文件）| ③ 的分配次数判据，见下 | |
@@ -965,8 +965,11 @@ crates.io 的 httparse 1.10.1 没有 `parse_unchecked`（那是 Cloudflare 自�
 
 #### 归零条件
 
-② ③ 与 ① 都不依赖枢衡，是给上游提 PR 的候选；⏳ 提不提是对外动作，owner 定。在那之前是**要跟着 rebase 的常年成本**：
-三处都是小补丁，① 的四处删除最容易在冲突里被合掉 —— 那时第一条判据会红。
+② ③ 不依赖枢衡；owner 2026-10-08 拍「先备材料、暂不发」⇒ 投稿材料在 [`upstream-pr/`](../../upstream-pr/README.md) 投稿七
+（一份 issue、一份 PR、两个提交，基于上游 `main` `4487f7b`）。⏳ 发不发是对外动作，另拍。
+⚠ ① **在上游不是语义不变**：上游的 `pingora-proxy` 读上游连接的 `get_write_pending_time()`（`proxy_h1.rs`，`Session::upstream_write_pending_time()`），
+两个 getter 还是公开 trait 的方法 ⇒ 原样投不了，可选做法记在投稿七那一节。在本 fork 里它照样语义不变（那个 crate 不在 fork 里）。
+在归零之前三处都是**要跟着 rebase 的常年成本**：都是小补丁，① 的四处删除最容易在冲突里被合掉 —— 那时第一条判据会红。
 
 ### 9. 没有动的一个：`daemonize`
 

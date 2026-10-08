@@ -1,0 +1,270 @@
+From 48b0658d8104d86cec1c088073bb10ec48834b73 Mon Sep 17 00:00:00 2001
+From: Shanire <shanire86@gmail.com>
+Date: Thu, 8 Oct 2026 20:43:58 +0800
+Subject: [PATCH 2/2] Keep request header refs on the stack instead of in a Vec
+
+Once a request header is complete, HttpSession::read_request() records the
+offset of each header in a freshly allocated Vec<KVRef>, so that the read
+buffer can be frozen into Bytes. That Vec only lives until the headers are
+appended to the RequestHeader a few lines later, but it costs one heap
+allocation per request.
+
+There are at most MAX_HEADERS refs, so write them into a stack array of
+MaybeUninit<KVRef> instead, through populate_header_refs(), which applies the
+same rule as populate_headers() (unnamed entries are skipped) and returns the
+slots it wrote. populate_headers() stays for the response path in client.rs.
+
+Add unit tests for populate_header_refs(), and an integration test, in its own
+binary with a counting global allocator, that bounds the allocations
+read_request() makes for a simple request. It fails with this change
+reverted.
+
+Signed-off-by: Shanire <shanire86@gmail.com>
+---
+ pingora-core/src/protocols/http/v1/common.rs  |  74 ++++++++++++
+ pingora-core/src/protocols/http/v1/server.rs  |  10 +-
+ .../tests/read_request_allocations.rs         | 114 ++++++++++++++++++
+ 3 files changed, 194 insertions(+), 4 deletions(-)
+ create mode 100644 pingora-core/tests/read_request_allocations.rs
+
+diff --git a/pingora-core/src/protocols/http/v1/common.rs b/pingora-core/src/protocols/http/v1/common.rs
+index bfd1291..cd78880 100644
+--- a/pingora-core/src/protocols/http/v1/common.rs
++++ b/pingora-core/src/protocols/http/v1/common.rs
+@@ -18,6 +18,7 @@ use http::{header, HeaderValue};
+ use log::{debug, warn};
+ use pingora_error::{Error, ErrorType::*, Result};
+ use pingora_http::{HMap, RequestHeader, ResponseHeader};
++use std::mem::MaybeUninit;
+ use std::str;
+ use std::time::Duration;
+ 
+@@ -288,6 +289,35 @@ pub(super) fn populate_headers(
+     used_header_index
+ }
+ 
++/// Like [`populate_headers`], but writes the refs into caller-provided slots, which may be
++/// uninitialized, instead of a `Vec`, and returns the slots it wrote.
++///
++/// # Panics
++/// If `headers` has more named entries than there are slots.
++#[inline]
++pub(super) fn populate_header_refs<'a>(
++    base: usize,
++    header_ref: &'a mut [MaybeUninit<KVRef>],
++    headers: &[httparse::Header],
++) -> &'a [KVRef] {
++    let mut used_header_index = 0;
++    for header in headers.iter() {
++        if !header.name.is_empty() {
++            // Indexing panics instead of writing out of bounds.
++            header_ref[used_header_index].write(KVRef::new(
++                header.name.as_ptr() as usize - base,
++                header.name.len(),
++                header.value.as_ptr() as usize - base,
++                header.value.len(),
++            ));
++            used_header_index += 1;
++        }
++    }
++    // SAFETY: the first `used_header_index` slots were initialized above, and
++    // `MaybeUninit<KVRef>` has the same layout as `KVRef`.
++    unsafe { std::slice::from_raw_parts(header_ref.as_ptr().cast(), used_header_index) }
++}
++
+ /// Parse a `Content-Length` field value as an ASCII digit string, matching
+ /// hyper's `from_digits`
+ /// (<https://github.com/hyperium/hyper/blob/v1.9.0/src/headers.rs#L72-L97>).
+@@ -651,4 +681,48 @@ mod test {
+         }
+         assert_eq!(is_chunked_encoding_from_headers(&headers), expected);
+     }
++
++    const HEADER_REFS_REQ: &[u8] =
++        b"GET / HTTP/1.1\r\nHost: pingora.org\r\nX-Empty:\r\nAccept: */*\r\n\r\n";
++
++    /// The headers of `HEADER_REFS_REQ`, with an unnamed entry inserted, which is skipped.
++    fn header_refs_input() -> Vec<httparse::Header<'static>> {
++        let mut headers = [httparse::EMPTY_HEADER; 4];
++        let mut req = httparse::Request::new(&mut headers);
++        assert!(req.parse(HEADER_REFS_REQ).unwrap().is_complete());
++        let mut headers = req.headers.to_vec();
++        headers.insert(1, httparse::EMPTY_HEADER);
++        headers
++    }
++
++    #[test]
++    fn test_populate_header_refs() {
++        let buf = HEADER_REFS_REQ;
++        let headers = header_refs_input();
++        let base = buf.as_ptr() as usize;
++
++        let mut expected = Vec::new();
++        assert_eq!(3, populate_headers(base, &mut expected, &headers));
++
++        let mut slots = [const { MaybeUninit::uninit() }; 3];
++        let refs = populate_header_refs(base, &mut slots, &headers);
++        assert_eq!(3, refs.len());
++        for (expected, actual) in expected.iter().zip(refs) {
++            assert_eq!(expected.get_name(buf), actual.get_name(buf));
++            assert_eq!(expected.get_value(buf), actual.get_value(buf));
++        }
++        assert_eq!(b"X-Empty", refs[1].get_name(buf));
++        assert_eq!(b"", refs[1].get_value(buf));
++        assert_eq!(b"Accept", refs[2].get_name(buf));
++        assert_eq!(b"*/*", refs[2].get_value(buf));
++    }
++
++    #[test]
++    #[should_panic(expected = "index out of bounds")]
++    fn test_populate_header_refs_too_few_slots() {
++        let buf = HEADER_REFS_REQ;
++        let headers = header_refs_input();
++        let mut slots = [const { MaybeUninit::uninit() }; 2];
++        populate_header_refs(buf.as_ptr() as usize, &mut slots, &headers);
++    }
+ }
+diff --git a/pingora-core/src/protocols/http/v1/server.rs b/pingora-core/src/protocols/http/v1/server.rs
+index c3738bb..697ccef 100644
+--- a/pingora-core/src/protocols/http/v1/server.rs
++++ b/pingora-core/src/protocols/http/v1/server.rs
+@@ -349,10 +349,12 @@ impl HttpSession {
+                         // `KVRef`s to record the offset of each piece of data, drop `req`, convert
+                         // buf, the do the 0 copy update
+                         let base = buf.as_ptr() as usize;
+-                        let mut header_refs = Vec::<KVRef>::with_capacity(req.headers.len());
+-                        // Note: req.headers has the correct number of headers
+-                        // while header_refs doesn't as it is still empty
+-                        let _num_headers = populate_headers(base, &mut header_refs, req.headers);
++                        // There are at most `MAX_HEADERS` refs and they are only needed until
++                        // the headers are appended below, so keep them on the stack.
++                        let mut header_ref_slots =
++                            [const { std::mem::MaybeUninit::<KVRef>::uninit() }; MAX_HEADERS];
++                        let header_refs =
++                            populate_header_refs(base, &mut header_ref_slots, req.headers);
+ 
+                         let mut request_header = Box::new(RequestHeader::build(
+                             req.method.unwrap_or(""),
+diff --git a/pingora-core/tests/read_request_allocations.rs b/pingora-core/tests/read_request_allocations.rs
+new file mode 100644
+index 0000000..a361468
+--- /dev/null
++++ b/pingora-core/tests/read_request_allocations.rs
+@@ -0,0 +1,114 @@
++// Copyright 2026 Cloudflare, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++// http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++//! Counts the heap allocations `HttpSession::read_request()` makes for a simple request.
++//!
++//! This is its own test binary because `#[global_allocator]` applies to the whole binary.
++//! Only allocations on the counting thread are counted, and the runtime is current-thread, so the
++//! future under test is polled on that thread.
++
++use std::alloc::{GlobalAlloc, Layout, System};
++use std::cell::Cell;
++use std::future::Future;
++
++use pingora_core::protocols::http::v1::server::HttpSession;
++use tokio_test::io::Builder;
++
++struct CountingAllocator;
++
++thread_local! {
++    static COUNTING: Cell<bool> = const { Cell::new(false) };
++    static COUNT: Cell<u64> = const { Cell::new(0) };
++}
++
++fn record_allocation() {
++    // `try_with`: the allocator is still called while thread-locals are being torn down.
++    let _ = COUNTING.try_with(|counting| {
++        if counting.get() {
++            let _ = COUNT.try_with(|count| count.set(count.get() + 1));
++        }
++    });
++}
++
++unsafe impl GlobalAlloc for CountingAllocator {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        record_allocation();
++        unsafe { System.alloc(layout) }
++    }
++
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        unsafe { System.dealloc(ptr, layout) }
++    }
++
++    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
++        record_allocation();
++        unsafe { System.realloc(ptr, layout, new_size) }
++    }
++}
++
++#[global_allocator]
++static ALLOCATOR: CountingAllocator = CountingAllocator;
++
++/// Counts the allocations made on this thread while `f` is polled.
++async fn count_allocations<T>(f: impl Future<Output = T>) -> (T, u64) {
++    COUNT.with(|count| count.set(0));
++    COUNTING.with(|counting| counting.set(true));
++    let out = f.await;
++    COUNTING.with(|counting| counting.set(false));
++    (out, COUNT.with(|count| count.get()))
++}
++
++fn current_thread_runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .build()
++        .unwrap()
++}
++
++const REQUEST: &[u8] =
++    b"GET /index.html HTTP/1.1\r\nHost: pingora.org\r\nUser-Agent: test\r\nAccept: */*\r\n\r\n";
++
++/// Reads `REQUEST`, which arrives in a single read, and returns how many allocations that took.
++fn read_request_allocations() -> u64 {
++    let runtime = current_thread_runtime();
++    let mock_io = Builder::new().read(REQUEST).build();
++    let mut session = HttpSession::new(Box::new(mock_io));
++    let (res, allocations) = runtime.block_on(count_allocations(session.read_request()));
++    assert_eq!(Some(REQUEST.len()), res.unwrap());
++    assert_eq!(3, session.req_header().headers.len());
++    allocations
++}
++
++#[test]
++fn counting_allocator_counts() {
++    let runtime = current_thread_runtime();
++    let (_, allocations) = runtime.block_on(count_allocations(async {
++        std::hint::black_box(Vec::<u8>::with_capacity(16));
++    }));
++    assert!(allocations >= 1, "the counting allocator saw no allocation");
++}
++
++/// The limit is what `read_request()` needed when this test was added; parsing the header refs
++/// no longer allocates. A change that needs more allocations per request should raise it
++/// explicitly, so that the cost shows up in review.
++#[test]
++fn read_request_allocation_budget() {
++    const MAX_ALLOCATIONS: u64 = 8;
++    // The first call may include one-time, process-wide allocations.
++    let _ = read_request_allocations();
++    let allocations = read_request_allocations();
++    assert!(
++        allocations <= MAX_ALLOCATIONS,
++        "read_request() made {allocations} allocations, more than {MAX_ALLOCATIONS}"
++    );
++}
+-- 
+2.56.0.windows.1
+

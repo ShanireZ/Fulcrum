@@ -414,6 +414,174 @@ git push origin lru-0.18.2
 ⚠ ⚠ 方法上踩到一条：**`gh search issues` 隐含 `is:issue`，一条 PR 都不返回** ——
 只跑那一条通道会答出「没人做过」而其实一个 PR 都没看过。
 
+## ⏳ 投稿七（材料已备，⏳ 未发，owner 2026-10-08 拍「先备材料、暂不发」）· `read_request` 每请求白做的两件事
+
+> 对应 fork **改动 16**（PLAN **G157**）的 ② ③（C1 / C2）。① （B2，l4 流不再记等待计时）**不投** ——
+> 上游有读者，在上游不是语义不变，见下「B2 为什么不投」。
+> ⛔ 没开 issue、没开 PR、没 push、没 fork，GitHub 上零写入（查重只读、没评论）。
+> 补丁做在 scratchpad 里的**干净上游克隆**上，`vendor/pingora/` 一个字节没动。
+>
+> 上游 `main` = **`4487f7b`**（committer date 2026-09-11，「Abort tls offload tasks when dropped」）。
+> 三处代码在它上面与 fork 改动前（`0c232f7^`）**逐字节相同**（`diff --strip-trailing-cr`，三个文件皆空），
+> `702f690..4487f7b` 没有提交碰过 `l4/stream.rs` / `v1/server.rs` / `v1/common.rs` —— 读的是克隆下来的代码，不是网页。
+
+| 文件 | 用途 |
+|---|---|
+| [`issue-7-read-request.md`](issue-7-read-request.md) | issue 草稿（`feature_request.md` 模板的四个小标题）。★ **必须先发它** |
+| [`pr-7-read-request.md`](pr-7-read-request.md) | PR 正文草稿；发前换 `#<ISSUE_NUMBER>` |
+| [`0007-Parse-request-headers-into-uninitialized-header-slots.patch`](0007-Parse-request-headers-into-uninitialized-header-slots.patch) | C1（`[PATCH 1/2]`）：改走 `parse_with_uninit_headers`；回归测试 `tests_stream::read_max_headers` |
+| [`0008-Keep-request-header-refs-on-the-stack-instead-of-in-a-Vec.patch`](0008-Keep-request-header-refs-on-the-stack-instead-of-in-a-Vec.patch) | C2（`[PATCH 2/2]`）：`populate_header_refs` + 栈上槽位；两条单测 + `tests/read_request_allocations.rs` |
+
+两份都是 `git format-patch` 原样输出：author 与 `Signed-off-by` 都是 `Shanire <shanire86@gmail.com>`，0 个 CR。
+
+### 怎么切：一份 issue、一份 PR、两个提交（⛔ 没有「投稿八」）
+
+- **合成一份**：C1 与 C2 在同一个函数里，立论相同（每条请求白做的功），验证形状也相同 ——
+  与前几份「立论与验证方式完全不同 ⇒ 各自开」的情形相反。拆成两份 PR 反而会在同一函数上互相排队。
+- **但分两个提交，且各自都能单独落地**：0008 不依赖 0007，单独 `git am` 到 `main` 上干净应用、门全过
+  （下表「C1 单独 / C2 单独」两行）。上游走**批量重放、按提交取**，维护者可以只拿一个。
+- **为什么不压成一个提交**：风险形状不同 —— C1 在 pingora 里**零 `unsafe`**（只是换 httparse 的入口），
+  C2 新加**一个 `unsafe` 块**（把已写的前缀当 `&[KVRef]`）。维护者若对后者有意见，不该拖住前者。
+- **为什么仍要先开 issue**：CONTRIBUTING 的免 issue 清单是错别字、小重构、文档；
+  新加 `unsafe` + 新加一个带 `#[global_allocator]` 的测试二进制，不算 trivial。
+- B2 不在里面（见下），所以没有第三个提交。
+
+### ★ ★ B2 为什么不投：上游有读者（⛔ 没做删除补丁）
+
+fork 侧「8 个 crate 里没有读者」**在 fork 里仍然成立**（枢衡不 vendor `pingora-proxy`），但上游 22 个 crate 里有：
+
+| 位置（上游 `4487f7b`） | 是什么 |
+|---|---|
+| `pingora-core/src/protocols/digest.rs:235-244` | 公开 trait `GetTimingDigest` 的 `get_read_pending_time` / `get_write_pending_time`（缺省回 0）；`protocols/mod.rs:94` 把它并进 `IO` 约束 ⇒ 任何持有 `Stream`（`Box<dyn IO>`）的使用者都能调。自 **0.3.0** 起公开（`ea1db2f`，2024-05-21；CHANGELOG：「Add the API to track socket read and write pending time」）|
+| `pingora-core/src/protocols/l4/stream.rs:677-683` | l4 `Stream` 的实现；TLS 包装层逐层转发：`tls/boringssl_openssl/client.rs:97-102` · `tls/rustls/stream.rs:118-123` · `tls/s2n/stream.rs:270-275` |
+| ★ **`pingora-proxy/src/proxy_h1.rs:213`、`:242-244`** | **树内读者**：代理 H1 上游时，在 `proxy_1to1` 前后各读一次**上游连接**的 `get_write_pending_time()`，差值写进 `Session` |
+| `pingora-proxy/src/lib.rs:619-620`、`:945-947` | 公开 getter `Session::upstream_write_pending_time()`；由 `900ec23`（2026-01-21，Cloudflare 的作者，「Add upstream_write_pending_time to Session for upload diagnostics」）加入 |
+
+⇒ 在上游删掉计时 = 上面那个公开 getter 与 trait 方法**恒为 0**：是行为变更，⛔ 不能按「语义不变」投。
+
+★ 顺带核清一处，影响取舍：上游 `AccumulatedDuration` **只在 Pending↔Ready 转换时读钟**
+（`start()` 只在第一次 Pending 时读，`stop()` 只在随后 Ready 时读；立刻就绪的读写一次钟都不读）。
+fork 侧量到的 `clock_gettime −2/请求` 与此一致（keep-alive 上每条请求的那次读先 Pending 一次）。
+⚠ `vendor/pingora/FORK.md` 改动 16 ① 那格写「每次各读一两次时钟」，措辞偏宽 —— ⛔ 本次范围外，我没改，交 owner。
+
+**可选做法（owner 定）**：
+
+| 做法 | 改什么 | 取舍 |
+|---|---|---|
+| **A. 不投**（我的推荐）| 无 | fork 那 4 处删除照旧随 rebase 重放（守卫测试会在被合掉时变红）。上游 8 个月前刚为它加了读者，说明他们在用这份数据；省下的只是每次挂起→就绪的两次 vDSO 读钟 |
+| B. 运行期开关，缺省开 | 例如 `Stream::set_track_pending_time(bool)`，关掉时不读钟、getter 回 0 | 对现有用户语义不变；但为很小的收益加公开 API。枢衡拿到的是 `ServerSession` 里的 `Box<dyn IO>`，要用还得在 accept 处接线（形状类似投稿六的监听器 `Tracer`）⇒ 改面不小 |
+| C. cargo feature 关掉 | `no-pending-time` 之类 | ⛔ 不推荐：「关能力」的 feature 违反 feature 可加性 —— 同一依赖图里的 `pingora-proxy` 会静默拿到 0 |
+| D. 只关读侧 | 读侧没有树内读者 | 仍是公开 trait 方法的行为变更，只省一半 |
+
+若选 B：按本目录纪律**先开 issue 问要不要**，⛔ 别直接做补丁。
+
+### G46 查重（2026-10-08，只读）
+
+**方法**：`gh search issues` 与 `gh search prs` **两条通道**（不加 `--state` ⇒ 开着的与关了的都在），22 个查询串；
+另把上游 **124 个 open PR 的改动文件**逐个过一遍（不靠关键词）；再在克隆里用 `git log -S` 查历史。
+
+| 查什么 | 结果 |
+|---|---|
+| `parse_with_uninit_headers` · `uninit headers` · `uninit_headers` · `MaybeUninit header` · `populate_headers` · `KVRef` · `header_refs` · `read_pending_time` · `write_pending_time` · `pending time` · `AccumulatedDuration` · `upstream_write_pending_time` · `header allocation` · `read_request allocation` · `EMPTY_HEADER` · `httparse allocation` · `httparse performance` · `clock_gettime` · `Instant::now overhead` · `per-request allocation` | **两条通道全 0** |
+| `MAX_HEADERS` | issue [#993](https://github.com/cloudflare/pingora/issues/993)（open）· PR [#1000](https://github.com/cloudflare/pingora/pull/1000)（open）· #83（无关，hyper 升级）|
+| `read_request` | #993 / #1000；其余无关：#447（超时）、#844 / #969（shutdown Notify，已进 `main`）、#876（pipelining，已进 `main`）|
+| 动同几个文件的 open PR | 6 个：#1000（下）· [#677](https://github.com/cloudflare/pingora/pull/677)（改 `for header in header_refs` 循环里那行注释）· #956 / #732（`once_cell`→`LazyLock`，别处）· #902（SNI，别处）· #971（l4 虚拟流池化，只与 B2 相关）|
+| 上游历史 | 从未用过 `parse_with_uninit_headers`；`[EMPTY_HEADER; MAX_HEADERS]` 与 `populate_headers` 自 0.1.0 未动 ⇒ **没有「试过又退回」** |
+| ★ 正对照（同一脚本同一通道）| `listener Tracer` / `connection lifetime` → PR **#995**；`CLOEXEC` → issue **#959**、PR **#960** |
+
+⇒ **零命中「有人在做同一件事」**。⚠ 但 **#1000 改的正是 C1 那两行**（它要把头数上限做成可配：
+`Request::new(&mut headers[..max_headers])`）。实测（`git merge-tree`，先扣掉 #1000 与 `main` 本来就有的
+`apps/mod.rs` 冲突）：本投稿只多出**那两行**一处冲突，一行可解；**C2 与它不冲突**。
+#1000 至今**没有维护者评审**（只有 issue 作者的 5 条 COMMENTED），最后活动 2026-09-25。已在 issue / PR 草稿里主动写明。
+★ #677 那一处是设计时就避开的：C2 让 `header_refs` 变成 `&[KVRef]`，**循环那一行一字不改** ⇒ 实测不冲突。
+⚠ 方法上又见一次：`connection lifetime` 在 issue 通道是 0、PR 通道才命中 —— **两条通道都要跑**。
+
+### 验证（2026-10-08，容器内，⛔ Rust 不在宿主机跑）
+
+**环境**：镜像 `upstream-g157-rust:1.97.1` = 官方 `rust:1.97.1@sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f`
+（Debian 13，rustc 1.97.1）+ 上游 `build.yml` 那组 `cmake libclang-dev` + `iptables` + `rustup toolchain install 1.85.0 --profile minimal`；
+容器 `--cap-add NET_ADMIN` 后先 `iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`；`CARGO_BUILD_JOBS=4`；
+宿主 Windows 11 + Docker Desktop 29.8.2。两侧共用**同一份 `Cargo.lock`**（cargo 1.97.1 生成，httparse 解析到 1.10.1）。
+两侧共用一个 target 卷，所以**每个编译步骤先在容器里 touch `pingora-core`**，这些日志里都有 `Compiling`/`Checking pingora-core`。
+「打补丁后」用的是**拿两份 `.patch` `git am` 出来的回放树**（与开发分支树逐字节一致）—— 测的就是要交出去的东西。
+
+| 门（命令取自上游 `build.yml`） | `main` `4487f7b` | 打补丁后 |
+|---|---|---|
+| `git am` 0007 + 0008 | — | ✅ 干净；回放树 == 分支树；★ 0008 单独 `git am` 到 `main` 也干净 |
+| `cargo fmt --all -- --check` | ✅ rc=0 | ✅ rc=0（⚠ 第一次 rc=1：我的测试里一行没按 rustfmt 折行，已改进 C1、重新生成补丁后重跑）|
+| `cargo check --workspace` | ✅ rc=0 | ✅ rc=0 |
+| `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | ✅ rc=0 | ✅ rc=0；warning 与基线逐行相同（只有 `pingora-foundations` 那条 clippy.toml MSRV 提示）|
+| `cargo +1.85.0 check --workspace --exclude pingora-foundations` | ✅ rc=0 | ✅ rc=0（lock 由 cargo 1.85.0 现生成，与 1.97.1 那份逐字节相同）|
+| `cargo test -p pingora-core --lib --tests --no-fail-fast` | 574 passed / 3 failed / 2 ignored | **579 / 3 / 2**；失败集合**双向差集为空**，多出的 5 条全是新测试，没有一条「改前过、改后不过」|
+| 同上，**C1 单独** / **C2 单独** | — | 575 / 3 / 2 · 578 / 3 / 2；失败集合同上（clippy 也各自 rc=0）|
+| `cargo test --doc -p pingora-core` | ✅ 1 passed / 10 ignored | ✅ 同 |
+| `cargo test --verbose --lib --bins --tests --no-fail-fast`（CI 原命令，全 workspace）| 1155 / 129 / 6 | **1160 / 129 / 6**；失败集合**按测试名**比双向差集为空，多出的 5 条全是新测试。失败的 4 个 target 两侧相同：`pingora-core --lib`（上面那 3 条）· `pingora-load-balancing --lib`（`health_check::test::test_tcp_check`）· `pingora-proxy` 的 `test_basic`（18）/ `test_upstream`（107）—— 后两者要 openresty |
+| `cargo check -p pingora-core --features patched_http1` | ✗ rc=101，唯一错误 E0599 `parse_unchecked` 不存在 | ✗ 同一个错误、只此一个 ⇒ 补丁里 patched 那条路的其余部分过了类型检查（借用检查没走到）|
+| `cargo audit` / `cargo machete` / nightly 档 / openresty 集成测试 | 未跑 | 未跑（本地没装 audit/machete、没装 openresty）|
+
+那 3 条两侧都红：`connectors::l4::tests::test_bind_to_port_range_on_connect`（老面孔，宿主机相关）与
+`http::v2::server` 的 `test_req_conflicting_content_length_rejected`、`test_req_malformed_stream_budget_exhausted`
+（这次新见，⛔ 没查根因；判它与本改动无关靠的是**基线同样红**，且它们走 h2、不经过 `v1::server::read_request`）。
+
+⚠ 方法上踩到一条：容器的 stdout 与 stderr 经 `docker run` 分两路转出，cargo 的 `Running <binary>`（stderr）
+会与测试输出（stdout）**错序** ⇒ 按「哪个二进制」归属测试名会张冠李戴（全 workspace 那次一度算出 3 条假的
+「改前过、改后不过」）。★ 判据改为**只按测试名（多重集）比**，上表都是这样比的。
+
+**探针读数**（一次性测试文件，⛔ 不在补丁里；两侧同一镜像、同一 lock）：
+
+| | `main` | 打补丁后 |
+|---|---|---|
+| `read_request` 分配次数，3 个头（热身后连读 5 次）| **9**（5/5）| **8**（5/5）|
+| 同，0 个头 | 4 | 4（空 `Vec` 本来就不分配 ⇒ 符合预期）|
+| `size_of_val(&read_request())`（future 大小）| 216 | **216**（两个数组不跨 `.await`，没进 future）|
+| `size_of::<httparse::Header>()` / `size_of::<KVRef>()` | 32 / 32 | — |
+
+### 注入反证（都在副本 `pingora-inject` 上，每次都有 `Compiling pingora-core`；判据：与「打补丁后」的失败集合比）
+
+| 注入 | 新增的红 |
+|---|---|
+| I1 · C1 给 httparse **少一个槽位** | 只红 `read_max_headers`（256 个头被 `TooManyHeaders` 拒）|
+| I2 · C1 的代码**退回 `main` 原样**，测试留着 | **全绿** ⇒ 它守的是**等价**，不是优化本身。C1 省的是栈上的写，不是分配，没有测试能抓「被退回」—— PR 里照实写了 |
+| I3 · C2 的调用处**退回 `Vec`**，测试留着 | 只红 `read_request_allocation_budget`：「made 9 allocations, more than 8」|
+| I4 · C2 的栈上槽位**少一个** | 只红 `read_max_headers`（`index out of bounds: the len is 255 but the index is 255`）|
+| I5 · `populate_header_refs` **不再跳过空名** | 只红那两条 helper 单测（`attempt to subtract with overflow`）|
+
+### ★ 数字的口径
+
+⛔ fork 侧诊断台的读数（用户指令 −4.7%、malloc −1 等）**一个都没进** issue / PR。进去的数都能在上游复现：
+`8 KiB` = `256 × size_of::<httparse::Header>()`；分配 9 → 8 由补丁自带的测试给出（退回 C2 它就报 9）；
+future 216 不变是探针读数，审阅者要自己写一行 `size_of_val` 才能复现 —— 所以 PR 里写的是「不变」并给了数。
+
+★ **计时没进 PR，理由是实测太抖**：上游树内就有 criterion 基准 `pingora-core/benches/h1_pipelining.rs`
+（`h1_single_request` 与 `h1_pipelining/bodyless/*` 正好走 `read_request`），在同一容器里做了
+两侧**交替跑了 6 段、得到 3 组对比**（`--save-baseline` / `--baseline` 交替，每段都先 touch `pingora-core`）：
+
+| 对比 | `bodyless/1` | `/16` | `/64` | `/256` | `/1024` | `h1_single_request` |
+|---|---|---|---|---|---|---|
+| 补丁 vs main（第 1 对）| −12.1% | −16.7% | −14.0% | −20.8% | −24.8% | −24.0%（CI −41.9%…−8.5%）|
+| main vs 补丁（反向）| +12.1% | +25.7% | +24.6% | +19.5% | +15.3% | 无显著（p=0.82）|
+| 补丁 vs main（第 2 对）| −5.2% | −20.3% | −24.5% | 噪声内 | ⚠ **+10.8%** | 无显著（p=0.18）|
+
+方向大体一致，⚠ 但第 2 对的 `/1024` 反了号，`h1_single_request` 的置信区间宽到没意义；
+这台宿主同时跑着别的容器（BetaPass 的 Playwright、WenTian 的 PG/Redis）。
+⇒ ⛔ 这些百分比**不写进 issue / PR**；PR 里只提一句「树内这个 bench 走的就是这条路径，我机器太吵、没引数」，
+把复现方法交给审阅者。
+
+### 发前要重查
+
+1. **上游 `main` 动没动**：`git fetch` 后重新 `git am` 两份补丁。若 `read_request` 一带有人改过，
+   **重量分配次数**（`MAX_ALLOCATIONS = 8` 是对 `4487f7b` 量的，⛔ 别为了绿直接改数）并重跑整张门表，
+   再改 PR 正文里的 574 / 579 等数。
+2. **#1000**：若已合，先 rebase（那一行改成 `parse_req_buffer(&mut req, &buf, &mut headers[..max_headers])`）；
+   `read_max_headers` 测的是缺省上限，仍成立。若还开着，草稿里那句「谁后落谁 rebase」不变。
+3. **#677**：仍应不冲突；重跑 `git merge-tree` 确认。
+4. **G46 重跑**：同一脚本（两条通道）+ open PR 文件维度扫一遍；带正对照。
+5. 外部写入（都要 owner 按 G40 单独授权）：发 issue → 拿号 → 推 `ShanireZ/pingora` 分支 → 开 PR。
+6. 若 owner 要 B2：走上表方案 B，**先开 issue 问**。
+
+**留下的本地资源**（⛔ 没删，留给 owner 决定）：镜像 `rust:1.97.1`（拉取）、`upstream-g157-rust:1.97.1`（自建，约 3.9 GB）；
+卷 `upstream-g157-cargo`（约 425 MB）/ `upstream-g157-target`（约 14 GB）/ `upstream-g157-target-msrv`（约 1 GB）；⛔ 没碰任何 `fulcrum-*` 卷。
+
 ## ❌ 投稿五（**已撤销，不发**）· rustls 监听器用不上自定义证书解析器
 
 > owner 2026-08-20 拍板 **「什么都不做」**：不开 issue、不开 PR、也不去别人的线程留言。
