@@ -65,6 +65,21 @@ pub(crate) async fn read_request<C: Conn>(conn: &mut C) -> (Result<bool>, Option
     }
 }
 
+/// 读完请求头之后定这条连接续不续、续多久（G161）：**pingora 判了「不续」就不续，枢衡只管时长**；
+/// 停机窗口内一律不续，让连接自己收敛而不是等被砍断。
+///
+/// ★ pingora 的判定在 `read_request` 里（`respect_keepalive`，再加 TE 与 CL 同在时关）：
+///   HTTP/1.0 没要求 keep-alive · `Connection: close` · TE 与 CL 同在（RFC 9112 §6.1，防请求走私）都是「不续」。
+/// ⚠ 这里曾无条件设成「续 `secs` 秒」，把头一类与第三类盖掉了（`Connection: close` 没受影响：
+///   pingora 的 `set_server_keepalive` 自己认它）。
+pub(crate) fn settle_after_read<C: Conn>(conn: &mut C, shutting_down: bool, secs: u64) {
+    if shutting_down || conn.keepalive().is_none() {
+        conn.set_keepalive(None);
+    } else {
+        conn.set_keepalive(Some(secs));
+    }
+}
+
 /// 把计时器交给下一条请求（经 pingora 的 `HttpPersistentSettings`）。
 pub(crate) fn carry(persistent: &mut HttpPersistentSettings, timer: Option<Box<IdleTimer>>) {
     if let Some(t) = timer {
@@ -359,5 +374,80 @@ mod tests {
         };
         let (closed, _client) = tokio::join!(bounded(server), client);
         at_about(closed, t0, D);
+    }
+
+    /// 读一条原始请求（真 pingora 解析），再按 `process_new_http` 的收尾定续不续；
+    /// 返回 pingora 那一格：`None` = 不续。
+    async fn verdict(raw: &[u8], shutting_down: bool) -> Option<u64> {
+        let (mut s, mut client) = conn();
+        client.write_all(raw).await.unwrap();
+        let (r, _) = read_request(&mut s).await;
+        assert!(r.unwrap(), "请求头应当读得出来");
+        settle_after_read(&mut s, shutting_down, D.as_secs());
+        s.get_keepalive()
+    }
+
+    /// G161：pingora 判了「不续」的，枢衡 ⛔ 不能把它改回续 —— 三类各一条，各自出结果。
+    /// HTTP/1.0 没要求 keep-alive ⇒ 回完就关（RFC 9112 §9.3）。
+    #[tokio::test]
+    async fn http10没要求keepalive就不续() {
+        assert_eq!(
+            verdict(b"GET / HTTP/1.0\r\nHost: a.example\r\n\r\n", false).await,
+            None
+        );
+    }
+
+    /// TE 与 CL 同在 ⇒ 回完必须关（RFC 9112 §6.1，防请求走私）。
+    #[tokio::test]
+    async fn te与cl同在就不续() {
+        assert_eq!(
+            verdict(
+                b"POST / HTTP/1.1\r\nHost: a.example\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n",
+                false
+            )
+            .await,
+            None
+        );
+    }
+
+    /// `Connection: close`（旧代码在这条上本来就对：pingora 的 `set_server_keepalive` 自己认它）。
+    #[tokio::test]
+    async fn connection_close不续() {
+        assert_eq!(
+            verdict(
+                b"GET / HTTP/1.1\r\nHost: a.example\r\nConnection: close\r\n\r\n",
+                false
+            )
+            .await,
+            None
+        );
+    }
+
+    /// G161 的另一半：pingora 判「续」的，续多久由枢衡定 ⇒ 一个「什么都关」的实现在这里红。
+    #[tokio::test]
+    async fn pingora判续的续d() {
+        let d = Some(D.as_secs());
+        assert_eq!(
+            verdict(b"GET / HTTP/1.1\r\nHost: a.example\r\n\r\n", false).await,
+            d,
+            "HTTP/1.1 缺省续"
+        );
+        assert_eq!(
+            verdict(
+                b"GET / HTTP/1.0\r\nHost: a.example\r\nConnection: keep-alive\r\n\r\n",
+                false
+            )
+            .await,
+            d,
+            "HTTP/1.0 要求了 keep-alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn 停机窗口内一律不续() {
+        assert_eq!(
+            verdict(b"GET / HTTP/1.1\r\nHost: a.example\r\n\r\n", true).await,
+            None
+        );
     }
 }

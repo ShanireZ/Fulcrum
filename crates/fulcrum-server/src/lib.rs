@@ -500,12 +500,9 @@ impl HttpServerApp for FulcrumApp {
             }
         }
 
-        // ★ 停机窗口内不再续 keep-alive：让连接自己收敛，而不是等被砍断。
-        if *shutdown.borrow() {
-            session.set_keepalive(None);
-        } else {
-            session.set_keepalive(Some(KEEPALIVE_SECS));
-        }
+        // ★ 续不续、续多久（G161）：停机窗口内不续（让连接自己收敛，而不是等被砍断）；
+        //   pingora 判了「不续」的也不续 —— 枢衡只管时长。
+        keepalive::settle_after_read(&mut session, *shutdown.borrow(), KEEPALIVE_SECS);
 
         // ★ ★ `Alt-Svc` 在这里接上（**G110**）：h1/h2 的每一条响应都带它，
         //   而「每一条」是由 `Downstream` 这个类型保证的，不是由记性保证的。
@@ -2604,5 +2601,52 @@ mod tests {
         let b = respond_body(&t, &c, &rc, &[], UNIX_EPOCH);
         assert_eq!(&a[..], b"method=GET");
         assert_eq!(&b[..], b"method=POST");
+    }
+
+    /// 真跑一次 `process_new_http`（只有一个 `respond` 站点，`duplex` 当连接），
+    /// 返回交给下一条请求的 keep-alive：外层 `None` = 这条连接不续。
+    async fn reuse_after(raw: &[u8]) -> Option<Option<u64>> {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", ":8080 {\n  respond 200 ok\n}\n")
+            .config
+            .unwrap();
+        let app = Arc::new(FulcrumApp::new(
+            fulcrum_runtime::SharedRuntime::new(Arc::new(Runtime::build(&cfg).unwrap())),
+            8080,
+            false,
+            Arc::new(Http01Store::new()),
+            cache::CacheHandle::new(cache::Backend::open(None, 4096)),
+            None,
+            1,
+        ));
+        let (server, mut client) = tokio::io::duplex(64 * 1024);
+        let mut session = ServerSession::new_http1(Box::new(server));
+        // 与 pingora `apps/mod.rs` 给新连接第一条请求设的一样。
+        session.set_keepalive(Some(KEEPALIVE_SECS));
+        tokio::io::AsyncWriteExt::write_all(&mut client, raw)
+            .await
+            .unwrap();
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        let reused = app.process_new_http(session, &shutdown).await?;
+        let (stream, settings) = reused.consume();
+        let mut next = ServerSession::new_http1(stream);
+        settings.expect("带着设置").apply_to_session(&mut next);
+        Some(next.get_keepalive())
+    }
+
+    /// G161 的接线：`process_new_http` 真的经 `keepalive::settle_after_read` 定续不续、续多久。
+    /// ⚠ 端到端（`tests/serve` 第 12 节）判不出「那一行被删掉」—— 删掉时 pingora 的判定原样留着、
+    ///   关与续照样全对，丢的是时长（续变成不限时、空闲永远不关），而 60 s 在端到端里量不起。
+    #[tokio::test]
+    async fn process_new_http_续的连接带着空闲窗口交给下一条_不续的不交() {
+        assert_eq!(
+            reuse_after(b"GET / HTTP/1.1\r\nHost: a.example\r\n\r\n").await,
+            Some(Some(KEEPALIVE_SECS)),
+            "HTTP/1.1 缺省续，且带着 KEEPALIVE_SECS（⛔ 不是不限时的 0）"
+        );
+        assert_eq!(
+            reuse_after(b"GET / HTTP/1.0\r\nHost: a.example\r\n\r\n").await,
+            None,
+            "HTTP/1.0 没要求 keep-alive ⇒ 这条连接不续"
+        );
     }
 }

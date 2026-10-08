@@ -777,6 +777,85 @@ expect_body "errs.example GET /static/missing" "404 /static/missing probe=p1"
 expect_status "errs.example GET /nothing（NoRouteMatch → 错误页）" 418 "$(probe_errs /nothing)"
 expect_body "errs.example GET /nothing" "404 /nothing probe=p1"
 
+# ── 12) ★ ★ 续不续听 pingora 的判定，枢衡只管时长（G161）──────────────────────────
+#
+# ★ 起因：`process_new_http` 读完请求头后曾无条件设 60 s keep-alive，盖掉了 pingora 判出的「不续」：
+#   ① HTTP/1.0 没要求 keep-alive 也续（RFC 9112 §9.3：回完就关）；
+#   ② TE 与 CL 同在的请求在读完请求体的站点上也续（§6.1：回完必须关，防请求走私）。
+# ★ 走 `/api/*`（反代，把请求体读完才回）：`respond` 不读请求体，会被 pingora
+#   「请求体没读完就先回 ⇒ 关」那条另行关掉 ⇒ ② 在那里看不出来（2026-10-08 实测）。
+# ★ 两个方向都判：该关的关、该续的续 —— 一个「什么都关」的实现会让前一半全绿。
+cat > "$WORK/conn.py" <<'PY'
+#!/usr/bin/env python3
+"""只服务于 tests/serve/run.sh 的第 12 节：发一条原始请求、读完它的响应，
+打印「响应的 Connection 头」与「回完之后对端关没关（closed / open）」。
+⚠ 读不到、读不懂就当场非零退出——不猜、不吞。"""
+import re
+import socket
+import sys
+
+REQS = {
+    "h10": b"GET /api/conn HTTP/1.0\r\nHost: a.example\r\n\r\n",
+    "h10-ka": b"GET /api/conn HTTP/1.0\r\nHost: a.example\r\nConnection: keep-alive\r\n\r\n",
+    "h11": b"GET /api/conn HTTP/1.1\r\nHost: a.example\r\n\r\n",
+    "h11-close": b"GET /api/conn HTTP/1.1\r\nHost: a.example\r\nConnection: close\r\n\r\n",
+    "te-cl": (
+        b"POST /api/conn HTTP/1.1\r\nHost: a.example\r\n"
+        b"Transfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n"
+    ),
+}
+
+host, port, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+s = socket.create_connection((host, port), timeout=5)
+s.sendall(REQS[name])
+buf = b""
+while b"\r\n\r\n" not in buf:
+    chunk = s.recv(65536)
+    if not chunk:
+        sys.exit(f"响应头没读完对端就关了：{buf[:200]!r}")
+    buf += chunk
+head, _, body = buf.partition(b"\r\n\r\n")
+if not head.startswith(b"HTTP/1.1 200 "):
+    sys.exit(f"不是 200：{head.splitlines()[0]!r}")
+m = re.search(rb"(?im)^content-length:\s*(\d+)\s*$", head)
+if not m:
+    sys.exit("响应没有 Content-Length，判不出正文在哪里结束")
+n = int(m.group(1))
+while len(body) < n:
+    chunk = s.recv(65536)
+    if not chunk:
+        sys.exit("正文没读完对端就关了")
+    body += chunk
+if len(body) > n:
+    sys.exit(f"正文之后多出 {len(body) - n} 字节")
+conn = re.search(rb"(?im)^connection:\s*([^\r\n]*)", head)
+s.settimeout(1)
+try:
+    state = "closed" if s.recv(1) == b"" else "extra-bytes"
+except socket.timeout:
+    state = "open"
+print(conn.group(1).decode().strip().lower() if conn else "-", state)
+PY
+
+# ⚠ 量不出来（python3 非零退出）就算红，⛔ 不跳过。
+expect_conn() {
+  local what=$1 name=$2 want=$3 out
+  if ! out=$(python3 "$WORK/conn.py" "$HOST" "$PROXY_PORT" "$name" 2>"$WORK/conn.err"); then
+    fail "$what：量不出来 —— $(cat "$WORK/conn.err")"
+    return 0
+  fi
+  if [ "$out" = "$want" ]; then
+    ok "$what → Connection: ${out% *} · 回完后 ${out#* }"
+  else
+    fail "$what → 得到「$out」，期望「$want」"
+  fi
+}
+expect_conn "HTTP/1.0 没要求 keep-alive ⇒ 回完就关" h10 "close closed"
+expect_conn "HTTP/1.0 带 Connection: keep-alive ⇒ 照续" h10-ka "keep-alive open"
+expect_conn "HTTP/1.1 不带 Connection ⇒ 照续" h11 "keep-alive open"
+expect_conn "HTTP/1.1 Connection: close ⇒ 关" h11-close "close closed"
+expect_conn "TE 与 CL 同在、反代读完请求体 ⇒ 关（RFC 9112 §6.1）" te-cl "close closed"
+
 # ── ★ ★ ★ 域名上游（批 10）──────────────────────────────────────────────────
 #
 # ⚠ ⚠ **这两条补的是一个具体的夹具缺口**：在它们之前，本场景里**所有上游
@@ -2019,4 +2098,4 @@ if [ "$FAILS" -ne 0 ]; then
   cat "$WORK/upstream.log" >&2
   exit 1
 fi
-echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段 / 错误页取原始请求头）。"
+echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段 / 错误页取原始请求头 / 续不续听 pingora 的判定）。"

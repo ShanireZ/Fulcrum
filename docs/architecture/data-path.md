@@ -39,7 +39,7 @@ sources:
 
 | 已经在跑 | 说明 |
 |---|---|
-| HTTP/1.1 + h2c 入口、keep-alive | `HttpServerApp`；**每个监听端口一个 app 实例**。h1 的空闲窗口 60 s 从开始等下一条请求算到它的请求头读完（合计，**G160**），计时器每连接一个、由 `keepalive.rs` 跨请求带着走 |
+| HTTP/1.1 + h2c 入口、keep-alive | `HttpServerApp`；**每个监听端口一个 app 实例**。h1 的空闲窗口 60 s 从开始等下一条请求算到它的请求头读完（合计，**G160**），计时器每连接一个、由 `keepalive.rs` 跨请求带着走。续不续听 pingora 的判定（HTTP/1.0 没要求 keep-alive · `Connection: close` · TE 与 CL 同在都不续，**G161**），枢衡只管时长 |
 | `respond` / `redir` / `header` / `rewrite` / `handle` / `route` | 按执行顺序表（G49）求值 |
 | `reverse_proxy` | h1/h2 上游、四种 `lb_policy`、`header_up` / `header_down` |
 | 421 / 404 / 502（G63）与 `handle_errors` | 无站点匹配真的回 421 |
