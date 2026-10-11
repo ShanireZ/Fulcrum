@@ -63,4 +63,4 @@ okf_version: "0.2"
 
 `agents/` 存的是**工具怎么用这个仓库**（issue 落在哪、triage 标签怎么对应、领域文档去哪找），不是产品知识；工作区准则与 OKF 维护合同只在工作区根各存一份，由索引指过去。项目级 agent 约束的权威始终是 [`AGENTS.md`](../AGENTS.md)，本目录只补它引到的那几份细则。
 
-* [Agent 配置索引](/agents/index.md) - 三份细则的入口：issue tracker 与 Wayfinder 约定、triage 标签映射、领域文档布局（`CONTEXT.md` / ADR，不存在就静默跳过），外加工作区准则与本 bundle 遵循的 OKF v0.2 维护合同的指针。
+* [Agent 配置索引](/agents/index.md) - 三份细则的入口：issue tracker 与 Wayfinder 约定、triage 标签映射、领域文档布局（`GLOSSARY.md` / ADR，不存在就静默跳过），外加工作区准则与本 bundle 遵循的 OKF v0.2 维护合同的指针。
