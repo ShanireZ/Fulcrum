@@ -13,7 +13,7 @@
 
 ## Interfaces that must survive changes
 
-- G6/G104 fixes the TLS backend to BoringSSL. Dynamic certificate selection uses the same `SslContextBuilder::set_select_certificate_callback` for h1/h2 and h3/QUIC; do not split certificate-picking logic. The former rustls sites are converted.
+- G6/G104 fixes the TLS backend to BoringSSL. Dynamic certificate selection uses the same `SslContextBuilder::set_select_certificate_callback` for h1/h2 and h3/QUIC; do not split certificate-picking logic.
 - Lock, dependency-graph and linked-artifact checks cover different claims; see [supply chain](docs/platform/supply-chain.md). The artifact check runs only in the musl scenario and proves nothing about the glibc development artifact.
 - tower middleware does not compose with Pingora phases. This project uses `HttpServerApp`/`ServerSession`, not `ProxyHttp`; `pingora-proxy` is not a dependency.
 - When changing the admin API, read `crates/fulcrum-server/src/admin.rs` and PLAN G120. `POST /load?overrides=keep|clear` requires the query parameter, with no default or JSON envelope. Missing/invalid values reject with 400 before changing configuration. Structured configuration stays the same format as on disk; clearing must report each removed override.
