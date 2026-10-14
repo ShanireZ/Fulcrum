@@ -1049,10 +1049,11 @@ fn if_range_matches(value: &str, etag: Option<&str>, mtime: Option<SystemTime>) 
 
 /// 要发的响应头：名是**字面量**，值已经是 `HeaderValue`（10-05 · 构响应头不再每个头分配几次）。
 ///
-/// ⚠ ⚠ 名必须是 `&'static str` **字面量**，⛔ 不用 `http::header::ETAG` 一类常量，也 ⛔ 不把
-/// `ResponseHeader::build` 换成 `build_no_case`：pingora 的标题化表
-/// （`pingora-http` 的 `titled_header_name_str`）里**没有** `ETag` / `Last-Modified` / `Content-Range` / `Vary`，
-/// 那两种写法都会让它们以**小写**上线。判据：`tests/files/run.sh` 里逐行钉头名的那一条。
+/// ★ 响应头**不建大小写表**（`build_no_case`，G162）⇒ 这里的每个名都必须照 pingora 的标题化表
+/// （`pingora-http` 的 `titled_header_name_str`）写出来才算数：`ETag` / `Last-Modified` / `Content-Range` / `Vary` /
+/// `Location` / `Allow` 是 fork 改动 17 补进去的，补之前它们没表就以**小写**上线。
+/// ⚠ 新加一个头名时先看它在不在那张表里、写法是否一字不差；不在就得先补表。
+/// 判据：本模块的 `发文件时插的名都照原样写得出`（从本文件源码里抠名）与 `tests/files/run.sh` 逐行钉头名的那几条。
 type Head = Vec<(&'static str, HeaderValue)>;
 
 /// 动态的值（来自请求、或格式化出来的）：转不成合法头值就**不发这个头** ——
@@ -1079,7 +1080,8 @@ async fn write_head_encoded(
     head: Head,
     encoder: &mut Option<crate::encode::Encoder>,
 ) {
-    let mut resp = match ResponseHeader::build(status, None) {
+    // ★ 不建大小写表（G162）：名全是本文件的字面量，且都照标题化表写得出（见 [`Head`]）。
+    let mut resp = match ResponseHeader::build_no_case(status, None) {
         Ok(r) => r,
         Err(e) => {
             warn!("file_server：构不出响应头（status={status}）：{e}");
@@ -1100,6 +1102,83 @@ async fn write_head_encoded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 本文件非测试部分里「像头名、后面紧跟逗号」的字符串字面量 —— 即 `("名", 值)` 与 `push_dynamic(head, "名", 值)`。
+    /// 粗扫：先去掉 `//` 注释，跳过 `'x'` / `'\x'` 字符字面量（含 `'"'`），字符串里认 `\` 转义。
+    fn header_name_literals(src: &str) -> std::collections::BTreeSet<String> {
+        let code: Vec<&str> = src
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect();
+        let code = code.join("\n");
+        let b = code.as_bytes();
+        let mut out = std::collections::BTreeSet::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'\'' && i + 2 < b.len() && b[i + 2] == b'\'' {
+                i += 3;
+            } else if b[i] == b'\'' && i + 3 < b.len() && b[i + 1] == b'\\' && b[i + 3] == b'\'' {
+                i += 4;
+            } else if b[i] == b'"' {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != b'"' {
+                    if b[j] == b'\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                let lit = &code[i + 1..j.min(b.len())];
+                let shaped = lit.bytes().next().is_some_and(|c| c.is_ascii_alphabetic())
+                    && lit.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-');
+                if shaped
+                    && code
+                        .get(j + 1..)
+                        .is_some_and(|r| r.trim_start().starts_with(','))
+                {
+                    out.insert(lit.to_string());
+                }
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// ★ G162：`file_server` 的响应头不建大小写表 ⇒ 本文件发的每个头名都必须照原样写得出（[`Head`]）。
+    ///   名从**本文件源码**里抠，新加一个头名不用记得来改这里 —— 它自己会被扫到。
+    #[test]
+    fn 发文件时插的名都照原样写得出() {
+        let names = header_name_literals(include_str!("mod.rs"));
+        // 自证扫得到：今天发的那十个一个不能少（扫描器坏成「什么都没扫到」时这里红，⛔ 不是空集合恒真）。
+        for want in [
+            "Accept-Ranges",
+            "Allow",
+            "Content-Encoding",
+            "Content-Length",
+            "Content-Range",
+            "Content-Type",
+            "ETag",
+            "Last-Modified",
+            "Location",
+            "Vary",
+        ] {
+            assert!(names.contains(want), "扫描器没扫到 {want}：{names:?}");
+        }
+        let bad: Vec<_> = names.iter().filter(|n| !crate::h1_name_as_is(n)).collect();
+        assert!(bad.is_empty(), "不建大小写表时这些名会变样：{bad:?}");
+    }
+
+    /// 上面那个扫描器自己的两个方向：该扫到的扫到，注释、字符字面量、值都不算。
+    #[test]
+    fn 头名扫描器_认得两种写法_不认注释与值() {
+        let src = "fn f() {\n    head.push((\"X-A\", v));\n    push_dynamic(\n        &mut head,\n        \"x-b\",\n        s,\n    );\n    // (\"X-Comment\", v)\n    let q = '\"'; let c = (\"X-C\", v);\n    HeaderValue::from_static(\"Value-Only\");\n    let e = \"has \\\" quote\", (\"X-D\", v);\n}\n#[cfg(test)]\nmod t { (\"X-Test\", v) }\n";
+        let got: Vec<_> = header_name_literals(src).into_iter().collect();
+        assert_eq!(got, ["X-A", "X-C", "X-D", "x-b"]);
+    }
 
     /// ★ 正文不另拷一份（HTTP 层诊断 10-05）：交给 `write_response_body` 的那块 `Bytes`
     ///   必须**指着 Probe 读进来的那块内存**。⚠ 只比内容判不出这件事 —— 拷一份内容也相同。

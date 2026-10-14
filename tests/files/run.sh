@@ -267,10 +267,11 @@ expect_header_absent() {
 }
 
 # ★ ★ 头名的**大小写与顺序**逐行钉死（2026-10-05，构响应头不再走 String 之后加的）。
-#   ⚠ 上面的 `hdr` 按大小写不敏感取值 ⇒ 判不出「`ETag` 以 `etag` 上线」这一族回归；
-#   而 pingora 的标题化表里没有 `ETag` / `Last-Modified` —— 有人把 `files/mod.rs` 的
-#   `ResponseHeader::build` 换成 `build_no_case`，或把头名换成 `http::header::ETAG` 一类常量，
-#   它们就以小写上线。⇒ 那一族**只有这一格**判得到。
+#   ⚠ 上面的 `hdr` 按大小写不敏感取值 ⇒ 判不出「`ETag` 以 `etag` 上线」这一族回归。
+#   ★ G162 起 `file_server` 的响应头**不建大小写表**（`build_no_case`），头名全靠 pingora 的标题化表写出：
+#   `ETag` / `Last-Modified` / `Content-Range` / `Location` / `Allow` 是 fork 改动 17 补进去的 ——
+#   rebase 冲掉那几行、或有人往 `files/mod.rs` 加了一个表外的大写头名，它们就以小写上线。
+#   ⇒ 那一族**只有这几格**判得到（200 / 206 / 416 / 301 / 405 各钉一条）。
 #   只比名字：值由别的断言判，`Date` 每秒都变。
 expect_header_names() {
   local what=$1 want=$2 got
@@ -359,6 +360,7 @@ if [ "$HEAD_BYTES" = "0" ]; then ok "HEAD /a.txt 响应体 0 字节"; else
 CODE=$(probe -X POST "$BASE/a.txt")
 expect_status "POST /a.txt" 405 "$CODE"
 expect_header "POST /a.txt" "Allow" "GET, HEAD"
+expect_header_names "POST /a.txt（405）" "Allow Content-Length Date Connection"
 CODE=$(probe -X DELETE "$BASE/a.txt")
 expect_status "DELETE /a.txt" 405 "$CODE"
 # ★ ★ 目录不带尾斜杠 → 301，**查询串要保留**。
@@ -367,6 +369,7 @@ expect_status "DELETE /a.txt" 405 "$CODE"
 CODE=$(probe "$BASE/sub")
 expect_status "GET /sub（缺尾斜杠）" 301 "$CODE"
 expect_header "GET /sub（缺尾斜杠）" "Location" "/sub/"
+expect_header_names "GET /sub（301）" "Location Content-Length Date Connection"
 CODE=$(probe "$BASE/sub?page=2&x=1")
 expect_status "GET /sub?page=2&x=1" 301 "$CODE"
 expect_header "GET /sub?page=2&x=1（查询串要保留）" "Location" "/sub/?page=2&x=1"
@@ -510,6 +513,7 @@ CODE=$(probe -H "Range: bytes=0-499" "$BASE/range.bin")
 expect_status "Range: bytes=0-499" 206 "$CODE"
 expect_header "Range: bytes=0-499" "Content-Range" "bytes 0-499/1000"
 expect_header "Range: bytes=0-499" "Content-Length" "500"
+expect_header_names "Range: bytes=0-499（206）" "Content-Type Content-Length Accept-Ranges ETag Last-Modified Content-Range Date Connection"
 expect_bytes  "Range: bytes=0-499" 500
 CODE=$(probe -H "Range: bytes=500-" "$BASE/range.bin")
 expect_status "Range: bytes=500-" 206 "$CODE"
@@ -526,6 +530,7 @@ expect_bytes  "Range: bytes=0-0" 1
 CODE=$(probe -H "Range: bytes=5000-6000" "$BASE/range.bin")
 expect_status "Range: bytes=5000-6000（越界）" 416 "$CODE"
 expect_header "Range 越界" "Content-Range" "bytes */1000"
+expect_header_names "Range 越界（416）" "Content-Range Content-Length Accept-Ranges ETag Last-Modified Date Connection"
 # ★ 末端超过文件尾要**截住**，不是拒。
 CODE=$(probe -H "Range: bytes=990-99999" "$BASE/range.bin")
 expect_status "Range: bytes=990-99999（末端截住）" 206 "$CODE"

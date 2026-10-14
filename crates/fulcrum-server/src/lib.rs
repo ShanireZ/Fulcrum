@@ -1845,13 +1845,44 @@ async fn write_error_page(session: &mut Downstream<'_>, page: ErrorPage) -> Outc
     OUTCOME_ERROR
 }
 
+/// 不建大小写表时，这个头名在 h1 上会不会**照原样**写出去（G162）。
+///
+/// pingora 没表时按 `titled_header_name_str` 写：表里有就写那一种，没有就写小写 ⇒ 只有恰好是那一种写法的名，
+/// 换 `build_no_case` 才逐字节不变。`X-Frame-Options`、`content-type` 都不是（前者会变小写，后者会变 `Content-Type`）。
+pub(crate) fn h1_name_as_is(name: &str) -> bool {
+    match http::HeaderName::from_bytes(name.as_bytes()) {
+        Ok(h) => pingora_http::titled_header_name_str(&h).unwrap_or(h.as_str()) == name,
+        Err(_) => false,
+    }
+}
+
+/// 枢衡自己构的响应头（G162）：要插的名都照原样写得出就**不建大小写表**（每个响应省一张表），否则照旧建。
+///
+/// `extra` 是 [`apply_pairs`] 收的那种对子：`-名` 只删不插 ⇒ 不碍事；`+名` 与 `名` 看名本身。
+/// ★ 用户 `header` 指令的名大小写随意 ⇒ 写了不合缺省写法的名，那一条响应仍建表、照他写的发。
+/// ⚠ 本函数之外再往这个头里插的名（下面两个字面量、漏斗里的 `Alt-Svc`、pingora 写响应时用常量补的）
+///   都必须照原样写得出 —— 由 `自建响应里固定插的名都照原样写得出` 那条测试钉着。
+fn self_built_header(
+    status: u16,
+    extra: &[(String, String)],
+) -> pingora_core::Result<ResponseHeader> {
+    let as_is = extra
+        .iter()
+        .all(|(n, _)| n.starts_with('-') || h1_name_as_is(n.strip_prefix('+').unwrap_or(n)));
+    if as_is {
+        ResponseHeader::build_no_case(status, None)
+    } else {
+        ResponseHeader::build(status, None)
+    }
+}
+
 async fn write_with_headers(
     session: &mut Downstream<'_>,
     status: u16,
     bytes: Option<Bytes>,
     extra: Vec<(String, String)>,
 ) {
-    let mut resp = match ResponseHeader::build(status, None) {
+    let mut resp = match self_built_header(status, &extra) {
         Ok(r) => r,
         Err(e) => {
             error!("构不出响应头（status={status}）：{e}");
@@ -2559,6 +2590,74 @@ mod tests {
     use super::*;
     use fulcrum_runtime::request::HeaderList;
     use std::time::UNIX_EPOCH;
+
+    /// G162：「不建大小写表也照原样」两个方向都有 —— 标题化表里的名只认那一种写法，表外的名只认小写。
+    #[test]
+    fn h1_name_as_is_两个方向() {
+        for yes in [
+            "Content-Type",
+            "ETag",
+            "Alt-Svc",
+            "Location",
+            "x-frame-options",
+            "x-lower",
+        ] {
+            assert!(h1_name_as_is(yes), "{yes} 该照原样");
+        }
+        for no in [
+            "content-type",
+            "etag",
+            "CONTENT-LENGTH",
+            "X-Frame-Options",
+            "X-Lower",
+            "bad name",
+            "",
+        ] {
+            assert!(!h1_name_as_is(no), "{no} 不该照原样");
+        }
+    }
+
+    /// G162：`self_built_header` 之外往自建响应里插的固定名（`write_with_headers` 的两个、漏斗的 `Alt-Svc`）
+    ///   也都必须照原样写得出 —— 否则不建表的那一条会把它们写变样。
+    #[test]
+    fn 自建响应里固定插的名都照原样写得出() {
+        for n in ["Content-Length", "Content-Type", "Alt-Svc"] {
+            assert!(h1_name_as_is(n), "{n}");
+        }
+    }
+
+    /// G162：什么时候不建大小写表。看得见的只有 `case_header_iter`：没有表时它一个都不给。
+    #[test]
+    fn self_built_header_名都照原样才不建表() {
+        let has_case_map = |extra: &[(&str, &str)]| {
+            let extra: Vec<(String, String)> = extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let mut h = self_built_header(200, &extra).unwrap();
+            h.insert_header("Content-Length", "0").unwrap();
+            h.case_header_iter().next().is_some()
+        };
+        assert!(!has_case_map(&[]), "没有用户的头：不建表");
+        assert!(
+            !has_case_map(&[("Location", "/x"), ("x-lower", "v")]),
+            "都照原样：不建表"
+        );
+        assert!(!has_case_map(&[("-X-Removed", "")]), "只删不插：不碍事");
+        assert!(!has_case_map(&[("+Vary", "Origin")]), "追加看名本身");
+        assert!(
+            has_case_map(&[("X-Frame-Options", "DENY")]),
+            "表外又不是小写：要建表才保得住"
+        );
+        assert!(
+            has_case_map(&[("+content-type", "text/x")]),
+            "表里的名写成小写：要建表"
+        );
+        assert!(
+            has_case_map(&[("x-lower", "v"), ("X-Upper", "v")]),
+            "一个不照原样就整条建表"
+        );
+    }
 
     /// 只为给 [`respond_body`] 一个请求视图。
     fn ctx<'a>(headers: &'a HeaderList<'a>) -> RequestCtx<'a> {

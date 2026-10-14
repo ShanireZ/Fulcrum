@@ -223,6 +223,15 @@ expect_no_header() {
 #   （小写），而旁文件那条是我们自己写的 `Accept-Encoding`。
 #   ★ 两者都合法 —— 所以判据必须**按语义比**，不能按字节比：
 #   一条按字节比的断言会在这里红，而它红的不是产品的问题。
+# ★ 头名的**大小写**逐字钉（G162）：压缩层用 `http::header` 常量改写 `ETag`、追加 `Vary`，
+#   头名照 pingora 的标题化表写 —— 那两个名是 fork 改动 17 补进表的，补之前它们以**小写**上线
+#   （`etag: W/…` · `vary: accept-encoding`）。上面的 `hdr` 不分大小写，判不出这一族。
+expect_header_name_exact() {
+  local what=$1 name=$2
+  if grep -q "^$name: " "$WORK/hdr"; then ok "$what 的头名原样是 $name"; else
+    fail "$what 的头名期望原样「$name」，实际「$(grep -i "^$name:" "$WORK/hdr" | head -1 | cut -d: -f1)」"; fi
+}
+
 expect_vary_accept_encoding() {
   local what=$1 got
   got=$(hdr Vary | tr '[:upper:]' '[:lower:]')
@@ -265,6 +274,7 @@ fi
 # ★ RFC 9110：内容随 `Accept-Encoding` 变 ⇒ 必须有 `Vary`。
 #   ⚠ 少了它，下游任何一层缓存都会把这份 gzip 发给不认 gzip 的客户端。
 expect_vary_accept_encoding "GET /text"
+expect_header_name_exact "GET /text（反代现压）" "Vary"
 # ⚠ 现压是流式的 ⇒ 长度事先不知道 ⇒ `Content-Length` 必然没有。
 expect_no_header "被压的响应" "Content-Length"
 
@@ -307,6 +317,9 @@ fi
 # ⚠ ⚠ **被现压的响应没有 Range** —— 这是正确的（区间说的是未压缩的字节），
 #   但它是用户看得见的行为，所以钉住它，别让它在某天悄悄变回去。
 expect_no_header "被现压的静态文件" "Accept-Ranges"
+# ★ 被弱化的 ETag 与追加的 Vary 都是压缩层用常量插的（G162）。
+expect_header_name_exact "被现压的静态文件" "ETag"
+expect_header_name_exact "被现压的静态文件" "Vary"
 
 # ── [4/6] 预压缩旁文件 ──────────────────────────────────────────────────────
 echo

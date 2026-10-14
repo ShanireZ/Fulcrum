@@ -86,7 +86,7 @@ boring 5 默认开后量子密钥交换 · quiche 0.30 · HTTP/1 / HTTP/2 入口
 ## 改了什么
 
 ★ **改动的意图严格限定为「放宽版本上界 + 随之而来的调用点适配」。**
-（这句是建 fork 时的口径；此后由 owner 逐条拍进来的另外三类 —— 加能力、缺陷修复、`G157` 的语义不变的性能改动 —— 各自写在本节对应的条目里。）
+（这句是建 fork 时的口径；此后由 owner 逐条拍进来的另外几类 —— 加能力、缺陷修复、`G157` 的语义不变的性能改动、`G162` 改了线上头名大小写的性能改动 —— 各自写在本节对应的条目里。）
 
 ⚠ ★ ★ **但「没有行为变更」这句话，2026-08-12 建立本 fork 时写下来是错的**：`nix` 那一轮实际引入了一条真回归（见下面第 2 节），它在 2026-08-13 补上回归网的当天被逮到并修好。
 **教训不是「当时不够小心」，是「当时没有能发现它的东西」**——编译过、M0 七跑全绿，而那条 bug 一直在。
@@ -971,6 +971,43 @@ crates.io 的 httparse 1.10.1 没有 `parse_unchecked`（那是 Cloudflare 自�
 两个 getter 还是公开 trait 的方法 ⇒ 原样投不了，可选做法记在投稿七那一节。在本 fork 里它照样语义不变（那个 crate 不在 fork 里）。
 在归零之前三处都是**要跟着 rebase 的常年成本**：都是小补丁，① 的四处删除最容易在冲突里被合掉 —— 那时第一条判据会红。
 
+### ★ ★ 17. 标题化表补七个名，并公开它（2026-10-14，G162）
+
+**起因**：§7 M3 底座单变量试验的 A2 —— 响应头保留大小写的那张表（`ResponseHeader::build` 另建的第二个 `HeaderMap`）
+每个响应两次分配，裸 pingora 上界约 −6% 用户指令。枢衡自己构的响应要换 `build_no_case` 而线上头名不变，
+前提是没表时 pingora 写得出同样的大小写；而上游这张表（`pingora-http/src/case_header_name.rs` 的 `titled_header_name_str`，
+12 个名，上游自己留着 `TODO: add more const header here`）里没有枢衡会发的 `ETag` 等几个。owner 2026-10-14 拍（弹窗两次）。
+
+#### 改了什么：**两个文件**
+
+| | 文件 | 改了什么 |
+|---|---|---|
+| ① | `pingora-http/src/case_header_name.rs` | 表里补 `Allow` · `Alt-Svc` · `Content-Range` · `ETag` · `Last-Modified` · `Location` · `Vary`；函数由 `pub(crate)` 改 `pub` |
+| ② | `pingora-http/src/lib.rs` | 在 crate 根再导出它（一行），枢衡用它判「不建表时这个名会不会照原样写出」|
+
+⚠ ⚠ **这不是「语义不变」那一类（改动 16）**：这张表同时决定**用 `http::header` 常量插入的名**怎么写，有没有大小写表都一样。
+⇒ 压缩层用常量改写的 `ETag`（弱化）与追加的 `Vary`，从小写 `etag:` / `vary:` 变成 `ETag:` / `Vary:`。
+开了 `encode` 的站点上，`Vary` 是只要压缩层认为响应随 `Accept-Encoding` 变就追加（压没压都追加）⇒ 那类站点的大部分响应都看得见。
+owner 10-14 认了这一处（与不压时、与预压缩旁文件、与 nginx 的写法一致）。别的路径上这七个名几乎只出现在响应里：
+h2 / h3 客户端的请求转发到 h1 上游时若带了它们，也从小写变成这里的写法。
+
+#### 量了多少（开发机诊断台，计数口径，⛔ 不是性能声明）
+
+连同枢衡那一侧（`file_server` 一律、`respond` / 跳转 / 错误页在用户 `header` 指令的名都照原样时不建表）：
+每请求 malloc / free 各 −2（`respond` 与 `file_server`，1 条连接与 200 条连接四格都是）；用户指令 −5% 到 −6%（`file_server` 200 条连接 −9.6%，改前区间宽）。
+
+#### 守卫
+
+| 判据 | 守什么 | 反证（注入写在临时 worktree 里，⛔ 没碰工作树）|
+|---|---|---|
+| 本文件的 `枢衡改动17_补进标题化表的名照原样写出` | 七个名照这里写（查表、常量转名、不建表写 h1 三条路）；表外的名照旧小写 | 表里删掉 `ETag` 与 `Vary` ⇒ 红（`None` 对 `Some("ETag")`），同 crate 另外 56 条照绿 |
+| 枢衡的 `tests/files/run.sh` 逐行钉头名（200 / 206 / 416 / 301 / 405）与 `tests/encode/run.sh` 钉 `ETag` / `Vary` 大小写 | rebase 冲掉补的那几行时，线上的样子 | 同一个注入 ⇒ files 红在带 `ETag` 的三条（301 / 405 照绿）、encode 三条全红 |
+
+#### 归零条件
+
+上游那条 TODO 正是这件事 ⇒ ① 是给上游提 PR 的候选（对外动作，owner 定）；② 上游未必收，收不了就留一行。
+在归零之前是**要跟着 rebase 的常年成本**：表是七行、冲突时最容易被合掉 —— 那时上表两条判据都会红。
+
 ### 9. 没有动的一个：`daemonize`
 
 > ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 随 daemonize
@@ -1051,6 +1088,9 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ### 结论
 
+> ★ **2026-10-14（改动 17）：19 个文件** —— 下面那 17 个，加 `pingora-http` 的 `src/case_header_name.rs` 与 `src/lib.rs`
+> （用上面的命令对 `0.9.0` 实测，`702f690`；只差权限位、内容为 0 行的不算）。`pingora-http` 自此不再是零改动。
+>
 > ★ **2026-10-06（改动 16）：17 个文件** —— 下面那 14 个，加 `pingora-core` 的 `protocols/http/v1/server.rs`、
 > `protocols/l4/stream.rs` 与新增的 `tests/fulcrum_read_request_alloc.rs`（用上面的命令对 `0.9.0` 实测，`702f690`）。
 >
@@ -1254,6 +1294,9 @@ git -C <上游克隆> show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ★ **重做时先看上游有没有已经自己升了**——`nix` 与这两条都是白捡的。
 
-## 已知的一处轻微行为差异
+## 已知的轻微行为差异
 
-`get_fds_from()` 里 `msg.cmsgs()?` 在控制缓冲被截断（`MSG_CTRUNC`）时会提前返回，**跳过 `unlink(path)` 的清理**，留下一个残余的 socket 文件。上游 main 的行为完全相同。这条路径在正常升级中不出现（缓冲按 `MAX_FDS = 32` 预留），记在这里只是为了不让它成为将来某次排查的意外。
+★ 有意的一处（2026-10-14，改动 17 / G162）：`ETag` · `Vary` 等七个头名在 h1 上照标题化表写 —— 压缩层用常量改写 / 追加的
+`etag` / `vary` 因此从小写变成 `ETag` / `Vary`，与上游不同。详见改动 17。
+
+下面这一处与上游**相同**，只是记下来：`get_fds_from()` 里 `msg.cmsgs()?` 在控制缓冲被截断（`MSG_CTRUNC`）时会提前返回，**跳过 `unlink(path)` 的清理**，留下一个残余的 socket 文件。上游 main 的行为完全相同。这条路径在正常升级中不出现（缓冲按 `MAX_FDS = 32` 预留），记在这里只是为了不让它成为将来某次排查的意外。

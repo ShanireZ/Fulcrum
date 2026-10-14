@@ -59,7 +59,7 @@ members = ["spikes/m0-seam"]
 
 **动机**（G30）：crates.io 上的 `pingora-core 0.8.1` 用十条版本上界把 44 个传递依赖钉在旧版，其中两条带真实安全公告。fork 只改各 `Cargo.toml` 的上界与随之而来的 12 个调用点，**没有任何行为变更**。
 
-★ **读 pingora 源码时看 `vendor/pingora/`，不要看 crates.io 上那份。** 完整改动清单、维护方式与已知的一处轻微行为差异见 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。
+★ **读 pingora 源码时看 `vendor/pingora/`，不要看 crates.io 上那份。** 完整改动清单、维护方式与已知的轻微行为差异（含改动 17 有意改的头名大小写）见 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。
 
 # ★ 两处决策与清单之间的差距
 

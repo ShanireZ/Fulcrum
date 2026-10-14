@@ -44,6 +44,8 @@ use authority::{raw_target_authority, RawTargetAuthority};
 mod case_header_name;
 use case_header_name::CaseHeaderName;
 pub use case_header_name::IntoCaseHeaderName;
+// 枢衡改动 17（G162）
+pub use case_header_name::titled_header_name_str;
 
 pub mod prelude {
     pub use crate::RequestHeader;

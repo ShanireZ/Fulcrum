@@ -512,12 +512,22 @@ expect_header() {
   if [ "$got" = "$want" ]; then ok "$what 的 $name = $got"; else fail "$what 的 $name 期望「$want」，实际「$got」"; fi
 }
 
+# ★ 头名的**大小写**逐字钉（G162）：上面的 `expect_header` 不分大小写 ⇒ 判不出「用户写的 `X-Fulcrum` 以 `x-fulcrum` 上线」。
+#   枢衡自建的响应只在要插的名都照原样写得出时才不建大小写表；`X-Fulcrum` 既不在 pingora 的标题化表里、
+#   也不是小写 ⇒ 这一条必须照旧建表、照用户写的发。判「什么时候不建表」那个函数坏成恒不建时，红在这里。
+expect_header_name_exact() {
+  local what=$1 name=$2
+  if grep -q "^$name: " "$WORK/hdr"; then ok "$what 的头名原样是 $name"; else
+    fail "$what 的头名期望原样「$name」，实际「$(grep -i "^$name:" "$WORK/hdr" | head -1 | cut -d: -f1)」"; fi
+}
+
 BASE="http://$HOST:$PROXY_PORT"
 
 # 1) 兜底 handle + 站点级 header（G49：header 排在 handle 之前，所以两者都生效）
 expect_status "GET /" 200 "$(probe "$BASE/")"
 expect_body "GET /" "root"
 expect_header "GET /" "X-Fulcrum" "test"
+expect_header_name_exact "GET /" "X-Fulcrum"
 
 # 2) ★ 转发：命名匹配器 + header_up 都要真的生效
 expect_status "GET /api/x（转发）" 200 "$(probe "$BASE/api/x")"
