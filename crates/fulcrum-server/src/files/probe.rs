@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 ///    ⚠ 那种误配的后果是**发错内容而 `Content-Length` 与 ETag 全都自洽**
 ///    ⇒ 不会有任何东西说，所以它值得由类型来挡。
 ///
-/// ② **字节只能按路径取回**（[`Probe::bytes_for`]，路径不符回 `None`）。
+/// ② **字节只能按路径取回**（[`Probe::bytes_for`] / [`Probe::check_bytes_for`]，路径不符回 `None`）。
 ///    ⇒ 预压缩旁文件读的是**另一个文件**，它会自动落回分块路径，
 ///    ⛔ 不再依赖调用方在发送那一行写对「表示是不是原文件」。
 pub(super) struct Probe {
@@ -62,9 +62,9 @@ impl Probe {
     /// **一次跨线程都不做**的探测：`open` + `fstat` +（≤ `inline_limit` 时）
     /// 一次 `preadv2(RWF_NOWAIT)` 整读。
     ///
-    /// - `Some(probe)` —— 这一趟已经做完了。两种情形：数据本来就在页缓存里；
+    /// - `Ok(probe)` —— 这一趟已经做完了。两种情形：数据本来就在页缓存里；
     ///   或者根本不需要读（目录 / 超过 `inline_limit` 的大文件）。
-    /// - `None` —— **这一次要等 I/O**（或 `open`/`fstat` 就失败了）
+    /// - `Err(path)` —— **这一次要等 I/O**（或 `open`/`fstat` 就失败了），路径原样交回
     ///   ⇒ 调用方去走 [`Probe::open_blocking`]，那条路才值得付一次
     ///   `spawn_blocking` 的代价。
     ///
@@ -75,13 +75,20 @@ impl Probe {
     ///
     /// ⚠ ⚠ ★ **`open` 自己仍然可能阻塞**（冷 dentry / 冷 inode）。这一条没有解，
     /// 要解得上 io_uring。⛔ 写在明处，别当它不存在。
-    pub(super) fn open_nowait(path: PathBuf, inline_limit: u64) -> Option<Self> {
-        let f = std::fs::File::open(&path).ok()?;
-        let meta = f.metadata().ok()?;
+    ///
+    /// ★ 路径**按值收**、成功时就存进探测结果，失败时原样交回（`Err`）给调用方去走回落 ——
+    ///   ⛔ 不为「存一份」而另拷一份（10-14 · 文件那条路剩下的分配）。
+    pub(super) fn open_nowait(path: PathBuf, inline_limit: u64) -> Result<Self, PathBuf> {
+        let Ok(f) = std::fs::File::open(&path) else {
+            return Err(path);
+        };
+        let Ok(meta) = f.metadata() else {
+            return Err(path);
+        };
         // 不用读的两种：目录（Linux 上 `read` 本来就不得）、大到该分块发的。
         // ⇒ 这一趟**没有任何会等 I/O 的动作**，直接算做完。
         if !meta.is_file() || meta.len() > inline_limit {
-            return Some(Self {
+            return Ok(Self {
                 path,
                 meta,
                 bytes: None,
@@ -89,9 +96,9 @@ impl Probe {
         }
         let mut buf = vec![0u8; meta.len() as usize];
         if !read_full_nowait(&f, &mut buf) {
-            return None;
+            return Err(path);
         }
-        Some(Self {
+        Ok(Self {
             path,
             meta,
             bytes: Some(Bytes::from(buf)),
@@ -130,7 +137,26 @@ impl Probe {
             None
         }
     }
+
+    /// 同 [`Self::bytes_for`] 的那道门，但只回一张凭证：`p` 这个文件的字节在手上才给。
+    /// 字节要用凭证去 [`Self::take_bytes`] 换 —— 整段交出去，⛔ 不 `clone`。
+    ///
+    /// ★ 为什么拆成两步（10-14 · 文件那条路剩下的分配）：从 `Vec` 来的 `Bytes` 第一次被 `clone` /
+    ///   `slice` 要升级成共享的那一块（一次分配），整段发时不必付 ⇒ 要把字节**拿走**；而调用方手里那个
+    ///   `p` 往往就借着本结构体的路径，借着它就拿不到 `&mut self`。凭证不借任何东西，
+    ///   且只有这里造得出来 ⇒ 「字节只能按路径取回」（不变式 ②）仍由类型守着。
+    pub(super) fn check_bytes_for(&self, p: &Path) -> Option<BytesFor> {
+        self.bytes_for(p).is_some().then_some(BytesFor(()))
+    }
+
+    /// 凭 [`Self::check_bytes_for`] 给的凭证把字节拿走（之后本结构体里就没有了）。
+    pub(super) fn take_bytes(&mut self, _: BytesFor) -> Option<Bytes> {
+        self.bytes.take()
+    }
 }
+
+/// [`Probe::check_bytes_for`] 给的凭证。字段私有 ⇒ 本模块之外造不出来。
+pub(super) struct BytesFor(());
 
 /// `preadv2(2)` 带 `RWF_NOWAIT`：**数据不在页缓存时立刻返回**，⛔ 不等 I/O。
 ///
@@ -293,7 +319,7 @@ mod tests {
                 // ⚠ 空文件**不需要等任何 I/O** ⇒ 它在每种文件系统上都该走快路径。
                 //   这不是猜的：内核把零长读短路在 `FMODE_NOWAIT` 检查之前（见上）。
                 let 该命中 = 认 || len == 0;
-                match Probe::open_nowait(p.clone(), LIMIT) {
+                match Probe::open_nowait(p.clone(), LIMIT).ok() {
                     Some(fast) => {
                         assert!(
                             该命中,
@@ -404,7 +430,7 @@ mod tests {
             // ⚠ 非空且远小于 `CHUNK`：它必然走「该整读」那一支，
             //   ⇒ 快路径回 `None` 之后，字节只能由回落带回来。
             let (p, body) = t.file("f.bin", 4096);
-            let probe = super::super::probe_file(&p).await.expect(
+            let probe = super::super::probe_file(p.clone()).await.expect(
                 "`probe_file` 在不认 RWF_NOWAIT 的文件系统上回了 None —— \
                  那条 spawn_blocking(open_blocking) 回落多半被删了。\
                  ⚠ 它在 serve 那一层只是性能（还有第二条回落兜着），\
@@ -442,7 +468,12 @@ mod tests {
     #[test]
     fn 不存在的路径回_none_而不是恐慌() {
         let t = Tmp::new("missing");
-        assert!(Probe::open_nowait(t.0.join("没有这个文件"), LIMIT).is_none());
+        let missing = t.0.join("没有这个文件");
+        assert_eq!(
+            Probe::open_nowait(missing.clone(), LIMIT).err(),
+            Some(missing),
+            "打不开就把路径原样交回，让调用方去走回落"
+        );
     }
 
     #[test]
@@ -451,8 +482,8 @@ mod tests {
         let (p, _) = t.file("a.bin", 128);
         let (other, _) = t.file("b.bin", 128);
         // 快路径可能因文件系统而回 None ⇒ 这一条钉在两条路各自的产物上。
-        for probe in [
-            Probe::open_nowait(p.clone(), LIMIT),
+        for mut probe in [
+            Probe::open_nowait(p.clone(), LIMIT).ok(),
             Probe::open_blocking(p.clone(), LIMIT).ok(),
         ]
         .into_iter()
@@ -462,6 +493,14 @@ mod tests {
                 probe.bytes_for(&other).is_none(),
                 "路径不符就必须回 None，⛔ 否则预压缩旁文件会拿到原文件的字节"
             );
+            assert!(
+                probe.check_bytes_for(&other).is_none(),
+                "凭证那道门也一样：路径不符不给凭证"
+            );
+            // 路径相符：凭证换得到整段字节，换过一次就没有了。
+            let token = probe.check_bytes_for(&p).expect("自己的路径要给凭证");
+            assert_eq!(probe.take_bytes(token).map(|b| b.len()), Some(128));
+            assert!(probe.check_bytes_for(&p).is_none(), "拿走之后不该再给凭证");
         }
     }
 }

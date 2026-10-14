@@ -220,14 +220,10 @@ pub(crate) async fn serve(
         "HEAD" => true,
         _ => {
             debug!("file_server：不认识的方法 {method} → 405");
-            write_head(
-                session,
-                405,
-                vec![
-                    ("Allow", HeaderValue::from_static("GET, HEAD")),
-                    ("Content-Length", HeaderValue::from_static("0")),
-                ],
-            )
+            write_head(session, 405, |head| {
+                head.push(("Allow", HeaderValue::from_static("GET, HEAD")));
+                head.push(("Content-Length", HeaderValue::from_static("0")));
+            })
             .await;
             return Ok(());
         }
@@ -238,17 +234,14 @@ pub(crate) async fn serve(
         debug!("file_server：路径解不开或越界 → 400（{url_path}）");
         return Err(400);
     };
-    if path::is_hidden(&norm.segments, &fs.hide) {
+    if path::is_hidden(&norm, &fs.hide) {
         // ★ ★ 回 **404 不是 403**（G88）：403 等于确认「这个文件在」。
         debug!("file_server：命中 hide 清单 → 404（{url_path}）");
         return Err(404);
     }
 
     // ── 5. join 到 root，必要时按 canonicalize 校验 ─────────────────────────
-    let mut full = PathBuf::from(&fs.root);
-    for s in &norm.segments {
-        full.push(s);
-    }
+    let full = path::join_under(&fs.root, &norm);
     if !fs.follow_symlinks && !within_root(&fs.root, &full).await {
         // ★ 这里回 403 而不是 404，与 hide 那条**有意不同**：
         //   hide 挡的是「访客不该知道它在」，而这里是「部署方自己放的一条链接
@@ -263,19 +256,21 @@ pub(crate) async fn serve(
     // ⚠ ⚠ `open` 失败**不是** 404 —— 它的失败面比 `stat` 宽（文件本身要可读）
     //   ⇒ 回落到 `stat()`，让「存在但打不开」照旧走原来那条路。
     //   ⛔ 这一步是纯性能改动，不许改掉任何一个可观察行为。
-    let probed = match probe_file(&full).await {
-        Some(p) => p,
+    let mut probed = match probe_file(full).await {
+        Ok(p) => p,
         // ⚠ ⚠ `open` 失败**不是** 404 —— 它的失败面比 `stat` 宽（文件本身要可读）
         //   ⇒ 回落到 `stat()`，让「存在但打不开」照旧走原来那条路。
         //   ★ `meta_only` **结构上不可能带字节** ⇒ 这条回落路径不会误带任何数据。
-        None => match stat(&full).await {
-            Some(m) => Probe::meta_only(full.clone(), m),
+        Err(full) => match stat(&full).await {
+            Some(m) => Probe::meta_only(full, m),
             None => {
                 debug!("file_server：不存在 → 404（{}）", full.display());
                 return Err(404);
             }
         },
     };
+    // ★ 路径从此借探测结果里那一份（10-14：⛔ 不再为探测另拷一份）。
+    let full = probed.path();
     let meta = probed.meta();
 
     // ── 7. 目录 ───────────────────────────────────────────────────────────
@@ -289,10 +284,11 @@ pub(crate) async fn serve(
                 to.push_str(query);
             }
             debug!("file_server：目录缺尾斜杠 → 301 {to}");
-            let mut head = Head::with_capacity(2);
-            push_dynamic(&mut head, "Location", to);
-            head.push(("Content-Length", HeaderValue::from_static("0")));
-            write_head(session, 301, head).await;
+            write_head(session, 301, |head| {
+                push_dynamic(head, "Location", to);
+                head.push(("Content-Length", HeaderValue::from_static("0")));
+            })
+            .await;
             return Ok(());
         }
         // 按 index 顺序找。
@@ -303,12 +299,12 @@ pub(crate) async fn serve(
             {
                 // ★ 索引文件的 metadata 来自对**它**的一次 `stat` ⇒ `meta_only`，
                 //   而那个构造口结构上带不了字节。
-                let probed = Probe::meta_only(cand, m);
-                return send_file(session, req, fs, &probed, head_only, encoder).await;
+                let mut probed = Probe::meta_only(cand, m);
+                return send_file(session, req, fs, &mut probed, head_only, encoder).await;
             }
         }
         if fs.browse {
-            return browse(session, &full, url_path, head_only, encoder).await;
+            return browse(session, full, url_path, head_only, encoder).await;
         }
         debug!(
             "file_server：目录没有索引且没开 browse → 404（{}）",
@@ -324,7 +320,7 @@ pub(crate) async fn serve(
     }
 
     // ── 8–11 ──────────────────────────────────────────────────────────────
-    send_file(session, req, fs, &probed, head_only, encoder).await
+    send_file(session, req, fs, &mut probed, head_only, encoder).await
 }
 
 /// `follow_symlinks false` 时的校验：canonicalize 之后必须仍在 root 之内。
@@ -378,7 +374,10 @@ async fn stat(p: &Path) -> Option<Metadata> {
 /// **不一样**：`stat` 只要父目录可搜索就成，而 `open` 还要文件本身可读
 /// ⇒ 一个 mode 000 的文件在旧路径上会走到「发完头再断」，直接改成 404 是**行为变更**。
 /// 本次是纯性能改动，⛔ 不许顺手改掉任何一个可观察行为。
-async fn probe_file(p: &Path) -> Option<Probe> {
+///
+/// ★ 路径**按值收**（10-14 · 文件那条路剩下的分配）：快路径成功就存进探测结果，⛔ 不另拷一份；
+///   两条路都失败时原样交回（`Err`），调用方拿它去 `stat()`。
+async fn probe_file(p: PathBuf) -> Result<Probe, PathBuf> {
     // ── ① 先在**本线程**上试一次，一次跨线程都不做 ─────────────────────────
     //
     // ★ ★ ★ 2026-09-06 剖面量出来的：做文件那件事只值 **3.16%** 的 CPU，
@@ -388,9 +387,10 @@ async fn probe_file(p: &Path) -> Option<Probe> {
     //   IPC 由 0.72 掉到 0.36、两个核还空着 15%。
     //   ⇒ 上一轮把切换次数砍掉三分之二只换来 +18%：次数减少了，
     //   **每一次的破坏力没变**。
-    if let Some(probe) = Probe::open_nowait(p.to_path_buf(), CHUNK as u64) {
-        return Some(probe);
-    }
+    let p = match Probe::open_nowait(p, CHUNK as u64) {
+        Ok(probe) => return Ok(probe),
+        Err(p) => p,
+    };
 
     // ── ② 到这里才是真的要等 I/O ──────────────────────────────────────────
     //
@@ -417,11 +417,16 @@ async fn probe_file(p: &Path) -> Option<Probe> {
     //
     // ⚠ ⛔ **仍然没有门的那一半**：「它只花 1 次跨线程」。把它重写成正确、
     //   却要三次跨线程的实现，上面那条测试照常绿 —— 那一半今天只由诊断台的读数守着。
-    let p = p.to_path_buf();
-    tokio::task::spawn_blocking(move || Probe::open_blocking(p, CHUNK as u64).ok())
+    // ⚠ 这条慢路径照旧要一份自有的路径交给阻塞线程；失败时交回的是调用方那一份。
+    let q = p.clone();
+    match tokio::task::spawn_blocking(move || Probe::open_blocking(q, CHUNK as u64).ok())
         .await
         .ok()
         .flatten()
+    {
+        Some(probe) => Ok(probe),
+        None => Err(p),
+    }
 }
 
 /// 从**已经在内存里**的字节发（[`probe_file`] 预取到的那一份）。⛔ 零 `spawn_blocking`。
@@ -433,25 +438,31 @@ async fn probe_file(p: &Path) -> Option<Probe> {
 ///
 /// ★ `slice` 只增引用计数，交出去的仍是 [`Probe`] 读进来的那块内存 ——
 ///   ⛔ 别换回 `Bytes::copy_from_slice`：内容一样，只是每个请求白拷一遍（判据见同名单测）。
-fn body_slice(bytes: &Bytes, start: u64, count: u64) -> Option<Bytes> {
+/// ★ 整段就原样交出、⛔ 不 `slice`（10-14）：从 `Vec` 来的 `Bytes` 第一次被 `slice` 要升级成共享的那一块，
+///   那是一次分配；整段发（最常见的 200）不必付。判据：`tests/files_alloc.rs`。
+pub fn body_range(bytes: Bytes, start: u64, count: u64) -> Option<Bytes> {
     let s = usize::try_from(start).ok()?;
     let e = s.checked_add(usize::try_from(count).ok()?)?;
     if e > bytes.len() {
         return None;
+    }
+    if s == 0 && e == bytes.len() {
+        return Some(bytes);
     }
     Some(bytes.slice(s..e))
 }
 
 async fn send_bytes(
     session: &mut Downstream<'_>,
-    bytes: &Bytes,
+    bytes: Bytes,
     start: u64,
     count: u64,
     encoder: &mut Option<crate::encode::Encoder>,
 ) {
     // ⚠ 防御：预取的那一份必须真的覆盖这个区间。⛔ 覆盖不到就断掉，
-    //   与 `stream_body` 里「文件比 Content-Length 说的短」同一个处置。
-    let Some(raw) = body_slice(bytes, start, count) else {
+    //   与 `stream_body` 里「文件比 Content-Length 说的短」同一个处置
+    //   （凭证换不到字节时 `bytes` 是空的，也落在这里）。
+    let Some(raw) = body_range(bytes, start, count) else {
         warn!("file_server：预取的字节比要发的区间短（头已发出）");
         let _ = session.write_response_body(Bytes::new(), true).await;
         return;
@@ -578,7 +589,8 @@ async fn send_file(
     fs: &FileServerRt,
     // ★ ★ 「哪个文件」与「它的 metadata / 字节」现在是**同一个值**带来的
     //   ⇒ ⛔ 不再有一个能与 metadata 各说各话的独立 `full` 参数。
-    probed: &Probe,
+    // ★ `&mut`：整段发时把字节从它那里拿走（10-14，见下面「11. 发送」）。
+    probed: &mut Probe,
     head_only: bool,
     encoder: Option<crate::encode::Encoder>,
 ) -> Result<(), u16> {
@@ -634,10 +646,8 @@ async fn send_file(
         },
     };
     if fresh {
-        let mut head = Head::with_capacity(2);
-        push_validators(&mut head, etag, last_mod);
         debug!("file_server：条件请求命中 → 304（{}）", full.display());
-        write_head(session, 304, head).await;
+        write_head(session, 304, |head| push_validators(head, etag, last_mod)).await;
         return Ok(());
     }
 
@@ -656,12 +666,13 @@ async fn send_file(
     let (status, start, end) = match verdict {
         range::RangeVerdict::Unsatisfiable => {
             debug!("file_server：Range 不可满足 → 416（{}）", full.display());
-            let mut head = Head::with_capacity(5);
-            push_dynamic(&mut head, "Content-Range", range::unsatisfiable_header(len));
-            head.push(("Content-Length", HeaderValue::from_static("0")));
-            head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
-            push_validators(&mut head, etag, last_mod);
-            write_head(session, 416, head).await;
+            write_head(session, 416, |head| {
+                push_dynamic(head, "Content-Range", range::unsatisfiable_header(len));
+                head.push(("Content-Length", HeaderValue::from_static("0")));
+                head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
+                push_validators(head, etag, last_mod);
+            })
+            .await;
             return Ok(());
         }
         range::RangeVerdict::Single { start, end } => (206, start, end),
@@ -671,31 +682,27 @@ async fn send_file(
     };
     let body_len = if len == 0 { 0 } else { end - start + 1 };
 
-    // ★ 顺序就是上线的顺序（大小写表与值表按插入次序配对），⛔ 别重排。
-    let mut head = Head::with_capacity(8);
-    head.push(("Content-Type", HeaderValue::from_static(ctype)));
-    head.push(("Content-Length", HeaderValue::from(body_len)));
-    head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
-    push_validators(&mut head, etag, last_mod);
-    if status == 206 {
-        push_dynamic(
-            &mut head,
-            "Content-Range",
-            range::content_range(start, end, len),
-        );
-    }
-    // ★ 预压缩旁文件：宣布编码，并按 RFC 9110 补 `Vary`。
-    //   ⚠ 少了 `Vary`，下游任何一层缓存都会把这份 br 的字节发给不认 br 的客户端。
-    if let Some(algo) = repr.encoding {
-        head.push(("Content-Encoding", HeaderValue::from_static(algo)));
-        head.push(("Vary", HeaderValue::from_static("Accept-Encoding")));
-    }
-
     // ⚠ ⚠ **206 不现压**：`Content-Range` 说的是**这个表示**的字节区间，
     //   而现压会把字节整个换掉 —— 两者放在同一个响应里必然对不上。
     //   ★ 预压缩那条路不受影响：旁文件本身就是那个表示，区间是它自己的。
     let mut encoder = if status == 206 { None } else { encoder };
-    write_head_encoded(session, status, head, &mut encoder).await;
+    // ★ 顺序就是上线的顺序，⛔ 别重排。
+    write_head_encoded(session, status, &mut encoder, |head| {
+        head.push(("Content-Type", HeaderValue::from_static(ctype)));
+        head.push(("Content-Length", HeaderValue::from(body_len)));
+        head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
+        push_validators(head, etag, last_mod);
+        if status == 206 {
+            push_dynamic(head, "Content-Range", range::content_range(start, end, len));
+        }
+        // ★ 预压缩旁文件：宣布编码，并按 RFC 9110 补 `Vary`。
+        //   ⚠ 少了 `Vary`，下游任何一层缓存都会把这份 br 的字节发给不认 br 的客户端。
+        if let Some(algo) = repr.encoding {
+            head.push(("Content-Encoding", HeaderValue::from_static(algo)));
+            head.push(("Vary", HeaderValue::from_static("Accept-Encoding")));
+        }
+    })
+    .await;
 
     // ── 11. 发送 ──────────────────────────────────────────────────────────
     if head_only || body_len == 0 {
@@ -706,9 +713,14 @@ async fn send_file(
     //   而 `bytes_for` 在路径不符时回 `None` ⇒ 旁文件**自动**落回分块路径。
     //   ⛔ 这里不再有「表示是不是原文件」这个需要人记得写对的条件 ——
     //   它由 `Probe` 的类型面挡着（见 `files/probe.rs` 的不变式 ②）。
-    match probed.bytes_for(full) {
+    // ★ 先按路径要一张凭证、再凭它把字节**拿走**（10-14）：`full` 借着 `probed`，借着它拿不到 `&mut`；
+    //   拿走而不是 `clone`，整段发时就不必把 `Bytes` 升级成共享的那一块（一次分配）。
+    match probed.check_bytes_for(full) {
         // 整个文件已经在内存里 ⇒ **这一整趟请求只有那一次 `spawn_blocking`**。
-        Some(bytes) => send_bytes(session, bytes, start, body_len, &mut encoder).await,
+        Some(token) => {
+            let bytes = probed.take_bytes(token).unwrap_or_default();
+            send_bytes(session, bytes, start, body_len, &mut encoder).await;
+        }
         None => stream_body(session, full, start, body_len, &mut encoder).await,
     }
     Ok(())
@@ -841,18 +853,13 @@ async fn browse(
     let bytes = Bytes::from(html);
     // ★ 目录列表是 HTML，正是最该压的那一类。
     let mut encoder = encoder;
-    write_head_encoded(
-        session,
-        200,
-        vec![
-            (
-                "Content-Type",
-                HeaderValue::from_static("text/html; charset=utf-8"),
-            ),
-            ("Content-Length", HeaderValue::from(bytes.len())),
-        ],
-        &mut encoder,
-    )
+    write_head_encoded(session, 200, &mut encoder, |head| {
+        head.push((
+            "Content-Type",
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        ));
+        head.push(("Content-Length", HeaderValue::from(bytes.len())));
+    })
     .await;
     if head_only {
         let _ = session.write_response_body(Bytes::new(), true).await;
@@ -1002,6 +1009,7 @@ fn unix_secs(t: SystemTime) -> Option<i64> {
 
 /// ★ 按值收：每条路径只推一次、推完不再用 ⇒ ⛔ 不必 `clone`。
 fn push_validators(head: &mut Head, etag: Option<HeaderValue>, last: Option<HeaderValue>) {
+    // ⚠ 名照旧写成 `("名", 值)` 的样子 —— `发文件时插的名都照原样写得出` 那条测试按这个样子从源码里抠名。
     if let Some(e) = etag {
         head.push(("ETag", e));
     }
@@ -1054,7 +1062,17 @@ fn if_range_matches(value: &str, etag: Option<&str>, mtime: Option<SystemTime>) 
 /// `Location` / `Allow` 是 fork 改动 17 补进去的，补之前它们没表就以**小写**上线。
 /// ⚠ 新加一个头名时先看它在不在那张表里、写法是否一字不差；不在就得先补表。
 /// 判据：本模块的 `发文件时插的名都照原样写得出`（从本文件源码里抠名）与 `tests/files/run.sh` 逐行钉头名的那几条。
-type Head = Vec<(&'static str, HeaderValue)>;
+///
+/// ★ 就是那个 `ResponseHeader` 外面套一层、只开 `push` 一个口（10-14 · 文件那条路剩下的分配）：
+///   头直接放进去，⛔ 不先攒进一个 `Vec` 再倒一遍。由 [`write_head_encoded`] 建好后交给调用方的闭包去填。
+struct Head(ResponseHeader);
+
+impl Head {
+    /// 放一个头。覆盖语义（`insert_header`），与原来攒好再逐个 `insert_header` 逐字相同；顺序就是上线的顺序。
+    fn push(&mut self, (name, value): (&'static str, HeaderValue)) {
+        let _ = self.0.insert_header(name, value);
+    }
+}
 
 /// 动态的值（来自请求、或格式化出来的）：转不成合法头值就**不发这个头** ——
 /// 与旧写法 `let _ = resp.insert_header(..)` 失败即跳过是同一个处置。
@@ -1064,8 +1082,8 @@ fn push_dynamic(head: &mut Head, name: &'static str, value: String) {
     }
 }
 
-async fn write_head(session: &mut Downstream<'_>, status: u16, head: Head) {
-    write_head_encoded(session, status, head, &mut None).await;
+async fn write_head(session: &mut Downstream<'_>, status: u16, fill: impl FnOnce(&mut Head)) {
+    write_head_encoded(session, status, &mut None, fill).await;
 }
 
 /// 同上，但让压缩层看一眼这个头（**M2 批 I**）。
@@ -1077,20 +1095,20 @@ async fn write_head(session: &mut Downstream<'_>, status: u16, head: Head) {
 async fn write_head_encoded(
     session: &mut Downstream<'_>,
     status: u16,
-    head: Head,
     encoder: &mut Option<crate::encode::Encoder>,
+    fill: impl FnOnce(&mut Head),
 ) {
     // ★ 不建大小写表（G162）：名全是本文件的字面量，且都照标题化表写得出（见 [`Head`]）。
-    let mut resp = match ResponseHeader::build_no_case(status, None) {
+    let resp = match ResponseHeader::build_no_case(status, None) {
         Ok(r) => r,
         Err(e) => {
             warn!("file_server：构不出响应头（status={status}）：{e}");
             return;
         }
     };
-    for (k, v) in head {
-        let _ = resp.insert_header(k, v);
-    }
+    let mut head = Head(resp);
+    fill(&mut head);
+    let Head(mut resp) = head;
     if let Some(enc) = encoder.as_mut() {
         enc.header_filter(&mut resp, crate::encode::status_has_no_body(status));
     }
@@ -1183,7 +1201,7 @@ mod tests {
     /// ★ 正文不另拷一份（HTTP 层诊断 10-05）：交给 `write_response_body` 的那块 `Bytes`
     ///   必须**指着 Probe 读进来的那块内存**。⚠ 只比内容判不出这件事 —— 拷一份内容也相同。
     #[test]
-    fn body_slice_指着探测读进来的那块内存_不另拷一份() {
+    fn body_range_指着探测读进来的那块内存_不另拷一份() {
         let d = std::env::temp_dir().join(format!("fulcrum-body-slice-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -1194,7 +1212,7 @@ mod tests {
         let probe = Probe::open_blocking(p.clone(), CHUNK as u64).unwrap();
         let held = probe.bytes_for(&p).expect("4 KiB 在内联界之内");
         for (start, count) in [(0u64, 4096u64), (100, 200), (4095, 1)] {
-            let out = body_slice(held, start, count).expect("区间在内");
+            let out = body_range(held.clone(), start, count).expect("区间在内");
             let (s, e) = (start as usize, (start + count) as usize);
             assert_eq!(&out[..], &body[s..e], "start={start} count={count}");
             assert_eq!(
@@ -1204,10 +1222,13 @@ mod tests {
             );
         }
         assert!(
-            body_slice(held, 4000, 97).is_none(),
+            body_range(held.clone(), 4000, 97).is_none(),
             "越界必须回 None（头已发出，调用方只能断连）"
         );
-        assert!(body_slice(held, u64::MAX, 1).is_none(), "溢出也是越界");
+        assert!(
+            body_range(held.clone(), u64::MAX, 1).is_none(),
+            "溢出也是越界"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

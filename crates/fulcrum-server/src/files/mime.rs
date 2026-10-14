@@ -109,16 +109,79 @@ pub fn for_name(name: &str) -> &'static str {
     if ext.is_empty() {
         return DEFAULT;
     }
-    let lower = ext.to_ascii_lowercase();
-    match TABLE.binary_search_by(|(k, _)| (*k).cmp(lower.as_str())) {
+    // ★ 转小写写进栈上的缓冲（10-14 · 文件那条路剩下的分配），⛔ 不每请求分配一个 `String`。
+    //   比 [`MAX_EXT`] 长的扩展名一定不在表里（`表里的扩展名都放得进栈上那块缓冲` 钉着）⇒ 直接回缺省。
+    //   按字节比与原来按 `&str` 比是同一个序（`str` 的 `Ord` 就是按字节）。
+    let mut buf = [0u8; MAX_EXT];
+    let Some(lower) = buf.get_mut(..ext.len()) else {
+        return DEFAULT;
+    };
+    for (d, s) in lower.iter_mut().zip(ext.bytes()) {
+        *d = s.to_ascii_lowercase();
+    }
+    match TABLE.binary_search_by(|(k, _)| k.as_bytes().cmp(lower)) {
         Ok(i) => TABLE[i].1,
         Err(_) => DEFAULT,
     }
 }
 
+/// 栈上那块缓冲的长度：表里最长的扩展名放得下就够。
+const MAX_EXT: usize = 16;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ 「比缓冲长的一定不在表里」那条捷径的前提；也钉住表里一律是小写（查表前转的就是小写）。
+    #[test]
+    fn 表里的扩展名都放得进栈上那块缓冲() {
+        for (k, _) in TABLE {
+            assert!(k.len() <= MAX_EXT, "{k} 比 MAX_EXT={MAX_EXT} 长");
+            assert_eq!(*k, k.to_ascii_lowercase(), "{k} 不是小写");
+        }
+    }
+
+    /// 大小写不敏感、表里与表外、长扩展名，与原来「转成 `String` 再查」的写法逐个相同。
+    #[test]
+    fn 与原来转成_string_再查的写法相同() {
+        let old = |name: &str| -> &'static str {
+            let Some((_, ext)) = name.rsplit_once('.') else {
+                return DEFAULT;
+            };
+            if ext.is_empty() {
+                return DEFAULT;
+            }
+            let lower = ext.to_ascii_lowercase();
+            match TABLE.binary_search_by(|(k, _)| (*k).cmp(lower.as_str())) {
+                Ok(i) => TABLE[i].1,
+                Err(_) => DEFAULT,
+            }
+        };
+        let mut names: Vec<String> = TABLE.iter().map(|(k, _)| format!("f.{k}")).collect();
+        names.extend(
+            TABLE
+                .iter()
+                .map(|(k, _)| format!("F.{}", k.to_ascii_uppercase())),
+        );
+        names.extend(
+            [
+                "noext",
+                "trailing.",
+                ".hidden",
+                "a.b.HTML",
+                "x.unknown",
+                "x.Ünï",
+                "x.中文",
+                "x.aaaaaaaaaaaaaaaa",
+                "x.aaaaaaaaaaaaaaaaa",
+                "x.JSONLD",
+            ]
+            .map(String::from),
+        );
+        for n in &names {
+            assert_eq!(for_name(n), old(n), "{n}");
+        }
+    }
 
     // ★ ★ 这条是**查表法自己的判据**：`for_name` 用的是二分查找，
     //   而二分查找在表没排序时不会报错 —— 它只是**查不到本来在表里的那几条**。
