@@ -1426,6 +1426,37 @@ impl Runtime {
     /// ★ 唯一用途是装载日志（G88 的可见性）：非空的默认 hide 清单不说出来就是静默行为。
     /// ⚠ ⚠ 日志必须打**运行时手里这一份**，不能照配置再算一遍 —— 两份各算各的时，
     /// 日志说的和服务器做的可以不是一回事。
+    /// 哪些端口上有反代站点（G163）：其上任何一个站点的执行链或错误处理器里（含嵌套的
+    /// `handle` / `route`）有 `reverse_proxy`。
+    ///
+    /// ★ 从路由用的**同三张表**推出来（精确 · 通配 · 端口兜底）⇒ 与「这个端口上的请求可能落到哪些站点」
+    /// 逐字同一个口径，⛔ 不另按站点地址再算一遍（两份算法迟早对不上）。
+    /// 用处：没有反代的端口上，读 h1 请求头时不必保留头名的原样大小写 —— 只有原样转发给上游时才用得到它。
+    pub fn proxy_ports(&self) -> BTreeSet<u16> {
+        let proxied: Vec<bool> = self
+            .sites
+            .iter()
+            .map(|s| steps_have_proxy(&s.chain) || steps_have_proxy(&s.error_handler))
+            .collect();
+        let mut out = BTreeSet::new();
+        for (&port, by_host) in &self.exact {
+            if by_host.values().any(|&(i, _)| proxied[i]) {
+                out.insert(port);
+            }
+        }
+        for &(_, port, i, _) in &self.wildcard {
+            if proxied[i] {
+                out.insert(port);
+            }
+        }
+        for (&port, &(i, _)) in &self.catch_all {
+            if proxied[i] {
+                out.insert(port);
+            }
+        }
+        out
+    }
+
     pub fn file_servers(&self) -> Vec<(&str, &FileServerRt)> {
         fn walk<'a>(
             steps: &'a [StepRt],
@@ -1829,6 +1860,42 @@ pub struct SharedRuntime {
     /// 在同一个 CI 容器里的两次 `POST /load` 之间看出「变了」，秒级粒度在一次
     /// 跑得很快的测试里可能落在同一秒——那会让一条本该稳定通过的判据偶发抖动。
     loaded_at: std::sync::RwLock<std::time::SystemTime>,
+    /// 哪些端口上有反代站点（G163），见 [`Self::port_has_proxy`]。
+    proxy_ports: PortBits,
+}
+
+/// 65536 位的端口位图（8 KiB）。读请求头之前每条请求查一次 ⇒ 只是一次原子读，
+/// ⛔ 不为它再拿一次 [`SharedRuntime::current`] 的读锁（每请求已经拿过一次了）。
+///
+/// ⚠ `new` 与 [`SharedRuntime::swap`] 各写一次，与运行时本身的替换**不是**原子的：
+/// 正落在换代那一瞬的一条请求可能按旧图定 —— 最坏是这一条转发到上游时头名变成标题化表的写法或小写
+/// （与 h2 客户端的请求今天的样子相同），或这一条多建了一张表。各位之间互不相干 ⇒ `Relaxed` 就够。
+struct PortBits(Box<[std::sync::atomic::AtomicU64]>);
+
+impl PortBits {
+    fn new(ports: &BTreeSet<u16>) -> PortBits {
+        let bits = PortBits(
+            (0..1024)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect(),
+        );
+        bits.store(ports);
+        bits
+    }
+
+    fn store(&self, ports: &BTreeSet<u16>) {
+        let mut words = vec![0u64; 1024];
+        for &p in ports {
+            words[usize::from(p) >> 6] |= 1 << (p & 63);
+        }
+        for (w, v) in self.0.iter().zip(words) {
+            w.store(v, Ordering::Relaxed);
+        }
+    }
+
+    fn get(&self, port: u16) -> bool {
+        (self.0[usize::from(port) >> 6].load(Ordering::Relaxed) >> (port & 63)) & 1 == 1
+    }
 }
 
 impl SharedRuntime {
@@ -1853,13 +1920,21 @@ impl SharedRuntime {
                 );
             }
         }
+        let proxy_ports = PortBits::new(&rt.proxy_ports());
         std::sync::Arc::new(SharedRuntime {
             inner: std::sync::RwLock::new(rt),
             overrides,
             // ★ R15：`new` 也算一次「装载」——进程刚起来时服务的那份配置
             // 同样有一个装载时刻，不是只有 `swap` 才算数。
             loaded_at: std::sync::RwLock::new(std::time::SystemTime::now()),
+            proxy_ports,
         })
+    }
+
+    /// 这个端口上有没有反代站点（G163）。读 h1 请求头之前就要定「要不要保留头名的原样大小写」，
+    /// 那时还不知道 Host ⇒ 只能按端口；口径见 [`Runtime::proxy_ports`]。
+    pub fn port_has_proxy(&self, port: u16) -> bool {
+        self.proxy_ports.get(port)
     }
 
     /// 这个进程的**格子登记处**。管理面（任务 4 / 5 / 6）从这里拿，⛔ 别自己建第二个。
@@ -1943,6 +2018,7 @@ impl SharedRuntime {
         let mut rt = rt;
         rt.attach_overrides(&self.overrides);
         let live = rt.override_keys();
+        let proxy_ports = rt.proxy_ports();
         let rt = std::sync::Arc::new(rt);
         // ★ ★ R15：**只读一次时钟**（批 M 的教训：收尾路径上读两次时钟，
         //   同一件事的两个数会对不上）。这里只有一个消费者（`loaded_at`），
@@ -1956,6 +2032,7 @@ impl SharedRuntime {
             Ok(mut g) => *g = now,
             Err(poisoned) => *poisoned.into_inner() = now,
         }
+        self.proxy_ports.store(&proxy_ports);
         // ⚠ 顺序：**换完之后**才收拾（裁决 R7 的原话是「一次成功的 swap 之后」）。
         //   反过来的话，一次在写锁上失败的 swap 会先把登记处清了。
         self.overrides.retain_after_swap(&live);
@@ -3214,6 +3291,26 @@ fn cache_settings_of(sites: &[SiteRt]) -> Vec<(&str, &CacheRt)> {
         walk(&site.error_handler, &site.name, &mut out);
     }
     out
+}
+
+/// 这串步骤里（含嵌套的 `handle` / `route`）有没有 `reverse_proxy`（G163，[`Runtime::proxy_ports`]）。
+fn steps_have_proxy(steps: &[StepRt]) -> bool {
+    steps.iter().any(|s| match &s.body {
+        BodyRt::Proxy(_) => true,
+        BodyRt::Handle(arms) => arms.iter().any(|a| steps_have_proxy(&a.steps)),
+        BodyRt::Route(inner) => steps_have_proxy(inner),
+        // ⚠ 不写 `_`：理由同 `Runtime::file_servers` 里那段 —— 新增一个装步骤的容器变体时，
+        //   要编译期穷举逼着来改这里，否则那个容器里的 `reverse_proxy` 会被当成没有。
+        BodyRt::Tracing
+        | BodyRt::Header(_)
+        | BodyRt::Rewrite(_)
+        | BodyRt::Encode(_)
+        | BodyRt::Redir { .. }
+        | BodyRt::Respond { .. }
+        | BodyRt::Metrics
+        | BodyRt::FileServer(_)
+        | BodyRt::Cache(_) => false,
+    })
 }
 
 fn self_loop_warnings(sites: &[SiteRt], listen_ports: &[(u16, bool)]) -> Vec<String> {

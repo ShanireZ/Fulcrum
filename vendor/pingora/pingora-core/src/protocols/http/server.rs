@@ -322,6 +322,15 @@ impl Session {
         }
     }
 
+    /// 枢衡改动 18（G163）：h1 读请求头时要不要保留头名的原样大小写，见
+    /// [`HttpSession::set_preserve_header_case`](super::v1::server::HttpSession::set_preserve_header_case)。
+    /// h2 / 子请求 / 自定义本来就不建那张表 ⇒ no-op。
+    pub fn set_preserve_header_case(&mut self, preserve: bool) {
+        if let Self::H1(s) = self {
+            s.set_preserve_header_case(preserve);
+        }
+    }
+
     /// Get the keepalive timeout. None if keepalive is disabled. Not applicable for h2 or
     /// subrequest
     pub fn get_keepalive(&self) -> Option<u64> {

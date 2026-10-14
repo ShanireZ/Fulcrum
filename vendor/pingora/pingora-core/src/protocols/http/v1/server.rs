@@ -158,6 +158,9 @@ pub struct HttpSession {
     /// [`super::super::HttpPersistentSettings`] into the next session.
     /// Scoped narrowly so it cannot affect FIN / `abort_on_close` semantics.
     pipelined_idle_bytes_stashed: bool,
+    /// 枢衡改动 18（G163）：[`Self::read_request`] 要不要另建保留请求头名原样大小写的那张表。
+    /// 缺省 `true`（与上游相同）。见 [`Self::set_preserve_header_case`]。
+    preserve_header_case: bool,
 }
 
 impl HttpSession {
@@ -206,7 +209,17 @@ impl HttpSession {
             pipelining_enabled: false,
             pipelined_prefix: None,
             pipelined_idle_bytes_stashed: false,
+            preserve_header_case: true,
         }
+    }
+
+    /// 枢衡改动 18（G163）：下一次 [`Self::read_request`] 要不要保留请求头名的原样大小写。
+    ///
+    /// 缺省保留（与上游相同）。不保留时 [`RequestHeader`] 不另建大小写表（每条请求少两次分配）：
+    /// 名与值照旧可查，只是再写成 h1 时（例如原样转发给上游）头名按标题化表写、表外的写小写 ——
+    /// 与 h2 读进来的请求头相同。每条请求的会话都是新建的 ⇒ 要每条设一次。
+    pub fn set_preserve_header_case(&mut self, preserve: bool) {
+        self.preserve_header_case = preserve;
     }
 
     async fn read_request_buf(
@@ -354,12 +367,15 @@ impl HttpSession {
                             [const { std::mem::MaybeUninit::<KVRef>::uninit() }; MAX_HEADERS];
                         let num_headers = populate_header_refs(base, &mut header_refs, req.headers);
 
-                        let mut request_header = Box::new(RequestHeader::build(
-                            req.method.unwrap_or(""),
-                            // we path httparse to allow unsafe bytes in the str
-                            req.path.unwrap_or("").as_bytes(),
-                            Some(req.headers.len()),
-                        )?);
+                        let method = req.method.unwrap_or("");
+                        // we path httparse to allow unsafe bytes in the str
+                        let path = req.path.unwrap_or("").as_bytes();
+                        // ★ 枢衡改动 18（G163）：不保留大小写时不建那张表。
+                        let mut request_header = Box::new(if self.preserve_header_case {
+                            RequestHeader::build(method, path, Some(req.headers.len()))?
+                        } else {
+                            RequestHeader::build_no_case(method, path, Some(req.headers.len()))?
+                        });
 
                         request_header.set_version(match req.version {
                             Some(1) => Version::HTTP_11,
@@ -2327,6 +2343,46 @@ mod tests_stream {
             for i in 0..count {
                 let v = headers.get(format!("x-h{i}")).map(|v| v.as_bytes());
                 assert_eq!(Some(format!("v{i}").as_bytes()), v, "第 {i} 个头");
+            }
+        }
+    }
+
+    /// 枢衡改动 18（G163）：缺省保留请求头名的原样大小写；关掉之后名与值照旧可查、只是不建那张表，
+    /// 再写成 h1 时头名照标题化表写、表外的写小写。两个方向都在这里。
+    #[tokio::test]
+    async fn 枢衡改动18_关掉保留大小写_名值照旧_写回按缺省写法() {
+        init_log();
+        let input = b"GET / HTTP/1.1\r\nhOsT: a.example\r\nX-Mixed-Case: 1\r\nx-lower: 2\r\n\r\n";
+        for preserve in [None, Some(true), Some(false)] {
+            let mock_io = Builder::new().read(&input[..]).build();
+            let mut http_stream = HttpSession::new(Box::new(mock_io));
+            if let Some(p) = preserve {
+                http_stream.set_preserve_header_case(p);
+            }
+            let res = http_stream.read_request().await;
+            assert_eq!(input.len(), res.unwrap().unwrap(), "{preserve:?}");
+            let req = http_stream.req_header();
+            assert_eq!(3, req.headers.len());
+            assert_eq!(b"a.example", req.headers.get("host").unwrap().as_bytes());
+            assert_eq!(b"1", req.headers.get("x-mixed-case").unwrap().as_bytes());
+            assert_eq!(b"2", req.headers.get("x-lower").unwrap().as_bytes());
+            let mut wire = vec![];
+            req.header_to_h1_wire(&mut wire);
+            if preserve == Some(false) {
+                assert!(
+                    req.case_header_iter().next().is_none(),
+                    "关掉之后不该有那张表"
+                );
+                assert_eq!(
+                    wire,
+                    b"Host: a.example\r\nx-mixed-case: 1\r\nx-lower: 2\r\n"
+                );
+            } else {
+                assert_eq!(3, req.case_header_iter().count(), "{preserve:?}");
+                assert_eq!(
+                    wire,
+                    b"hOsT: a.example\r\nX-Mixed-Case: 1\r\nx-lower: 2\r\n"
+                );
             }
         }
     }

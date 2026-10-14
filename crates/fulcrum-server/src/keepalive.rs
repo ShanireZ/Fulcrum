@@ -34,6 +34,8 @@ pub(crate) trait Conn {
     fn set_keepalive(&mut self, secs: Option<u64>);
     /// 上一条请求经 `HttpPersistentSettings::set_user_context` 带过来的东西。
     fn take_carried(&mut self) -> Option<Box<dyn Any + Send + Sync>>;
+    /// 读 h1 请求头时要不要另建保留头名原样大小写的表（G163，fork 改动 18）；h2 / h3 上 no-op。
+    fn set_preserve_header_case(&mut self, preserve: bool);
     fn read_request(&mut self) -> impl Future<Output = Result<bool>> + Send;
 }
 
@@ -55,7 +57,16 @@ impl IdleTimer {
 ///
 /// 其他状态（不续 / 不限时 / h2 / h3）照旧直接读，带过来的计时器丢掉 ——
 /// 那几种状态下这条连接本来就不靠它关。
-pub(crate) async fn read_request<C: Conn>(conn: &mut C) -> (Result<bool>, Option<Box<IdleTimer>>) {
+///
+/// `preserve_case`（G163）：这条请求的头名要不要保留原样大小写 —— 只有原样转发给 h1 上游时才用得到，
+/// 调用方按端口定（端口上没有反代站点就不保留，见 `SharedRuntime::port_has_proxy`）。
+/// ★ 放进本函数的参数而不是让调用方另设一行：每条请求的会话都是新建的、缺省「保留」，
+///   漏设一行在线上看不出任何差别（只是每请求多两次分配）⇒ 让编译器逼着每个调用方表态。
+pub(crate) async fn read_request<C: Conn>(
+    conn: &mut C,
+    preserve_case: bool,
+) -> (Result<bool>, Option<Box<IdleTimer>>) {
+    conn.set_preserve_header_case(preserve_case);
     let carried = conn
         .take_carried()
         .and_then(|c| c.downcast::<IdleTimer>().ok());
@@ -248,12 +259,33 @@ mod tests {
         assert_eq!(s.get_keepalive(), None);
     }
 
+    /// G163：`preserve_case` 真的在读之前设到连接上（真 pingora 解析）—— 不保留时请求头没有那张表，名与值照旧查得到。
+    #[tokio::test]
+    async fn preserve_case_在读之前设到连接上() {
+        for preserve in [true, false] {
+            let (mut s, mut client) = conn();
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: a.example\r\nX-Mixed-Case: 1\r\n\r\n")
+                .await
+                .unwrap();
+            let (r, _) = read_request(&mut s, preserve).await;
+            assert!(r.unwrap(), "preserve={preserve}");
+            let req = s.req_header();
+            assert_eq!(req.headers.get("x-mixed-case").unwrap(), "1");
+            assert_eq!(
+                req.case_header_iter().next().is_some(),
+                preserve,
+                "preserve={preserve}：有没有那张表"
+            );
+        }
+    }
+
     /// 判据 1：新连接什么都不发 ⇒ 正好 d 之后关。
     #[tokio::test(start_paused = true)]
     async fn 空闲到d就关() {
         let t0 = Instant::now();
         let (mut s, _client) = conn();
-        let (r, _) = bounded(read_request(&mut s)).await;
+        let (r, _) = bounded(read_request(&mut s, true)).await;
         assert!(!r.unwrap(), "空闲到 d 应当读不到请求头");
         at_about(Instant::now(), t0, D);
     }
@@ -267,11 +299,11 @@ mod tests {
         let server = async move {
             let mut s = s;
             for _ in 0..2 {
-                let (r, timer) = read_request(&mut s).await;
+                let (r, timer) = read_request(&mut s, true).await;
                 assert!(r.unwrap());
                 s = next(s, timer).await;
             }
-            let (r, _) = read_request(&mut s).await;
+            let (r, _) = read_request(&mut s, true).await;
             assert!(!r.unwrap());
             Instant::now()
         };
@@ -293,7 +325,7 @@ mod tests {
             let mut s = s;
             let mut seen: Vec<(*const IdleTimer, Instant)> = Vec::new();
             for _ in 0..3 {
-                let (r, timer) = read_request(&mut s).await;
+                let (r, timer) = read_request(&mut s, true).await;
                 assert!(r.unwrap());
                 let t = timer.as_ref().expect("等过就该有计时器");
                 seen.push((&**t as *const IdleTimer, t.sleep.deadline()));
@@ -322,11 +354,11 @@ mod tests {
         let (s, mut client) = conn();
         let server = async move {
             let mut s = s;
-            let (r, timer) = read_request(&mut s).await;
+            let (r, timer) = read_request(&mut s, true).await;
             assert!(r.unwrap());
             let mut s = next(s, timer).await;
             s.set_keepalive(Some(1));
-            let (r, _) = read_request(&mut s).await;
+            let (r, _) = read_request(&mut s, true).await;
             assert!(!r.unwrap());
             Instant::now()
         };
@@ -344,7 +376,7 @@ mod tests {
         let t0 = Instant::now();
         let (mut s, mut client) = conn();
         let (head, tail) = REQ.split_at(20);
-        let server = async move { read_request(&mut s).await.0.unwrap() };
+        let server = async move { read_request(&mut s, true).await.0.unwrap() };
         let client = async move {
             send_at(&mut client, t0, Duration::from_secs(10), head).await;
             send_at(&mut client, t0, Duration::from_secs(20), tail).await;
@@ -363,7 +395,7 @@ mod tests {
         let (head, tail) = REQ.split_at(20);
         let server = async move {
             let mut s = s;
-            let (r, _) = read_request(&mut s).await;
+            let (r, _) = read_request(&mut s, true).await;
             assert!(!r.unwrap(), "合计超过 d 应当关");
             Instant::now()
         };
@@ -381,7 +413,7 @@ mod tests {
     async fn verdict(raw: &[u8], shutting_down: bool) -> Option<u64> {
         let (mut s, mut client) = conn();
         client.write_all(raw).await.unwrap();
-        let (r, _) = read_request(&mut s).await;
+        let (r, _) = read_request(&mut s, true).await;
         assert!(r.unwrap(), "请求头应当读得出来");
         settle_after_read(&mut s, shutting_down, D.as_secs());
         s.get_keepalive()

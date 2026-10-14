@@ -472,6 +472,9 @@ impl keepalive::Conn for ServerSession {
     fn take_carried(&mut self) -> Option<Box<dyn std::any::Any + Send + Sync>> {
         self.take_connection_user_context()
     }
+    fn set_preserve_header_case(&mut self, preserve: bool) {
+        ServerSession::set_preserve_header_case(self, preserve)
+    }
     fn read_request(
         &mut self,
     ) -> impl std::future::Future<Output = pingora_core::Result<bool>> + Send {
@@ -487,7 +490,10 @@ impl HttpServerApp for FulcrumApp {
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
         // ★ keep-alive 的空闲计时由 `keepalive` 接管（G160）：每条连接一个计时器，跨请求带着走。
-        let (read, idle_timer) = keepalive::read_request(&mut session).await;
+        // ★ 请求头名的原样大小写只有原样转发给上游时才用得到 ⇒ 端口上没有反代站点就不保留（G163）。
+        //   读请求头之前还不知道 Host ⇒ 只能按端口；查的是位图，⛔ 不为它再拿一次运行时的读锁。
+        let preserve_case = self.rt.port_has_proxy(self.port);
+        let (read, idle_timer) = keepalive::read_request(&mut session, preserve_case).await;
         match read {
             Ok(true) => {}
             Ok(false) => {

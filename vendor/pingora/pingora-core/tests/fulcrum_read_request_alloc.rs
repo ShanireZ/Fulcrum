@@ -1,5 +1,5 @@
-//! ★ 枢衡 fork 自己加的测试（`vendor/pingora/FORK.md` 改动 16 ③，G157）：
-//! `HttpSession::read_request` 解析一条普通请求时，一共分配几次。
+//! ★ 枢衡 fork 自己加的测试（`vendor/pingora/FORK.md` 改动 16 ③ G157 · 改动 18 G163）：
+//! `HttpSession::read_request` 解析一条普通请求时，一共分配几次；关掉保留大小写时少几次。
 //!
 //! 改动 16 ③ 把头偏移从每条请求一个 `Vec<KVRef>` 挪到了栈上 ⇒ 上游原样的代码在这里多一次。
 //! ⚠ 数的是**整个** `read_request`（读缓冲、请求头、头表、保留大小写的表……都在里面），
@@ -66,12 +66,14 @@ const REQUEST: &[u8] =
     b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: t\r\nAccept: */*\r\n\r\n";
 
 /// 一条完整请求一次读完（mock 立刻就绪 ⇒ 不登记计时器），数 `read_request` 的分配次数。
-fn read_request_allocs() -> u64 {
+/// `preserve` = 枢衡改动 18 的开关（缺省 `true`）。
+fn read_request_allocs_with(preserve: bool) -> u64 {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
     let mock = Builder::new().read(REQUEST).build();
     let mut session = HttpSession::new(Box::new(mock));
+    session.set_preserve_header_case(preserve);
     let (res, n) = rt.block_on(counted(session.read_request()));
     assert_eq!(
         Some(REQUEST.len()),
@@ -80,6 +82,10 @@ fn read_request_allocs() -> u64 {
     );
     assert_eq!(3, session.req_header().headers.len());
     n
+}
+
+fn read_request_allocs() -> u64 {
+    read_request_allocs_with(true)
 }
 
 /// ★ 内置反证：分配器真的在数。少了它，下面那条的数也可能只是「什么都没数」。
@@ -108,5 +114,18 @@ fn 枢衡改动16_读请求头不再为偏移单独分配() {
     assert_eq!(
         EXPECTED, n,
         "read_request 分配了 {n} 次（期望 {EXPECTED}）—— 多一次多半是改动 16 ③ 被 rebase 合掉了"
+    );
+}
+
+/// ★ 枢衡改动 18（G163）：关掉保留大小写之后，那张表（一个 `HeaderMap`：下标与条目两块）不再分配 ⇒ 比上面那条少 2。
+#[test]
+fn 枢衡改动18_关掉保留大小写少两次分配() {
+    let _ = read_request_allocs_with(false);
+    let on = read_request_allocs_with(true);
+    let off = read_request_allocs_with(false);
+    assert_eq!(
+        on - 2,
+        off,
+        "保留大小写 {on} 次、关掉 {off} 次（期望少 2）—— 少不了多半是改动 18 被 rebase 合掉了"
     );
 }

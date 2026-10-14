@@ -42,6 +42,9 @@ THREADS_PORT_B=${THREADS_PORT_B:-9108}
 THREADS_PORT_C=${THREADS_PORT_C:-9109}
 # ⚠ 9107 曾经是空的（回落层删除后退场），**2026-09-05 被上面那一组收走了**（G140）。
 #   端口表（docs/platform/host-and-gate-traps.md）已跟着从 9100–9106 扩到 9100–9109。
+# ★ 第 13 节（G163）的上游：一个 python 小服务，把收到的请求头名**原样**回成正文 ——
+#   枢衡当上游的 `respond` 只认得值、看不出头名的大小写。端口表跟着扩到 9100–9110。
+ECHO_PORT=${ECHO_PORT:-9110}
 # ★ 管理面走 Unix socket（G14），所以它**不占端口**，也不进上面那张端口表。
 ADMIN_SOCK="$WORK/admin.sock"
 
@@ -113,13 +116,13 @@ wait_port_gone() {
 # ★ ★ 这一步不是形式。本仓库栽过一次：一个「基线探针」对着**上一个场景遗留的进程**
 #   报了绿。端口没清干净时，后面每一条断言测的都是别人的服务。
 echo "=== [0/4] 基线：端口未被占用 ==="
-for p in "$PROXY_PORT" "$UP_PORT" "$NAMED_PORT" "$TLS_PORT" "$SICK_PORT" "$LATE_PORT" "$BAD_PORT"; do
+for p in "$PROXY_PORT" "$UP_PORT" "$NAMED_PORT" "$TLS_PORT" "$SICK_PORT" "$LATE_PORT" "$BAD_PORT" "$ECHO_PORT"; do
   if port_listening "$p"; then
     echo "SERVE TESTS FAILED: 端口 $p 已经被占用了 —— 先清掉再跑，否则下面测的是别人的服务。" >&2
     exit 1
   fi
 done
-ok "$PROXY_PORT / $UP_PORT / $NAMED_PORT / $TLS_PORT / $SICK_PORT / $LATE_PORT / $BAD_PORT 都是空的"
+ok "$PROXY_PORT / $UP_PORT / $NAMED_PORT / $TLS_PORT / $SICK_PORT / $LATE_PORT / $BAD_PORT / $ECHO_PORT 都是空的"
 
 [ -x "$BIN" ] || {
   echo "SERVE TESTS FAILED: 找不到 $BIN（先跑 cargo build --release）" >&2
@@ -250,6 +253,10 @@ cat > "$WORK/proxy.Fulcrumfile" <<'CONF'
     handle /deadname/* {
         reverse_proxy no-such-host-zzz.invalid:80
     }
+    # ★ 第 13 节（G163）：上游把收到的头名原样回成正文。
+    handle /echo-case/* {
+        reverse_proxy 127.0.0.1:ECHO_PORT
+    }
     handle /rotate/* {
         reverse_proxy rotate.test:UP_PORT {
             dns_refresh 5s
@@ -379,7 +386,7 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
 
 # ⚠ `UP_PORT` 在两种前缀下都出现（`127.0.0.1:` 与 `localhost:`），两边都要替。
 #   ★ **一条只认得一种写法的替换，在另一种写法上等于没有替换。**
-sed -i "s/:PROXY_PORT/:$PROXY_PORT/; s/:UP_PORT/:$UP_PORT/g; s/:NAMED_PORT/:$NAMED_PORT/; s/:TLS_PORT/:$TLS_PORT/; s/:SICK_PORT/:$SICK_PORT/g; s/:LATE_PORT/:$LATE_PORT/g; s/:BAD_PORT/:$BAD_PORT/g" \
+sed -i "s/:PROXY_PORT/:$PROXY_PORT/; s/:UP_PORT/:$UP_PORT/g; s/:NAMED_PORT/:$NAMED_PORT/; s/:TLS_PORT/:$TLS_PORT/; s/:SICK_PORT/:$SICK_PORT/g; s/:LATE_PORT/:$LATE_PORT/g; s/:BAD_PORT/:$BAD_PORT/g; s/:ECHO_PORT/:$ECHO_PORT/g" \
   "$WORK/proxy.Fulcrumfile"
 # ★ 自研 file_server 的根 —— 内容在这里现造（M2 批 F）。
 #   ⚠ 必须是**绝对路径**（G91），`$WORK` 本来就是。
@@ -865,6 +872,80 @@ expect_conn "HTTP/1.0 带 Connection: keep-alive ⇒ 照续" h10-ka "keep-alive 
 expect_conn "HTTP/1.1 不带 Connection ⇒ 照续" h11 "keep-alive open"
 expect_conn "HTTP/1.1 Connection: close ⇒ 关" h11-close "close closed"
 expect_conn "TE 与 CL 同在、反代读完请求体 ⇒ 关（RFC 9112 §6.1）" te-cl "close closed"
+
+# ── 13) ★ ★ 有反代站点的端口上，h1 客户端的头名原样到上游（G163）──────────────────────
+#
+# ★ 起因：读 h1 请求头时保留头名原样大小写的那张表，G163 起**按端口**建 —— 端口上没有反代站点就不建
+#   （每条请求省两次分配）。读请求头之前还不知道 Host，只能按端口定。
+#   ⇒ 本端口有反代（`/api/*` 等）⇒ 必须照旧建表 ⇒ 转发给上游的头名一个字都不变。
+#   判定坏成「一律不建」（或端口判反了）时红在这里：上游收到的会是 `x-mixed-case` 一类小写。
+# ⚠ 反方向（没有反代的端口不建表）在线上**看不出任何差别**，只少两次分配 ——
+#   那一半由 `fulcrum-runtime` 的 `proxy_ports` 单测、`keepalive` 的单测与开发机诊断台的计数判。
+cat > "$WORK/echo_case.py" <<'PY'
+#!/usr/bin/env python3
+"""只服务于 tests/serve/run.sh 的第 13 节：把收到的请求头名原样（逗号分隔）回成正文。"""
+import signal
+import socket
+import sys
+import threading
+
+
+def handle(c):
+    try:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = c.recv(65536)
+            if not chunk:
+                return  # `wait_port` 的探测连接：收到 EOF 就走。
+            data += chunk
+        lines = data.split(b"\r\n\r\n", 1)[0].split(b"\r\n")[1:]
+        names = b",".join(ln.split(b":", 1)[0] for ln in lines)
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" % (len(names), names))
+    except OSError:
+        pass
+    finally:
+        c.close()
+
+
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(16)
+# 收尾先发 SIGINT、5 秒后 SIGKILL。⚠ 非交互 bash 里 `&` 起的进程 SIGINT 是被忽略的，python 那时不装
+#   KeyboardInterrupt ⇒ 显式接住 SIGINT（SIGTERM 也接），干净退出、当场还端口。
+#   `settimeout` 让主线程回得到 Python、信号才处理得了。
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+srv.settimeout(0.5)
+try:
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            continue
+        conn.settimeout(5)
+        threading.Thread(target=handle, args=(conn,), daemon=True).start()
+except (KeyboardInterrupt, SystemExit):
+    pass
+finally:
+    srv.close()
+PY
+python3 "$WORK/echo_case.py" "$ECHO_PORT" > "$WORK/echo_case.log" 2>&1 &
+PIDS+=($!)
+if wait_port "$ECHO_PORT"; then
+  ECHO_CODE=$(run_curl -s -o "$WORK/body" -w '%{http_code}' --max-time 5 \
+    -H "X-Mixed-Case: 1" -H "x-lower-case: 2" -H "X-ALL-UPPER: 3" "$BASE/echo-case/x")
+  expect_status "GET /echo-case/x（反代到回头名的上游）" 200 "$ECHO_CODE"
+  ECHO_NAMES=",$(cat "$WORK/body"),"
+  for n in X-Mixed-Case x-lower-case X-ALL-UPPER; do
+    case "$ECHO_NAMES" in
+      *",$n,"*) ok "上游收到的头名原样是 $n" ;;
+      *) fail "上游收到的头名里没有原样的「$n」：$(cat "$WORK/body")" ;;
+    esac
+  done
+else
+  fail "回头名的上游（$ECHO_PORT）没起来：$(cat "$WORK/echo_case.log")"
+fi
 
 # ── ★ ★ ★ 域名上游（批 10）──────────────────────────────────────────────────
 #
@@ -2108,4 +2189,4 @@ if [ "$FAILS" -ne 0 ]; then
   cat "$WORK/upstream.log" >&2
   exit 1
 fi
-echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段 / 错误页取原始请求头 / 续不续听 pingora 的判定）。"
+echo "SERVE TESTS PASSED —— 路由决策被真流量执行对了（转发 / 改写 / header_up / 重定向 / 421 / file_server 自研 / cache 裹转发 / keep-alive / HTTPS+SNI+h2 / 4 KiB 响应一个数据段 / 错误页取原始请求头 / 续不续听 pingora 的判定 / 反代端口的头名原样到上游）。"
