@@ -51,8 +51,8 @@ use tokio::io::AsyncReadExt;
 /// 「装载时定死一份快照」这种写法在任何新代码里都会长回同一个样子。
 /// ⇒ 这里每条连接现读一次当前快照，**换配置立刻生效**，不新欠一条 D 号。
 ///
-/// ★ 代价写在明处：每条**新连接**多取一次快照（`SharedRuntime::snapshot`，G164：命中时只读一次世代字、
-/// 克隆本线程那一格的外层 `Arc`）。它落在 accept 之后、TLS 握手之前那一步上，而那一步本来就要做几十微秒的密码学。
+/// ★ 代价写在明处：每条**新连接**多一次 `RwLock` 读锁 + 一次 `Arc` 克隆。
+/// 它落在 accept 之后、TLS 握手之前那一步上，而那一步本来就要做几十微秒的密码学。
 pub(crate) struct HttpProxyProtocol {
     rt: Arc<SharedRuntime>,
 }
@@ -84,7 +84,7 @@ impl HttpProxyProtocol {
     /// ★ 与「清单为空时恒 false」同一条纪律：**拿不到证据不等于证据成立**。
     pub(crate) fn trusts(&self, peer: Option<&std::net::SocketAddr>) -> bool {
         match peer {
-            Some(a) => self.rt.snapshot().trusts_proxy_protocol(a.ip()),
+            Some(a) => self.rt.current().trusts_proxy_protocol(a.ip()),
             None => false,
         }
     }

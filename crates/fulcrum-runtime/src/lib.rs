@@ -24,10 +24,7 @@ pub mod matcher;
 pub mod overrides;
 pub mod proxyproto;
 pub mod request;
-mod snapshot;
 pub mod template;
-
-pub use snapshot::RuntimeSnapshot;
 
 use fulcrum_config::host::wildcard_covers;
 // ★ 与 `remote_ip` 匹配器**同一份** CIDR 实现（G50 的邻居）——
@@ -1415,6 +1412,14 @@ pub struct Routed<'r> {
     pub outcome: Outcome<'r>,
 }
 
+/// 一份**可以在运行期整体换掉**的运行时图（G8 的「全量原子 load」那一侧）。
+///
+/// ★ 不用 `arc-swap`：它不在依赖图里（+1 个包），而写入是「一天几次」量级。
+/// `RwLock<Arc<Runtime>>` 的读路径只是一次无竞争读锁 + 一次 `Arc` 克隆。
+///
+/// ⚠ ⚠ **一个请求必须自始至终看到同一份配置** ⇒ [`SharedRuntime::current`] 只在请求入口
+/// 调一次。每阶段各调一次的话，请求中途的一次 load 会让同一个请求按旧配置路由、
+/// 按新配置转发 —— 那正是 G8 禁止的「部分生效」。
 impl Runtime {
     /// 全部自研 `file_server` 步骤，连同它所在站点的名字。
     ///
@@ -1837,25 +1842,8 @@ pub fn resolve_upstreams(rt: &Runtime) -> ResolveReport {
     report
 }
 
-/// 一份**可以在运行期整体换掉**的运行时图（G8 的「全量原子 load」那一侧）。
-///
-/// ⚠ ⚠ **一个请求必须自始至终看到同一份配置** ⇒ 请求入口只取一次（热路径 [`SharedRuntime::snapshot`]，
-/// 冷路径 [`SharedRuntime::current`]）。每阶段各取一次的话，请求中途的一次 load 会让同一个请求按旧配置路由、
-/// 按新配置转发 —— 那正是 G8 禁止的「部分生效」。
-///
-/// ★ 读路径（G164）：`inner` 是唯一权威。热路径走 [`SharedRuntime::snapshot`] —— 每个线程缓存一份「实例 · 世代 · 快照」，
-///   命中时只读一次世代字、克隆本线程那一格的外层 `Arc`（那块对齐到 128 字节、计数独占缓存行），
-///   ⛔ 不碰读锁、⛔ 不写全进程共用的那一个引用计数；`swap()` 加了世代之后，各线程在下一次取快照时才换。
-/// ⚠ 快照在别的线程上丢掉时（工作窃取；L4 TCP 在 accept 线程上取、在连接所在的工人上丢），那一次仍写回
-///   取它的那个线程的那一行 —— 争用是分散到每个线程了，不是没了。
-/// ⚠ 代价：闲着的线程留着它最后见到的那一份旧图，直到它再取快照或线程结束；最多
-///   「HTTP 监听 service 数（含 h3）× `threads_l7` + L4 service 数 × `threads_l4`」份。只是内存：
-///   新请求总是先刷新再用 ⇒ 旧图 ⛔ 不再服务任何新请求，也没有任何东西靠旧图何时释放。
-/// ★ 不用 `arc-swap`：不加依赖（+1 个包），且它的 `load_full` 照样共写那一份 `Arc` 的计数。
 pub struct SharedRuntime {
     inner: std::sync::RwLock<std::sync::Arc<Runtime>>,
-    /// 换代的世代号，热路径据它判断本线程缓存的快照还新不新，见 [`Self::snapshot`]。
-    generation: snapshot::Generation,
     /// **临时覆盖层的格子登记处**（**M2 批 N 任务 3**，G18 / 裁决 R7）。
     ///
     /// ★ ★ 它挂在**这里**而不是 [`Runtime`] 上，因为它必须**跨换代活着**：
@@ -1877,7 +1865,7 @@ pub struct SharedRuntime {
 }
 
 /// 65536 位的端口位图（8 KiB）。读请求头之前每条请求查一次 ⇒ 只是一次原子读，
-/// ⛔ 不为它再取一次快照（每请求已经取过一次了，见 [`SharedRuntime::snapshot`]）。
+/// ⛔ 不为它再拿一次 [`SharedRuntime::current`] 的读锁（每请求已经拿过一次了）。
 ///
 /// ⚠ `new` 与 [`SharedRuntime::swap`] 各写一次，与运行时本身的替换**不是**原子的：
 /// 正落在换代那一瞬的一条请求可能按旧图定 —— 最坏是这一条转发到上游时头名变成标题化表的写法或小写
@@ -1935,7 +1923,6 @@ impl SharedRuntime {
         let proxy_ports = PortBits::new(&rt.proxy_ports());
         std::sync::Arc::new(SharedRuntime {
             inner: std::sync::RwLock::new(rt),
-            generation: snapshot::Generation::new(),
             overrides,
             // ★ R15：`new` 也算一次「装载」——进程刚起来时服务的那份配置
             // 同样有一个装载时刻，不是只有 `swap` 才算数。
@@ -2041,9 +2028,6 @@ impl SharedRuntime {
             Ok(mut g) => *g = rt,
             Err(poisoned) => *poisoned.into_inner() = rt,
         }
-        // ⚠ 顺序：新的那一份写进去**之后**才加世代（写锁已放掉）—— 反过来的话，
-        //   一个先看到新世代的线程可能从锁里读到旧的那一份，把它当成新世代缓存起来。
-        self.generation.bump();
         match self.loaded_at.write() {
             Ok(mut g) => *g = now,
             Err(poisoned) => *poisoned.into_inner() = now,

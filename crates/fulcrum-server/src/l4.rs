@@ -26,7 +26,7 @@
 //!   给一个「看起来安全」的 30 秒，等于去杀一条上游认为健康的连接，
 //!   现场表现是「数据库偶尔断线」。⇒ 空闲由两端自己管。
 
-use fulcrum_runtime::{RuntimeSnapshot, SharedRuntime};
+use fulcrum_runtime::SharedRuntime;
 use fulcrum_tls::alpn_list;
 use log::{debug, error, info, warn};
 use pingora_boringssl::ssl::{
@@ -503,10 +503,11 @@ fn new_peek_stream() -> Option<SslStream<HelloFeed>> {
 
 /// 把一条已接受的连接接到某个上游去，然后双向搬字节。
 ///
-/// ★ 「挑哪个上游」在**每条连接**上决定一次，取的是当时的运行时（快照在 accept 之后、交进任务之前取）——
+/// ★ 「挑哪个上游」在**每条连接**上决定一次，取的是当时的运行时 ——
 /// 于是 `POST /load` 换掉上游之后，新连接立刻走新的，老连接不受影响。
-async fn handle_conn(rt: RuntimeSnapshot, listen: String, mut client: TcpStream) {
+async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: TcpStream) {
     let peer_ip = client.peer_addr().ok().map(|a| a.ip());
+    let rt = shared.current();
     let Some(l) = rt.l4_listeners.iter().find(|l| l.listen == listen) else {
         // ⚠ 走到这里说明当前配置里已经没有这个监听器了。★ 管理面挡着端口集变化，
         //   所以这**不该**发生；真发生了就把连接关掉并说清楚，而不是静默丢弃。
@@ -779,7 +780,7 @@ impl Service for TcpProxyService {
                             if let Err(e) = sock.set_nodelay(true) {
                                 debug!("[l4] set_nodelay 失败（{e}）—— 继续，它只影响延迟");
                             }
-                            let rt = self.shared.snapshot();
+                            let shared = self.shared.clone();
                             let listen = self.listen.clone();
                             // ★ 连接计数（**M2 批 O**）：包一层而不改 `handle_conn` 的签名。
                             let g = self.conn.guard();
@@ -787,7 +788,7 @@ impl Service for TcpProxyService {
                                 // ⚠ ⚠ **必须绑名字**：写成 `let _ = g;` 会当场 drop，
                                 //   于是 active 恒为 0 而 total 照涨，且不会有东西红。
                                 let _g = g;
-                                handle_conn(rt, listen, sock).await
+                                handle_conn(shared, listen, sock).await
                             });
                         }
                         Err(e) => {
@@ -1201,7 +1202,7 @@ impl Service for UdpProxyService {
                         }
                         continue;
                     }
-                    let rt = self.shared.snapshot();
+                    let rt = self.shared.current();
                     let Some(l) = rt.l4_listeners.iter().find(|l| l.listen == self.listen) else {
                         error!(
                             "[l4] 当前配置里找不到监听器 {}（UDP）—— 丢弃这个数据报",
