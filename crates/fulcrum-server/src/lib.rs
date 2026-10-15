@@ -78,6 +78,7 @@ use fulcrum_runtime::template::Template;
 use fulcrum_runtime::{
     CacheRt, HeaderOpRt, Outcome, ProxyTarget, Routed, Runtime, SiteRt, Upstream,
 };
+use http::HeaderValue;
 use log::{debug, error, info, warn};
 use pingora_core::apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream};
 use pingora_core::connectors::ConnectorOptions;
@@ -430,9 +431,10 @@ impl HttpServerApp for H1Entry {
         session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        // ⚠ 必须写成 UFCS：`self.0.process_new_http(…)` 会先撞上
-        //   `Arc<H1Entry>` 自己的那一个（方法解析从 `Self` 开始），成了递归。
-        HttpServerApp::process_new_http(&self.0, session, shutdown).await
+        // ★ 调固有方法、⛔ 不再经 `HttpServerApp` 转一手（2026-10-15 · respond 剩的分配）：
+        //   `#[async_trait]` 每过一层就把那一层的 future 装一次箱 —— pingora 调到这里已经装过一次，
+        //   再经 trait 调 `FulcrumApp` 等于每条请求多一次分配。判据：`tests/respond_alloc.rs`。
+        self.0.serve_h1(session, shutdown).await
     }
 }
 
@@ -482,10 +484,13 @@ impl keepalive::Conn for ServerSession {
     }
 }
 
-#[async_trait]
-impl HttpServerApp for FulcrumApp {
-    async fn process_new_http(
-        self: &Arc<Self>,
+impl FulcrumApp {
+    /// h1/h2 的一条请求：读请求头 → 执行链 → 收尾，把连接交回 pingora。只经 [`H1Entry`] 进来。
+    ///
+    /// ★ 是固有方法、⛔ 不是 `HttpServerApp` 的实现：那样 [`H1Entry`] 每转一手就多装一次箱（见那里）。
+    /// ★ pub 只为 `tests/respond_alloc.rs` 拿它当对照，数「入口那一层多几次分配」。
+    pub async fn serve_h1(
+        &self,
         mut session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
@@ -1882,25 +1887,42 @@ fn self_built_header(
     }
 }
 
+/// 带正文的自建响应缺省的 `Content-Type`。
+const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
+
+/// [`write_with_headers`] 要写的那份响应头：只算、⛔ 不写。`body_len` 为 `None` = 没有正文。
+///
+/// ★ 除了头表本身，只有 `Content-Length` 的值分配一次（2026-10-15 · respond 剩的分配）：
+///   `Content-Type` 走 `from_static`，⛔ 别换回 `&str` —— 那会经 `HeaderValue::from_str` 每个响应拷一份。
+/// ★ pub 只为 `tests/respond_alloc.rs` 数分配。
+pub fn simple_response_header(
+    status: u16,
+    body_len: Option<usize>,
+    extra: &[(String, String)],
+) -> pingora_core::Result<ResponseHeader> {
+    let mut resp = self_built_header(status, extra)?;
+    let len = body_len.unwrap_or(0) as u64;
+    let _ = resp.insert_header("Content-Length", files::content_length_value(len));
+    if body_len.is_some() {
+        let _ = resp.insert_header("Content-Type", HeaderValue::from_static(TEXT_PLAIN));
+    }
+    apply_pairs(&mut resp, extra);
+    Ok(resp)
+}
+
 async fn write_with_headers(
     session: &mut Downstream<'_>,
     status: u16,
     bytes: Option<Bytes>,
     extra: Vec<(String, String)>,
 ) {
-    let mut resp = match self_built_header(status, &extra) {
+    let resp = match simple_response_header(status, bytes.as_ref().map(|b| b.len()), &extra) {
         Ok(r) => r,
         Err(e) => {
             error!("构不出响应头（status={status}）：{e}");
             return;
         }
     };
-    let len = bytes.as_ref().map(|b| b.len()).unwrap_or(0);
-    let _ = resp.insert_header("Content-Length", len.to_string());
-    if bytes.is_some() {
-        let _ = resp.insert_header("Content-Type", "text/plain; charset=utf-8");
-    }
-    apply_pairs(&mut resp, &extra);
     if let Err(e) = session.write_response_header(Box::new(resp)).await {
         debug!("写响应头失败：{e}");
         return;
@@ -2632,6 +2654,12 @@ mod tests {
         }
     }
 
+    /// ★ `HeaderValue::from_static` 遇到非法字符会**在请求路径上 panic** ⇒ 喂给它的固定值钉住（同 `files` 里的同名单测）。
+    #[test]
+    fn 喂给_from_static_的固定值都是合法头值() {
+        assert!(HeaderValue::from_str(TEXT_PLAIN).is_ok(), "{TEXT_PLAIN}");
+    }
+
     /// G162：什么时候不建大小写表。看得见的只有 `case_header_iter`：没有表时它一个都不给。
     #[test]
     fn self_built_header_名都照原样才不建表() {
@@ -2708,13 +2736,13 @@ mod tests {
         assert_eq!(&b[..], b"method=POST");
     }
 
-    /// 真跑一次 `process_new_http`（只有一个 `respond` 站点，`duplex` 当连接），
+    /// 真跑一次 `process_new_http`（经 pingora 实际调的那个 [`H1Entry`]；只有一个 `respond` 站点，`duplex` 当连接），
     /// 返回交给下一条请求的 keep-alive：外层 `None` = 这条连接不续。
     async fn reuse_after(raw: &[u8]) -> Option<Option<u64>> {
         let cfg = fulcrum_config::compile_str("t.Fulcrumfile", ":8080 {\n  respond 200 ok\n}\n")
             .config
             .unwrap();
-        let app = Arc::new(FulcrumApp::new(
+        let app = Arc::new(H1Entry::new(Arc::new(FulcrumApp::new(
             fulcrum_runtime::SharedRuntime::new(Arc::new(Runtime::build(&cfg).unwrap())),
             8080,
             false,
@@ -2722,7 +2750,7 @@ mod tests {
             cache::CacheHandle::new(cache::Backend::open(None, 4096)),
             None,
             1,
-        ));
+        ))));
         let (server, mut client) = tokio::io::duplex(64 * 1024);
         let mut session = ServerSession::new_http1(Box::new(server));
         // 与 pingora `apps/mod.rs` 给新连接第一条请求设的一样。

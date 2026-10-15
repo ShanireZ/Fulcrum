@@ -378,7 +378,14 @@ fork 一行不动；空闲窗口的口径收紧为「从开始等下一条请求
 拼到站点根下容量事先算够 · 探测按值收路径 · 扩展名在栈上转小写 · 响应头直接放进 `ResponseHeader` · 整段正文原样交出（⛔ 不 `slice`）。
 `file_server` 每请求 malloc 30 → 23、realloc 2 → 0、用户指令 −4% 到 −7%（开发机诊断台计数口径，⛔ 不是性能声明）；改前改后 28 种请求除 `Date` 外逐字节相同。
 比 `respond` 仍多的三次（交出会话前拷一份 URL 路径 · `ETag` 与 `Last-Modified` 各一个头值）有意留着：前者 301 的 `Location` 要原样用它，后两者每个 `HeaderValue` 都自带一块内存。
-⏳ 登记着的：每请求 `SharedRuntime::current()` 的读锁 · `respond` 剩的分配。
+✅ `respond` 剩的分配（2026-10-15；线上字节一个不变 ⇒ 没有 G 号）：带正文时补的 `Content-Type` 改用静态头值 ·
+`Content-Length` 的值在栈上转十进制、恰好分配一次（`file_server` 原来经 `HeaderValue::from(u64)` 要两次）·
+h1 入口直接调 `FulcrumApp` 的固有方法、⛔ 不再经 `HttpServerApp` 转一手（`#[async_trait]` 每过一层装一次箱）。
+每请求 malloc `respond` 20 → 18、`file_server` 23 → 21（1 / 200 条连接都是）；用户指令 1 条连接时 −2.2% / −1.3%，200 条连接时在三轮区间内分不出
+（开发机诊断台计数口径，⛔ 不是性能声明）；改前改后 28 种请求加四条续连接的除 `Date` 外逐字节相同。
+`respond` 剩下的 18 次里枢衡自己的五次有意留着：头表两次 · `Content-Length` 一个值 · 交给 pingora 的 `Box<ResponseHeader>` ·
+字面量正文的 `from_owner`（理由见 `respond_body`）；另外十三次都在 pingora 里（写响应头里三次，其余十次的调用栈上没有枢衡的帧），要动只能改 fork。
+⏳ 登记着的：每请求 `SharedRuntime::current()` 的读锁。
 
 ### M4 · 发布 ⏳ 未开工
 

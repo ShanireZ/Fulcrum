@@ -689,7 +689,7 @@ async fn send_file(
     // ★ 顺序就是上线的顺序，⛔ 别重排。
     write_head_encoded(session, status, &mut encoder, |head| {
         head.push(("Content-Type", HeaderValue::from_static(ctype)));
-        head.push(("Content-Length", HeaderValue::from(body_len)));
+        head.push(("Content-Length", content_length_value(body_len)));
         head.push(("Accept-Ranges", HeaderValue::from_static("bytes")));
         push_validators(head, etag, last_mod);
         if status == 206 {
@@ -858,7 +858,7 @@ async fn browse(
             "Content-Type",
             HeaderValue::from_static("text/html; charset=utf-8"),
         ));
-        head.push(("Content-Length", HeaderValue::from(bytes.len())));
+        head.push(("Content-Length", content_length_value(bytes.len() as u64)));
     })
     .await;
     if head_only {
@@ -976,6 +976,25 @@ fn etag_value(nanos: u128, len: u64) -> Option<HeaderValue> {
     buf[n] = b'"';
     n += 1;
     HeaderValue::from_bytes(&buf[..n]).ok()
+}
+
+/// `Content-Length` 的头值：十进制写在栈上，只为头值本身分配一次（2026-10-15 · respond 剩的分配）。
+/// ⛔ 别换回 `HeaderValue::from(u64)`：http 1.x 先按最长 20 字节建 `BytesMut` 再 `freeze`，
+///   长度对不上容量 ⇒ `freeze` 还要另分配一块共享头，每个响应两次。判据：`tests/respond_alloc.rs`。
+pub fn content_length_value(n: u64) -> HeaderValue {
+    let mut buf = [0u8; 20]; // u64 最多 20 位十进制
+    let mut at = buf.len();
+    let mut x = n;
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (x % 10) as u8;
+        x /= 10;
+        if x == 0 {
+            break;
+        }
+    }
+    // 只有数字 ⇒ 走不到 `Err`；真走到也照旧写对，⛔ 不在请求路径上 panic。
+    HeaderValue::from_bytes(&buf[at..]).unwrap_or_else(|_| HeaderValue::from(n))
 }
 
 /// 小写十六进制、无前导零（`0` 写成 `0`）—— 与 `{:x}` 同一个口径。回写了几位。
