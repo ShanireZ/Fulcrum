@@ -84,7 +84,7 @@ impl HttpProxyProtocol {
     /// ★ 与「清单为空时恒 false」同一条纪律：**拿不到证据不等于证据成立**。
     pub(crate) fn trusts(&self, peer: Option<&std::net::SocketAddr>) -> bool {
         match peer {
-            Some(a) => self.rt.current().trusts_proxy_protocol(a.ip()),
+            Some(a) => self.rt.snapshot().trusts_proxy_protocol(a.ip()),
             None => false,
         }
     }
