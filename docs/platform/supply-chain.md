@@ -61,6 +61,7 @@ vendor 锁那份只有回归网会编（`pingora-rustls` 成员、`pingora-core`
 ★ owner 选的这一条**推翻了 agent 推荐项**（推荐的是登记 `ACCEPTED`：产品从不解析 YAML —— 走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 里构、`opt.conf` 被忽略）。
 两把锁各新进 10 / 11 个包（`serde-saphyr` · `granit-parser` · `annotate-snippets` · `encoding_rs` 等），全部过 24 小时怀疑期、无 yank、许可宽松；根锁同时少了 `ryu`，编译图 202 → 210 个。
 ⚠ `encoding_rs` 带 **BSD-3-Clause**（WHATWG 数据），发布时的第三方声明要收录。根锁 `supply-audit.py` 由此 exit 0；vendor 锁剩 `quinn-proto` × 5。
+✅ **2026-10-16 同日：`quinn-proto` × 5 也清了** —— 只改 vendor 锁：`quinn` 0.11.11 → 0.11.12、`quinn-proto` 0.11.16 → 0.11.19（owner 选连 `quinn` 一起升；发布于 09-14 / 09-30，远过怀疑期、无 yank），根锁逐字节不变。两个包谁都不编（`reqwest` 的弱依赖 `quinn?/ring` 只把它们记进锁；vendor workspace 全 feature、全 target 的 `cargo tree -i` 什么都打不出）；`errno` / `quinn-udp` / `winapi-util` 的 `windows-sys` 边随之回到 0.59.0（与根锁一致，只在 Windows 目标上）。两把锁 `supply-audit.py` 都 exit 0。
 ⚠ ⚠ **此处原先链到 [待定清单](/governance/open-questions.md) 的 `D12`，那是过期的**（2026-09-08 更正）——
 `D12` 已结案（`G32`），而那份清单里**一个 D 号都没有**，链过去什么都看不到。
 ★ 与本页下文那句「它已经不在待定清单里了」原本是**同一份文件里自相矛盾的两句**。★ 此后 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 迁走**，不再在名单上。
