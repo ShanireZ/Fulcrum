@@ -12,7 +12,8 @@ G29 的口径是：`Cargo.toml` 用 `>=` 下界、不设上界，追最新（**�
      全量查 Cargo.lock 里几百个包纯属浪费。
   2. 对每个候选版本查 crates.io 的发布时间与 yanked 状态。
   3. 发布不足 N 小时、或已被 yank 的，一律挡下并说明原因。
-  4. `--apply` 时只对**通过怀疑期**的候选做 `cargo update -p <name> --precise <ver>`。
+  4. `--apply` 时只对**通过怀疑期**的候选做 `cargo update -p <name> --precise <ver>`；
+     成败看跑完之后的两把锁，不看 cargo 的退出码（同族包会被前一项顺带带走，见 `adopt_root`）。
 
 ★ 另有一件 `cargo update` 结构上做不到的事：**盯住被 fork 的 pingora-core 的上游**。
 
@@ -70,6 +71,8 @@ Debian 侧的 digest 漂移只打一行提示。
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import re
 import subprocess
@@ -875,18 +878,12 @@ def main() -> int:
         print(f"\n{len(eligible)} 项可采纳。加 --apply 执行。")
         return finish(10 + fork_code + image_code + systemd_code + advisory_code)
 
-    print("\n开始采纳：")
-    failed = 0
-    for name, cur, version in eligible:
-        # ⚠ 同名多版本时裸 `name` 是**歧义的**，而 cargo 会因此整条失败。
-        #   带上当前版本就唯一了；`cur` 为空（新增包）时只能裸着来。
-        spec = f"{name}@{cur}" if cur else name
+    def update_root(spec: str, version: str) -> tuple[int, str]:
         proc = run([*cargo, "update", "-p", spec, "--precise", version])
-        ok = proc.returncode == 0
-        print(f"  {'✓' if ok else '✗'} {spec} -> {version}")
-        if not ok:
-            failed += 1
-            print((proc.stderr or proc.stdout).strip())
+        return proc.returncode, proc.stderr or proc.stdout
+
+    print("\n开始采纳：")
+    failed = len(adopt_root(eligible, update_root, lambda: _lock_versions("Cargo.lock")))
 
     failed += _align_vendor_lock(cargo, eligible)
 
@@ -895,6 +892,77 @@ def main() -> int:
         "（M0 是 tests/m0/run.sh；M3 之后是全量对拍）。"
     )
     return 1 if failed else finish(10 + fork_code + image_code + systemd_code + advisory_code)
+
+
+def adopt_root(eligible, update, read_lock) -> list[tuple[str, str]]:
+    """根锁那一侧的采纳：逐项 `cargo update -p 名字@旧版本 --precise 新版本`，**按结果锁判成败**。
+
+    返回真失败的那几项 `[(名字, 说明)]`，空表 = 根锁全部到位。`update(spec, 版本)` 返回
+    `(退出码, 输出)`，`read_lock()` 返回 `{名字: {版本}}` —— 都由调用方给，自测里换成桩。
+
+    # ⚠ 退出码不能当判据（与 `_align_vendor_lock` 同一条）
+
+    同族包会被前一项**顺带带到目标版本**：`boring-sys` 跟 `boring`、`jiff-static` 跟 `jiff`、
+    `zerocopy-derive` 跟 `zerocopy`、`zstd-safe` / `zstd-sys` 跟 `zstd`。轮到它自己时
+    `名字@旧版本` 已经不在锁里，cargo 报 `did not match any packages` 并非零退出。
+    ⇒ 2026-10-16 那次 37 项里 9 项是这个形状，`--apply` 因此退 1，而锁一项不差 ——
+      一个绿的结果被报成红，比漏报更伤：读的人要么误判，要么学会无视红。
+    ★ 判据取**结果**：全部跑完之后读根锁，见 [`root_lock_problems`]。反过来也成立：
+      cargo 退 0 而锁不对（后一项把前一项挪走、旧版本仍被别的包钉着）同样判失败。
+    """
+    for name, cur, version in eligible:
+        # ⚠ 同名多版本时裸 `name` 是**歧义的**，而 cargo 会因此整条失败。
+        #   带上当前版本就唯一了；`cur` 为空（新增包）时只能裸着来。
+        spec = f"{name}@{cur}" if cur else name
+        rc, out = update(spec, version)
+        if rc == 0:
+            print(f"  ✓ {spec} -> {version}")
+        else:
+            print(f"  ? {spec} -> {version}    （cargo 退出码 {rc}；成败以下面的根锁核对为准）")
+            print("\n".join(f"      {line}" for line in out.strip().splitlines()))
+
+    problems = root_lock_problems(read_lock(), eligible)
+    print("\n核对根锁（Cargo.lock）：")
+    for _name, line in problems:
+        print(f"  ✗ {line}")
+    if problems:
+        print(f"  ⚠ {len(problems)} / {len(eligible)} 项没落到目标版本。")
+    else:
+        print(f"  ✓ {len(eligible)} 项全在目标版本，旧版本一个不剩。")
+    return problems
+
+
+def root_lock_problems(lock: dict[str, set[str]], eligible) -> list[tuple[str, str]]:
+    """逐项核对根锁：目标版本在、旧版本不在。返回没做到的那几项 `[(名字, 说明)]`。
+
+    ★ 同一个名字在图里可以有好几个版本，每一项只对自己那一对（旧 → 新）负责：
+      旧版本恰好是同名另一项的目标时（一个依赖方 0.3 → 0.4、另一个 0.4 → 0.5），它留着是对的。
+      新增包（旧版本为空）只看目标在不在。
+    """
+    targets: dict[str, set[str]] = {}
+    for name, _cur, new in eligible:
+        targets.setdefault(name, set()).add(new)
+
+    out = []
+    for name, cur, new in eligible:
+        have = lock.get(name, set())
+        why = []
+        if new not in have:
+            why.append(f"目标 {new} 不在锁里")
+        if cur and cur in have and cur not in targets[name]:
+            why.append(f"旧版本 {cur} 还在")
+        if why:
+            out.append((name, f"{name} {cur or '(新增)'} -> {new}：{'，'.join(why)}"
+                              f"（锁里是：{' '.join(sorted(have)) or '没有这个包'}）"))
+    return out
+
+
+def _lock_versions(rel_lock: str) -> dict[str, set[str]]:
+    """某把锁里每个 registry 包 → 它解出来的版本集合。"""
+    out: dict[str, set[str]] = {}
+    for n, v in _load_supply_audit().parse_lock(REPO / rel_lock):
+        out.setdefault(n, set()).add(v)
+    return out
 
 
 def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, str]]) -> int:
@@ -995,13 +1063,59 @@ def lock_alignment(root, vendor, names, pingora_users):
     return out
 
 
-def self_check() -> int:
-    """`--self-check`：用合成输入钉住 [`lock_alignment`] 的每种判定 —— 不出网、不跑 cargo。
+def _self_check_adopt_root() -> tuple[list[str], int]:
+    """钉住 [`adopt_root`]：根锁那一侧的成败看**结果锁**，不看 cargo 的退出码。两个方向都要有。
 
+    每条：(说明, 候选, 非零退出的 spec → 退出码, 采纳后的根锁, 应判失败的名字)。版本号是合成的。
+    """
+    cases = [
+        ("同族已被前一项带到位（2026-10-16 的形状）：cargo 退非零，锁是对的",
+         [("boring", "5.2.0", "5.3.0"), ("boring-sys", "5.2.0", "5.3.0"),
+          ("zstd", "0.14.0", "0.14.1"), ("zstd-safe", "8.0.0", "8.0.1"), ("zstd-sys", "2.1.0", "2.1.1")],
+         {"boring-sys@5.2.0": 101, "zstd-safe@8.0.0": 101, "zstd-sys@2.1.0": 101},
+         {"boring": {"5.3.0"}, "boring-sys": {"5.3.0"},
+          "zstd": {"0.14.1"}, "zstd-safe": {"8.0.1"}, "zstd-sys": {"2.1.1"}},
+         set()),
+        ("同名两个大版本各升一格 · 一个依赖方的目标正是另一个的旧版本 · 新增包轮到时还不在锁里",
+         [("syn", "2.0.119", "2.0.120"), ("syn", "3.0.3", "3.0.4"),
+          ("foo", "0.3.0", "0.4.0"), ("foo", "0.4.0", "0.5.0"), ("aaa-new", None, "0.1.0")],
+         {"aaa-new": 101},
+         {"syn": {"2.0.120", "3.0.4"}, "foo": {"0.4.0", "0.5.0"}, "aaa-new": {"0.1.0"}},
+         set()),
+        ("真失败：cargo 退非零，锁也没动",
+         [("rand", "0.10.3", "0.10.4"), ("ring", "0.17.14", "0.17.15")],
+         {"ring@0.17.14": 101},
+         {"rand": {"0.10.4"}, "ring": {"0.17.14"}},
+         {"ring"}),
+        ("cargo 退 0 而锁不对：旧版本仍被别的包钉着 · 目标被后一项挪走 · 新增包没加上",
+         [("hyper", "1.11.0", "1.12.0"), ("h2", "0.4.19", "0.4.20"), ("bbb-new", None, "1.0.0")],
+         {},
+         {"hyper": {"1.11.0", "1.12.0"}, "h2": {"0.4.18"}},
+         {"hyper", "h2", "bbb-new"}),
+    ]
+    bad = []
+    for label, eligible, nonzero, lock, want in cases:
+        def update(spec, _version, nonzero=nonzero):
+            rc = nonzero.get(spec, 0)
+            return rc, f"error: package ID specification `{spec}` did not match any packages" if rc else ""
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = {n for n, _why in adopt_root(eligible, update, lambda lock=lock: lock)}
+        if got != want:
+            bad.append(f"根锁采纳「{label}」：应判失败 {sorted(want) or '无'}，实际判了 {sorted(got) or '无'}")
+    return bad, len(cases)
+
+
+def self_check() -> int:
+    """`--self-check`：用合成输入钉住 `--apply` 的两处判定 —— 不出网、不跑 cargo。
+
+    一、[`lock_alignment`] 的每种判定。
     ★ 口径必须与 `tests/vendor/run.sh` 的 [2/5] 相同：根侧的每个版本都得在 vendor 侧，
       **除非没有任何 pingora crate 用它**（那一问由 cargo tree 答，这里用桩代替）。
       ⚠ 这里曾经是「两边版本集合逐字相等」—— 比它声称镜像的那道门更严，
       2026-09-24 那次 `--apply` 因此把 rand / thiserror / thiserror-impl 误报成对不上、退出码 1。
+
+    二、[`adopt_root`] 按结果锁判成败，见 [`_self_check_adopt_root`]。
     """
     users = {
         ("base64", "0.23.1"): [],  # 只经 rcgen → pem 4 进产物（2026-09-24 的真实形状）
@@ -1032,12 +1146,15 @@ def self_check() -> int:
     bad = [f"{n}：期望 {w}，得到 {got.get(n, ('（缺）', ''))[0]}" for n, w in want.items() if got.get(n, ("",))[0] != w]
     if not bad and "pingora-pool" not in got["lru"][1]:
         bad.append("lru：判红的说明里没点名是哪个 pingora crate 在用它")
+    root_bad, root_cases = _self_check_adopt_root()
+    bad += root_bad
     if bad:
         print("DEP-CHECK SELF-CHECK FAILED：")
         for line in bad:
             print(f"  ✗ {line}")
         return 1
-    print(f"DEP-CHECK SELF-CHECK PASSED —— 两把锁的对齐判定 {len(want)} 种情况各钉一条（与 tests/vendor/run.sh [2/5] 同一口径）")
+    print(f"DEP-CHECK SELF-CHECK PASSED —— 两把锁的对齐判定 {len(want)} 种情况各钉一条（与 tests/vendor/run.sh [2/5] 同一口径）；"
+          f"根锁采纳按结果锁判成败 {root_cases} 组（两个方向都有）")
     return 0
 
 

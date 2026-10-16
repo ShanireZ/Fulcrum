@@ -53,6 +53,7 @@ sources:
 vendor 锁那份只有回归网会编（`pingora-rustls` 成员、`pingora-core` 的 dev-dep `reqwest`）。owner 仍选采纳、不登记 `ACCEPTED` —— 出路已过怀疑期，`ACCEPTED` 留给没有出路的公告。
 同批的 `h2` 0.4.20 自己在 codec 层拒掉值不同的重复 `content-length`，回归网两条上游测试因此红 ⇒ fork 改动 20（[`FORK.md`](../../vendor/pingora/FORK.md)）。
 `--apply` 的退出码是 1，但那是良性的：9 项已被同族包先带到位，`name@旧版本` 不再匹配；两把锁逐包核过，37 项全在目标版本。
+此后根锁那一侧也改为按结果锁判成败（[依赖策略](/platform/dependency-policy.md)「脚本做了什么」第 4 条），同一形状退 `10`。
 ⚠ 同一次扫出、**仍未登记**的：`unsafe-libyaml` 0.2.11（RUSTSEC-2024-0449，失维、无修复版，**`[编译]`**，`pingora-core` → `serde_yaml`，两把锁都有）
 与 `quinn-proto` 0.11.16 × 5（RUSTSEC-2026-0338…0342，只在 vendor 锁、`[仅 lock]`）⇒ `supply-audit.py` 根锁 1 条、vendor 锁 6 条，`dep-check.py` 仍亮 `160`，待 owner 另行处置。
 ⚠ `dep-check.py` 的候选只来自**根清单**的 `cargo update --dry-run` ⇒ 只在 vendor 锁里的包（如 `quinn-proto`）`--apply` 永远够不到。

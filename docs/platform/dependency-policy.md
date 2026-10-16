@@ -69,7 +69,9 @@ python tools/dep-check.py --hours 48 # 换一个怀疑期长度
 1. 用 `cargo update --dry-run` 问出「如果现在更新，会动哪些包」——★ **只有这批需要查**，全量查几百个传递依赖是浪费
 2. 对每个候选版本查 crates.io 的**发布时间**与 **yanked 状态**
 3. 发布不足 N 小时、或已被 yank 的，**一律挡下并说明原因**
-4. `--apply` 时只对通过的候选做 `cargo update -p <name> --precise <ver>`
+4. `--apply` 时只对通过的候选做 `cargo update -p <name> --precise <ver>`，★ **成败看跑完之后的锁，不看 cargo 的退出码**：
+   根锁逐项核对「目标版本在、旧版本不在」，vendor 锁核对与根锁对得上。同族包（`boring-sys` 跟 `boring`、`zstd-sys` 跟 `zstd`）
+   常被前一项顺带带到位，轮到它自己时 cargo 报 `did not match any packages` 并非零退出 —— 那不是失败，锁对了就退 `10`
 
 # ★ 它看不见什么
 
