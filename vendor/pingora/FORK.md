@@ -1042,6 +1042,44 @@ h2 / h3 客户端的请求转发到 h1 上游时若带了它们，也从小写�
 要上游接一个「读请求头时不保留大小写」的选项（或把那张表做成按需建）⇒ 是给上游提 PR 的候选（对外动作，owner 定）。
 在那之前是**要跟着 rebase 的常年成本**：一格、一个 setter、一处 `if`，冲突时最容易丢的是那个 `if` —— 上表两条判据都会红。
 
+### ★ ★ 19. 写 h1 响应头时少两次分配（2026-10-16，G165）
+
+**类别**：与改动 16 同一类 —— 只为性能、对枢衡看得见的行为一个不变（线上字节逐个相同）。
+**起因**：`PLAN.md` §7 M3 记着 `respond` 每请求 18 次 malloc 里有三次在 pingora 写响应头那一步；开发机诊断台的归因
+（`handoff/` 下，⛔ 不入库）把其中两次落在 `prepare_response_header`。owner 2026-10-16 按简报推荐拍（两处都改 · 判据并进现有计数测试二进制 · 投稿材料先备不发）。
+
+#### 改了什么：**一个文件（改动 16 已计入），判据并进已有的测试文件**
+
+| | 位置（`src/protocols/http/v1/server.rs`）| 改了什么 | 为什么语义不变 |
+|---|---|---|---|
+| ① | `prepare_response_header` 里补 `Connection` 那几行 | `"keep-alive"` / `"close"` 改成 `HeaderValue::from_static(…)`；上游那条 `TODO: make these lazy static` 就是这件事 | `&str` 走 `HeaderValue::from_str` → `Bytes::copy_from_slice`，每次拷 5 / 10 字节；`from_static` 不分配。两者都是 `is_sensitive = false`，写出去的字节相同 |
+| ② | `prepare_response_header` 的返回值，与它的两个调用方 | 回传 `BytesMut` 而不是 `freeze` 过的 `Bytes`；proxy task 那条路（`send_header_task` 要 `Bytes`、会存起来）在调用处自己 `freeze` | 缓冲按 4 KiB 开、头只有几百字节 ⇒ 长度 ≠ 容量 ⇒ `freeze` 走 `Vec → Bytes` 要另分配一块 `Shared`（bytes 1.12.1）。直写那条路只 `write_all(&buf)` 借用、用完就丢 ⇒ 那块是白分配的。同一份字节，只是不冻结 |
+
+⚠ 枢衡的 h1 不走 proxy task（`proxy_tasks_enabled` 缺省 false，`crates/` 里没有启用的）；那条路照旧 `freeze` 一次，行为不变。
+文件数不变：两处都在改动 16 已计入的 `v1/server.rs`，判据在改动 16 已计入的 `tests/fulcrum_read_request_alloc.rs`（2026-10-16 用下文命令对 `0.9.0` 实测仍是 20 个）。
+
+#### 量了多少（开发机诊断台，计数口径，⛔ 不是性能声明）
+
+改前 `9b43f01`、改后同一棵树加本改动，同一个容器同一个目标卷编：每请求 malloc / free 各 −2（`respond` 18 → 16、`file_server` 21 → 19，1 与 200 条连接四格都是）；
+用户指令 1 条连接 `respond` −1.9%、`file_server` −2.5%，200 条连接时在三轮区间内分不出；
+32 种请求（含四条续连接）除 `Date` 外逐字节相同（指标端点正文是活计数，只比头），比较器负对照（G162 之前的二进制）红 9 条。
+
+#### 守卫（都在 `tests/fulcrum_read_request_alloc.rs`，`tests/vendor/run.sh` 照跑）
+
+| 判据 | 守什么 | 反证（注入写在临时 worktree 里，⛔ 没碰工作树；每次都有 `Compiling pingora-core`）|
+|---|---|---|
+| `枢衡改动19_写响应头不再拷连接头的值也不再冻结缓冲` | 读完一条请求后 `write_response_header` 一共分配 **1** 次（只剩序列化用的那块暂存缓冲；上游原样是 3 次，改前在本 fork 上实测 3）；`keep-alive` 与 `close` 两种都数。连接用预留了容量的 `Cursor<Vec<u8>>`，写的时候连接自己不分配 | ① 换回 `&str` ⇒ **只红它**「分配了 2 次（期望 1）」；② 换回 `freeze` ⇒ **只红它**，同样是 2 |
+| `枢衡改动19_写响应头的字节照旧` | 续与不续各写一次：除 `Date` 的值（核它是 HTTP 日期）外逐字节等于 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。上游自己写响应头的测试几乎都关了 `update_resp_headers`，没有一条钉这两行 | 值写成 `Keep-Alive` ⇒ **只红它**（回归网里上游自己的测试没有一条跟着红 —— 正是要补它的理由）|
+
+proxy task 那处漏了 `freeze` ⇒ 编不过（E0308，类型逼着），不需要测试守。
+⚠ `Date` 是线程本地缓存、每秒换一次，换的那一秒里第一次写会多分配几次 ⇒ 分配那条先热身、再取三次里最少的。
+⚠ 与改动 16 那条一样，数的是**整个**调用 ⇒ rebase 后上游自己增减分配也会红：先核是谁动的，再改期望值。
+
+#### 归零条件
+
+① 是上游自己的 TODO、② 动的是私有函数 ⇒ 两处在上游也语义不变，一起做成一份投稿（[`upstream-pr/`](../../upstream-pr/README.md) 投稿八，基于上游 `main` `4487f7b`；⏳ 材料已备、未发，发不发另拍）。
+上游 `main`（2026-10-16 克隆）这两处与 0.9.0 一字不差。在归零之前是**要跟着 rebase 的常年成本**：两处都小，冲突时最容易丢的是调用处那个 `freeze` —— 丢了编不过；另两处被合掉时分配那条会红。
+
 ### 9. 没有动的一个：`daemonize`
 
 > ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 随 daemonize
@@ -1122,6 +1160,9 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ### 结论
 
+> ★ **2026-10-16（改动 19）：仍是 20 个文件** —— 改动 19 两处都落在已计入的 `protocols/http/v1/server.rs`，
+> 判据在已计入的 `tests/fulcrum_read_request_alloc.rs`（同一条命令对 `0.9.0` 实测，`702f690`）。
+>
 > ★ **2026-10-14（改动 18）：20 个文件** —— 改动 17 那 19 个，加 `pingora-core` 的 `src/protocols/http/server.rs`
 > （改动 18 另两处落在已计入的 `protocols/http/v1/server.rs` 与 `tests/fulcrum_read_request_alloc.rs`；同一条命令实测）。
 >

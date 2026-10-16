@@ -840,10 +840,13 @@ impl HttpSession {
     /// Prepare response header for writing: handle upgrades, set headers, initialize body writer.
     /// This contains all the synchronous logic that should happen before writing the header.
     /// Returns Ok(Some((bytes, should_flush))) if the header should be written, Ok(None) if should skip.
+    ///
+    /// 枢衡改动 19 ②（G165）：回传 `BytesMut` 而不是 `freeze` 过的 `Bytes` —— 直写那条路只借用它、用完就丢，
+    /// 而缓冲长度 ≠ 容量时 `freeze` 要另分配一块共享头；要 `Bytes` 的调用方（proxy task）自己 `freeze`。
     fn prepare_response_header(
         &mut self,
         header: &mut ResponseHeader,
-    ) -> Result<Option<(Bytes, bool)>> {
+    ) -> Result<Option<(BytesMut, bool)>> {
         // Check if we should ignore informational responses
         if header.status.is_informational() && self.ignore_info_resp(header.status.into()) {
             debug!("ignoring informational headers");
@@ -871,11 +874,12 @@ impl HttpSession {
             /* update headers */
             header.insert_header(header::DATE, date::get_cached_date())?;
 
-            // TODO: make these lazy static
+            // 枢衡改动 19 ①（G165）：上游这里的 TODO（make these lazy static）本身 —— `from_static` 不分配，
+            // 而 `&str` 每次都经 `HeaderValue::from_str` 拷一份。
             let connection_value = if self.will_keepalive() {
-                "keep-alive"
+                HeaderValue::from_static("keep-alive")
             } else {
-                "close"
+                HeaderValue::from_static("close")
             };
             header.insert_header(header::CONNECTION, connection_value)?;
         }
@@ -945,7 +949,7 @@ impl HttpSession {
         let should_flush = header.status.is_informational()
             || header.headers.get(header::CONTENT_LENGTH).is_none();
 
-        Ok(Some((write_buf.freeze(), should_flush)))
+        Ok(Some((write_buf, should_flush)))
     }
 
     fn init_body_writer(&mut self, header: &ResponseHeader) {
@@ -1718,7 +1722,7 @@ impl HttpSession {
                     let flush = should_flush || self.body_writer.finished();
                     self.proxy_task_state
                         .header_writer()
-                        .send_header_task(write_buf, flush, None);
+                        .send_header_task(write_buf.freeze(), flush, None);
                     self.proxy_task_state.current_writer =
                         Some(ProxyTaskWriter::WritingHeader(header, end));
                 }
