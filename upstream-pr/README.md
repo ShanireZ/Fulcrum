@@ -522,6 +522,9 @@ fork 侧量到的 `clock_gettime −2/请求` 与此一致（keep-alive 上每�
 那 3 条两侧都红：`connectors::l4::tests::test_bind_to_port_range_on_connect`（老面孔，宿主机相关）与
 `http::v2::server` 的 `test_req_conflicting_content_length_rejected`、`test_req_malformed_stream_budget_exhausted`
 （这次新见，⛔ 没查根因；判它与本改动无关靠的是**基线同样红**，且它们走 h2、不经过 `v1::server::read_request`）。
+✅ **根因 2026-10-16 查到了：`h2` 0.4.20**（10-06 发布，自己在 codec 里拒掉值不同的重复 `content-length`）。
+在 `4487f7b` 上实测：h2 0.4.20 两条红、换 0.4.19 两条绿。⚠ 投稿七那次的锁没留下来，没直接看到它解析到 0.4.20；
+但它是 10-08 现生成的锁、上游要求 `h2 >=0.4.16` ⇒ 只能是 0.4.20。修法见投稿九。
 
 ⚠ 方法上踩到一条：容器的 stdout 与 stderr 经 `docker run` 分两路转出，cargo 的 `Running <binary>`（stderr）
 会与测试输出（stdout）**错序** ⇒ 按「哪个二进制」归属测试名会张冠李戴（全 workspace 那次一度算出 3 条假的
@@ -644,7 +647,7 @@ future 216 不变是探针读数，审阅者要自己写一行 `size_of_val` 才
 | 新测试文件放到**没打补丁的 `main`** 上（另跑）| 预算那条红：「made 3 allocations, more than 1」；字节那条绿（字节没变）| — |
 
 两侧都红的 4 条，与投稿七全 workspace 那次是同几条：`connectors::l4::tests::test_bind_to_port_range_on_connect`、
-`http::v2::server` 的 `test_req_conflicting_content_length_rejected` / `test_req_malformed_stream_budget_exhausted`（走 h2、不经过本函数）、
+`http::v2::server` 的 `test_req_conflicting_content_length_rejected` / `test_req_malformed_stream_budget_exhausted`（走 h2、不经过本函数；✅ 根因是 h2 0.4.20 —— 本次两份现生成的锁都解析到它，见投稿九）、
 `pingora-load-balancing` 的 `health_check::test::test_tcp_check`。★ `pingora-proxy` 的 `test_basic` / `test_upstream` 这次**全过**（投稿七那次 125 条全红，原因见下 ②）——
 其中真查 `Connection` 值的 `test_connect_close`（keep-alive 与 close 两处）· `test_duplex`（keep-alive）· `test_close_on_response_before_downstream_finish`（close）在打补丁的树上都过了。
 `cargo audit` 那 2 条公告是 `rustls` 0.21.12 的 RUSTSEC-2026-0346 / -0349（2026-10-14 发布，修复版 ≥ 0.23.46），4 条 warning 是 `derivative` · `paste` · `rustls-pemfile` · `unsafe-libyaml` 失维 —— 依赖图两侧相同，本补丁一个依赖都没动。
@@ -675,6 +678,57 @@ future 216 不变是探针读数，审阅者要自己写一行 `size_of_val` 才
 
 **重做环境**：镜像的 Dockerfile 与矩阵脚本留在 `handoff/spike-http-ceiling/g165/upstream-ci/`（不入库）；克隆必须在 Linux 里展开（上面 ②）。
 本地资源 2026-10-16 owner 说「不用就删」⇒ 卷 `upstream-g165-cargo` / `upstream-g165-target` 与镜像 `upstream-g165-rust:1.97.1` 都已删；⛔ 没碰任何 `fulcrum-*` 卷。
+
+## ⏳ 投稿九（材料已备，⏳ 未发，owner 2026-10-16 拍「改准材料＋备投稿九」）· 两条 h2 测试在 h2 0.4.20 下红
+
+> 对应 fork **改动 20**（`vendor/pingora/FORK.md`）。⛔ 没开 issue、没开 PR、没 push、没 fork，GitHub 上零写入（查重只读、没评论）。
+> 补丁做在 scratchpad 里的**干净上游克隆**上（`git clone` 自投稿八那棵 `4487f7b`，`core.autocrlf=false`），`vendor/pingora/` 一个字节没动。
+> ★ **它最好先于投稿七、八发**：在它落地之前，`main` 上任何新 PR 的 CI 都会红在这两条上（投稿七、八的 PR 草稿已补一句指向它）。
+
+| 文件 | 用途 |
+|---|---|
+| [`issue-9-h2-content-length-tests.md`](issue-9-h2-content-length-tests.md) | issue 草稿（`bug_report.md` 的小标题）。★ **必须先发它** |
+| [`pr-9-h2-content-length-tests.md`](pr-9-h2-content-length-tests.md) | PR 正文草稿；发前换 `#<ISSUE_NUMBER>` |
+| [`0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch`](0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch) | 一个提交：两条测试改断言（第二条改名）+ workspace `h2 = ">=0.4.20"`。author 与 `Signed-off-by` 都是 `Shanire <shanire86@gmail.com>`，0 个 CR，`git apply --check` 对 `4487f7b` 通过 |
+
+与 fork 改动 20 的差别只有两处：注释里不提枢衡；补丁多抬了 workspace 的 `h2` 下界（两条测试从此依赖 0.4.20 的行为，写进清单才不靠锁碰运气）。⛔ fork 那边没抬，理由是不为它再多一处 fork 改动、锁已钉 0.4.20。
+
+### G46 查重（2026-10-16，只读）
+
+`gh search issues` 与 `gh search prs` 两条通道，查询串：`h2 0.4.20` · `conflicting content-length` · `duplicate content-length` ·
+`test_req_conflicting_content_length_rejected` · `test_req_malformed_stream_budget_exhausted` · `MAX_MALFORMED_STREAMS_PER_CONN` · `malformed stream budget`。
+
+| 结果 | |
+|---|---|
+| issue 通道 | **全 0** |
+| PR 通道 | 只命中 **#816**（open，「early request body buffering」，与本题无关的功能 PR）。★ 命中的是它作者 **2026-10-06 17:05 UTC 的一条评论**：同样两条、同样「0.4.20 红 / 0.4.19 绿」、预言 `main` 下次跑也会红 |
+| ★ 正对照（同一脚本同一通道）| `listener Tracer` → PR **#995** |
+
+⇒ **有人报过、没人在修**：没有 issue、没有修它的 PR、`main` 自 09-11 未动。issue 与 PR 草稿都引用了那条评论，⛔ 不把它说成我们先发现的。
+
+### 验证（2026-10-16，容器内 `fulcrum-build:local`，rustc 1.98.0；⛔ Rust 不在宿主机跑）
+
+锁按 CI 的做法现生成（`cargo generate-lockfile`，解析到 h2 0.4.20）。
+
+| 门 | `main` `4487f7b` | 打补丁后 |
+|---|---|---|
+| `cargo test -p pingora-core --lib -- protocols::http::v2::server::test::test_req_`（h2 0.4.20）| ✗ 那两条红（1860:9「malformed request must not surface as a session」· 1917:25「connection ended before malformed budget was exhausted」）| — |
+| 同上，`--precise 0.4.19` | ✅ 4/4 | ⛔ 解析失败：新下界不许 0.4.19（这正是要的）|
+| `cargo test -p pingora-core --lib -- protocols::http::v2::server`（h2 0.4.20）| — | ✅ 14/14 |
+| `cargo fmt --all -- --check` | — | ✅ |
+| `cargo clippy -p pingora-core --all-targets -- --allow=unknown-lints --deny=warnings` | — | ✅ |
+
+**反证**：改过的两条测试在 h2 0.4.19 上两条都红（「must not reach Pingora's acceptance checks」·「was charged to Pingora's budget」）——
+⚠ 这一格是在 **fork 的副本**上量的（测试代码与补丁逐行相同、只差注释），上游树上被新下界挡住、跑不到 0.4.19。
+
+⛔ **没做的**（与投稿八那张整矩阵相比）：全 workspace 测试、doc test、nightly / 1.85.0（MSRV）、`cargo audit` / `machete`、OpenResty 集成测试。
+补丁只动测试与一行版本下界，MSRV 风险看不出来，但没实测。
+
+### 发前要重查
+
+1. 上游 `main` 动没动、那两条测试有没有人先改了（#816 那条评论下面有没有后续）。
+2. G46 重跑（两条通道、带正对照）。
+3. 外部写入（都要 owner 按 G40 单独授权）：发 issue → 拿号 → 推 `ShanireZ/pingora` 分支 → 开 PR；再回头把投稿七、八草稿里的 `#<H2_ISSUE_NUMBER>` 换掉。
 
 ## ❌ 投稿五（**已撤销，不发**）· rustls 监听器用不上自定义证书解析器
 

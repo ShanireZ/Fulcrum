@@ -2,6 +2,8 @@
 
 > ★ 本目录纪律：**先 issue、后 PR**。先发 [`issue-7-read-request.md`](issue-7-read-request.md)，
 > 拿到编号后把正文第一行的 `#<ISSUE_NUMBER>` 换掉。
+> ⚠ 正文 Verification 表里的 `#<H2_ISSUE_NUMBER>` 是**投稿九**的 issue 号（2026-10-16 补，那两条 h2 测试的根因）；
+> 投稿九没发就把「which fail with h2 0.4.20, see …」那半句删掉。
 >
 > 补丁（基于上游 `main` = `4487f7b`，带 `Signed-off-by`，**一份 PR、两个提交**，各自也能单独 `git am`）：
 > [`0007-Parse-request-headers-into-uninitialized-header-slots.patch`](0007-Parse-request-headers-into-uninitialized-header-slots.patch) ·
@@ -80,7 +82,7 @@ both sides:
 | `cargo check --workspace` | pass |
 | `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | pass |
 | `cargo +1.85.0 check --workspace --exclude pingora-foundations` | pass |
-| `cargo test -p pingora-core --lib --tests --no-fail-fast` | 579 passed / 3 failed / 2 ignored; `main`: 574 / 3 / 2. The same 3 fail on both sides (`connectors::l4::tests::test_bind_to_port_range_on_connect` and two `http::v2::server` tests); the 5 extra passes are the new tests |
+| `cargo test -p pingora-core --lib --tests --no-fail-fast` | 579 passed / 3 failed / 2 ignored; `main`: 574 / 3 / 2. The same 3 fail on both sides (`connectors::l4::tests::test_bind_to_port_range_on_connect` and two `http::v2::server` tests, which fail with h2 0.4.20, see #<H2_ISSUE_NUMBER>); the 5 extra passes are the new tests |
 | `cargo test --doc -p pingora-core` | pass |
 | `cargo test --verbose --lib --bins --tests --no-fail-fast` | 1160 passed / 129 failed / 6 ignored; `main`: 1155 / 129 / 6. The same 129 fail on both sides: the 3 above, `pingora-load-balancing`'s `test_tcp_check`, and the `pingora-proxy` `test_basic` / `test_upstream` suites, which need openresty |
 

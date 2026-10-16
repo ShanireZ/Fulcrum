@@ -2,6 +2,8 @@
 
 > ★ 本目录纪律：**先 issue、后 PR**。先发 [`issue-8-write-response-header.md`](issue-8-write-response-header.md)，
 > 拿到编号后把正文第一行的 `#<ISSUE_NUMBER>` 换掉。
+> ⚠ 正文末段的 `#<H2_ISSUE_NUMBER>` 是**投稿九**的 issue 号（2026-10-16 补，那两条 h2 测试的根因）；
+> 投稿九没发就把「which fail with h2 0.4.20, see …」那半句删掉。
 >
 > 补丁（基于上游 `main` = `4487f7b`，带 `Signed-off-by`，**一份 PR、一个提交**）：
 > [`0009-Avoid-two-allocations-when-writing-an-HTTP-1-response-header.patch`](0009-Avoid-two-allocations-when-writing-an-HTTP-1-response-header.patch)。
@@ -92,6 +94,6 @@ generated were identical.
 
 The four tests failing on both trees are `connectors::l4::tests::test_bind_to_port_range_on_connect`,
 two `http::v2::server` tests (`test_req_conflicting_content_length_rejected`,
-`test_req_malformed_stream_budget_exhausted`) and `pingora-load-balancing`'s
-`health_check::test::test_tcp_check`; they fail on `main` in the same container and do not go
-through this code.
+`test_req_malformed_stream_budget_exhausted`, which fail with h2 0.4.20, see #<H2_ISSUE_NUMBER>) and
+`pingora-load-balancing`'s `health_check::test::test_tcp_check`; they fail on `main` in the same
+container and do not go through this code.
