@@ -1086,7 +1086,9 @@ proxy task 那处漏了 `freeze` ⇒ 编不过（E0308，类型逼着），不�
 **起因**：2026-10-16 的依赖追新（`dep-check.py --apply`，37 项，为修 rustls 四条公告）把 `h2` 0.4.19 → 0.4.20。
 0.4.20 的 `recv_headers` 自己对**值不同的重复 `content-length`** 发 `PROTOCOL_ERROR` 重置流（CHANGELOG「Fix rejecting duplicate `content-length` headers with different values」；0.4.19 只看第一个值）
 ⇒ 这样的请求到不了 `accept()`，pingora 自己那道重复 CL 校验与每连接坏流预算都碰不到它。上游两条测试断言的正是 pingora 那一层 ⇒ 回归网红两条、定向重跑仍红。
-上游 `main`（2026-10-16 读）这两条与 0.9.0 一字不差；投稿七、八在上游 `main` 上跑全 workspace 时它们两侧都红、当时没查根因（[`upstream-pr/`](../../upstream-pr/README.md)）—— 就是这一条。
+上游 `main`（2026-10-16 读）这两条与 0.9.0 一字不差；投稿七、八在上游 `main` 上跑全 workspace 时它们两侧都红、当时没查根因（[`upstream-pr/`](../../upstream-pr/README.md)）——
+就是这一条：同日在上游 `main` `4487f7b` 上实测，h2 0.4.20 两条红、换 0.4.19 两条绿；投稿八那两份现生成的锁都是 0.4.20（投稿七的锁没留下，按日期推断同样是）。
+上游已有人在 PR #816 的评论里提过（2026-10-06），没有 issue、没有修它的 PR。
 owner 2026-10-16 拍（弹窗）：采 0.4.20、改测试（另两个选项：h2 暂留 0.4.19；整批撤回、只升 rustls）。
 
 #### 改了什么：**一个文件**（`pingora-core/src/protocols/http/v2/server.rs`，此前与 0.9.0 逐字相同 ⇒ fork 文件数 20 → 21）
@@ -1108,6 +1110,37 @@ owner 2026-10-16 拍（弹窗）：采 0.4.20、改测试（另两个选项：h2
 #### 归零条件
 
 上游迟早要为 h2 0.4.20 改这两条；rebase 时照上游的改法、删掉本节。在那之前冲突只会落在这两条测试上（产品代码一行没动）。
+⏳ 投稿材料已备、未发：[`upstream-pr/`](../../upstream-pr/README.md) 投稿九（同样两条测试，另把上游 workspace 的 `h2` 下界抬到 `>=0.4.20`；fork 这边没抬）。
+
+### ★ 21. `serde_yaml` 换成 `serde-saphyr`（2026-10-16）
+
+**类别**：换依赖（与改动 3 `derivative` → `educe` 同一类）。
+**起因**：RUSTSEC-2024-0449 —— `serde_yaml`（`0.9.34+deprecated`）底下的 `unsafe-libyaml` 失维（仓库 2024-03 归档，libyaml 的 c2rust 机器翻译），无修复版；
+公告 2026-10-12 改过之后才出现在扫描里，而且它在产品的**编译图**里（`pingora-core` 的非可选依赖）。
+owner 2026-10-16 拍（弹窗），★ **推翻了 agent 推荐项**：推荐的是登记 `ACCEPTED`（产品从不解析 YAML：走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 里构、`opt.conf` 被忽略；
+只有两个 spike 经 `Server::new` 解析常量 `"---\nversion: 1"`），另一个选项是照上游 issue #779 把 `serde_yaml` 做成可选 feature。
+
+#### 改了什么：**两个文件**（`Cargo.toml` 已计入 ⇒ fork 文件数 21 → 22）
+
+| | 文件 | 改了什么 |
+|---|---|---|
+| ① | `pingora-core/Cargo.toml` | `serde_yaml = "0.9"` → `serde-saphyr = { version = "2", default-features = false, features = ["deserialize", "serialize"] }`（不要 `comments`）|
+| ② | `pingora-core/src/server/configuration/mod.rs` | `from_yaml` / `to_yaml` 两处换成 `serde_saphyr::from_str` / `to_string`；测试 `test_working_directory_deserializes_from_yaml_string` 原用 `serde_yaml::to_value` 取树，`serde-saphyr` 没有 `Value` ⇒ 改成核那一行 + 往返一次 |
+
+两把锁：`serde_yaml` / `unsafe-libyaml` 都走了（根锁连带少了 `ryu`）；新进 `serde-saphyr` 2.0.0 · `granit-parser` 2.0.0 · `annotate-snippets` · `encoding_rs` · `encoding_rs_io` ·
+`arraydeque` · `core_detect` · `multiversion_no_op` · `nohash-hasher` · `unicode-width`（vendor 另有 `simdutf8`，根锁里早有），**全部过 24 小时怀疑期**，现有包一个版本都没动。
+⚠ 这些包**进了产品的编译图**（202 → 210），而产品照旧一行 YAML 都不解析 —— 这是换掉 `unsafe-libyaml` 的代价，写在明处。
+⚠ 看得到的行为差别：序列化时列表里的字符串带引号（`- "1.2.3.4"`），往返不变；两个解析器在边角 YAML 上的差异**没有逐项比**。
+对枢衡无影响（不读 YAML 配置），只影响直接用 pingora YAML 配置的人。
+
+#### 判据
+
+`pingora-core` 的 `server::configuration` 全部 14 条测试照跑照绿（含读真 YAML 文件的 `test_load_file`、拿常量构默认值的 `test_default`）；两个 spike 的 `Server::new` 由 M0 / M1 场景覆盖。
+
+#### 归零条件
+
+上游 issue #779（「Make serde_yaml optional or configurable」，2025-12 起 open）落地，或上游自己换掉 `serde_yaml` ⇒ rebase 时照上游、删掉本节。
+⛔ 原样投给上游不合适：`serde-saphyr` 2 要 Rust 1.89，上游 MSRV 是 1.85。在那之前是**要跟着 rebase 的常年成本**：一行清单、两处调用、一条测试。
 
 ### 9. 没有动的一个：`daemonize`
 
@@ -1189,6 +1222,9 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ### 结论
 
+> ★ **2026-10-16（改动 21）：22 个文件** —— 改动 20 那 21 个，加 `pingora-core` 的 `src/server/configuration/mod.rs`
+> （改前它与 `0.9.0` 逐字相同；`pingora-core/Cargo.toml` 早已计入）。同日对 vendor 跑 `cargo fmt` 只重排了改动 19 与改动 6 自己写的三处（已计入的文件），文件数不变。
+>
 > ★ **2026-10-16（改动 20）：21 个文件** —— 改动 19 那 20 个，加 `pingora-core` 的 `src/protocols/http/v2/server.rs`
 > （改前它与 `0.9.0` 逐字相同：拿 GitHub 上 tag `0.9.0` 的原文件比，0 行差异；⚠ 没有重跑上面那整条命令）。
 >

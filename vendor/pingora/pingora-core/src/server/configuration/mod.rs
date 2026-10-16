@@ -349,7 +349,8 @@ impl ServerConf {
 
     pub fn from_yaml(conf_str: &str) -> Result<Self> {
         trace!("Read conf file: {conf_str}");
-        let conf: ServerConf = serde_yaml::from_str(conf_str).or_err_with(ReadError, || {
+        // Fulcrum fork change 21 (vendor/pingora/FORK.md): serde_yaml -> serde-saphyr.
+        let conf: ServerConf = serde_saphyr::from_str(conf_str).or_err_with(ReadError, || {
             format!("Unable to parse yaml conf {conf_str}")
         })?;
 
@@ -358,7 +359,7 @@ impl ServerConf {
     }
 
     pub fn to_yaml(&self) -> String {
-        serde_yaml::to_string(self).unwrap()
+        serde_saphyr::to_string(self).unwrap()
     }
 
     pub fn validate(self) -> Result<Self> {
@@ -641,11 +642,16 @@ working_directory: /var/lib/pingora
             Some(std::path::Path::new("/var/lib/pingora"))
         );
 
-        let yaml = serde_yaml::to_value(&conf).unwrap();
-        assert_eq!(
-            yaml.get("working_directory"),
-            Some(&serde_yaml::Value::String("/var/lib/pingora".to_string()))
+        // Fulcrum fork change 21: serde-saphyr has no `Value` tree, so check the
+        // serialized line and a round trip instead of `serde_yaml::to_value`.
+        let yaml = conf.to_yaml();
+        assert!(
+            yaml.lines()
+                .any(|l| l.trim_end() == "working_directory: /var/lib/pingora"),
+            "working_directory must serialize as a plain string:\n{yaml}"
         );
+        let round_trip = ServerConf::from_yaml(&yaml).unwrap();
+        assert_eq!(round_trip.working_directory, conf.working_directory);
     }
 
     #[test]

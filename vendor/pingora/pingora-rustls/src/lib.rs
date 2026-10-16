@@ -297,7 +297,8 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
     const FAKE_CERT_A: &str = "-----BEGIN CERTIFICATE-----\nYWFh\n-----END CERTIFICATE-----\n";
     const FAKE_CERT_B: &str = "-----BEGIN CERTIFICATE-----\nYmJi\n-----END CERTIFICATE-----\n";
     const PKCS8_KEY: &str = "-----BEGIN PRIVATE KEY-----\ncGs4\n-----END PRIVATE KEY-----\n";
-    const PKCS1_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\ncGsx\n-----END RSA PRIVATE KEY-----\n";
+    const PKCS1_KEY: &str =
+        "-----BEGIN RSA PRIVATE KEY-----\ncGsx\n-----END RSA PRIVATE KEY-----\n";
     const SEC1_KEY: &str = "-----BEGIN EC PRIVATE KEY-----\nc2Mx\n-----END EC PRIVATE KEY-----\n";
     const PUBLIC_KEY: &str = "-----BEGIN PUBLIC KEY-----\ncHVi\n-----END PUBLIC KEY-----\n";
     /// ★ rustls-pemfile 的 `Item` 覆盖不到的段类型——它会被静默跳过。
@@ -519,7 +520,9 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
     #[test]
     fn junk_outside_sections_is_ignored() {
         // PEM 解析器允许段与段之间有任意垃圾文本。
-        let path = pem_file(&format!("hello\n{FAKE_CERT_A}goodbye\n{FAKE_CERT_B}trailing"));
+        let path = pem_file(&format!(
+            "hello\n{FAKE_CERT_A}goodbye\n{FAKE_CERT_B}trailing"
+        ));
         let key = pem_file(PKCS8_KEY);
         let (certs, _) = load_certs_and_key_files(&path, &key).unwrap().unwrap();
         assert_eq!(certs.len(), 2);

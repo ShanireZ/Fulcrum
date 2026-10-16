@@ -999,6 +999,12 @@ LINT_CMD='cargo fmt --all -- --check'
 #     ⇒ 那份探针的 Rust 代码目前**没有 clippy 看着**，已登记在
 #     docs/verification/musl-boringssl.md「这份探针证不了什么」一节。
 LINT_CMD="$LINT_CMD && cargo fmt --manifest-path spikes/musl-boringssl/Cargo.toml --all -- --check"
+# ★ `vendor/pingora` 同理：它是**另一个 workspace**（根 `[patch]` 把它当路径依赖，不是成员），
+#   根那条 `--all` 够不到它，够不到的表现同样是**绿**。2026-10-16 实测漂了两处，全是 fork
+#   自己写的行（改动 19 的 `v1/server.rs`、改动 6 的 `pingora-rustls` 测试）；上游原码在本镜像的
+#   rustfmt 下是干净的 ⇒ 这一条只拦 fork 改动。⚠ rebase 后若红在上游原码上，先核是不是
+#   rustfmt 版本的排法差异，别顺手把整份上游重排进 fork 的改动面。
+LINT_CMD="$LINT_CMD && cargo fmt --manifest-path vendor/pingora/Cargo.toml --all -- --check"
 LINT_CMD="$LINT_CMD && cargo clippy --workspace --all-targets --locked -- -D warnings"
 # ★ ★ shell 那半边**扫哪些文件是推导出来的，不是一张手写清单**。
 #

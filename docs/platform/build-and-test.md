@@ -165,7 +165,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 
 | 场景 | 入口 | 判据 |
 |---|---|---|
-| ★ **lint** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `shellcheck` | 见下 |
+| ★ **lint** | `cargo fmt --all -- --check`（另对两个独立 workspace 各补一条 `--manifest-path`：`spikes/musl-boringssl`、`vendor/pingora` —— 根那条 `--all` 够不到它们）+ `cargo clippy --workspace --all-targets -- -D warnings` + `shellcheck` | 见下 |
 | ★ **枢衡自己的 crate 测试** | [`tests/unit/run.sh`](../../tests/unit/run.sh) | `cargo test --workspace --locked --no-fail-fast` 全绿，**且条数不低于下界**，见下 |
 | **fork 回归网** | [`tests/vendor/run.sh`](../../tests/vendor/run.sh) | ★ 不是「零失败」，而是**失败集合与官方原版 0.8.1 逐项相同**（现为 2 条）。⚠ 它**依赖容器能上公网**，见下 |
 | ★ **数据面端到端** | [`tests/serve/run.sh`](../../tests/serve/run.sh) | 真流量走完路由 → 转发 → `rewrite` → `header_up` → 重定向 → 421 → **回落三向**（501 / 转发 / 502）→ keep-alive → 一个约 4 KiB 的响应只许一个数据段（写缓冲，G155）→ 错误页里的 `{header.X}` 取原始请求头（第 11 节）|

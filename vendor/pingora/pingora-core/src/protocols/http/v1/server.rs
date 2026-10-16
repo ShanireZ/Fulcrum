@@ -1720,9 +1720,11 @@ impl HttpSession {
                     };
                     // header only responses will want to flush
                     let flush = should_flush || self.body_writer.finished();
-                    self.proxy_task_state
-                        .header_writer()
-                        .send_header_task(write_buf.freeze(), flush, None);
+                    self.proxy_task_state.header_writer().send_header_task(
+                        write_buf.freeze(),
+                        flush,
+                        None,
+                    );
                     self.proxy_task_state.current_writer =
                         Some(ProxyTaskWriter::WritingHeader(header, end));
                 }

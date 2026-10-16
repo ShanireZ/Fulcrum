@@ -57,6 +57,10 @@ vendor 锁那份只有回归网会编（`pingora-rustls` 成员、`pingora-core`
 ⚠ 同一次扫出、**仍未登记**的：`unsafe-libyaml` 0.2.11（RUSTSEC-2024-0449，失维、无修复版，**`[编译]`**，`pingora-core` → `serde_yaml`，两把锁都有）
 与 `quinn-proto` 0.11.16 × 5（RUSTSEC-2026-0338…0342，只在 vendor 锁、`[仅 lock]`）⇒ `supply-audit.py` 根锁 1 条、vendor 锁 6 条，`dep-check.py` 仍亮 `160`，待 owner 另行处置。
 ⚠ `dep-check.py` 的候选只来自**根清单**的 `cargo update --dry-run` ⇒ 只在 vendor 锁里的包（如 `quinn-proto`）`--apply` 永远够不到。
+✅ **2026-10-16 同日：`unsafe-libyaml` 离开了两把锁** —— fork 改动 21 把 `pingora-core` 的 `serde_yaml`（已弃用）换成公告推荐的纯安全 Rust 实现 `serde-saphyr` 2.0.0（[`FORK.md`](../../vendor/pingora/FORK.md)）。
+★ owner 选的这一条**推翻了 agent 推荐项**（推荐的是登记 `ACCEPTED`：产品从不解析 YAML —— 走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 里构、`opt.conf` 被忽略）。
+两把锁各新进 10 / 11 个包（`serde-saphyr` · `granit-parser` · `annotate-snippets` · `encoding_rs` 等），全部过 24 小时怀疑期、无 yank、许可宽松；根锁同时少了 `ryu`，编译图 202 → 210 个。
+⚠ `encoding_rs` 带 **BSD-3-Clause**（WHATWG 数据），发布时的第三方声明要收录。根锁 `supply-audit.py` 由此 exit 0；vendor 锁剩 `quinn-proto` × 5。
 ⚠ ⚠ **此处原先链到 [待定清单](/governance/open-questions.md) 的 `D12`，那是过期的**（2026-09-08 更正）——
 `D12` 已结案（`G32`），而那份清单里**一个 D 号都没有**，链过去什么都看不到。
 ★ 与本页下文那句「它已经不在待定清单里了」原本是**同一份文件里自相矛盾的两句**。★ 此后 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 迁走**，不再在名单上。
