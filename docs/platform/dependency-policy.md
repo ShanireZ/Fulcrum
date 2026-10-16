@@ -75,11 +75,23 @@ python tools/dep-check.py --hours 48 # 换一个怀疑期长度
    真实树当天 4 行、0 行带注记，是潜伏的）。`Downgrading` / `Removing` 与来源不是 crates.io 的行（git／path）不是候选。
    `--self-check` 用 cargo 的原样输出钉着（`parse_dry_run`）
 
+   ★ **两份清单各问一次。** 根清单之外再对 `vendor/pingora/Cargo.toml` 跑一次，只收 **`名字@旧版本` 根锁里没有**的那些
+   （只在 vendor 锁里的包：`pingora-core` 的 dev-dep、vendor 成员才开的可选依赖拖进来的；新增包看新版本）。
+   根锁也有的版本归根那条路、由第 4 条镜像进 vendor 锁 —— 两边各自决定，[2/5] 就会对不上。
+   ⚠ 此前候选只来自根清单，于是只在 vendor 锁里的版本**永远不是候选**：2026-10-16 vendor 的 dry-run 动 29 项，
+   其中 25 项是这一类，`quinn-proto` 0.11.16 带着五条公告（RUSTSEC-2026-0338…0342），本脚本一条都不报。
+   报告里单列一节「vendor 独有的更新」，走同一个怀疑期；有可采纳的同样点亮 `10`
 2. 对每个候选版本查 crates.io 的**发布时间**与 **yanked 状态**
 3. 发布不足 N 小时、或已被 yank 的，**一律挡下并说明原因**
 4. `--apply` 时只对通过的候选做 `cargo update -p <name> --precise <ver>`，★ **成败看跑完之后的锁，不看 cargo 的退出码**：
    根锁逐项核对「目标版本在、旧版本不在」，vendor 锁核对与根锁对得上。同族包（`boring-sys` 跟 `boring`、`zstd-sys` 跟 `zstd`）
-   常被前一项顺带带到位，轮到它自己时 cargo 报 `did not match any packages` 并非零退出 —— 那不是失败，锁对了就退 `10`
+   常被前一项顺带带到位，轮到它自己时 cargo 报 `did not match any packages` 并非零退出 —— 那不是失败，锁对了就退 `10`。
+   vendor 独有的那批在根那批之后、对 vendor 清单逐项采纳，同样按结果锁判成败；它们动过的每个名字再与根锁对一次齐
+   （新版本可能把两把锁共有的包拉走）。
+   ★ **互相 `=` 钉死的一族逐项永远升不动**（`wasm-bindgen` 族与 `js-sys` / `web-sys`：任何一项单独 `--precise` 都撞上另一项的 `=`）
+   ⇒ 逐项跑完还没到位的，一次 `cargo update -p a@旧 -p b@旧 …`（不带 `--precise`）一起升，再照旧按结果锁判。
+   不带 `--precise` 落到候选清单之后才发的版本不算到位，下面那道怀疑期核对也会现查它。
+   2026-10-16 在一次性副本上实跑（真 cargo + crates.io）：vendor 独有的 25 项一次全到位（其中 7 项靠一起升），退 `10`，根锁逐字节没动
 
    ★ ★ **顺带带进来的版本同样要过怀疑期。** `--precise` 是保守更新，但新版本要求的依赖锁里满足不了时照样会动，
    而且被拉到**满足要求的最新版、不看发布时间**（cargo 1.98.0 实测：`zstd` 0.12.4 → 0.13.0 把 `zstd-safe` 6.0.6 拉到 7.3.0，

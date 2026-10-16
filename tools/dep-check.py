@@ -9,7 +9,8 @@ G29 的口径是：`Cargo.toml` 用 `>=` 下界、不设上界，追最新（**�
 
 做法：
   1. 用 `cargo update --dry-run` 问出「如果现在更新，会动哪些包」——只有这批才需要查；
-     全量查 Cargo.lock 里几百个包纯属浪费。
+     全量查 Cargo.lock 里几百个包纯属浪费。★ 根清单与 vendor 清单各问一次，vendor 那份只收
+     根锁里没有的版本（见 `vendor_only`）。
   2. 对每个候选版本查 crates.io 的发布时间与 yanked 状态。
   3. 发布不足 N 小时、或已被 yank 的，一律挡下并说明原因。
   4. `--apply` 时只对**通过怀疑期**的候选做 `cargo update -p <name> --precise <ver>`；
@@ -184,9 +185,9 @@ def run(cmd: list[str], *, cwd: Path = REPO) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
-def cargo_candidates(cargo: list[str]) -> list[tuple[str, str | None, str]]:
-    """返回 [(crate, 当前版本 or None, 候选版本)]。"""
-    proc = run([*cargo, "update", "--dry-run"])
+def cargo_candidates(cargo: list[str], manifest: str | None = None) -> list[tuple[str, str | None, str]]:
+    """返回 [(crate, 当前版本 or None, 候选版本)]；`manifest` 给了就问那份清单（vendor），否则问根。"""
+    proc = run([*cargo, "update", "--dry-run", *(["--manifest-path", manifest] if manifest else [])])
     out = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         print(out, file=sys.stderr)
@@ -212,6 +213,24 @@ def parse_dry_run(out: str) -> list[tuple[str, str | None, str]]:
         if m:
             found.append((m.group(1), None, m.group(2)))
     return found
+
+
+def vendor_only(candidates, root_lock: dict[str, set[str]]) -> list[tuple[str, str | None, str]]:
+    """vendor 清单 dry-run 的候选里，**根那条路够不到**的那些：`名字@旧版本` 根锁里没有。
+
+    # ★ 为什么要有这一步
+
+    候选原先只来自根清单的 `cargo update --dry-run`，`--apply` 再把它们镜像进 vendor 锁。
+    ⇒ 只在 vendor 锁里的版本（`pingora-core` 的 dev-dep、vendor 成员才开的可选依赖拖进来的）**永远不是候选**：
+      2026-10-16 vendor 的 dry-run 动 29 项，25 项是这一类，其中 `quinn-proto` 0.11.16 带五条公告
+      （RUSTSEC-2026-0338…0342），而本脚本一条都不报。
+
+    ★ `名字@旧版本` 根锁也有的**不收**：它归根那条路决定、`_align_vendor_lock` 照旧镜像 ——
+      两边各自决定，两把锁就会对不上（`tests/vendor/run.sh` [2/5]）。同名、但旧版本只在 vendor 的
+      （vendor 合法地多一个老大版本，如 `rand` 0.8）照收。新增包（旧版本为空）看的是新版本根锁有没有。
+    """
+    return [(name, cur, new) for name, cur, new in candidates
+            if (cur or new) not in root_lock.get(name, set())]
 
 
 def crate_versions(name: str) -> dict[str, dict]:
@@ -249,6 +268,24 @@ def quarantine_verdict(name: str, version: str, cutoff: datetime) -> tuple[str |
     if published > cutoff:
         return "怀疑期内", f"发布于 {published:%Y-%m-%d %H:%M UTC}，仅 {age_h:.1f} 小时"
     return None, f"发布于 {published:%Y-%m-%d %H:%M UTC}，{age_h:.0f} 小时前"
+
+
+def screen(candidates, vet) -> list[tuple[str, str | None, str]]:
+    """候选逐个过 `vet`（同 [`quarantine_verdict`]），打出 ✓ / ✗，返回过了的那些。根与 vendor 独有的两批共用。"""
+    eligible, blocked = [], []
+    for name, cur, new in candidates:
+        label = f"{name} {cur or '(新增)'} -> {new}"
+        why, detail = vet(name, new)
+        if why:
+            blocked.append((label, why, detail))
+        else:
+            eligible.append((name, cur, new))
+            print(f"  ✓ {label}    （{detail}）")
+    if blocked:
+        print("\n被挡下的：")
+        for label, why, detail in blocked:
+            print(f"  ✗ {label}    [{why}] {detail}")
+    return eligible
 
 
 def version_key(v: str) -> tuple:
@@ -871,7 +908,9 @@ def main() -> int:
 
     print("── crates.io 更新检查 ──")
     candidates = cargo_candidates(cargo)
-    if not candidates:
+    # ★ vendor 清单再问一次：只在 vendor 锁里的版本根那条路看不见，见 [`vendor_only`]。
+    vendor_candidates = vendor_only(cargo_candidates(cargo, VENDOR_MANIFEST), _lock_versions("Cargo.lock"))
+    if not candidates and not vendor_candidates:
         print("没有可用更新，依赖已是最新。")
         print("★ 注意：这句话只覆盖 `cargo update` 能动的东西——"
               "被上游清单上界卡住的依赖它一个都不会报。全量审计见 docs/platform/supply-chain.md。")
@@ -883,9 +922,6 @@ def main() -> int:
     #   ⚠ 而**另外八项全成功了** —— 一次「大部分绿」的采纳，最容易被读成全绿。
     #   ⇒ 用 `name@当前版本` 这个 pkgid spec 去指名道姓（cargo 自己在那条报错里
     #     给出的正是这种写法）。
-    eligible: list[tuple[str, str | None, str]] = []
-    blocked: list[tuple[str, str, str]] = []
-
     print(f"候选更新 {len(candidates)} 项，怀疑期 {args.hours} 小时（早于 {cutoff:%Y-%m-%d %H:%M UTC} 发布的才算数）\n")
 
     # 判过的版本记下来：采纳之后的闯入者核对多半撞上候选清单里被挡的那几个，不必再问 crates.io。
@@ -896,31 +932,36 @@ def main() -> int:
             verdicts[(name, version)] = quarantine_verdict(name, version, cutoff)
         return verdicts[(name, version)]
 
-    for name, cur, new in candidates:
-        label = f"{name} {cur or '(新增)'} -> {new}"
-        why, detail = vet(name, new)
-        if why:
-            blocked.append((label, why, detail))
-        else:
-            eligible.append((name, cur, new))
-            print(f"  ✓ {label}    （{detail}）")
+    eligible = screen(candidates, vet)
+    print(f"\n── vendor 独有的更新（{VENDOR_LOCK}；根清单看不见）──")
+    print(f"候选 {len(vendor_candidates)} 项，同一个怀疑期\n")
+    vendor_eligible = screen(vendor_candidates, vet)
 
-    if blocked:
-        print("\n被挡下的：")
-        for label, why, detail in blocked:
-            print(f"  ✗ {label}    [{why}] {detail}")
-
-    if not eligible:
+    if not eligible and not vendor_eligible:
         print("\n没有通过怀疑期的更新，本次什么都不做。")
         return finish(fork_code + image_code + systemd_code + advisory_code)
 
     if not args.apply:
-        print(f"\n{len(eligible)} 项可采纳。加 --apply 执行。")
+        print(f"\n{len(eligible)} + {len(vendor_eligible)}（vendor 独有）项可采纳。加 --apply 执行。")
         return finish(10 + fork_code + image_code + systemd_code + advisory_code)
 
     def update_root(spec: str, version: str) -> tuple[int, str]:
         proc = run([*cargo, "update", "-p", spec, "--precise", version])
         return proc.returncode, proc.stderr or proc.stdout
+
+    def update_vendor(spec: str, version: str) -> tuple[int, str]:
+        proc = run([*cargo, "update", "-p", spec, "--precise", version, "--manifest-path", VENDOR_MANIFEST])
+        return proc.returncode, proc.stderr or proc.stdout
+
+    def group(read_lock, lock: str, manifest: list[str]):
+        """`adopt_root` 的 `update_group`：一次 `cargo update -p a -p b …`（不带 `--precise`）。
+        ★ `blaming` 在**调用时**才包：它记的是包上那一刻之后新出现的版本，早包会把逐项那一轮的也算到这一次头上。"""
+        def run_group(specs: list[str]) -> tuple[int, str]:
+            def update(spec_line: str, _version: str) -> tuple[int, str]:
+                proc = run([*cargo, "update", *(a for s in spec_line.split() for a in ("-p", s)), *manifest])
+                return proc.returncode, proc.stderr or proc.stdout
+            return blaming(update, read_lock, lock, blame)(" ".join(specs), "各自最新的兼容版（一起采纳）")
+        return run_group
 
     # ★ 采纳前给两把锁拍快照（逐字节）：顺带带进没过怀疑期的版本时整批还原，见 [`lock_intruders`]。
     locks = ("Cargo.lock", VENDOR_LOCK)
@@ -931,12 +972,30 @@ def main() -> int:
     def read_root() -> dict[str, set[str]]:
         return _lock_versions("Cargo.lock")
 
-    print("\n开始采纳：")
-    failed = len(adopt_root(eligible, blaming(update_root, read_root, "Cargo.lock", blame), read_root))
+    def read_vendor() -> dict[str, set[str]]:
+        return _lock_versions(VENDOR_LOCK)
 
-    failed += _align_vendor_lock(cargo, eligible, blame)
+    failed = 0
+    if eligible:
+        print("\n开始采纳：")
+        failed += len(adopt_root(eligible, blaming(update_root, read_root, "Cargo.lock", blame), read_root,
+                                 update_group=group(read_root, "Cargo.lock", [])))
+        failed += _align_vendor_lock(cargo, eligible, blame)
 
-    found = lock_intruders(before, {lock: _lock_versions(lock) for lock in locks}, eligible, vet)
+    if vendor_eligible:
+        # ★ 根那一批之后再做：它们的目标里不该有根那一批会镜像过来的版本（[`vendor_only`] 已排除）。
+        print(f"\n采纳 vendor 独有的（{VENDOR_LOCK}）：")
+        prior = read_vendor()
+        failed += len(adopt_root(vendor_eligible, blaming(update_vendor, read_vendor, VENDOR_LOCK, blame),
+                                 read_vendor, label=f"vendor 锁（{VENDOR_LOCK}）",
+                                 update_group=group(read_vendor, VENDOR_LOCK, ["--manifest-path", VENDOR_MANIFEST])))
+        # ⚠ vendor 独有的一项也可能把**两把锁共有**的包拉走（新版本要更新的依赖）⇒ 动过的名字都再对一次齐。
+        moved = sorted(n for n, vs in read_vendor().items() if vs != prior.get(n, set()))
+        moved += sorted(set(prior) - set(read_vendor()))
+        failed += _report_alignment(cargo, moved)
+
+    found = lock_intruders(before, {lock: _lock_versions(lock) for lock in locks},
+                           eligible + vendor_eligible, vet)
     if report_intruders(found, blame):
         for lock, data in snapshot.items():
             (REPO / lock).write_bytes(data)
@@ -952,11 +1011,13 @@ def main() -> int:
     return 1 if failed else finish(10 + fork_code + image_code + systemd_code + advisory_code)
 
 
-def adopt_root(eligible, update, read_lock) -> list[tuple[str, str]]:
+def adopt_root(eligible, update, read_lock, label: str = "根锁（Cargo.lock）",
+               update_group=None) -> list[tuple[str, str]]:
     """根锁那一侧的采纳：逐项 `cargo update -p 名字@旧版本 --precise 新版本`，**按结果锁判成败**。
 
     返回真失败的那几项 `[(名字, 说明)]`，空表 = 根锁全部到位。`update(spec, 版本)` 返回
     `(退出码, 输出)`，`read_lock()` 返回 `{名字: {版本}}` —— 都由调用方给，自测里换成桩。
+    vendor 独有的那一批（[`vendor_only`]）走同一个函数，`update` / `read_lock` 换成 vendor 清单与锁、`label` 跟着换。
 
     # ⚠ 退出码不能当判据（与 `_align_vendor_lock` 同一条）
 
@@ -967,6 +1028,16 @@ def adopt_root(eligible, update, read_lock) -> list[tuple[str, str]]:
       一个绿的结果被报成红，比漏报更伤：读的人要么误判，要么学会无视红。
     ★ 判据取**结果**：全部跑完之后读根锁，见 [`root_lock_problems`]。反过来也成立：
       cargo 退 0 而锁不对（后一项把前一项挪走、旧版本仍被别的包钉着）同样判失败。
+
+    # ★ 互相 `=` 钉死的一族：逐项永远升不动，一起升（`update_group`）
+
+    `wasm-bindgen` 0.2.127 / `-macro` / `-macro-support` / `-shared` / `-futures` 与 `js-sys` / `web-sys` 彼此要 `=` 版本
+    ⇒ 任何一项单独 `--precise` 都撞上另一项的 `=` 钉子（cargo 1.98.0：`failed to select a version for the
+    requirement js-sys = "=0.3.104"`），2026-10-16 vendor 独有的那批 25 项里 7 项是这个形状，逐项采纳永远红。
+    ⇒ 给了 `update_group(specs)` 时，逐项跑完还没到位、旧版本还在锁里的那几项**一起**交给它
+    （`cargo update -p a@旧 -p b@旧 …`，不带 `--precise`：一次解开一族，落到各自最新的兼容版，实测正是 dry-run 的目标），
+    然后**照旧按结果锁判**。⚠ 不带 `--precise` 可能落到候选清单之后才发的版本 ⇒ 那不是目标，这里判没到位，
+    采纳后的怀疑期核对（[`lock_intruders`]）也会现查它 —— 判据不放松。
     """
     for name, cur, version in eligible:
         # ⚠ 同名多版本时裸 `name` 是**歧义的**，而 cargo 会因此整条失败。
@@ -976,11 +1047,23 @@ def adopt_root(eligible, update, read_lock) -> list[tuple[str, str]]:
         if rc == 0:
             print(f"  ✓ {spec} -> {version}")
         else:
-            print(f"  ? {spec} -> {version}    （cargo 退出码 {rc}；成败以下面的根锁核对为准）")
+            print(f"  ? {spec} -> {version}    （cargo 退出码 {rc}；成败以下面的{label}核对为准）")
             print("\n".join(f"      {line}" for line in out.strip().splitlines()))
 
     problems = root_lock_problems(read_lock(), eligible)
-    print("\n核对根锁（Cargo.lock）：")
+    if problems and update_group:
+        lock = read_lock()
+        stuck = {name for name, _line in problems}
+        specs = [f"{name}@{cur}" for name, cur, _new in eligible
+                 if name in stuck and cur and cur in lock.get(name, set())]
+        if specs:
+            print(f"\n  逐项没到位的 {len(specs)} 项一起升（互相 `=` 钉死的一族逐项永远升不动）：{' '.join(specs)}")
+            rc, out = update_group(specs)
+            if rc:
+                print(f"  ? cargo 退出码 {rc}；成败以下面的{label}核对为准")
+                print("\n".join(f"      {line}" for line in out.strip().splitlines()))
+            problems = root_lock_problems(read_lock(), eligible)
+    print(f"\n核对{label}：")
     for _name, line in problems:
         print(f"  ✗ {line}")
     if problems:
@@ -1121,18 +1204,17 @@ def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, s
     for name, cur, version in eligible:
         update(f"{name}@{cur}" if cur else name, version)
 
-    sa = _load_supply_audit()
-    root = {}
-    vendor = {}
-    for store, rel in ((root, "Cargo.lock"), (vendor, VENDOR_LOCK)):
-        for n, v in sa.parse_lock(REPO / rel):
-            store.setdefault(n, set()).add(v)
+    return _report_alignment(cargo, [n for n, _c, _v in eligible])
 
-    marks = {"ok": "✓", "absent": "○", "root-only-path": "·", "mismatch": "✗"}
+
+def _report_alignment(cargo: list[str], names: list[str]) -> int:
+    """读两把锁，对 `names` 逐个跑 [`lock_alignment`] 并打出来，返回对不上的个数。"""
+    root = _lock_versions("Cargo.lock")
+    vendor = _lock_versions(VENDOR_LOCK)
+
+    marks = {"ok": "✓", "absent": "○", "vendor-only": "○", "root-only-path": "·", "mismatch": "✗"}
     bad = 0
-    for name, verdict, why in lock_alignment(
-        root, vendor, [n for n, _c, _v in eligible], lambda n, v: _pingora_users(cargo, n, v)
-    ):
+    for name, verdict, why in lock_alignment(root, vendor, names, lambda n, v: _pingora_users(cargo, n, v)):
         print(f"  {marks[verdict]} {name:<20} {why}")
         bad += verdict == "mismatch"
     if bad:
@@ -1157,9 +1239,9 @@ def _pingora_users(cargo: list[str], name: str, version: str) -> list[str] | Non
 def lock_alignment(root, vendor, names, pingora_users):
     """逐个包判定两把锁对不对得上，返回 [(名字, 判定, 说明)] —— 与 [2/5] 同一口径。
 
-    判定 ∈ "ok" / "absent"（vendor 锁里没有这个名字）/ "root-only-path"（根侧多出的版本
-    没有任何 pingora crate 在用）/ "mismatch"。`pingora_users(名字, 版本)` 返回用到它的
-    pingora crate 列表，问不出来返回 None（⛔ 问不出来 ≠ 没人用，一律判 mismatch）。
+    判定 ∈ "ok" / "absent"（vendor 锁里没有这个名字）/ "vendor-only"（根锁里没有这个名字）/
+    "root-only-path"（根侧多出的版本没有任何 pingora crate 在用）/ "mismatch"。`pingora_users(名字, 版本)`
+    返回用到它的 pingora crate 列表，问不出来返回 None（⛔ 问不出来 ≠ 没人用，一律判 mismatch）。
     ★ vendor 侧**多**出来的版本合法（dev-dep／未启用的可选依赖拖进来的老大版本），不判。
     """
     out = []
@@ -1167,6 +1249,9 @@ def lock_alignment(root, vendor, names, pingora_users):
         rv, vv = root.get(name, set()), vendor.get(name)
         if vv is None:
             out.append((name, "absent", "vendor 锁里没有这个包 —— 无从对不上"))
+            continue
+        if not rv:
+            out.append((name, "vendor-only", f"根锁里没有这个包 —— 只在 vendor 锁里：{' '.join(sorted(vv))}"))
             continue
         missing = sorted(rv - vv)
         if not missing:
@@ -1273,6 +1358,15 @@ def _self_check_intruders() -> tuple[list[str], int]:
          {(vendor, "quinn-proto", "0.11.20"): "reqwest@0.12.28 -> 0.12.29",
           (vendor, "quinn-udp", "0.6.0"): "reqwest@0.12.28 -> 0.12.29"},
          {(root, "portable-atomic", "1.11.1"), (vendor, "portable-atomic", "1.11.1")}),
+        ("vendor 独有的一批（[`vendor_only`]）：目标被同批前一项带到位不再查 · 顺带动的老包已过怀疑期，放行",
+         [("quinn", "0.11.11", "0.11.12"), ("quinn-proto", "0.11.16", "0.11.19")],
+         {root: {"tokio": {"1.53.3"}},
+          vendor: {"quinn": {"0.11.11"}, "quinn-proto": {"0.11.16"}, "quinn-udp": {"0.5.15"}, "tokio": {"1.53.3"}}},
+         {vendor: {"quinn@0.11.11": [("quinn", "0.11.11", "0.11.12"), ("quinn-proto", "0.11.16", "0.11.19"),
+                                     ("quinn-udp", "0.5.15", "0.5.16")]}},
+         {("quinn-udp", "0.5.16"): (None, "800 小时前")},
+         {},
+         {(vendor, "quinn-udp", "0.5.16")}),
         ("没有闯入者：同名两个大版本各升一格 · 新版本甩掉的依赖消失 · 新增包本身是采纳目标",
          [("syn", "2.0.119", "2.0.120"), ("syn", "3.0.3", "3.0.4"), ("aaa-new", None, "0.1.0")],
          {root: {"syn": {"2.0.119", "3.0.3"}, "proc-macro-hack": {"0.5.20"}}, vendor: {}},
@@ -1318,6 +1412,82 @@ def _self_check_intruders() -> tuple[list[str], int]:
             bad.append(f"闯入者核对「{label}」：应放行 {sorted(want_ok) or '无'}，实际 {sorted(got_ok) or '无'}")
         if stray:
             bad.append(f"闯入者核对「{label}」：不该查怀疑期的也查了：{' '.join(stray)}")
+    return bad, len(cases)
+
+
+def _self_check_lockstep() -> tuple[list[str], int]:
+    """钉住 [`adopt_root`] 的 `update_group`：逐项没到位的才一起升，一起升之后照旧按结果锁判。两个方向都要有。
+
+    每条：(说明, 候选, 采纳前的锁, 逐项各自的改动, 一起升的改动, 应判失败的名字, 一起升应收到的 spec)。
+    改动是 `{名字: 新版本集合}`，由桩写进假锁；逐项那一轮不在表里的 spec 什么都不动、退 101。版本号是合成的。
+    """
+    cases = [
+        ("互相 `=` 钉死的一族（2026-10-16 的 wasm-bindgen / js-sys 形状）：逐项全红、一起升到位",
+         [("js-sys", "0.3.104", "0.3.106"), ("wasm-bindgen", "0.2.127", "0.2.129")],
+         {"js-sys": {"0.3.104"}, "wasm-bindgen": {"0.2.127"}},
+         {},
+         {"js-sys": {"0.3.106"}, "wasm-bindgen": {"0.2.129"}},
+         set(), ["js-sys@0.3.104", "wasm-bindgen@0.2.127"]),
+        ("一起也升不动：照旧判失败",
+         [("js-sys", "0.3.104", "0.3.106"), ("wasm-bindgen", "0.2.127", "0.2.129")],
+         {"js-sys": {"0.3.104"}, "wasm-bindgen": {"0.2.127"}},
+         {},
+         {},
+         {"js-sys", "wasm-bindgen"}, ["js-sys@0.3.104", "wasm-bindgen@0.2.127"]),
+        ("逐项都到位：不一起升",
+         [("quinn", "0.11.11", "0.11.12")],
+         {"quinn": {"0.11.11"}},
+         {"quinn@0.11.11": {"quinn": {"0.11.12"}}},
+         {"quinn": {"0.11.99"}},
+         set(), None),
+        ("一起升落到候选清单之后才发的版本（不是目标）· 新增包没有旧版本可指名、不进一起升",
+         [("js-sys", "0.3.104", "0.3.106"), ("wasm-bindgen", "0.2.127", "0.2.129"), ("ccc-new", None, "0.1.0")],
+         {"js-sys": {"0.3.104"}, "wasm-bindgen": {"0.2.127"}},
+         {},
+         {"js-sys": {"0.3.107"}, "wasm-bindgen": {"0.2.129"}},
+         {"js-sys", "ccc-new"}, ["js-sys@0.3.104", "wasm-bindgen@0.2.127"]),
+    ]
+    bad = []
+    for label, eligible, before, per_item, together, want, want_group in cases:
+        lock = {n: set(vs) for n, vs in before.items()}
+        calls: list[list[str]] = []
+
+        def update(spec, _version, lock=lock, per_item=per_item):
+            if spec not in per_item:
+                return 101, f"error: failed to select a version for `{spec}`"
+            lock.update({n: set(vs) for n, vs in per_item[spec].items()})
+            return 0, ""
+
+        def update_group(specs, lock=lock, together=together, calls=calls):
+            calls.append(list(specs))
+            lock.update({n: set(vs) for n, vs in together.items()})
+            return (0, "") if together else (101, "error: failed to select a version")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = {n for n, _why in adopt_root(eligible, update, lambda lock=lock: lock, update_group=update_group)}
+        if got != want:
+            bad.append(f"一起升「{label}」：应判失败 {sorted(want) or '无'}，实际判了 {sorted(got) or '无'}")
+        if calls != ([want_group] if want_group else []):
+            bad.append(f"一起升「{label}」：应收到 {want_group or '（不调）'}，实际 {calls or '（没调）'}")
+    return bad, len(cases)
+
+
+def _self_check_vendor_only() -> tuple[list[str], int]:
+    """钉住 [`vendor_only`]：vendor dry-run 的候选里只收根那条路够不到的。每条：(说明, 候选, 根锁, 应收下的)。"""
+    root = {"defmt": {"1.1.1"}, "rand": {"0.10.3"}, "synstructure": {"0.13.2"}, "base64": {"0.22.1", "0.23.1"}}
+    cases = [
+        ("只在 vendor 锁里的名字（2026-10-16 的 quinn-proto）", [("quinn-proto", "0.11.16", "0.11.19")],
+         {("quinn-proto", "0.11.16", "0.11.19")}),
+        ("名字@旧版本 根锁也有：归根那条路，不收", [("defmt", "1.1.1", "1.2.0")], set()),
+        ("同名、旧版本只在 vendor（老大版本）", [("rand", "0.8.7", "0.8.8")], {("rand", "0.8.7", "0.8.8")}),
+        ("新增包：新版本根锁没有才收", [("synstructure", None, "0.14.0"), ("base64", None, "0.23.1")],
+         {("synstructure", None, "0.14.0")}),
+    ]
+    bad = []
+    for label, candidates, want in cases:
+        got = set(vendor_only(candidates, root))
+        if got != want:
+            bad.append(f"vendor 独有的筛选「{label}」：应收 {sorted(want, key=str) or '无'}，实际 {sorted(got, key=str) or '无'}")
     return bad, len(cases)
 
 
@@ -1416,7 +1586,7 @@ note: pass `--verbose` to see 3 unchanged dependencies behind latest
 
 
 def self_check() -> int:
-    """`--self-check`：用合成输入钉住 `--apply` 的三处判定 —— 不出网、不跑 cargo。
+    """`--self-check`：用合成输入钉住 `--apply` 的五处判定 —— 不出网、不跑 cargo。
 
     一、[`lock_alignment`] 的每种判定。
     ★ 口径必须与 `tests/vendor/run.sh` 的 [2/5] 相同：根侧的每个版本都得在 vendor 侧，
@@ -1427,6 +1597,10 @@ def self_check() -> int:
     二、[`adopt_root`] 按结果锁判成败，见 [`_self_check_adopt_root`]。
 
     三、顺带带进来的版本过怀疑期、点名是谁带的，见 [`_self_check_intruders`]。
+
+    四、vendor 清单的候选只收根那条路够不到的，见 [`_self_check_vendor_only`]。
+
+    五、互相 `=` 钉死的一族逐项升不动时一起升、照旧按结果锁判，见 [`_self_check_lockstep`]。
 
     另：[`parse_dry_run`] 认不认得 cargo 的 dry-run 行（含行尾括号注记）不属上面几处 `--apply` 判定，见 [`_self_check_dry_run`]。
     """
@@ -1443,6 +1617,7 @@ def self_check() -> int:
         "pem": {"4.0.0"},
     }
     vendor = {
+        "quinn-proto": {"0.11.16"},  # 只在 vendor 锁里（2026-10-16 的真实形状）
         "rand": {"0.8.7", "0.10.3"},  # vendor 侧合法地多一个老大版本（dev-dep／可选依赖）
         "base64": {"0.22.1"},
         "lru": {"0.18.5"},
@@ -1454,6 +1629,7 @@ def self_check() -> int:
         "lru": "mismatch",
         "zstd": "mismatch",  # ⛔ 问不出来 ≠ 没人用
         "pem": "absent",
+        "quinn-proto": "vendor-only",
     }
     got = {n: (v, why) for n, v, why in lock_alignment(root, vendor, list(want), lambda n, v: users[(n, v)])}
     bad = [f"{n}：期望 {w}，得到 {got.get(n, ('（缺）', ''))[0]}" for n, w in want.items() if got.get(n, ("",))[0] != w]
@@ -1465,6 +1641,10 @@ def self_check() -> int:
     bad += intruder_bad
     dry_run_bad, dry_run_cases = _self_check_dry_run()
     bad += dry_run_bad
+    vendor_bad, vendor_cases = _self_check_vendor_only()
+    bad += vendor_bad
+    lockstep_bad, lockstep_cases = _self_check_lockstep()
+    bad += lockstep_bad
     if bad:
         print("DEP-CHECK SELF-CHECK FAILED：")
         for line in bad:
@@ -1473,7 +1653,9 @@ def self_check() -> int:
     print(f"DEP-CHECK SELF-CHECK PASSED —— 两把锁的对齐判定 {len(want)} 种情况各钉一条（与 tests/vendor/run.sh [2/5] 同一口径）；"
           f"根锁采纳按结果锁判成败 {root_cases} 组（两个方向都有）；"
           f"cargo dry-run 行解析 {dry_run_cases} 组（含行尾注记；`Downgrading` 等非候选行不收）；"
-          f"顺带带进来的版本过怀疑期 {intruder_cases} 组（判红、放行、不该查的不查）")
+          f"顺带带进来的版本过怀疑期 {intruder_cases} 组（判红、放行、不该查的不查）；"
+          f"vendor 独有的候选筛选 {vendor_cases} 组；"
+          f"互相钉死的一族一起升 {lockstep_cases} 组（两个方向都有）")
     return 0
 
 
