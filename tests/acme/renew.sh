@@ -10,6 +10,9 @@
 #   `该续期了：CA 的 ARI 建议窗口已经开始`（**谁下的决定**）、② 证书**序列号变了**、
 #   ③ 续期那一趟的挑战**按 CA 的选择走对了**（CA 新建授权就重解 DNS-01，复用有效授权就不解）。
 #
+# ★ ★ 第一代的序列号若带 DER 符号字节，就在续期之前重签一张（[2/5] 末尾，G166）：
+#   pebble v2.10.1 认不出那种证书的 `replaces`，而本格要证的是 `replaces` 被接受那一条。
+#
 # 单独一个场景 + 单独一套端口 + 单独一个 pebble 实例：短寿命证书会污染同一个 CA 下的其它
 #   断言（run.sh 有好几条依赖「刚签完的证书还早得很」）。共用一个 CA 等于让两个场景互相设定前提。
 #
@@ -104,6 +107,30 @@ cert_epoch() {
   # $2 是 -startdate 或 -enddate
   date -d "$(openssl x509 -in "$1" -noout "$2" | cut -d= -f2)" +%s
 }
+# `cert_serial` 打的是**逐字节**两位十六进制（恒为偶数位）⇒ 首位是 8–F ⇔ 首字节 ≥ 0x80
+#   ⇔ DER 要在前面补一个符号字节 `00`，ARI 标识里的序列号也就带着它（RFC 9773 §4.1）。
+needs_sign_byte() {
+  [ $((${#1} % 2)) -eq 0 ] || return 1
+  case "$1" in
+    [89A-Fa-f]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# 发 SIGINT、最多等 10s。⚠ 等完不判活没活 —— 调用的地方各有各的判法。
+stop_fulcrum() {
+  local waited=0
+  kill -INT "$FULCRUM_PID" 2>/dev/null || true
+  while kill -0 "$FULCRUM_PID" 2>/dev/null && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+}
+# pebble 每**新建**一份授权打一句 `There are now N authorizations in the db`，取最后那个 N。
+# ⚠ `|| true` 不能省：一句都没有时 grep 退 1，`pipefail` + `set -e` 会让整个脚本静默退出。
+authz_total() {
+  grep -aoE 'There are now [0-9]+ authorizations in the db' "$WORK/pebble.log" |
+    tail -1 | awk '{print $4}' || true
+}
 
 echo "=== [0/5] 基线：端口是空的、存储里还没有证书 ==="
 
@@ -112,6 +139,28 @@ acme_require_tools "ACME RENEW TESTS"
   echo "ACME RENEW TESTS FAILED: 找不到 $BIN（先跑 cargo build --release）" >&2
   exit 1
 }
+
+# ★ ★ [2/5] 末尾那段「第一代重签」只为 pebble v2.10.1 的一个缺陷而设（G166）。
+#   ⚠ 版本一变就红，⛔ 不许改成「不是 v2.10.1 就跳过」：升级的人必须回来确认新版本
+#   含上游 `1fcb30c`（issue #550），再删掉那一段和这一条 —— 留着它会让本格少测一种序列号。
+PEBBLE_VER=$(pebble -version 2>&1 | head -1 || true)
+case "$PEBBLE_VER" in
+  *' v2.10.1 '*) ok "pebble 是 v2.10.1（[2/5] 末尾的第一代重签只为它而设）" ;;
+  *)
+    echo "ACME RENEW TESTS FAILED: pebble 版本是「${PEBBLE_VER:-（取不到）}」，不再是 v2.10.1 ——" >&2
+    echo "  先确认它含上游 1fcb30c（issue #550），再删掉 [2/5] 末尾的第一代重签与这一条（G166）" >&2
+    exit 1
+    ;;
+esac
+# ★ 判据函数的自证：真撞上过的那个序列号要判「带」、去掉最高位要判「不带」，两头都得对。
+#   ⚠ 只验一头的话，一个恒真或恒假的 `needs_sign_byte` 都能过。
+if needs_sign_byte B36F9903F33BC7 && needs_sign_byte 80 &&
+  ! needs_sign_byte 336F9903F33BC7 && ! needs_sign_byte 7F; then
+  ok "needs_sign_byte 两头都判得对（B36F9903F33BC7 带、336F9903F33BC7 不带）"
+else
+  echo "ACME RENEW TESTS FAILED: needs_sign_byte 自证不过 —— [2/5] 末尾的前提控制不可信" >&2
+  exit 1
+fi
 acme_require_ports_free "ACME RENEW TESTS" \
   "$DIR_PORT" "$MGMT_PORT" "$DNS_PORT" "$CTS_MGMT_PORT" "$HTTP_PORT" "$TLS_PORT"
 ok "六个端口都是空的"
@@ -258,6 +307,52 @@ else
   fail "第一趟日志里没有「向权威 NS 确认 TXT 可见」那一步"
 fi
 
+# ★ ★ ★ **前提控制：第一代的序列号不许带 DER 符号字节（G166）。**
+#   pebble v2.10.1 存订单的键是 `hex(big.Int.Bytes())`（不带符号字节），查 `replaces` 时
+#   却用 ARI 标识里的原始字节 —— 而 RFC 9773 §4.1 规定首字节 ≥ 0x80 时要带上那个 `00`。
+#   ⇒ 这种证书带 `replaces` 下单，pebble 一律回 `serverInternal`
+#   （`could not find order resulting in the given certificate serial number`；
+#   上游 issue #550，修在 main `1fcb30c`，没发版）。pebble 的序列号 < 2^63 ⇒ 约 1/255。
+#   ★ 枢衡碰上会去掉 `replaces` 再下一次、照样续上（G166 的产品那一半，单测守着）——
+#   ⚠ 但本格要证的是「`replaces` 被 CA 接受」那一条（判据二之二），所以在第二代起来之前换一张。
+#   ⛔ 这**不是**「加重试」：换不换由一个确定的字节决定，发生在被测的续期**之前**，
+#   不碰续期本身 —— 续期那一趟失败照样红。
+REROLLS=0
+while needs_sign_byte "$SERIAL_1"; do
+  REROLLS=$((REROLLS + 1))
+  if [ "$REROLLS" -gt 3 ]; then
+    echo "ACME RENEW TESTS FAILED: 连着 4 张序列号都带符号字节（每张约 1/255）—— \
+不是运气，去查 pebble 的序列号是怎么来的" >&2
+    exit 1
+  fi
+  echo "  ⟳ 第一代序列号 $SERIAL_1 带 DER 符号字节（pebble v2.10.1 #550）⇒ 丢掉它重签（第 $REROLLS 次）"
+  stop_fulcrum
+  # ⚠ 旧进程还占着端口时，下面的 `wait_port` 会量到它而立刻返回 —— 那就不是在等新的一代了。
+  if kill -0 "$FULCRUM_PID" 2>/dev/null || port_listening "$TLS_PORT" ||
+    port_listening "$HTTP_PORT"; then
+    echo "ACME RENEW TESTS FAILED: 重签之前第一代没退干净（pid $FULCRUM_PID）" >&2
+    exit 1
+  fi
+  rm -rf "$CERT_DIR"
+  start_fulcrum "gen1-reroll$REROLLS"
+  wait_port "$TLS_PORT" || {
+    echo "ACME RENEW TESTS FAILED: 重签的第一代起不来。日志：" >&2
+    cat "$WORK/gen1-reroll$REROLLS.log" >&2
+    exit 1
+  }
+  if ! wait_log "$WORK/gen1-reroll$REROLLS.log" "ACME 签发成功：$WILDCARD_SITE" 120; then
+    echo "ACME RENEW TESTS FAILED: 重签的第一代 120s 内没签下来。" >&2
+    cat "$WORK/gen1-reroll$REROLLS.log" >&2
+    echo "── pebble ──" >&2
+    tail -40 "$WORK/pebble.log" >&2
+    exit 1
+  fi
+  SERIAL_1=$(cert_serial "$CERT_DIR/cert.pem")
+  NOT_BEFORE_1=$(cert_epoch "$CERT_DIR/cert.pem" -startdate)
+done
+# 判据四要的是「续期那单新建了几份授权」，基线取在第一代**最后**签完之后。
+AUTHZ_BASE=$(authz_total)
+
 echo "=== [3/5] 第二代：先判「还不到时候」——续期的反面必须先成立 ==="
 
 # ★ ★ 为什么必须换一代：签完那一轮的 `next_check` 是**写死的 3600s**
@@ -265,12 +360,7 @@ echo "=== [3/5] 第二代：先判「还不到时候」——续期的反面必�
 #   而 ARI 是「盘上已经有一张」时才去问的。所以第一代要等一小时才会再看一眼，
 #   门禁等不起。⚠ 这不是缺陷：真实证书是 90 天 / 6 天量级，一小时无关紧要。
 #   ★ 顺带这一步也验了「重启之后盘上那张读得出来、装得上」。
-kill -INT "$FULCRUM_PID" 2>/dev/null || true
-waited=0
-while kill -0 "$FULCRUM_PID" 2>/dev/null && [ "$waited" -lt 100 ]; do
-  sleep 0.1
-  waited=$((waited + 1))
-done
+stop_fulcrum
 for p in "$HTTP_PORT" "$TLS_PORT"; do
   if port_listening "$p"; then
     fail "第一代退了，端口 $p 还被占着 —— 第二轮测的会是别人的服务"
@@ -355,6 +445,25 @@ if ! wait_log_count "$WORK/gen2.log" "ACME 签发成功：$WILDCARD_SITE" \
   tail -40 "$WORK/pebble.log" >&2
 fi
 
+# ★ ★ 判据二之二（G166）：续期那单**带着 `replaces`、而且被 CA 认了**。
+#   正面证据取 CA 自己的话：pebble 只在带 `replaces` 的订单签完之后打
+#   `Order … has been marked as replaced in the DB` —— 那句在订单转 valid **之后**的
+#   goroutine 里才打（`wfe.go` 的 finalize）⇒ 这里等一小会儿，⛔ 不是立刻 grep。
+#   反面证据取枢衡的话：回退那句一次都不许出现。那条路有单测守着；
+#   本格要证的是 `replaces` 被接受这一条，第一代的前提控制保证走得到它。
+if wait_log "$WORK/pebble.log" "has been marked as replaced in the DB" 15; then
+  ok "续期那单带的 replaces 被 CA 认了（pebble：旧订单已标成被替换）"
+else
+  fail "15s 内 pebble 没说旧订单被替换 —— 续期那单没带 replaces，或者带了 CA 没认"
+  grep -aiE 'replace' "$WORK/pebble.log" >&2 || true
+fi
+if grep -qF "带 replaces 下单被 CA 拒了" "$WORK/gen2.log"; then
+  fail "续期那一趟走了「replaces 被拒 ⇒ 去掉再下」的回退 —— 第一代的前提控制没起作用"
+  grep -F "带 replaces 下单被 CA 拒了" "$WORK/gen2.log" >&2
+else
+  ok "续期那一趟没走「replaces 被拒」之后的回退"
+fi
+
 # ★ ★ ★ 判据三：**序列号变了**。这一条是 owner 点名的那条——
 #   「不能只数日志行数」。序列号是 CA 给的，同一张证书重写一遍不会换号。
 SERIAL_2=$(cert_serial "$CERT_DIR/cert.pem")
@@ -381,17 +490,19 @@ fi
 #   2026-10-05 全量门禁真碰上了一次：续期那单没新建授权、没有 `POST /chalZ/`，枢衡如实没去重解，
 #   而当时的判据只认「CA 不会复用」，于是判红 —— 红的是判据的前提，不是产品。
 #   ★ 分支信号取 CA 自己的话：pebble 每**新建**一份授权打一句
-#   `There are now N authorizations in the db`，复用时一句不打 ⇒ 第一单之后 N = 1，
-#   续期那单新建了就是 2、复用了就仍是 1。
+#   `There are now N authorizations in the db`，复用时一句不打 ⇒ 第一代最后签完时记下 N₀
+#   （`AUTHZ_BASE`；没重签过就是 1），续期那单新建了就是 N₀ + 1、复用了就仍是 N₀。
+#   ⚠ 取差、⛔ 不取绝对值：[2/5] 末尾的第一代重签（G166）会多建授权。
 #   ⛔ 不许改成「复用就跳过」或「复用就重跑」：两支都判，每一支判的是枢衡在那一支下该做的事。
 #   ★ 错判那一支也逃不掉：CA 新建了授权而枢衡没解，订单到不了 ready，上面判据二先红。
-# ⚠ `|| true` 不能省：一句都没有时 grep 退 1，`pipefail` + `set -e` 会让整个脚本在这里静默退出，
-#   走不到下面那条「分支信号本身不成立」。
-AUTHZ_COUNT=$(grep -aoE 'There are now [0-9]+ authorizations in the db' "$WORK/pebble.log" |
-  tail -1 | awk '{print $4}' || true)
+AUTHZ_COUNT=$(authz_total)
+AUTHZ_NEW=
+if [ -n "$AUTHZ_BASE" ] && [ -n "$AUTHZ_COUNT" ]; then
+  AUTHZ_NEW=$((AUTHZ_COUNT - AUTHZ_BASE))
+fi
 TXT_CONFIRMED=$(grep -cF "的 TXT 已在全部 1 台权威 NS 上可见" "$WORK/gen2.log" || true)
-case "${AUTHZ_COUNT:-0}" in
-  2)
+case "$AUTHZ_NEW" in
+  1)
     if [ "$TXT_CONFIRMED" -ge 1 ]; then
       ok "续期那单 CA 新建了授权，枢衡重新写了 TXT 并重新确认可见（G58 对续期同样成立）"
     else
@@ -399,7 +510,7 @@ case "${AUTHZ_COUNT:-0}" in
       grep -i 'TXT\|DNS-01' "$WORK/gen2.log" >&2 || true
     fi
     ;;
-  1)
+  0)
     if [ "$TXT_CONFIRMED" -eq 0 ]; then
       ok "续期那单 CA 复用了有效授权（pebble 在 AUTHZREUSE=0 时仍有 1/100），枢衡如实没有重解挑战"
     else
@@ -408,7 +519,8 @@ case "${AUTHZ_COUNT:-0}" in
     fi
     ;;
   *)
-    fail "pebble 报的授权总数是「${AUTHZ_COUNT:-（一句都没有）}」，期望 1（续期复用）或 2（续期新建）—— 分支信号本身不成立"
+    fail "pebble 报的授权总数：第一代签完时「${AUTHZ_BASE:-（一句都没有）}」、续期之后「${AUTHZ_COUNT:-（一句都没有）}」，\
+期望续期那单新建 1 份或复用（差 0）—— 分支信号本身不成立"
     grep -aF 'authorizations in the db' "$WORK/pebble.log" >&2 || true
     ;;
 esac
@@ -445,15 +557,15 @@ echo "=== [5/5] 收工 ==="
 if [ "$FAILS" -ne 0 ]; then
   echo >&2
   echo "ACME RENEW TESTS FAILED: $FAILS 条断言不通过" >&2
-  # ★ ★ 加的取证。这一格**会偶发红**（PLAN §10）：
-  #   连跑第四次全量门禁时红了 5 条，单独复跑 17/17 绿。
-  #   错误是 pebble 的原话：`could not find order resulting in the given
-  #   certificate serial number`（ARI 续期下单时带的 `replaces` 查不到订单）——
-  #   ⚠ **而 pebble 自己的日志里明明有那笔订单**。
-  #   ★ 下面这几行把**两侧的序列号放在一起**，下次再碰就能当场判断：
-  #   是我们发错了序列号，还是 pebble 自己丢了订单。
+  # ★ ★ 取证。这一格曾经偶发红，靠下面这几行查实了（G166）：pebble 的原话
+  #   `could not find order resulting in the given certificate serial number` 来自
+  #   pebble v2.10.1 自己的缺陷 —— 序列号首字节 ≥ 0x80 时，它查 `replaces` 的键带着
+  #   DER 符号字节、存订单的键不带（issue #550）。⇒ [2/5] 末尾的第一代重签之后它不该再出现。
+  #   ★ 两侧的序列号仍放在一起打：`openssl -serial` 打的是数值，**看不出符号字节**，
+  #   所以「两侧一样」不等于「标识一样」—— 首位是 8–F 时就是那个缺陷。
   #   ⚠ ⚠ **没有这一段时，上一次真实失败只留下了一句「续期在半路失败了」。**
   echo "── ★ 两侧的序列号对不对得上 ──" >&2
+  echo "第一代那张的序列号（续期时拿它做 replaces）：${SERIAL_1:-（没取到）}，前面重签过 ${REROLLS:-0} 次" >&2
   if [ -f "$CERT_DIR/cert.pem" ]; then
     echo "盘上这张证书的序列号（我们会拿它去做 ARI 的 replaces）：$(cert_serial "$CERT_DIR/cert.pem")" >&2
   else
@@ -468,12 +580,17 @@ if [ "$FAILS" -ne 0 ]; then
     || echo "（一行都没有）" >&2
   echo "── 枢衡（第一代）──" >&2
   cat "$WORK/gen1.log" >&2
+  for f in "$WORK"/gen1-reroll*.log; do
+    [ -f "$f" ] || continue
+    echo "── 枢衡（第一代重签：$(basename "$f" .log)）──" >&2
+    cat "$f" >&2
+  done
   echo "── 枢衡（第二代）──" >&2
   cat "$WORK/gen2.log" 2>/dev/null >&2 || true
   echo "── pebble ──" >&2
   tail -60 "$WORK/pebble.log" >&2
   echo >&2
-  echo "★ 先单独复跑这一格（它会偶发红）：bash tests/acme/renew.sh" >&2
+  echo "★ 单独复跑这一格：bash tests/acme/renew.sh" >&2
   echo "  ⚠ 不许用「加重试」修它 —— 那会同时掩盖真实的续期缺陷。" >&2
   exit 1
 fi

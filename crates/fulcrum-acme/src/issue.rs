@@ -514,16 +514,18 @@ impl AcmeManager {
     ) -> Result<(String, String), String> {
         let domain = target.domain.as_str();
         let identifiers = [Identifier::Dns(domain.to_string())];
-        let mut new_order = NewOrder::new(&identifiers);
-        if let Some(id) = replaces {
-            // ★ 只有确认 CA 支持 ARI 时才带上它：`new_order` 在 CA 不支持时会**直接报错**，
-            //   于是「顺手带一个能拿到优惠速率的字段」会变成「换个 CA 就一张都签不出来」。
-            new_order = new_order.replaces(id);
-        }
-        let mut order = account
-            .new_order(&new_order)
-            .await
-            .map_err(|e| format!("下单失败：{e}"))?;
+        let ids = &identifiers;
+        let mut order = new_order_with_fallback(domain, replaces, |replaces| async move {
+            let mut new_order = NewOrder::new(ids);
+            if let Some(id) = replaces {
+                // ★ 只有确认 CA 支持 ARI 时才带上它：`new_order` 在 CA 不支持时会**直接报错**，
+                //   于是「顺手带一个能拿到优惠速率的字段」会变成「换个 CA 就一张都签不出来」。
+                new_order = new_order.replaces(id);
+            }
+            account.new_order(&new_order).await
+        })
+        .await
+        .map_err(|e| format!("下单失败：{e}"))?;
 
         // ── 解挑战 ────────────────────────────────────────────────────────
         //
@@ -705,22 +707,10 @@ impl AcmeManager {
         replaces: &mut Option<CertificateIdentifier<'static>>,
     ) -> Option<AriWindow> {
         let leaf = sc.chain.first()?;
-        // ⚠ 这里多一次 DER 往返：`instant-acme` 的 `CertificateIdentifier` 只有
-        //   `TryFrom<&CertificateDer>` 这一个入口，而我们手里是 BoringSSL 的 `X509`。
-        // ★ **不自己抠 AKI 与序列号** —— ARI 标识抠错的后果是「续期请求被 CA 静静忽略」。
-        // ⚠ `rustls-pki-types` 因此是本 crate 的直接依赖（**新增 0 个包**）：它是纯类型
-        //   定义 crate，没有 crypto / provider / default feature，与 `rustls` 不是一类东西。
-        let der = match leaf.to_der() {
-            Ok(d) => rustls_pki_types::CertificateDer::from(d),
+        let id = match ari_cert_id(leaf) {
+            Ok(id) => id,
             Err(e) => {
-                debug!("证书转不回 DER：{e}");
-                return None;
-            }
-        };
-        let id = match CertificateIdentifier::try_from(&der) {
-            Ok(id) => id.into_owned(),
-            Err(e) => {
-                debug!("从证书里抠不出 ARI 标识：{e}");
+                debug!("{e}");
                 return None;
             }
         };
@@ -780,6 +770,60 @@ impl AcmeManager {
         }
         self.resolver.install(&loaded.domains, loaded.key);
         Ok(())
+    }
+}
+
+/// 一张证书的 ARI 标识（RFC 9773 §4.1）：`base64url(AKI keyIdentifier) "." base64url(序列号)`。
+///
+/// ⚠ 这里多一次 DER 往返：`instant-acme` 的 `CertificateIdentifier` 只有
+///   `TryFrom<&CertificateDer>` 这一个入口，而我们手里是 BoringSSL 的 `X509`。
+/// ★ **不自己抠 AKI 与序列号** —— ARI 标识抠错的后果是「续期请求被 CA 静静忽略」。
+/// ⚠ `rustls-pki-types` 因此是本 crate 的直接依赖（**新增 0 个包**）：它是纯类型
+///   定义 crate，没有 crypto / provider / default feature，与 `rustls` 不是一类东西。
+/// ★ ★ 序列号取的是 DER INTEGER 的内容字节：首字节 ≥ 0x80 时**带着**那个符号字节 `00`，
+///   RFC 9773 §4.1 的原例（`00:87:65:43:21` → `AIdlQyE`）就是这样。
+///   ⛔ 不许为了迁就哪个 CA 把它剥掉（G166）：剥了就是对规范 CA 发错标识。
+///   CA 不认的那一头由 [`new_order_with_fallback`] 兜。
+fn ari_cert_id(
+    leaf: &pingora_boringssl::x509::X509,
+) -> Result<CertificateIdentifier<'static>, String> {
+    let der = leaf.to_der().map_err(|e| format!("证书转不回 DER：{e}"))?;
+    let der = rustls_pki_types::CertificateDer::from(der);
+    CertificateIdentifier::try_from(&der)
+        .map(CertificateIdentifier::into_owned)
+        .map_err(|e| format!("从证书里抠不出 ARI 标识：{e}"))
+}
+
+/// 下单；带着 `replaces` 被 CA 拒了，就去掉 `replaces` 再下一次（G166）。
+///
+/// ★ ★ 不回退的后果是**这个域名永远续不上**：失败进退避，下一轮 `fetch_ari` 拿同一张证书
+///   算出同一个 `replaces`，CA 再拒 —— 一直到证书过期。`replaces` 换来的只是 CA 那边的
+///   速率优惠，不值得拿续期本身去赌。
+/// ⚠ 真碰上过的一例：pebble v2.10.1 对序列号首字节 ≥ 0x80 的证书（约 1/255）一律回
+///   `serverInternal`（它存订单的键不带符号字节，查的时候却带着；上游 issue #550）。
+/// ⚠ 只认 CA 回的 problem 文档（`Error::Api`）：连不上、超时这类，去掉 `replaces`
+///   也照样失败，交给退避。⛔ 也不收窄成「只认 `alreadyReplaced`」—— 上面那一例就不是它。
+async fn new_order_with_fallback<'a, T, F, Fut>(
+    domain: &str,
+    replaces: Option<CertificateIdentifier<'a>>,
+    mut place: F,
+) -> Result<T, instant_acme::Error>
+where
+    F: FnMut(Option<CertificateIdentifier<'a>>) -> Fut,
+    Fut: Future<Output = Result<T, instant_acme::Error>>,
+{
+    let Some(id) = replaces else {
+        return place(None).await;
+    };
+    match place(Some(id)).await {
+        Err(instant_acme::Error::Api(problem)) => {
+            warn!(
+                "{domain} 带 replaces 下单被 CA 拒了（{problem}），去掉 replaces 再下一次 \
+                 —— 照常签，只是拿不到 ARI 续期的速率优惠"
+            );
+            place(None).await
+        }
+        other => other,
     }
 }
 
@@ -1001,5 +1045,150 @@ mod tests {
             pick_non_dns_challenge(Some(NonDnsChallenge::Http01.as_str())),
             NonDnsChallenge::TlsAlpn01
         );
+    }
+
+    // ── ARI 标识与 `replaces` 回退（G166）────────────────────────────────
+
+    /// 序列号 `0xb36f9903f33bc7`（首字节 ≥ 0x80）：2026-10-16 全量门禁里真撞上的那一个。
+    /// 固定字节，`openssl x509 -set_serial` 签的，AKI = `5f8a17d7…83d2`。
+    const 高位序列号证书: &str = "-----BEGIN CERTIFICATE-----
+MIIBgTCCASegAwIBAgIIALNvmQPzO8cwCgYIKoZIzj0EAwIwFzEVMBMGA1UEAwwM
+QVJJIHJlcHJvIENBMB4XDTI2MTAxNjA2NDk0MloXDTM2MTAxMzA2NDk0MlowGDEW
+MBQGA1UEAwwNcmVwcm8uZXhhbXBsZTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IA
+BLENn0DpwTsh7JrVLX+DsqnTvL3TL8JGf2Bl7DRU+xJBLZ3ko749XMy/5rG/oq/7
+eUvm5FNCJ8agczycd4azwCyjXDBaMBgGA1UdEQQRMA+CDXJlcHJvLmV4YW1wbGUw
+HwYDVR0jBBgwFoAUX4oX19Tqp1+ctI6gLUtWdqoPg9IwHQYDVR0OBBYEFAqqk7v6
+Xj//9sW2CrzStr98SqjkMAoGCCqGSM49BAMCA0gAMEUCIDteCExkVKCEc2hR2HJN
+flqVKGGOMVOnsjMhB5F7yFMCAiEA1s8HbiyZwpsuEKCKtkyuSXtZ3hxS55Wqj5BG
+E8VL9Ew=
+-----END CERTIFICATE-----
+";
+    /// 对照：同一个 CA、同样的序列号去掉最高位（`0x336f9903f33bc7`）。
+    const 低位序列号证书: &str = "-----BEGIN CERTIFICATE-----
+MIIBgDCCASagAwIBAgIHM2+ZA/M7xzAKBggqhkjOPQQDAjAXMRUwEwYDVQQDDAxB
+UkkgcmVwcm8gQ0EwHhcNMjYxMDE2MDY0OTQyWhcNMzYxMDEzMDY0OTQyWjAYMRYw
+FAYDVQQDDA1yZXByby5leGFtcGxlMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE
+in5ClQn7qSYDK4IS0XgjENo5BvX3aV07a8bjrMhy8bpjGmFw4nK5IkVDhdar1ytE
+GEu6el5CBR/vaE+uh+lsxqNcMFowGAYDVR0RBBEwD4INcmVwcm8uZXhhbXBsZTAf
+BgNVHSMEGDAWgBRfihfX1OqnX5y0jqAtS1Z2qg+D0jAdBgNVHQ4EFgQUQRALGzGv
+PsdvzDy7WB46xiKFqE0wCgYIKoZIzj0EAwIDSAAwRQIhAKi5LMG05tSnygG/wvu3
+KhXWlp3Zpoy7tOIyxEANfobAAiBfH2c6qafOxJWYpTpyn2qkK/QwyWF2ajgozLZq
+mYRjTQ==
+-----END CERTIFICATE-----
+";
+
+    #[test]
+    fn ari_标识照_rfc_9773_原例编码() {
+        use instant_acme::CertificateIdentifier;
+        use rustls_pki_types::Der;
+        // RFC 9773 §4.1 原文的例子：序列号 0x87654321 的 DER 内容是 `00:87:65:43:21`
+        //   （补一个 `00` 让它保持正数）⇒ 标识里的序列号是 `AIdlQyE`。
+        let aki = [
+            0x69, 0x88, 0x5b, 0x6b, 0x87, 0x46, 0x40, 0x41, 0xe1, 0xb3, 0x7b, 0x84, 0x7b, 0xa0,
+            0xae, 0x2c, 0xde, 0x01, 0xc8, 0xd4,
+        ];
+        let id = CertificateIdentifier::new(
+            Der::from_slice(&aki),
+            Der::from_slice(&[0x00, 0x87, 0x65, 0x43, 0x21]),
+        );
+        assert_eq!(id.to_string(), "aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE");
+    }
+
+    #[test]
+    fn 高位序列号的_ari_标识带着符号字节() {
+        use super::ari_cert_id;
+        use pingora_boringssl::x509::X509;
+        // ★ 走的是 `fetch_ari` 那条真路径：BoringSSL `X509` → DER → `CertificateIdentifier`。
+        // `ALNvmQPzO8c` = `00 b3 6f 99 03 f3 3b c7`。⚠ 剥掉 `00` 会变成 `s2-ZA_M7xw`，
+        //   pebble v2.10.1 认那个，规范 CA 不认 —— ⛔ 不许为了前者改成后者（G166）。
+        let high = X509::from_pem(高位序列号证书.as_bytes()).unwrap();
+        assert_eq!(
+            ari_cert_id(&high).unwrap().to_string(),
+            "X4oX19Tqp1-ctI6gLUtWdqoPg9I.ALNvmQPzO8c"
+        );
+        // 对照：首字节 < 0x80 时没有符号字节 —— 证明上面那个 `00` 不是每次都补的。
+        let low = X509::from_pem(低位序列号证书.as_bytes()).unwrap();
+        assert_eq!(
+            ari_cert_id(&low).unwrap().to_string(),
+            "X4oX19Tqp1-ctI6gLUtWdqoPg9I.M2-ZA_M7xw"
+        );
+    }
+
+    fn 跑完(
+        f: impl Future<Output = Result<u8, instant_acme::Error>>,
+    ) -> Result<u8, instant_acme::Error> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    fn 某个标识() -> instant_acme::CertificateIdentifier<'static> {
+        use rustls_pki_types::Der;
+        instant_acme::CertificateIdentifier::new(Der::from_slice(b"aki"), Der::from_slice(b"sn"))
+    }
+
+    /// pebble v2.10.1 那一句的原样（`serverInternal` 不是 `alreadyReplaced`）。
+    fn ca_的拒绝() -> instant_acme::Error {
+        instant_acme::Error::Api(
+            serde_json::from_str(
+                r#"{"type":"urn:ietf:params:acme:error:serverInternal",
+                    "detail":"could not find an order for the given certificate","status":500}"#,
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn 带_replaces_被_ca_拒了就去掉它再下一次() {
+        use super::new_order_with_fallback;
+        let mut 下单时带没带 = Vec::new();
+        let r = 跑完(new_order_with_fallback(
+            "a.example",
+            Some(某个标识()),
+            |replaces| {
+                下单时带没带.push(replaces.is_some());
+                let res = if replaces.is_some() {
+                    Err(ca_的拒绝())
+                } else {
+                    Ok(7)
+                };
+                async move { res }
+            },
+        ));
+        assert_eq!(r.unwrap(), 7);
+        // ★ 恰好两次，第二次**没带**：判据挂在调用上，不只挂在结果上。
+        assert_eq!(下单时带没带, [true, false]);
+    }
+
+    #[test]
+    fn 没带_replaces_时被拒就照实报错() {
+        use super::new_order_with_fallback;
+        let mut 下单时带没带 = Vec::new();
+        let r = 跑完(new_order_with_fallback("a.example", None, |replaces| {
+            下单时带没带.push(replaces.is_some());
+            async move { Err(ca_的拒绝()) }
+        }));
+        assert!(r.is_err());
+        // 没有可去掉的东西 ⇒ 不许再下第二次（那只是把同一个请求重发一遍）。
+        assert_eq!(下单时带没带, [false]);
+    }
+
+    #[test]
+    fn 不是_ca_回的拒绝就不回退() {
+        use super::new_order_with_fallback;
+        let mut 下单时带没带 = Vec::new();
+        let r = 跑完(new_order_with_fallback(
+            "a.example",
+            Some(某个标识()),
+            |replaces| {
+                下单时带没带.push(replaces.is_some());
+                async move { Err(instant_acme::Error::Str("connection reset")) }
+            },
+        ));
+        assert!(r.is_err());
+        // ⚠ 连不上去掉 `replaces` 也照样连不上 —— 交给退避，不在这里多打一次。
+        assert_eq!(下单时带没带, [true]);
     }
 }
