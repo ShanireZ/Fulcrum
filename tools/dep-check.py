@@ -155,8 +155,19 @@ SYSTEMD_MAJOR = re.compile(r"^(\d+)")
 # cargo 的 dry-run 输出形如：
 #     Updating pingora-core v0.8.1 -> v0.9.0
 #       Adding some-new-crate v1.2.3
-UPDATING = re.compile(r"^\s*Updating\s+(\S+)\s+v(\S+)\s+->\s+v(\S+)\s*$")
-ADDING = re.compile(r"^\s*Adding\s+(\S+)\s+v(\S+)\s*$")
+#
+# ★ 行尾可能再挂一个括号注记，**必须认**：不认，这一行整条被丢 —— 不报、不过怀疑期、不采纳，一点声响都没有。
+#   2026-10-16 在 cargo 1.98.0（fulcrum-build:local）里实测到的两种：
+#     Updating zstd v0.12.4 -> v0.13.3 (available: v0.14.2)                      有更新、但跨了大版本，`cargo update` 够不到
+#     Updating clap v4.0.0 -> v4.5.61 (available: v4.6.7, requires Rust 1.85)    更新的那版要更高的 Rust（resolver 3 的 MSRV 回退）
+#   `Adding` 同样带。另有三种照 cargo 源码（797e8a9bc `ops/cargo_update.rs` 的 `report_*`）才知道的：
+#   `(requires Rust X)`（选中的版本比 rust-version 还新）、`(published 3 hours ago, minimum age 7 days)` 与
+#   `(available: vX, published …)`（后两种要 -Zmin-publish-age，稳定版打不出来）。
+#   ⇒ 不枚举内容，认「行尾恰好一个不含括号的括号注记」：将来再冒出新种类，也不至于重蹈覆辙。
+#   `Downgrading` / `Removing` / `Unchanged` 不是采纳候选，不解析（`Downgrading` 一样带注记，见 [`_self_check_dry_run`]）。
+_NOTE = r"(?:\s+\([^()]*\))?"
+UPDATING = re.compile(r"^\s*Updating\s+(\S+)\s+v(\S+)\s+->\s+v(\S+)" + _NOTE + r"\s*$")
+ADDING = re.compile(r"^\s*Adding\s+(\S+)\s+v(\S+)" + _NOTE + r"\s*$")
 
 
 def rel(p: Path) -> str:
@@ -181,6 +192,16 @@ def cargo_candidates(cargo: list[str]) -> list[tuple[str, str | None, str]]:
         print(out, file=sys.stderr)
         raise SystemExit(f"cargo update --dry-run 失败（退出码 {proc.returncode}）")
 
+    return parse_dry_run(out)
+
+
+def parse_dry_run(out: str) -> list[tuple[str, str | None, str]]:
+    """`cargo update --dry-run` 的输出 → [(crate, 当前版本 or None, 候选版本)]。纯文本进、列表出 —— `--self-check` 直接喂它。
+
+    只认 `Updating` 与 `Adding`（含行尾括号注记，见 [`UPDATING`] 上的说明）；`Downgrading` / `Removing` / `Unchanged`、
+    `Locking …` 之类的表头、`warning:` 与 `note:` 都不是采纳候选。来源不是 crates.io 的包，行里旧版本后面跟着 `(来源)`，
+    本来就匹配不上 —— 它们没有 crates.io 的发布时间可判怀疑期。
+    """
     found: list[tuple[str, str | None, str]] = []
     for line in out.splitlines():
         m = UPDATING.match(line)
@@ -1300,6 +1321,100 @@ def _self_check_intruders() -> tuple[list[str], int]:
     return bad, len(cases)
 
 
+def _self_check_dry_run() -> tuple[list[str], int]:
+    """钉住 [`parse_dry_run`]：真实形状的 dry-run 输出喂进去，候选一个不丢，不该收的一个不收。
+
+    每条：(说明, dry-run 输出, 应得的候选)。
+    ★ A–D 四组是 2026-10-16 在 cargo 1.98.0（fulcrum-build:local）里对一次性项目实测的**原样输出**（C 组只删了几行）；
+      E–F 两组照 cargo 源码（797e8a9bc `ops/cargo_update.rs`）里 `report_*` 与 `PackageChange` 拼出的形状写的，
+      本机稳定版 cargo 打不出来。
+    ⚠ 这里曾经什么都没有：`UPDATING` / `ADDING` 锚在行尾，`(available: …)` 一挂上，整条候选被悄悄丢掉
+      （在 `zstd = ">=0.12, <0.14"` 的一次性项目里复现；真实树当天 4 行、0 行带注记，是潜伏的）。
+    """
+    cases = [
+        ("A 直接依赖有跨大版本的更新：`(available: v0.14.2)`（zstd 那次的原样输出）",
+         """\
+    Updating crates.io index
+     Locking 2 packages to latest Rust 1.98.0 compatible versions
+    Updating zstd v0.12.4 -> v0.13.3 (available: v0.14.2)
+    Updating zstd-safe v6.0.6 -> v7.3.0
+warning: not updating lockfile due to dry run
+""",
+         [("zstd", "0.12.4", "0.13.3"), ("zstd-safe", "6.0.6", "7.3.0")]),
+        ("B 无注记的 Updating / Adding 照收，`Removing` 不收",
+         """\
+    Updating crates.io index
+     Locking 3 packages to latest Rust 1.85 compatible versions
+      Adding memchr v2.8.3
+    Removing ryu v1.0.23
+    Updating serde_json v1.0.100 -> v1.0.154
+      Adding zmij v1.0.23
+warning: not updating lockfile due to dry run
+""",
+         [("memchr", None, "2.8.3"), ("serde_json", "1.0.100", "1.0.154"), ("zmij", None, "1.0.23")]),
+        ("C MSRV 回退：Updating 与 Adding 都带 `(available: …, requires Rust 1.85)`",
+         """\
+    Updating crates.io index
+     Locking 14 packages to latest Rust 1.75 compatible versions
+    Removing addr2line v0.24.2
+      Adding anstream v1.0.0
+    Removing atty v0.2.14
+    Updating clap v4.0.0 -> v4.5.61 (available: v4.6.7, requires Rust 1.85)
+      Adding clap_builder v4.5.61 (available: v4.6.7, requires Rust 1.85)
+    Updating clap_lex v0.3.3 -> v1.0.1 (available: v1.1.1, requires Rust 1.85)
+    Updating strsim v0.10.0 -> v0.11.1
+    Updating tokio v1.30.0 -> v1.53.3
+    Removing winapi v0.3.9
+warning: not updating lockfile due to dry run
+""",
+         [("anstream", None, "1.0.0"), ("clap", "4.0.0", "4.5.61"), ("clap_builder", None, "4.5.61"),
+          ("clap_lex", "0.3.3", "1.0.1"), ("strsim", "0.10.0", "0.11.1"), ("tokio", "1.30.0", "1.53.3")]),
+        ("D `--precise` 往回退：`Downgrading` 不是采纳候选，同一输出里的 Adding 照收",
+         """\
+    Updating crates.io index
+    Removing memchr v2.8.3
+      Adding ryu v1.0.23
+ Downgrading serde_json v1.0.154 -> v1.0.100
+    Removing zmij v1.0.23
+warning: not updating lockfile due to dry run
+""",
+         [("ryu", None, "1.0.23")]),
+        ("E 源码里的另三种注记：`(requires Rust X)` · `(published …, minimum age …)` · `(available: …, requires …, published …)`",
+         """\
+    Updating foo v1.2.0 -> v1.3.0 (requires Rust 1.99)
+    Updating bar v0.4.1 -> v0.4.2 (published 3 hours ago, minimum age 7 days)
+      Adding baz v2.0.0 (available: v2.0.1, published 3 hours ago)
+    Updating qux v1.0.0 -> v1.0.1 (available: v1.0.2, requires Rust 1.90, published 5 hours ago)
+""",
+         [("foo", "1.2.0", "1.3.0"), ("bar", "0.4.1", "0.4.2"), ("baz", None, "2.0.0"), ("qux", "1.0.0", "1.0.1")]),
+        ("F 不是候选：带注记的 Downgrading · `--verbose` 才有的 Unchanged · 来源不是 crates.io（git／path）· 收尾的 note",
+         """\
+ Downgrading foo v1.3.0 -> v1.2.9 (available: v1.3.1)
+   Unchanged foo v1.0.0 (available: v2.0.0)
+    Updating gitdep v1.0.0 (https://github.com/example/gitdep#abc12345) -> #def67890
+    Updating pathdep v1.0.0 (/work/vendor/pathdep) -> v1.1.0
+note: pass `--verbose` to see 3 unchanged dependencies behind latest
+""",
+         []),
+    ]
+    bad = []
+    for label, out, want in cases:
+        got = parse_dry_run(out)
+        if got != want:
+            lost = [c for c in want if c not in got]
+            extra = [c for c in got if c not in want]
+            bad.append(f"dry-run 行解析「{label}」：丢了 {lost or '无'}，多收了 {extra or '无'}")
+
+    # 再走一遍真正的入口：用解释器假扮 cargo（把第一个参数原样吐到 stderr、退 0），
+    # 证明 `cargo_candidates` 确实经过 `parse_dry_run`，不是只有自测在用它。
+    label, out, want = cases[0]
+    fake_cargo = [sys.executable, "-c", "import sys; sys.stderr.write(sys.argv[1])", out]
+    got = cargo_candidates(fake_cargo)
+    if got != want:
+        bad.append(f"dry-run 行解析「{label}」经 cargo_candidates：应得 {want}，实际 {got}")
+    return bad, len(cases) + 1
+
+
 def self_check() -> int:
     """`--self-check`：用合成输入钉住 `--apply` 的三处判定 —— 不出网、不跑 cargo。
 
@@ -1312,6 +1427,8 @@ def self_check() -> int:
     二、[`adopt_root`] 按结果锁判成败，见 [`_self_check_adopt_root`]。
 
     三、顺带带进来的版本过怀疑期、点名是谁带的，见 [`_self_check_intruders`]。
+
+    另：[`parse_dry_run`] 认不认得 cargo 的 dry-run 行（含行尾括号注记）不属上面几处 `--apply` 判定，见 [`_self_check_dry_run`]。
     """
     users = {
         ("base64", "0.23.1"): [],  # 只经 rcgen → pem 4 进产物（2026-09-24 的真实形状）
@@ -1346,6 +1463,8 @@ def self_check() -> int:
     bad += root_bad
     intruder_bad, intruder_cases = _self_check_intruders()
     bad += intruder_bad
+    dry_run_bad, dry_run_cases = _self_check_dry_run()
+    bad += dry_run_bad
     if bad:
         print("DEP-CHECK SELF-CHECK FAILED：")
         for line in bad:
@@ -1353,6 +1472,7 @@ def self_check() -> int:
         return 1
     print(f"DEP-CHECK SELF-CHECK PASSED —— 两把锁的对齐判定 {len(want)} 种情况各钉一条（与 tests/vendor/run.sh [2/5] 同一口径）；"
           f"根锁采纳按结果锁判成败 {root_cases} 组（两个方向都有）；"
+          f"cargo dry-run 行解析 {dry_run_cases} 组（含行尾注记；`Downgrading` 等非候选行不收）；"
           f"顺带带进来的版本过怀疑期 {intruder_cases} 组（判红、放行、不该查的不查）")
     return 0
 

@@ -67,6 +67,14 @@ python tools/dep-check.py --hours 48 # 换一个怀疑期长度
 # 脚本做了什么
 
 1. 用 `cargo update --dry-run` 问出「如果现在更新，会动哪些包」——★ **只有这批需要查**，全量查几百个传递依赖是浪费
+
+   ★ **解析要认行尾的括号注记。** 只认 `Updating` / `Adding` 两种行，行尾可以再挂一个括号注记：cargo 1.98.0 在还有跨大版本的更新（`cargo update` 够不到）时挂
+   `(available: v0.14.2)`，resolver 3 按 MSRV 回退时挂 `(available: v4.6.7, requires Rust 1.85)`（`Adding` 同样），
+   源码里另有 `(requires Rust X)` 与 `-Zmin-publish-age` 才有的 `published …`。锚死行尾的写法会把这样的候选整条丢掉 ——
+   不报、不过怀疑期、不采纳，一点声响都没有（2026-10-16 在 `zstd = ">=0.12, <0.14"` 的一次性项目里复现；
+   真实树当天 4 行、0 行带注记，是潜伏的）。`Downgrading` / `Removing` 与来源不是 crates.io 的行（git／path）不是候选。
+   `--self-check` 用 cargo 的原样输出钉着（`parse_dry_run`）
+
 2. 对每个候选版本查 crates.io 的**发布时间**与 **yanked 状态**
 3. 发布不足 N 小时、或已被 yank 的，**一律挡下并说明原因**
 4. `--apply` 时只对通过的候选做 `cargo update -p <name> --precise <ver>`，★ **成败看跑完之后的锁，不看 cargo 的退出码**：
