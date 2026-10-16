@@ -1080,6 +1080,35 @@ proxy task 那处漏了 `freeze` ⇒ 编不过（E0308，类型逼着），不�
 ① 是上游自己的 TODO、② 动的是私有函数 ⇒ 两处在上游也语义不变，一起做成一份投稿（[`upstream-pr/`](../../upstream-pr/README.md) 投稿八，基于上游 `main` `4487f7b`；⏳ 材料已备、未发，发不发另拍）。
 上游 `main`（2026-10-16 克隆）这两处与 0.9.0 一字不差。在归零之前是**要跟着 rebase 的常年成本**：两处都小，冲突时最容易丢的是调用处那个 `freeze` —— 丢了编不过；另两处被合掉时分配那条会红。
 
+### ★ 20. 两条上游 h2 测试改成「h2 在 codec 层就拒掉」（2026-10-16，h2 0.4.20）
+
+**类别**：改测试、不改产品代码（与改动 7 同一类）。
+**起因**：2026-10-16 的依赖追新（`dep-check.py --apply`，37 项，为修 rustls 四条公告）把 `h2` 0.4.19 → 0.4.20。
+0.4.20 的 `recv_headers` 自己对**值不同的重复 `content-length`** 发 `PROTOCOL_ERROR` 重置流（CHANGELOG「Fix rejecting duplicate `content-length` headers with different values」；0.4.19 只看第一个值）
+⇒ 这样的请求到不了 `accept()`，pingora 自己那道重复 CL 校验与每连接坏流预算都碰不到它。上游两条测试断言的正是 pingora 那一层 ⇒ 回归网红两条、定向重跑仍红。
+上游 `main`（2026-10-16 读）这两条与 0.9.0 一字不差；投稿七、八在上游 `main` 上跑全 workspace 时它们两侧都红、当时没查根因（[`upstream-pr/`](../../upstream-pr/README.md)）—— 就是这一条。
+owner 2026-10-16 拍（弹窗）：采 0.4.20、改测试（另两个选项：h2 暂留 0.4.19；整批撤回、只升 rustls）。
+
+#### 改了什么：**一个文件**（`pingora-core/src/protocols/http/v2/server.rs`，此前与 0.9.0 逐字相同 ⇒ fork 文件数 20 → 21）
+
+| 上游测试 | 上游断言 | 改成 |
+|---|---|---|
+| `test_req_conflicting_content_length_rejected` | 服务端拿到 `Some(H2Accept::Rejected)`，下一次 `from_h2_conn` 才是 `None` | 第一次 `from_h2_conn`（1 s 超时）就是 `None` —— 流在 codec 里被重置、pingora 没见过它；客户端照旧断言 `PROTOCOL_ERROR` |
+| `test_req_malformed_stream_budget_exhausted` → **改名** `test_req_conflicting_content_length_not_charged_to_malformed_budget` | 预算 31 时这条请求把预算耗尽（`H2Error`）| 预算 31 时返回 `None`、预算仍是 31 |
+
+线上行为：客户端看到的仍是 `RST_STREAM PROTOCOL_ERROR`，只是发的人从 pingora 换成了 h2。
+⚠ 唯一的差别是计数：这类流不再计入 pingora 每连接 32 条的坏流预算，改计入 h2 自己的本地错误重置上限（`DEFAULT_LOCAL_RESET_COUNT_MAX` = 1024）。
+预算耗尽本身仍由上游另两条测试守（`test_authority_mismatch_exhausts_malformed_stream_budget`、`test_forbidden_target_exhausts_malformed_stream_budget`），不靠本节这条。
+
+#### 反证（临时副本，⛔ 没碰工作树；每次都重编了 `pingora-core`）
+
+副本里把 h2 回退到 0.4.19、只跑这两条 ⇒ **两条都红**：「malformed request must not reach Pingora's acceptance checks」与「malformed request was charged to Pingora's budget」；
+工作树（0.4.20）里两条都绿 ⇒ 它们钉的是 h2 这一处行为，h2 哪天退回去会当场红。
+
+#### 归零条件
+
+上游迟早要为 h2 0.4.20 改这两条；rebase 时照上游的改法、删掉本节。在那之前冲突只会落在这两条测试上（产品代码一行没动）。
+
 ### 9. 没有动的一个：`daemonize`
 
 > ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 随 daemonize
@@ -1160,6 +1189,9 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ### 结论
 
+> ★ **2026-10-16（改动 20）：21 个文件** —— 改动 19 那 20 个，加 `pingora-core` 的 `src/protocols/http/v2/server.rs`
+> （改前它与 `0.9.0` 逐字相同：拿 GitHub 上 tag `0.9.0` 的原文件比，0 行差异；⚠ 没有重跑上面那整条命令）。
+>
 > ★ **2026-10-16（改动 19）：仍是 20 个文件** —— 改动 19 两处都落在已计入的 `protocols/http/v1/server.rs`，
 > 判据在已计入的 `tests/fulcrum_read_request_alloc.rs`（同一条命令对 `0.9.0` 实测，`702f690`）。
 >

@@ -1815,6 +1815,11 @@ mod test {
         }
     }
 
+    // Fulcrum fork change 20 (vendor/pingora/FORK.md): since h2 0.4.20 the
+    // codec itself resets a stream whose duplicate Content-Length values
+    // conflict (PROTOCOL_ERROR), so the request never reaches `accept()` and
+    // Pingora's own duplicate-CL check is not what rejects it any more.
+    // Upstream asserted `Some(H2Accept::Rejected)` here.
     #[tokio::test]
     async fn test_req_conflicting_content_length_rejected() {
         let (client, server) = duplex(65536);
@@ -1836,9 +1841,8 @@ mod test {
                 .unwrap();
 
             let (response, mut req_body) = h2.send_request(request, false).unwrap();
-            // Send a body matching the first Content-Length value so the h2
-            // codec accepts the stream and Pingora's duplicate-CL validation is
-            // what rejects the request.
+            // Send a body matching the first Content-Length value, so the only
+            // thing wrong with the stream is the conflicting header.
             req_body.reserve_capacity(5);
             req_body.send_data("abcde".into(), true).unwrap();
 
@@ -1852,30 +1856,32 @@ mod test {
         let mut connection = handshake(Box::new(server), None).await.unwrap();
         let digest = Arc::new(Digest::default());
 
-        // The malformed stream is reset during acceptance, so it is reported as
-        // rejected rather than surfaced to the application as a session.
-        let accepted = HttpSession::from_h2_conn(&mut connection, digest.clone())
-            .await
-            .unwrap();
-        assert!(
-            matches!(accepted, Some(H2Accept::Rejected)),
-            "malformed request must not surface as a session"
-        );
-
-        let done = timeout(
+        // The codec resets the malformed stream before acceptance, so the first
+        // thing Pingora sees is the connection closing once the client hangs up.
+        let accepted = timeout(
             Duration::from_secs(1),
             HttpSession::from_h2_conn(&mut connection, digest),
         )
         .await
-        .expect("from_h2_conn hung after rejecting malformed request")
-        .expect("from_h2_conn returned an error after rejecting malformed request");
-        assert!(done.is_none(), "connection should close after rejection");
+        .expect("from_h2_conn hung after the codec rejected the malformed request")
+        .expect("from_h2_conn returned an error after the codec rejected the malformed request");
+        assert!(
+            accepted.is_none(),
+            "malformed request must not reach Pingora's acceptance checks"
+        );
 
         client_task.await.unwrap();
     }
 
+    // Fulcrum fork change 20 (vendor/pingora/FORK.md): replaces upstream's
+    // `test_req_malformed_stream_budget_exhausted`, which used this request to
+    // exhaust the budget. Since h2 0.4.20 the codec resets the stream itself and
+    // charges h2's own local error-reset limit instead, so Pingora's budget is
+    // left untouched. Exhaustion is still covered by
+    // `test_authority_mismatch_exhausts_malformed_stream_budget` and
+    // `test_forbidden_target_exhausts_malformed_stream_budget`.
     #[tokio::test]
-    async fn test_req_malformed_stream_budget_exhausted() {
+    async fn test_req_conflicting_content_length_not_charged_to_malformed_budget() {
         let (client, server) = duplex(65536);
 
         let client_task = tokio::spawn(async move {
@@ -1906,20 +1912,22 @@ mod test {
         let digest = Arc::new(Digest::default());
         let mut malformed_streams = MAX_MALFORMED_STREAMS_PER_CONN - 1;
 
-        let err = match HttpSession::from_h2_conn_with_malformed_budget(
-            &mut connection,
-            digest,
-            &mut malformed_streams,
+        let accepted = timeout(
+            Duration::from_secs(1),
+            HttpSession::from_h2_conn_with_malformed_budget(
+                &mut connection,
+                digest,
+                &mut malformed_streams,
+            ),
         )
         .await
-        {
-            Ok(Some(_)) => panic!("malformed request must not surface as a session"),
-            Ok(None) => panic!("connection ended before malformed budget was exhausted"),
-            Err(err) => err,
-        };
-
-        assert_eq!(err.etype(), &ErrorType::H2Error);
-        assert_eq!(malformed_streams, MAX_MALFORMED_STREAMS_PER_CONN);
+        .expect("from_h2_conn hung after the codec rejected the malformed request");
+        match accepted {
+            Ok(None) => {}
+            Ok(Some(_)) => panic!("malformed request must not reach Pingora's acceptance checks"),
+            Err(err) => panic!("malformed request was charged to Pingora's budget: {err}"),
+        }
+        assert_eq!(malformed_streams, MAX_MALFORMED_STREAMS_PER_CONN - 1);
 
         drop(connection);
         client_task.await.unwrap();
