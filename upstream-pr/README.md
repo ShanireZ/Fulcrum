@@ -620,33 +620,47 @@ future 216 不变是探针读数，审阅者要自己写一行 `size_of_val` 才
 
 ⇒ **零命中「有人在做同一件事」**。
 
-### 验证（2026-10-16，容器内，⛔ Rust 不在宿主机跑）
+### 验证（2026-10-16，容器内，⛔ Rust 不在宿主机跑）· ★ 整张上游 CI 矩阵重放过
 
-**环境**：镜像 `fulcrum-build:local`（Debian trixie，rustc 1.98.0，已有 cmake / clang / iptables）+ 容器里 `rustup toolchain install 1.85.0 --profile minimal`；
-`--cap-add NET_ADMIN` 后先 `iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`。两侧共用**同一份 `Cargo.lock`**（cargo 1.98.0 对 `main` 生成；bytes 1.12.1 · http 1.5.0 · httparse 1.10.1，与 fork 相同）。
-⚠ 上游 CI 的稳定版是 1.97.1，这里用的是 1.98.0 —— clippy 的 lint 集可能差一点，发前要在 1.97.1 上重跑。
-「打补丁后」= 拿 `.patch` `git am` 到 `main` 上的回放树（与开发分支的树逐字节一致）。
+**环境**：自建镜像 `upstream-g165-rust:1.97.1` = 官方 `rust:1.97.1@sha256:b1b3c9c0…`（与投稿七同一个 digest）+ 上游 `build.yml` 那组 `cmake libclang-dev`
++ **OpenResty 1.27.1.2**（照 CI 的 sha256 核过、源码编，`pingora-proxy` 的集成测试要它）+ `rustup` 装 `nightly`（当日 1.101.0-nightly `4ebd25825`）与 `1.85.0`
++ `cargo install --locked cargo-audit`（0.22.2）与 `cargo-machete 0.7.0`；`--cap-add NET_ADMIN` 后先 `iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`。
+两棵树：`main` `4487f7b` 与「打补丁后」= 补丁 `git am` 到 `main` 上（`0262f87`，树与分支逐字节一致）；★ 都在容器里用 `git archive` 现展开（见下「方法上踩到两条」②）。
+每个（工具链 × 树）一份新展开的副本、**一个独立的 `CARGO_TARGET_DIR`**，源码全部 touch，每一格都核了 `Compiling` / `Checking pingora-core (/work/…)`。
+锁文件按 CI 的做法各自现生成（CI 不带锁）：六份 sha256 都是 `cb9ccc6d…`（bytes 1.12.1 · http 1.5.0 · httparse 1.10.1，与 fork 相同）。
 
-| 门 | `main` `4487f7b` | 打补丁后 |
+| 工具链 · 门（命令照 `build.yml` 原样）| `main` `4487f7b` | 打补丁后 |
 |---|---|---|
-| `git am` | — | ✅ 干净；回放树 == 分支树 |
-| `cargo fmt --all -- --check` | ✅ rc=0 | ✅ rc=0（⚠ 第一次 rc=1：proxy task 那行没按 rustfmt 折行，改后重新生成补丁）|
-| `cargo clippy -p pingora-core --all-targets -- --allow=unknown-lints --deny=warnings` | ✅ rc=0，0 条 | ✅ rc=0，0 条 |
-| `cargo +1.85.0 check -p pingora-core` | ✅ rc=0 | ✅ rc=0 |
-| `cargo test -p pingora-core --lib --tests --no-fail-fast` | 574 passed / 3 failed / 2 ignored | **577 / 3 / 2**；失败集合**按测试名**相同，多出的 3 条全是新测试 |
-| 新测试文件放到**没打补丁的 `main`** 上 | 预算那条红：「made 3 allocations, more than 1」；字节那条绿（字节没变）| — |
+| 1.97.1 · `cargo fmt --all -- --check` | ✅ | ✅ |
+| 1.97.1 · `cargo check --workspace` | ✅ | ✅ |
+| 1.97.1 · `cargo test --verbose --lib --bins --tests --no-fail-fast` | 1280 passed / 4 failed / 6 ignored | **1283 / 4 / 6**；失败集合按测试名相同，多出的 3 条全是新测试 |
+| 1.97.1 · `cargo test --verbose --doc` | 7 / 0 / 20 | 7 / 0 / 20 |
+| 1.97.1 · `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | ✅ rc=0（3 条 warning，都是 `pingora-foundations` 的「clippy.toml 与 Cargo.toml 的 MSRV 不同」）| ✅ 同（逐行相同）|
+| 1.97.1 · `cargo generate-lockfile --ignore-rust-version && cargo audit` | ✗ rc=1：2 条公告 + 4 条 warning | ✗ 同（逐条相同）—— 与补丁无关，见下 |
+| 1.97.1 · `cargo machete` | ✅ | ✅ |
+| nightly · fmt | ✗ 只差 `pingora-cache/src/key.rs` 一处 | ✗ 同一处（补丁的文件都没被点名）|
+| nightly · check / test / doc test | ✅ / 1280 / 4 / 6 / 7 / 0 / 20 | ✅ / **1283 / 4 / 6** / 7 / 0 / 20；失败集合相同 |
+| 1.85.0 · fmt / `cargo check --workspace --exclude pingora-foundations` | ✅ / ✅ | ✅ / ✅ |
+| 新测试文件放到**没打补丁的 `main`** 上（另跑）| 预算那条红：「made 3 allocations, more than 1」；字节那条绿（字节没变）| — |
 
-那 3 条两侧都红，与投稿七那次是同三条：`connectors::l4::tests::test_bind_to_port_range_on_connect` 与
-`http::v2::server` 的 `test_req_conflicting_content_length_rejected`、`test_req_malformed_stream_budget_exhausted`（走 h2、不经过本函数）。
+两侧都红的 4 条，与投稿七全 workspace 那次是同几条：`connectors::l4::tests::test_bind_to_port_range_on_connect`、
+`http::v2::server` 的 `test_req_conflicting_content_length_rejected` / `test_req_malformed_stream_budget_exhausted`（走 h2、不经过本函数）、
+`pingora-load-balancing` 的 `health_check::test::test_tcp_check`。★ `pingora-proxy` 的 `test_basic` / `test_upstream` 这次**全过**（投稿七那次 125 条全红，原因见下 ②）——
+其中真查 `Connection` 值的 `test_connect_close`（keep-alive 与 close 两处）· `test_duplex`（keep-alive）· `test_close_on_response_before_downstream_finish`（close）在打补丁的树上都过了。
+`cargo audit` 那 2 条公告是 `rustls` 0.21.12 的 RUSTSEC-2026-0346 / -0349（2026-10-14 发布，修复版 ≥ 0.23.46），4 条 warning 是 `derivative` · `paste` · `rustls-pemfile` · `unsafe-libyaml` 失维 —— 依赖图两侧相同，本补丁一个依赖都没动。
 
 **注入反证**（副本上，每次都有 `Compiling pingora-core`）：只退回 `Connection` 那处 ⇒ 只红预算那条「made 2 allocations」；只退回 `freeze` 那处 ⇒ 同样只红它、同样 2。
 
-**没跑的**（发前要补）：全 workspace 的 CI 原命令 `cargo test --verbose --lib --bins --tests --no-fail-fast` · `cargo test --doc` · 全 workspace clippy · `cargo audit` / `cargo machete` · nightly 档 · rustc 1.97.1。
+**补丁 v2**：重放之后把测试里一句注释的范围改准（原句「现有测试几乎都关了 `update_resp_headers`」没提 `pingora-proxy` 那几条要 OpenResty 的集成测试）。
+新旧两份补丁按行比，只差那一句注释与 diffstat；v2 重新 `git apply --check` / `git am`（树与分支一致）、1.97.1 的 fmt 与新测试二进制 3 条都过。⛔ 整张矩阵没对 v2 重跑（注释不进编译产物）。
 
-⚠ ⚠ **方法上踩到一条（已改正）**：几棵树共用一个 `CARGO_TARGET_DIR`，而 cargo 对 workspace 里的 path 包按**相对路径**算元数据 ⇒
-`cp -a` 出来的副本（保留了旧 mtime）会被当成「已经编过」，直接用上一棵树的产物。第一趟「新测试放到没打补丁的 `main` 上」因此**跑的其实是打补丁的库**、预算那条是绿的（编译 1.45 s、没重编库就是破绽）。
-先把副本里的源码全部 touch、确认 `Compiling pingora-core` 之后重跑，才拿到上表的 3 次；同一趟 MSRV 对回放树那次也是假的（0.85 s、没有 `Checking pingora-core`），touch 后重跑才算数。
-⇒ 上表每一格都对着各自的 `Compiling` / `Checking pingora-core` 核过。
+⚠ ⚠ **方法上踩到两条（都已改正）**：
+① 几棵树共用一个 `CARGO_TARGET_DIR` 时，cargo 对 workspace 里的 path 包按**相对路径**算元数据 ⇒ `cp -a` 出来的副本（保留了旧 mtime）被当成「已经编过」、直接用上一棵树的产物。
+第一趟「新测试放到没打补丁的 `main` 上」因此**跑的其实是打补丁的库**、预算那条是绿的（编译 1.45 s、没重编库就是破绽）；同一趟 MSRV 对回放树那次也是假的（0.85 s、没有 `Checking pingora-core`）。
+⇒ 改成每格独立目标目录 + 全部 touch + 逐格核 `Compiling` / `Checking`。
+② 上游仓库里有两个**符号链接**（`pingora-proxy/tests/utils/conf/origin/conf/keys` · `pingora/tests/keys`），在 Windows 上克隆（`core.symlinks=false`）就成了普通文件 ⇒ OpenResty 读不到证书起不来，
+`pingora-proxy` 两个集成测试二进制 125 条两侧全红（「mock origin (openresty) failed to start within 10s」，之后全是「Lazy instance has previously been poisoned」）。投稿七那次没装 OpenResty（「后两者要 openresty」）；就算装了，它的克隆若也是在 Windows 上做的，也会卡在这一条。
+⇒ 改成在容器里 `git archive | tar -x` 展开（符号链接原样），先手工起一次 mock origin 确认 `:8000` 回 200，再跑矩阵。
 
 ### ★ 数字的口径
 
@@ -655,13 +669,12 @@ future 216 不变是探针读数，审阅者要自己写一行 `size_of_val` 才
 
 ### 发前要重查
 
-1. **上游 `main` 动没动**：`git fetch` 后重新 `git am`。若 `prepare_response_header` 一带有人改过，**重量分配次数**（上限 1 是对 `4487f7b` 量的），再改 PR 正文里的 574 / 577。
-2. **用上游 CI 的 1.97.1 重跑**上表，并补上「没跑的」那几项。
-3. **G46 重跑**：同一组查询（两条通道）+ open PR 文件维度扫一遍 + `merge-tree`；带正对照。
-4. 外部写入（都要 owner 按 G40 单独授权）：发 issue → 拿号 → 推 `ShanireZ/pingora` 分支 → 开 PR。
+1. **上游 `main` 动没动**：`git fetch` 后重新 `git am`。若 `prepare_response_header` 一带有人改过，**重量分配次数**（上限 1 是对 `4487f7b` 量的），并整张矩阵重跑、再改 PR 正文里的 1280 / 1283 等数。
+2. **G46 重跑**：同一组查询（两条通道）+ open PR 文件维度扫一遍 + `merge-tree`；带正对照。
+3. 外部写入（都要 owner 按 G40 单独授权）：发 issue → 拿号 → 推 `ShanireZ/pingora` 分支 → 开 PR。
 
-**留下的本地资源**（⛔ 没删，留给 owner 决定）：卷 `upstream-g165-cargo`（约 191 MB）/ `upstream-g165-target`（约 4.2 GB）；
-上游克隆在本会话 scratchpad 里（会话结束后不保证还在）。⛔ 没碰任何 `fulcrum-*` 卷。
+**重做环境**：镜像的 Dockerfile 与矩阵脚本留在 `handoff/spike-http-ceiling/g165/upstream-ci/`（不入库）；克隆必须在 Linux 里展开（上面 ②）。
+本地资源 2026-10-16 owner 说「不用就删」⇒ 卷 `upstream-g165-cargo` / `upstream-g165-target` 与镜像 `upstream-g165-rust:1.97.1` 都已删；⛔ 没碰任何 `fulcrum-*` 卷。
 
 ## ❌ 投稿五（**已撤销，不发**）· rustls 监听器用不上自定义证书解析器
 

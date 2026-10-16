@@ -1,4 +1,4 @@
-From 892e0b0f386f055fc440d4187b2b69e8340b920a Mon Sep 17 00:00:00 2001
+From ae24cd9303b5b723fe7bc0af5fe7431a1c5cee6c Mon Sep 17 00:00:00 2001
 From: Shanire <shanire86@gmail.com>
 Date: Fri, 16 Oct 2026 10:59:14 +0900
 Subject: [PATCH] Avoid two allocations when writing an HTTP/1 response header
@@ -28,8 +28,8 @@ change reverted.
 Signed-off-by: Shanire <shanire86@gmail.com>
 ---
  pingora-core/src/protocols/http/v1/server.rs  |  22 ++-
- .../write_response_header_allocations.rs      | 183 ++++++++++++++++++
- 2 files changed, 197 insertions(+), 8 deletions(-)
+ .../write_response_header_allocations.rs      | 184 ++++++++++++++++++
+ 2 files changed, 198 insertions(+), 8 deletions(-)
  create mode 100644 pingora-core/tests/write_response_header_allocations.rs
 
 diff --git a/pingora-core/src/protocols/http/v1/server.rs b/pingora-core/src/protocols/http/v1/server.rs
@@ -93,10 +93,10 @@ index 71c7a2a..35be693 100644
                  }
 diff --git a/pingora-core/tests/write_response_header_allocations.rs b/pingora-core/tests/write_response_header_allocations.rs
 new file mode 100644
-index 0000000..a554808
+index 0000000..62b6968
 --- /dev/null
 +++ b/pingora-core/tests/write_response_header_allocations.rs
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,184 @@
 +// Copyright 2026 Cloudflare, Inc.
 +//
 +// Licensed under the Apache License, Version 2.0 (the "License");
@@ -252,8 +252,9 @@ index 0000000..a554808
 +    }
 +}
 +
-+/// Existing tests of `write_response_header()` mostly turn `update_resp_headers` off, so the
-+/// `Date` and `Connection` lines it adds are pinned here, byte for byte except the date itself.
++/// The `pingora-core` tests of `write_response_header()` mostly turn `update_resp_headers` off,
++/// and the `pingora-proxy` tests that check the `Connection` value need OpenResty, so the `Date`
++/// and `Connection` lines it adds are pinned here, byte for byte except the date itself.
 +#[test]
 +fn write_response_header_wire_bytes() {
 +    let runtime = current_thread_runtime();

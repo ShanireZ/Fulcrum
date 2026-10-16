@@ -57,9 +57,11 @@ allocator (only the counting thread is counted, on a current-thread runtime):
   either change reverted, 2. The cached `Date` value is refreshed once a second and the first write
   after a refresh allocates more, so the test takes the fewest of three consecutive writes.
 - `write_response_header_wire_bytes`: the same two responses are written to an in-memory stream and
-  compared byte for byte, except the date value, which is checked to parse as an HTTP date. Existing
-  tests of `write_response_header()` mostly turn `update_resp_headers` off, so the `Date` and
-  `Connection` lines it adds were not pinned before.
+  compared byte for byte, except the date value, which is checked to parse as an HTTP date. In
+  `pingora-core`, the tests of `write_response_header()` mostly turn `update_resp_headers` off, so
+  the `Date` and `Connection` lines it adds were not pinned there; the `Connection` value is checked
+  end to end only by the `pingora-proxy` integration tests (`test_basic`, `test_upstream`), which
+  need OpenResty.
 - `counting_allocator_counts`: the allocator does count.
 
 The stream is a `std::io::Cursor<Vec<u8>>` with its capacity reserved up front, so writing to it
@@ -67,22 +69,29 @@ does not allocate, and the written bytes are read back through `HttpSession::str
 
 ### Verification
 
-On `main` (`4487f7b`) and on the patch applied with `git am`, in a container (Debian trixie,
-rustc 1.98.0), sharing one `Cargo.lock` generated for `main`; every step recompiled
-`pingora-core` from the tree under test:
+I ran the steps of `.github/workflows/build.yml` on `main` (`4487f7b`) and on this patch applied
+with `git am`, in a container built from `rust:1.97.1` with the CI's build dependencies and
+OpenResty 1.27.1.2, plus `nightly` (1.101.0-nightly, 2026-10-15) and `1.85.0`. Each tree was
+extracted with `git archive` and built in its own target directory; the lockfiles the toolchains
+generated were identical.
 
-- `cargo fmt --all -- --check`: clean on both.
-- `cargo clippy -p pingora-core --all-targets -- --allow=unknown-lints --deny=warnings`: clean on
-  both.
-- `cargo +1.85.0 check -p pingora-core`: passes on both.
-- `cargo test -p pingora-core --lib --tests --no-fail-fast`: 574 passed / 3 failed / 2 ignored on
-  `main`, 577 / 3 / 2 with the patch. The three extra are the new tests; the failing sets are
-  identical by test name (`connectors::l4::tests::test_bind_to_port_range_on_connect` and two
-  `http::v2::server` tests, which fail on `main` in the same container and do not go through this
-  code).
+- 1.97.1: `fmt`, `check --workspace`, `clippy --all-targets --all` (`--deny=warnings`) and
+  `cargo machete` pass on both. `cargo test --verbose --lib --bins --tests --no-fail-fast`: 1280
+  passed / 4 failed / 6 ignored on `main`, 1283 / 4 / 6 with the patch; the three extra are the new
+  tests, and the failing sets are identical by test name. Doc tests: 7 passed on both.
+- nightly: the same test and doc-test results; `cargo fmt --check` reports one diff in
+  `pingora-cache/src/key.rs` on both trees, none in the files this touches.
+- 1.85.0: `fmt` and `check --workspace --exclude pingora-foundations` pass on both.
+- `cargo audit` reports the same advisories on both (for `rustls` 0.21.12, which this does not
+  touch).
+- The `pingora-proxy` integration tests that check the `Connection` value (`test_connect_close`,
+  `test_duplex`, `test_close_on_response_before_downstream_finish`) pass with the patch.
 - The new test file on unpatched `main`: the budget test fails with 3 allocations, the wire-bytes
   test passes (the bytes are the same). With only the `Connection` change or only the `freeze`
   change reverted, the budget test fails with 2.
 
-Not run: the full-workspace CI command, the doc tests, `cargo audit` / `cargo machete`, and the
-nightly toolchain.
+The four tests failing on both trees are `connectors::l4::tests::test_bind_to_port_range_on_connect`,
+two `http::v2::server` tests (`test_req_conflicting_content_length_rejected`,
+`test_req_malformed_stream_budget_exhausted`) and `pingora-load-balancing`'s
+`health_check::test::test_tcp_check`; they fail on `main` in the same container and do not go
+through this code.

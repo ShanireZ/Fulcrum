@@ -198,8 +198,9 @@ fn 枢衡改动19_写响应头不再拷连接头的值也不再冻结缓冲() {
     }
 }
 
-/// ★ 枢衡改动 19（G165）的另一半：线上字节照旧。上游自己写响应头的测试几乎都把 `update_resp_headers` 关了，
-/// 没有一条钉 `Date` / `Connection` 那两行 ⇒ 这里钉：续与不续各写一次，除 `Date` 的值以外逐字节对上。
+/// ★ 枢衡改动 19（G165）的另一半：线上字节照旧。本 fork 8 个 crate 里写响应头的测试几乎都把 `update_resp_headers`
+/// 关了，没有一条钉 `Date` / `Connection` 那两行（上游只在没进 fork 的 `pingora-proxy` 集成测试里查 `Connection` 的值）
+/// ⇒ 这里钉：续与不续各写一次，除 `Date` 的值以外逐字节对上。
 #[test]
 fn 枢衡改动19_写响应头的字节照旧() {
     let rt = tokio::runtime::Builder::new_current_thread()

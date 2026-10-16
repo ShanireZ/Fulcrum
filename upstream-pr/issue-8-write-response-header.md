@@ -57,6 +57,8 @@ I have this as one commit with tests and can open a PR if this direction is welc
 
 ## Additional context
 
-Existing tests of `write_response_header()` mostly turn `update_resp_headers` off, so nothing pins
-the `Date` / `Connection` lines it adds. The change adds a test that writes a keep-alive and a close
-response and compares the bytes (except the date value).
+In `pingora-core`, the tests of `write_response_header()` mostly turn `update_resp_headers` off, so
+the `Date` / `Connection` lines it adds are not pinned there; the `Connection` value is checked end to
+end only by the `pingora-proxy` integration tests (`test_basic`, `test_upstream`), which need
+OpenResty. The change adds a `pingora-core` test that writes a keep-alive and a close response and
+compares the bytes (except the date value).

@@ -1069,7 +1069,7 @@ h2 / h3 客户端的请求转发到 h1 上游时若带了它们，也从小写�
 | 判据 | 守什么 | 反证（注入写在临时 worktree 里，⛔ 没碰工作树；每次都有 `Compiling pingora-core`）|
 |---|---|---|
 | `枢衡改动19_写响应头不再拷连接头的值也不再冻结缓冲` | 读完一条请求后 `write_response_header` 一共分配 **1** 次（只剩序列化用的那块暂存缓冲；上游原样是 3 次，改前在本 fork 上实测 3）；`keep-alive` 与 `close` 两种都数。连接用预留了容量的 `Cursor<Vec<u8>>`，写的时候连接自己不分配 | ① 换回 `&str` ⇒ **只红它**「分配了 2 次（期望 1）」；② 换回 `freeze` ⇒ **只红它**，同样是 2 |
-| `枢衡改动19_写响应头的字节照旧` | 续与不续各写一次：除 `Date` 的值（核它是 HTTP 日期）外逐字节等于 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。上游自己写响应头的测试几乎都关了 `update_resp_headers`，没有一条钉这两行 | 值写成 `Keep-Alive` ⇒ **只红它**（回归网里上游自己的测试没有一条跟着红 —— 正是要补它的理由）|
+| `枢衡改动19_写响应头的字节照旧` | 续与不续各写一次：除 `Date` 的值（核它是 HTTP 日期）外逐字节等于 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。本 fork 8 个 crate 里写响应头的测试几乎都关了 `update_resp_headers`，没有一条钉这两行（上游只在没进 fork 的 `pingora-proxy` 集成测试 `test_basic` / `test_upstream` 里经 OpenResty 查 `Connection` 的值）| 值写成 `Keep-Alive` ⇒ **只红它**（回归网里上游自己的测试没有一条跟着红 —— 正是要补它的理由）|
 
 proxy task 那处漏了 `freeze` ⇒ 编不过（E0308，类型逼着），不需要测试守。
 ⚠ `Date` 是线程本地缓存、每秒换一次，换的那一秒里第一次写会多分配几次 ⇒ 分配那条先热身、再取三次里最少的。
