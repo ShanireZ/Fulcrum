@@ -581,6 +581,87 @@ future 216 不变是探针读数，审阅者要自己写一行 `size_of_val` 才
 
 **留下的本地资源**（⛔ 没删，留给 owner 决定）：镜像 `rust:1.97.1`（拉取）、`upstream-g157-rust:1.97.1`（自建，约 3.9 GB）；
 卷 `upstream-g157-cargo`（约 425 MB）/ `upstream-g157-target`（约 14 GB）/ `upstream-g157-target-msrv`（约 1 GB）；⛔ 没碰任何 `fulcrum-*` 卷。
+⚠ 2026-10-16 这台开发机上这些镜像与卷都已不在（10-15 Docker 状态被本会话之外的东西清过）。
+
+## ⏳ 投稿八（材料已备，⏳ 未发，owner 2026-10-16 拍「投稿材料先备不发」）· 写 h1 响应头时两次白分配
+
+> 对应 fork **改动 19**（PLAN **G165**）的 ① ②，两处一起投。
+> ⛔ 没开 issue、没开 PR、没 push、没 fork，GitHub 上零写入（查重只读、没评论）。
+> 补丁做在 scratchpad 里的**干净上游克隆**上，`vendor/pingora/` 一个字节没动。
+>
+> 上游 `main` = **`4487f7b`**（2026-10-16 克隆时仍是它，与投稿七同一个基底）。
+> `prepare_response_header` 整个函数与 proxy task 那处调用，在它上面与 fork 改动前（`9b43f01`）**逐行相同**。
+
+| 文件 | 用途 |
+|---|---|
+| [`issue-8-write-response-header.md`](issue-8-write-response-header.md) | issue 草稿（`feature_request.md` 模板的四个小标题）。★ **必须先发它** |
+| [`pr-8-write-response-header.md`](pr-8-write-response-header.md) | PR 正文草稿；发前换 `#<ISSUE_NUMBER>` |
+| [`0009-Avoid-two-allocations-when-writing-an-HTTP-1-response-header.patch`](0009-Avoid-two-allocations-when-writing-an-HTTP-1-response-header.patch) | 一个提交：两处改动 + 新测试二进制 `tests/write_response_header_allocations.rs`（分配上限 1 · 续与不续的字节 · 分配器自证）|
+
+`git format-patch` 原样输出：author 与 `Signed-off-by` 都是 `Shanire <shanire86@gmail.com>`，0 个 CR；`git apply --check` 对 `4487f7b` 通过。
+
+### 怎么切：一份 issue、一份 PR、一个提交
+
+- **不拆**：两处在同一个函数里、立论相同（每条响应白做的分配）、风险形状相同（都零 `unsafe`、都改私有函数或常量），验证也是同一个测试 —— 与投稿七「C2 新加 `unsafe`」那种值得分开的情形不同。
+- **仍先开 issue**：CONTRIBUTING 的免 issue 清单是错别字、小重构、文档；新加一个带 `#[global_allocator]` 的测试二进制不算 trivial。
+
+### G46 查重（2026-10-16，只读）
+
+**方法**：`gh search issues` 与 `gh search prs` **两条通道**（不加 `--state`），12 个查询串；
+另把上游 **123 个 open PR** 里改到 `pingora-core/src/protocols/http/v1/server.rs` 的 5 个拉下来逐个看 diff，并用 `git merge-tree` 试合。
+
+| 查什么 | 结果 |
+|---|---|
+| `make these lazy static` · `prepare_response_header` · `write_response_header allocation` · `response header allocation` · `connection_value` · `freeze write_buf` · `BytesMut freeze` · `Connection header keep-alive static` · `per-response allocation` · `lazy static connection` | **两条通道全 0** |
+| `HeaderValue::from_static` | issue #229（已关，压缩时的 `Accept-Ranges`，无关）|
+| `write_response_header` | 8 个 issue（#852 / #381 / #1031 等，都是阶段或语义问题，无关）· PR #289（已关，`write_response_header_ref` 绕过下游模块，无关）|
+| 动同一个文件的 open PR | #1000 · #956 · #902 · #732 · #677：diff 里没有一行碰 `connection_value` / `freeze` / `prepare_response_header` / `send_header_task`；`git merge-tree` 下本补丁**一处新冲突都不添**（它们与 `main` 本来各有 1 / 5 / 3 / 15 / 1 个冲突文件，叠上本补丁后数目与名单不变）|
+| ★ 正对照（同一脚本同一通道）| `listener Tracer` → PR **#995**；`CLOEXEC` → issue **#959** |
+
+⇒ **零命中「有人在做同一件事」**。
+
+### 验证（2026-10-16，容器内，⛔ Rust 不在宿主机跑）
+
+**环境**：镜像 `fulcrum-build:local`（Debian trixie，rustc 1.98.0，已有 cmake / clang / iptables）+ 容器里 `rustup toolchain install 1.85.0 --profile minimal`；
+`--cap-add NET_ADMIN` 后先 `iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`。两侧共用**同一份 `Cargo.lock`**（cargo 1.98.0 对 `main` 生成；bytes 1.12.1 · http 1.5.0 · httparse 1.10.1，与 fork 相同）。
+⚠ 上游 CI 的稳定版是 1.97.1，这里用的是 1.98.0 —— clippy 的 lint 集可能差一点，发前要在 1.97.1 上重跑。
+「打补丁后」= 拿 `.patch` `git am` 到 `main` 上的回放树（与开发分支的树逐字节一致）。
+
+| 门 | `main` `4487f7b` | 打补丁后 |
+|---|---|---|
+| `git am` | — | ✅ 干净；回放树 == 分支树 |
+| `cargo fmt --all -- --check` | ✅ rc=0 | ✅ rc=0（⚠ 第一次 rc=1：proxy task 那行没按 rustfmt 折行，改后重新生成补丁）|
+| `cargo clippy -p pingora-core --all-targets -- --allow=unknown-lints --deny=warnings` | ✅ rc=0，0 条 | ✅ rc=0，0 条 |
+| `cargo +1.85.0 check -p pingora-core` | ✅ rc=0 | ✅ rc=0 |
+| `cargo test -p pingora-core --lib --tests --no-fail-fast` | 574 passed / 3 failed / 2 ignored | **577 / 3 / 2**；失败集合**按测试名**相同，多出的 3 条全是新测试 |
+| 新测试文件放到**没打补丁的 `main`** 上 | 预算那条红：「made 3 allocations, more than 1」；字节那条绿（字节没变）| — |
+
+那 3 条两侧都红，与投稿七那次是同三条：`connectors::l4::tests::test_bind_to_port_range_on_connect` 与
+`http::v2::server` 的 `test_req_conflicting_content_length_rejected`、`test_req_malformed_stream_budget_exhausted`（走 h2、不经过本函数）。
+
+**注入反证**（副本上，每次都有 `Compiling pingora-core`）：只退回 `Connection` 那处 ⇒ 只红预算那条「made 2 allocations」；只退回 `freeze` 那处 ⇒ 同样只红它、同样 2。
+
+**没跑的**（发前要补）：全 workspace 的 CI 原命令 `cargo test --verbose --lib --bins --tests --no-fail-fast` · `cargo test --doc` · 全 workspace clippy · `cargo audit` / `cargo machete` · nightly 档 · rustc 1.97.1。
+
+⚠ ⚠ **方法上踩到一条（已改正）**：几棵树共用一个 `CARGO_TARGET_DIR`，而 cargo 对 workspace 里的 path 包按**相对路径**算元数据 ⇒
+`cp -a` 出来的副本（保留了旧 mtime）会被当成「已经编过」，直接用上一棵树的产物。第一趟「新测试放到没打补丁的 `main` 上」因此**跑的其实是打补丁的库**、预算那条是绿的（编译 1.45 s、没重编库就是破绽）。
+先把副本里的源码全部 touch、确认 `Compiling pingora-core` 之后重跑，才拿到上表的 3 次；同一趟 MSRV 对回放树那次也是假的（0.85 s、没有 `Checking pingora-core`），touch 后重跑才算数。
+⇒ 上表每一格都对着各自的 `Compiling` / `Checking pingora-core` 核过。
+
+### ★ 数字的口径
+
+⛔ fork 侧诊断台的计数（每请求 malloc 18 → 16、用户指令 −1.9% 等）**一个都没进** issue / PR。进去的数都能在上游复现：
+3 → 1 次分配由补丁自带的测试给出（退回任一处它就报 2），4 KiB 是 `INIT_HEADER_BUF_SIZE`。计时没测、也没写。
+
+### 发前要重查
+
+1. **上游 `main` 动没动**：`git fetch` 后重新 `git am`。若 `prepare_response_header` 一带有人改过，**重量分配次数**（上限 1 是对 `4487f7b` 量的），再改 PR 正文里的 574 / 577。
+2. **用上游 CI 的 1.97.1 重跑**上表，并补上「没跑的」那几项。
+3. **G46 重跑**：同一组查询（两条通道）+ open PR 文件维度扫一遍 + `merge-tree`；带正对照。
+4. 外部写入（都要 owner 按 G40 单独授权）：发 issue → 拿号 → 推 `ShanireZ/pingora` 分支 → 开 PR。
+
+**留下的本地资源**（⛔ 没删，留给 owner 决定）：卷 `upstream-g165-cargo`（约 191 MB）/ `upstream-g165-target`（约 4.2 GB）；
+上游克隆在本会话 scratchpad 里（会话结束后不保证还在）。⛔ 没碰任何 `fulcrum-*` 卷。
 
 ## ❌ 投稿五（**已撤销，不发**）· rustls 监听器用不上自定义证书解析器
 

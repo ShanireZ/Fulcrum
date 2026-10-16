@@ -1,0 +1,285 @@
+From 892e0b0f386f055fc440d4187b2b69e8340b920a Mon Sep 17 00:00:00 2001
+From: Shanire <shanire86@gmail.com>
+Date: Fri, 16 Oct 2026 10:59:14 +0900
+Subject: [PATCH] Avoid two allocations when writing an HTTP/1 response header
+
+HttpSession::prepare_response_header() makes two heap allocations per
+response that are not needed:
+
+- The Connection value is inserted as a &str, which HeaderValue::from_str()
+  copies into a new buffer every time. The two values are static, so insert
+  them with HeaderValue::from_static() instead, as the "make these lazy
+  static" TODO asked.
+- The serialized header is returned as frozen Bytes. Freezing a BytesMut
+  whose length differs from its capacity (the buffer starts at
+  INIT_HEADER_BUF_SIZE) allocates a shared header, but
+  write_response_header() only borrows the bytes for write_all() and drops
+  them. Return the BytesMut, and freeze it only in the proxy-task path,
+  which hands it to send_header_task().
+
+The bytes written do not change.
+
+Add an integration test, in its own binary with a counting global
+allocator, that bounds the allocations write_response_header() makes for a
+simple response to one (the serialization buffer), and pins the bytes it
+writes for keep-alive and close responses. The budget fails with either
+change reverted.
+
+Signed-off-by: Shanire <shanire86@gmail.com>
+---
+ pingora-core/src/protocols/http/v1/server.rs  |  22 ++-
+ .../write_response_header_allocations.rs      | 183 ++++++++++++++++++
+ 2 files changed, 197 insertions(+), 8 deletions(-)
+ create mode 100644 pingora-core/tests/write_response_header_allocations.rs
+
+diff --git a/pingora-core/src/protocols/http/v1/server.rs b/pingora-core/src/protocols/http/v1/server.rs
+index 71c7a2a..35be693 100644
+--- a/pingora-core/src/protocols/http/v1/server.rs
++++ b/pingora-core/src/protocols/http/v1/server.rs
+@@ -817,10 +817,14 @@ impl HttpSession {
+     /// Prepare response header for writing: handle upgrades, set headers, initialize body writer.
+     /// This contains all the synchronous logic that should happen before writing the header.
+     /// Returns Ok(Some((bytes, should_flush))) if the header should be written, Ok(None) if should skip.
++    ///
++    /// The bytes are returned unfrozen: the direct write path only borrows them, and freezing a
++    /// buffer whose length differs from its capacity allocates a shared header. Callers that need
++    /// `Bytes` freeze them.
+     fn prepare_response_header(
+         &mut self,
+         header: &mut ResponseHeader,
+-    ) -> Result<Option<(Bytes, bool)>> {
++    ) -> Result<Option<(BytesMut, bool)>> {
+         // Check if we should ignore informational responses
+         if header.status.is_informational() && self.ignore_info_resp(header.status.into()) {
+             debug!("ignoring informational headers");
+@@ -848,11 +852,11 @@ impl HttpSession {
+             /* update headers */
+             header.insert_header(header::DATE, date::get_cached_date())?;
+ 
+-            // TODO: make these lazy static
++            // Static values: a `&str` would be copied into a new `HeaderValue` on every response.
+             let connection_value = if self.will_keepalive() {
+-                "keep-alive"
++                HeaderValue::from_static("keep-alive")
+             } else {
+-                "close"
++                HeaderValue::from_static("close")
+             };
+             header.insert_header(header::CONNECTION, connection_value)?;
+         }
+@@ -922,7 +926,7 @@ impl HttpSession {
+         let should_flush = header.status.is_informational()
+             || header.headers.get(header::CONTENT_LENGTH).is_none();
+ 
+-        Ok(Some((write_buf.freeze(), should_flush)))
++        Ok(Some((write_buf, should_flush)))
+     }
+ 
+     fn init_body_writer(&mut self, header: &ResponseHeader) {
+@@ -1693,9 +1697,11 @@ impl HttpSession {
+                     };
+                     // header only responses will want to flush
+                     let flush = should_flush || self.body_writer.finished();
+-                    self.proxy_task_state
+-                        .header_writer()
+-                        .send_header_task(write_buf, flush, None);
++                    self.proxy_task_state.header_writer().send_header_task(
++                        write_buf.freeze(),
++                        flush,
++                        None,
++                    );
+                     self.proxy_task_state.current_writer =
+                         Some(ProxyTaskWriter::WritingHeader(header, end));
+                 }
+diff --git a/pingora-core/tests/write_response_header_allocations.rs b/pingora-core/tests/write_response_header_allocations.rs
+new file mode 100644
+index 0000000..a554808
+--- /dev/null
++++ b/pingora-core/tests/write_response_header_allocations.rs
+@@ -0,0 +1,183 @@
++// Copyright 2026 Cloudflare, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++// http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++//! Counts the heap allocations `HttpSession::write_response_header()` makes for a simple
++//! response, and checks the bytes it writes.
++//!
++//! This is its own test binary because `#[global_allocator]` applies to the whole binary.
++//! Only allocations on the counting thread are counted, and the runtime is current-thread, so the
++//! future under test is polled on that thread.
++
++use std::alloc::{GlobalAlloc, Layout, System};
++use std::cell::Cell;
++use std::future::Future;
++use std::io::Cursor;
++
++use http::HeaderValue;
++use pingora_core::protocols::http::v1::server::HttpSession;
++use pingora_http::ResponseHeader;
++
++struct CountingAllocator;
++
++thread_local! {
++    static COUNTING: Cell<bool> = const { Cell::new(false) };
++    static COUNT: Cell<u64> = const { Cell::new(0) };
++}
++
++fn record_allocation() {
++    // `try_with`: the allocator is still called while thread-locals are being torn down.
++    let _ = COUNTING.try_with(|counting| {
++        if counting.get() {
++            let _ = COUNT.try_with(|count| count.set(count.get() + 1));
++        }
++    });
++}
++
++unsafe impl GlobalAlloc for CountingAllocator {
++    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++        record_allocation();
++        unsafe { System.alloc(layout) }
++    }
++
++    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++        unsafe { System.dealloc(ptr, layout) }
++    }
++
++    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
++        record_allocation();
++        unsafe { System.realloc(ptr, layout, new_size) }
++    }
++}
++
++#[global_allocator]
++static ALLOCATOR: CountingAllocator = CountingAllocator;
++
++/// Counts the allocations made on this thread while `f` is polled.
++async fn count_allocations<T>(f: impl Future<Output = T>) -> (T, u64) {
++    COUNT.with(|count| count.set(0));
++    COUNTING.with(|counting| counting.set(true));
++    let out = f.await;
++    COUNTING.with(|counting| counting.set(false));
++    (out, COUNT.with(|count| count.get()))
++}
++
++fn current_thread_runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .build()
++        .unwrap()
++}
++
++/// Answered with `Connection: keep-alive`.
++const KEEPALIVE_REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: pingora.org\r\n\r\n";
++/// Answered with `Connection: close`.
++const CLOSE_REQUEST: &[u8] = b"GET / HTTP/1.1\r\nHost: pingora.org\r\nConnection: close\r\n\r\n";
++
++/// A session over an in-memory stream: the request bytes first, the written bytes appended after
++/// them. The capacity is reserved up front, so writing does not allocate in the stream itself.
++fn session_over_cursor(request: &[u8]) -> HttpSession {
++    let mut wire = Vec::with_capacity(64 * 1024);
++    wire.extend_from_slice(request);
++    HttpSession::new(Box::new(Cursor::new(wire)))
++}
++
++/// The bytes written after the request.
++fn written(session: &HttpSession, request_len: usize) -> Vec<u8> {
++    let wire = (**session.stream())
++        .as_any()
++        .downcast_ref::<Cursor<Vec<u8>>>()
++        .expect("the stream is the Cursor<Vec<u8>> it was created with");
++    wire.get_ref()[request_len..].to_vec()
++}
++
++fn empty_ok_response() -> Box<ResponseHeader> {
++    let mut resp = ResponseHeader::build_no_case(200, Some(4)).unwrap();
++    resp.insert_header(http::header::CONTENT_LENGTH, HeaderValue::from_static("0"))
++        .unwrap();
++    Box::new(resp)
++}
++
++/// Reads `request`, then returns how many allocations writing the response header took. The
++/// response header itself is built before counting starts.
++fn write_response_header_allocations(request: &[u8]) -> u64 {
++    let runtime = current_thread_runtime();
++    let mut session = session_over_cursor(request);
++    runtime.block_on(session.read_request()).unwrap();
++    let resp = empty_ok_response();
++    let (res, allocations) =
++        runtime.block_on(count_allocations(session.write_response_header(resp)));
++    res.unwrap();
++    allocations
++}
++
++#[test]
++fn counting_allocator_counts() {
++    let runtime = current_thread_runtime();
++    let (_, allocations) = runtime.block_on(count_allocations(async {
++        std::hint::black_box(Vec::<u8>::with_capacity(16));
++    }));
++    assert!(allocations >= 1, "the counting allocator saw no allocation");
++}
++
++/// The limit is what `write_response_header()` needed when this test was added: the buffer the
++/// header is serialized into. A change that needs more allocations per response should raise it
++/// explicitly, so that the cost shows up in review.
++///
++/// The cached `Date` value is refreshed once a second, and the first response after a refresh
++/// allocates a few more times; so this takes the fewest of three consecutive writes.
++#[test]
++fn write_response_header_allocation_budget() {
++    const MAX_ALLOCATIONS: u64 = 1;
++    for (request, connection) in [(KEEPALIVE_REQUEST, "keep-alive"), (CLOSE_REQUEST, "close")] {
++        // The first call may include one-time, process-wide allocations.
++        let _ = write_response_header_allocations(request);
++        let allocations = (0..3)
++            .map(|_| write_response_header_allocations(request))
++            .min()
++            .unwrap();
++        assert!(
++            allocations <= MAX_ALLOCATIONS,
++            "writing a `Connection: {connection}` response header made {allocations} allocations, \
++             more than {MAX_ALLOCATIONS}"
++        );
++    }
++}
++
++/// Existing tests of `write_response_header()` mostly turn `update_resp_headers` off, so the
++/// `Date` and `Connection` lines it adds are pinned here, byte for byte except the date itself.
++#[test]
++fn write_response_header_wire_bytes() {
++    let runtime = current_thread_runtime();
++    for (request, connection) in [(KEEPALIVE_REQUEST, "keep-alive"), (CLOSE_REQUEST, "close")] {
++        let mut session = session_over_cursor(request);
++        runtime.block_on(session.read_request()).unwrap();
++        runtime
++            .block_on(session.write_response_header(empty_ok_response()))
++            .unwrap();
++        let out = String::from_utf8(written(&session, request.len())).unwrap();
++        let date = out
++            .split("\r\n")
++            .find_map(|line| line.strip_prefix("Date: "))
++            .unwrap_or_else(|| panic!("no `Date: ` line in {out:?}"));
++        assert!(
++            httpdate::parse_http_date(date).is_ok(),
++            "not an HTTP date: {date:?}"
++        );
++        assert_eq!(
++            format!(
++                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nDate: {date}\r\nConnection: {connection}\r\n\r\n"
++            ),
++            out
++        );
++    }
++}
+-- 
+2.50.1.windows.1
+
