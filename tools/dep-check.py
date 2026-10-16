@@ -14,6 +14,8 @@ G29 的口径是：`Cargo.toml` 用 `>=` 下界、不设上界，追最新（**�
   3. 发布不足 N 小时、或已被 yank 的，一律挡下并说明原因。
   4. `--apply` 时只对**通过怀疑期**的候选做 `cargo update -p <name> --precise <ver>`；
      成败看跑完之后的两把锁，不看 cargo 的退出码（同族包会被前一项顺带带走，见 `adopt_root`）。
+     ★ 顺带带进来的版本同样要过怀疑期：两把锁采纳前后逐包比，有一个过不了就**整批作废、
+     两把锁逐字节还原**（见 `lock_intruders`）。
 
 ★ 另有一件 `cargo update` 结构上做不到的事：**盯住被 fork 的 pingora-core 的上游**。
 
@@ -50,7 +52,7 @@ Debian 侧的 digest 漂移只打一行提示。
     80  ★ systemd 测试宿主镜像要人管（G39）：大版本变了 / **本次没能查证**
    160  ★ 有未登记的安全公告 / **本次没能查证**（新增，见下）
    255  ★ 上面几档同时亮到装不下了（见 `finish()`）——**不是第六档**，是「说不清楚」
-    1   出错
+    1   出错；`--apply` 时也表示采纳没成（含顺带带进没过怀疑期的版本、整批作废，见 `lock_intruders`）
 
 ★ 20 / 40 / 80 / 160 都把「没能查证」算作**要人管**，不算作「无事」。这是本项目复审反复抓到的
   那个形状：把失败当成成功的返回值。它们各自只发一两个请求，失败多半是真有问题，重跑也便宜。
@@ -202,6 +204,30 @@ def crate_versions(name: str) -> dict[str, dict]:
 def parse_ts(raw: str) -> datetime:
     # crates.io 给的是 RFC3339，尾巴可能是 Z
     return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+
+
+def quarantine_verdict(name: str, version: str, cutoff: datetime) -> tuple[str | None, str]:
+    """一个具体版本过没过怀疑期：`(None, 说明)` = 可采纳，`(原因, 说明)` = 挡下。
+
+    ★ 候选清单与采纳之后的闯入者核对（[`lock_intruders`]）共用这一个判据 —— 各写一份迟早分家。
+      查不到、已 yank 同样挡下：没能查证不算通过。
+    """
+    try:
+        versions = crate_versions(name)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        return "查不到", f"crates.io 查询失败：{e}"
+
+    meta = versions.get(version)
+    if meta is None:
+        return "查不到", "crates.io 上没有这个版本（本地索引比线上新？）"
+    if meta.get("yanked"):
+        return "已 yank", "该版本已被撤回"
+
+    published = parse_ts(meta["created_at"])
+    age_h = (datetime.now(timezone.utc) - published).total_seconds() / 3600
+    if published > cutoff:
+        return "怀疑期内", f"发布于 {published:%Y-%m-%d %H:%M UTC}，仅 {age_h:.1f} 小时"
+    return None, f"发布于 {published:%Y-%m-%d %H:%M UTC}，{age_h:.0f} 小时前"
 
 
 def version_key(v: str) -> tuple:
@@ -841,29 +867,22 @@ def main() -> int:
 
     print(f"候选更新 {len(candidates)} 项，怀疑期 {args.hours} 小时（早于 {cutoff:%Y-%m-%d %H:%M UTC} 发布的才算数）\n")
 
+    # 判过的版本记下来：采纳之后的闯入者核对多半撞上候选清单里被挡的那几个，不必再问 crates.io。
+    verdicts: dict[tuple[str, str], tuple[str | None, str]] = {}
+
+    def vet(name: str, version: str) -> tuple[str | None, str]:
+        if (name, version) not in verdicts:
+            verdicts[(name, version)] = quarantine_verdict(name, version, cutoff)
+        return verdicts[(name, version)]
+
     for name, cur, new in candidates:
         label = f"{name} {cur or '(新增)'} -> {new}"
-        try:
-            versions = crate_versions(name)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
-            blocked.append((label, "查不到", f"crates.io 查询失败：{e}"))
-            continue
-
-        meta = versions.get(new)
-        if meta is None:
-            blocked.append((label, "查不到", "crates.io 上没有这个版本（本地索引比线上新？）"))
-            continue
-        if meta.get("yanked"):
-            blocked.append((label, "已 yank", "该版本已被撤回"))
-            continue
-
-        published = parse_ts(meta["created_at"])
-        age_h = (datetime.now(timezone.utc) - published).total_seconds() / 3600
-        if published > cutoff:
-            blocked.append((label, "怀疑期内", f"发布于 {published:%Y-%m-%d %H:%M UTC}，仅 {age_h:.1f} 小时"))
+        why, detail = vet(name, new)
+        if why:
+            blocked.append((label, why, detail))
         else:
             eligible.append((name, cur, new))
-            print(f"  ✓ {label}    （发布于 {published:%Y-%m-%d %H:%M UTC}，{age_h:.0f} 小时前）")
+            print(f"  ✓ {label}    （{detail}）")
 
     if blocked:
         print("\n被挡下的：")
@@ -882,10 +901,28 @@ def main() -> int:
         proc = run([*cargo, "update", "-p", spec, "--precise", version])
         return proc.returncode, proc.stderr or proc.stdout
 
-    print("\n开始采纳：")
-    failed = len(adopt_root(eligible, update_root, lambda: _lock_versions("Cargo.lock")))
+    # ★ 采纳前给两把锁拍快照（逐字节）：顺带带进没过怀疑期的版本时整批还原，见 [`lock_intruders`]。
+    locks = ("Cargo.lock", VENDOR_LOCK)
+    snapshot = {lock: (REPO / lock).read_bytes() for lock in locks}
+    before = {lock: _lock_versions(lock) for lock in locks}
+    blame: dict[tuple[str, str, str], str] = {}
 
-    failed += _align_vendor_lock(cargo, eligible)
+    def read_root() -> dict[str, set[str]]:
+        return _lock_versions("Cargo.lock")
+
+    print("\n开始采纳：")
+    failed = len(adopt_root(eligible, blaming(update_root, read_root, "Cargo.lock", blame), read_root))
+
+    failed += _align_vendor_lock(cargo, eligible, blame)
+
+    found = lock_intruders(before, {lock: _lock_versions(lock) for lock in locks}, eligible, vet)
+    if report_intruders(found, blame):
+        for lock, data in snapshot.items():
+            (REPO / lock).write_bytes(data)
+        print("\n⛔ 整批作废（G29）：采纳会顺带带进没过怀疑期的版本。"
+              "两把锁已逐字节还原成采纳前的样子，本轮什么都没采。")
+        print("  等上面 ✗ 的那几个过了怀疑期再重跑；已 yank／查不到的要人看。")
+        return 1
 
     print(
         "\n★ 记住 G29 的后半句：升级之后必须跑完当前里程碑的全部验证"
@@ -957,6 +994,72 @@ def root_lock_problems(lock: dict[str, set[str]], eligible) -> list[tuple[str, s
     return out
 
 
+def lock_intruders(before, after, eligible, vet) -> list[tuple[str, str, str, str | None, str]]:
+    """采纳前后逐把锁比：新出现、却**不是任何一项采纳目标**的 `(名字, 版本)`，各自过一遍怀疑期。
+
+    返回 `[(锁, 名字, 版本, 原因 or None, 说明)]`，原因非空的就是闯入者 —— G29 被绕过了。
+    `before` / `after` 是 `{锁: {名字: {版本}}}`；`vet(名字, 版本)` 同 [`quarantine_verdict`]。
+
+    # ★ ★ 为什么要有这一步
+
+    `cargo update -p A@旧 --precise 新` 是保守更新，但 A 的新版本要求的依赖**锁里满足不了时照样会动**，
+    而且被拉到「满足要求的最新版」，**不看发布时间**。cargo 1.98.0 实测：`zstd` 0.12.4 → 0.13.0
+    把 `zstd-safe` 6.0.6 拉到 7.3.0，而 `^7.0.0` 有 7.0.0 就够了。
+    ⇒ 同族包的最新版还在怀疑期里（候选清单里它正被挡着），或 A 的新版本新增了一个刚发版的依赖，
+      `--apply` 都会把它**悄悄**采纳 —— [`root_lock_problems`] 只核「每一项到没到目标」，不核「别的动没动」。
+
+    ★ 采纳目标在候选清单里已过过怀疑期，不再查；其余新出现的版本**一律现查**，不只认候选清单里被挡的：
+      cargo 每跑一次都会刷新索引，候选清单之后才发的版本同样可能被带进来；而被带到候选清单之外、
+      早已过了怀疑期的老版本（上面的 7.3.0 就是这种）也不该判红。
+    ★ 消失的版本（新版本甩掉的依赖）不在此列：移走东西不是采纳。
+    """
+    targets = {(name, new) for name, _cur, new in eligible}
+    out = []
+    for lock, now in after.items():
+        old = before.get(lock, {})
+        for name in sorted(now):
+            for ver in sorted(now[name] - old.get(name, set())):
+                if (name, ver) not in targets:
+                    out.append((lock, name, ver, *vet(name, ver)))
+    return out
+
+
+def report_intruders(found, blame) -> int:
+    """打出 [`lock_intruders`] 的结果，返回闯入者个数（> 0 即整批作废）。"""
+    print("\n核对怀疑期（两把锁采纳前后逐包比，只看不是采纳目标的新版本）：")
+    if not found:
+        print("  ✓ 新出现的版本全是采纳目标。")
+        return 0
+    bad = 0
+    for lock, name, ver, why, detail in found:
+        by = blame.get((lock, name, ver), "说不清是哪一项")
+        if why:
+            bad += 1
+            print(f"  ✗ {name} {ver}（{lock}，由 {by} 带进来）[{why}] {detail}")
+        else:
+            print(f"  ○ {name} {ver}（{lock}，由 {by} 带进来）不在候选清单里，已过怀疑期：{detail}")
+    return bad
+
+
+def blaming(update, read_lock, lock: str, blame: dict):
+    """给 `update(spec, 版本)` 包一层：每跑完一项读一次锁，新出现的 `(锁, 名字, 版本)` 记进 `blame`，
+    值是带它进来的那一项。只为报告 —— 闯入者要说得出是谁带进来的，人才知道在等哪一个。
+    """
+    prev = read_lock()
+
+    def wrapped(spec, version):
+        nonlocal prev
+        result = update(spec, version)
+        now = read_lock()
+        for name, vers in now.items():
+            for ver in vers - prev.get(name, set()):
+                blame[(lock, name, ver)] = f"{spec} -> {version}"
+        prev = now
+        return result
+
+    return wrapped
+
+
 def _lock_versions(rel_lock: str) -> dict[str, set[str]]:
     """某把锁里每个 registry 包 → 它解出来的版本集合。"""
     out: dict[str, set[str]] = {}
@@ -965,7 +1068,7 @@ def _lock_versions(rel_lock: str) -> dict[str, set[str]]:
     return out
 
 
-def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, str]]) -> int:
+def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, str]], blame: dict) -> int:
     """把同一批更新也落进 **vendor/pingora/Cargo.lock**，并**逐个包核对两把锁一致**。
 
     # ★ ★ ★ 为什么要有这一步（§10）
@@ -989,10 +1092,13 @@ def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, s
     ★ 而「vendor 锁里根本没有这个名字」算一致 —— 它没有可对不上的东西。
     """
     print(f"\n对齐第二把锁（{VENDOR_LOCK}）：")
+    update = blaming(
+        lambda spec, version: run([*cargo, "update", "-p", spec, "--precise", version,
+                                   "--manifest-path", VENDOR_MANIFEST]),
+        lambda: _lock_versions(VENDOR_LOCK), VENDOR_LOCK, blame,
+    )
     for name, cur, version in eligible:
-        spec = f"{name}@{cur}" if cur else name
-        run([*cargo, "update", "-p", spec, "--precise", version,
-             "--manifest-path", VENDOR_MANIFEST])
+        update(f"{name}@{cur}" if cur else name, version)
 
     sa = _load_supply_audit()
     root = {}
@@ -1106,8 +1212,96 @@ def _self_check_adopt_root() -> tuple[list[str], int]:
     return bad, len(cases)
 
 
+def _self_check_intruders() -> tuple[list[str], int]:
+    """钉住 [`lock_intruders`] 与 [`blaming`]：顺带带进来的版本逐个过怀疑期，判红的要点名是哪一项带进来的。
+
+    每条：(说明, 候选, 采纳前的两把锁, 每一项在每把锁里的改动, 怀疑期判定, 应判红 → 带进来的那一项,
+    应放行的)。改动是 `(名字, 移走的版本 or None, 加进的版本 or None)`，由 `update` 桩写进假锁，
+    逐项走一遍 `blaming` 再比前后 —— 与 `--apply` 同一条路。版本号与判定都是合成的。
+    ★ 判定表之外的版本被拿去查，同样算失败：采纳目标和没动的版本不该再问 crates.io。
+    """
+    root, vendor = "Cargo.lock", VENDOR_LOCK
+    cases = [
+        ("同族被拉到候选清单里正被挡着的版本 · 新增依赖刚发版 · 同族到目标版本、前一项已带到位的不算",
+         [("zstd", "0.12.4", "0.14.2"), ("boring", "5.2.0", "5.3.0"), ("boring-sys", "5.2.0", "5.3.0")],
+         {root: {"zstd": {"0.12.4"}, "zstd-safe": {"6.0.6"}, "boring": {"5.2.0"}, "boring-sys": {"5.2.0"},
+                 "syn": {"2.0.119"}},
+          vendor: {"zstd": {"0.12.4"}, "zstd-safe": {"6.0.6"}}},
+         {root: {"zstd@0.12.4": [("zstd", "0.12.4", "0.14.2"), ("zstd-safe", "6.0.6", "8.0.5")],
+                 "boring@5.2.0": [("boring", "5.2.0", "5.3.0"), ("boring-sys", "5.2.0", "5.3.0"),
+                                  ("foreign-types-shared", None, "0.4.1")]},
+          vendor: {"zstd@0.12.4": [("zstd", "0.12.4", "0.14.2"), ("zstd-safe", "6.0.6", "8.0.5")]}},
+         {("zstd-safe", "8.0.5"): ("怀疑期内", "仅 3.0 小时"),
+          ("foreign-types-shared", "0.4.1"): ("怀疑期内", "仅 1.0 小时")},
+         {(root, "zstd-safe", "8.0.5"): "zstd@0.12.4 -> 0.14.2",
+          (root, "foreign-types-shared", "0.4.1"): "boring@5.2.0 -> 5.3.0",
+          (vendor, "zstd-safe", "8.0.5"): "zstd@0.12.4 -> 0.14.2"},
+         set()),
+        ("只在 vendor 锁里的包被带到已 yank／查不到的版本 · 被带到候选清单之外的老版本已过怀疑期，放行",
+         [("reqwest", "0.12.28", "0.12.29"), ("jiff", "0.2.15", "0.2.16")],
+         {root: {"jiff": {"0.2.15"}, "portable-atomic": {"1.11.0"}},
+          vendor: {"reqwest": {"0.12.28"}, "quinn-proto": {"0.11.16"}, "jiff": {"0.2.15"},
+                   "portable-atomic": {"1.11.0"}}},
+         {root: {"jiff@0.2.15": [("jiff", "0.2.15", "0.2.16"), ("portable-atomic", "1.11.0", "1.11.1")]},
+          vendor: {"reqwest@0.12.28": [("reqwest", "0.12.28", "0.12.29"), ("quinn-proto", "0.11.16", "0.11.20"),
+                                       ("quinn-udp", None, "0.6.0")],
+                   "jiff@0.2.15": [("jiff", "0.2.15", "0.2.16"), ("portable-atomic", "1.11.0", "1.11.1")]}},
+         {("quinn-proto", "0.11.20"): ("已 yank", "该版本已被撤回"),
+          ("quinn-udp", "0.6.0"): ("查不到", "crates.io 查询失败"),
+          ("portable-atomic", "1.11.1"): (None, "1000 小时前")},
+         {(vendor, "quinn-proto", "0.11.20"): "reqwest@0.12.28 -> 0.12.29",
+          (vendor, "quinn-udp", "0.6.0"): "reqwest@0.12.28 -> 0.12.29"},
+         {(root, "portable-atomic", "1.11.1"), (vendor, "portable-atomic", "1.11.1")}),
+        ("没有闯入者：同名两个大版本各升一格 · 新版本甩掉的依赖消失 · 新增包本身是采纳目标",
+         [("syn", "2.0.119", "2.0.120"), ("syn", "3.0.3", "3.0.4"), ("aaa-new", None, "0.1.0")],
+         {root: {"syn": {"2.0.119", "3.0.3"}, "proc-macro-hack": {"0.5.20"}}, vendor: {}},
+         {root: {"syn@2.0.119": [("syn", "2.0.119", "2.0.120"), ("proc-macro-hack", "0.5.20", None)],
+                 "syn@3.0.3": [("syn", "3.0.3", "3.0.4")],
+                 "aaa-new": [("aaa-new", None, "0.1.0")]}},
+         {},
+         {},
+         set()),
+    ]
+    bad = []
+    for label, eligible, before, effects, verdicts, want_bad, want_ok in cases:
+        state = {lock: {n: set(vs) for n, vs in pkgs.items()} for lock, pkgs in before.items()}
+        stray: list[str] = []
+
+        def vet(name, ver, verdicts=verdicts, stray=stray):
+            if (name, ver) not in verdicts:
+                stray.append(f"{name} {ver}")
+                return None, ""
+            return verdicts[(name, ver)]
+
+        blame: dict[tuple[str, str, str], str] = {}
+        for lock in state:
+            def update(spec, _version, lock=lock):
+                for name, old, new in effects.get(lock, {}).get(spec, []):
+                    vers = state[lock].setdefault(name, set())
+                    vers.discard(old)
+                    if new:
+                        vers.add(new)
+                return 0, ""
+
+            step = blaming(update, lambda lock=lock: {n: set(vs) for n, vs in state[lock].items()}, lock, blame)
+            for name, cur, new in eligible:
+                step(f"{name}@{cur}" if cur else name, new)
+
+        found = lock_intruders(before, state, eligible, vet)
+        got_bad = {(lk, n, v): blame.get((lk, n, v)) for lk, n, v, why, _d in found if why}
+        got_ok = {(lk, n, v) for lk, n, v, why, _d in found if not why}
+        if got_bad != want_bad:
+            bad.append(f"闯入者核对「{label}」：应判红 {sorted(want_bad.items()) or '无'}，"
+                       f"实际 {sorted(got_bad.items()) or '无'}")
+        if got_ok != want_ok:
+            bad.append(f"闯入者核对「{label}」：应放行 {sorted(want_ok) or '无'}，实际 {sorted(got_ok) or '无'}")
+        if stray:
+            bad.append(f"闯入者核对「{label}」：不该查怀疑期的也查了：{' '.join(stray)}")
+    return bad, len(cases)
+
+
 def self_check() -> int:
-    """`--self-check`：用合成输入钉住 `--apply` 的两处判定 —— 不出网、不跑 cargo。
+    """`--self-check`：用合成输入钉住 `--apply` 的三处判定 —— 不出网、不跑 cargo。
 
     一、[`lock_alignment`] 的每种判定。
     ★ 口径必须与 `tests/vendor/run.sh` 的 [2/5] 相同：根侧的每个版本都得在 vendor 侧，
@@ -1116,6 +1310,8 @@ def self_check() -> int:
       2026-09-24 那次 `--apply` 因此把 rand / thiserror / thiserror-impl 误报成对不上、退出码 1。
 
     二、[`adopt_root`] 按结果锁判成败，见 [`_self_check_adopt_root`]。
+
+    三、顺带带进来的版本过怀疑期、点名是谁带的，见 [`_self_check_intruders`]。
     """
     users = {
         ("base64", "0.23.1"): [],  # 只经 rcgen → pem 4 进产物（2026-09-24 的真实形状）
@@ -1148,13 +1344,16 @@ def self_check() -> int:
         bad.append("lru：判红的说明里没点名是哪个 pingora crate 在用它")
     root_bad, root_cases = _self_check_adopt_root()
     bad += root_bad
+    intruder_bad, intruder_cases = _self_check_intruders()
+    bad += intruder_bad
     if bad:
         print("DEP-CHECK SELF-CHECK FAILED：")
         for line in bad:
             print(f"  ✗ {line}")
         return 1
     print(f"DEP-CHECK SELF-CHECK PASSED —— 两把锁的对齐判定 {len(want)} 种情况各钉一条（与 tests/vendor/run.sh [2/5] 同一口径）；"
-          f"根锁采纳按结果锁判成败 {root_cases} 组（两个方向都有）")
+          f"根锁采纳按结果锁判成败 {root_cases} 组（两个方向都有）；"
+          f"顺带带进来的版本过怀疑期 {intruder_cases} 组（判红、放行、不该查的不查）")
     return 0
 
 
