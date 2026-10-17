@@ -76,7 +76,7 @@ impl HttpRequest {
 
     /// 能進紀錄的那一份：**頭的值一律換成 `<redacted>`**。
     ///
-    /// ⚠ 不是隻擋 `Authorization`：DNSPod 的憑證在 **body** 裡
+    /// ⚠ 不是只擋 `Authorization`：DNSPod 的憑證在 **body** 裡
     /// （`login_token=ID,Token`），而 Cloudflare 的在頭裡。
     /// 一個「只擋 Authorization」的實作在 DNSPod 上完全失效，
     /// 而失效的表現是**憑證出現在紀錄裡**——沒有任何回報錯誤。
@@ -158,7 +158,7 @@ impl HttpTransport for HyperTransport {
             .body(body)
             .map_err(|e| format!("请求构造失败（{}）：{e}", req.redacted()))?;
 
-        // ★ 超時罩住**整段**（連接 + 發 + 收 body），不是隻罩發出去那一下。
+        // ★ 超時罩住**整段**（連接 + 發 + 收 body），不是只罩發出去那一下。
         //   ⚠ 這條是 exec hook 那次的教訓直接搬過來的：只罩一半的超時是一句空話。
         let fut = async {
             let rsp = self

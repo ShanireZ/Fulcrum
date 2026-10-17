@@ -641,7 +641,7 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
             // 與 `pick_index_by` 同一把篩子：解析不出位址、或被健康檢查判死的，跳過。
             continue;
         }
-        // ★ 逐個候選試，不是隻試第一個。理由與 HTTP 那邊逐字相同：
+        // ★ 逐個候選試，不是只試第一個。理由與 HTTP 那邊逐字相同：
         //   `localhost` 解出來第一個可能是 `[::1]`，而上游只監聽 `127.0.0.1`。
         for (i, dial) in candidates.iter().enumerate() {
             match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(dial)).await {

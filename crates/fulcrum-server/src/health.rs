@@ -135,7 +135,7 @@ async fn probe_one(
     for dial in &candidates {
         let peer = HttpPeer::new(*dial, target.tls, sni.clone());
         match tokio::time::timeout(timeout, probe_peer(connector, &peer, uri, &up.addr)).await {
-            // ⚠ 超時要罩住**整趟**（連接 + 寫 + 讀），不是隻罩其中一段。
+            // ⚠ 超時要罩住**整趟**（連接 + 寫 + 讀），不是只罩其中一段。
             //   本儲存庫在 exec hook 上栽過一次：`timeout` 只罩了 `wait()`，
             //   而讀輸出那一步先阻塞了 30 秒 —— 判據是「那條測試跑了 30.01 秒」。
             Err(_) => last = format!("{dial}：超过 {timeout:?} 没回话"),

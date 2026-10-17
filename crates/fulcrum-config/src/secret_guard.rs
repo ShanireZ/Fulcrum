@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn 脱敏过的凭据在任何入口都要被挡下() {
-        // ★ ★ 判據掛在 `check()` 上而不是隻掛在 serve 的 ACME 那一層：
+        // ★ ★ 判據掛在 `check()` 上而不是只掛在 serve 的 ACME 那一層：
         //   `validate` 的全部意義就是「上線之前先問一遍」，
         //   而一份 load 不起來的設定正是它該攔住的東西。
         let src = format!(

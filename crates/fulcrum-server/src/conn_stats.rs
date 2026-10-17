@@ -65,7 +65,7 @@ impl Entrypoint {
     /// ⚠ ⚠ **這個函式存在的唯一理由是讓編譯器守住 [`Entrypoint::ALL`] 的完整性。**
     /// 加一種入口 ⇒ 這條 match 編不過 ⇒ 人被逼著回來同時改 `ALL`。
     /// ⛔ 別給它加 `_ =>` 備援臂，那樣它就什麼都不守了。
-    /// ★ 只靠 [`Entrypoint::as_str`] 的窮盡性是不夠的：那隻逼人改 `as_str`，
+    /// ★ 只靠 [`Entrypoint::as_str`] 的窮盡性是不夠的：那只逼人改 `as_str`，
     /// 而「順手也改 `ALL`」是**一句寫在註解裡的話，沒有門守著**。
     #[cfg(test)]
     pub(crate) fn 穷尽性自证(self) -> Self {

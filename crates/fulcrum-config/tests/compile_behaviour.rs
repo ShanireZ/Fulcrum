@@ -1259,7 +1259,7 @@ fn 没有匹配器的metrics要出警告() {
         .iter()
         .find(|d| d.code == DiagCode::METRICS_UNGUARDED)
         .expect("裸 `metrics` 该出 G116 那条警告");
-    // 文案要說出後果，不是隻說「建議加個匹配器」。
+    // 文案要說出後果，不是只說「建議加個匹配器」。
     assert!(d.label.contains("指标"), "{}", d.label);
     // ★ ★ note 裡必須把「什麼算、什麼不算」逐個說出來 —— 那是這條診斷現在的
     //   全部價值所在：一句籠統的「加個匹配器吧」會把人直接引向

@@ -157,7 +157,7 @@ pub fn ownership(me: &GenId, ty: quiche::Type, dcid: &[u8], has_token: bool) -> 
             // DCID 短於 8 位元組 —— 我們自選的 CID 永遠是 SCID_LEN 長，所以這不是我們發的。
             None => Ownership::Undecidable,
         },
-        // 伺服器端不會收到這兩種；收到了說明對端在亂髮，不給它任何處理路徑。
+        // 伺服器端不會收到這兩種；收到了說明對端在亂發，不給它任何處理路徑。
         Type::Retry | Type::VersionNegotiation => Ownership::Undecidable,
     }
 }

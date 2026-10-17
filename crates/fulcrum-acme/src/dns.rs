@@ -350,7 +350,7 @@ impl TxtChecker {
     /// 等到 `name` 上出現值為 `expected` 的 TXT，或者超時。
     ///
     /// ⚠ 回傳 `Err` 的含義是「**沒等到**」，呼叫方**不應該**繼續通知 CA 來驗——
-    /// 那隻會換來一次必然失敗的檢核。
+    /// 那只會換來一次必然失敗的檢核。
     pub async fn wait_visible(&self, name: &str, expected: &str) -> Result<(), String> {
         if self.resolvers.is_empty() {
             // ★ 走到這裡說明設定檢核漏了。說清楚是哪一條，而不是「查不到」。

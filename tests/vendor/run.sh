@@ -93,7 +93,7 @@ dump_lock "$LOCK"      > /tmp/vendor.pkgs
 #
 #   改成全量之後沒有名單可維護，覆蓋面從 16 個變成 170 個。
 #   實測：root 171 包 / vendor 332 包 / 共有 170，**零不一致**；
-#   唯一隻在 root 側的是 `m0-seam` 自己（工作區成員，vendor 本就測不到，按規則自動跳過）。
+#   唯一只在 root 側的是 `m0-seam` 自己（工作區成員，vendor 本就測不到，按規則自動跳過）。
 versions_of() { awk -v k="$2" '$1 == k { print $2 }' "$1" | sort -u; }
 
 # 把多行／多空格的版本列表壓成一行、單空格分隔。

@@ -127,7 +127,7 @@ pub fn backoff_remaining(
 /// 該不該現在續期。
 ///
 /// 順序：**退避 → ARI → 比例**。退避排最前是因為它是**否決項**：
-/// 上一次失敗之後還沒到重試時刻，就算 ARI 說該續也不能續（那隻會再撞一次速率限制）。
+/// 上一次失敗之後還沒到重試時刻，就算 ARI 說該續也不能續（那只會再撞一次速率限制）。
 pub fn should_renew(
     now: SystemTime,
     not_before: SystemTime,

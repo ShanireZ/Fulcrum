@@ -883,7 +883,7 @@ pub struct CacheRt {
     ///
     /// ⚠ ⚠ 它是**處理程序級**的一件事，卻寫在**站台級**的指令裡 —— 設定層為此
     /// 有一條跨塊一致性檢查（`FUL-DSL-0035`）。★ 這裡仍然逐站台存著，
-    /// 因為裝載紀錄要能說出「這個站台寫的是哪一個」，而不是隻說一個彙總值。
+    /// 因為裝載紀錄要能說出「這個站台寫的是哪一個」，而不是只說一個彙總值。
     pub disk_dir: Option<String>,
 }
 
@@ -1822,7 +1822,7 @@ pub fn resolve_upstreams(rt: &Runtime) -> ResolveReport {
         report.queried += 1;
         match up.addr.to_socket_addrs() {
             Ok(it) => {
-                // ★ **全部收下**，不是隻取第一個。理由見 `Upstream::resolved`。
+                // ★ **全部收下**，不是只取第一個。理由見 `Upstream::resolved`。
                 let addrs: Vec<std::net::SocketAddr> = it.collect();
                 if addrs.is_empty() {
                     // 解析「成功」但一個位址都沒有。⚠ 這不是不可能。
@@ -2867,7 +2867,7 @@ impl<'r, 'q> Walk<'r, 'q> {
                 BodyRt::Encode(list) => self.encodings = list.clone(),
                 // ★ 中介軟體：只記一筆，**不終結**。
                 //   ⚠ 一條鏈上寫兩個 `cache` 時後一個生效 —— 與 `encode` 同款，
-                //   而順序表保證它們在同一位置，所以這隻可能來自 `route { … }`。
+                //   而順序表保證它們在同一位置，所以這只可能來自 `route { … }`。
                 BodyRt::Cache(c) => self.cache = Some(c),
                 BodyRt::Handle(arms) => {
                     // ★ 互斥：只有**第一個**匹配的分支會執行。
@@ -3433,7 +3433,7 @@ fn build_l4_target(
     Some(ProxyTarget {
         // ★ ★ **L4 的 id 恆為空串**（M2 批 N 任務 2.8）：`l4` 塊裡沒有 `reverse_proxy`，
         //   也就沒有 `id` 的位置；L4 的上游沒有站台，按 R6 的鍵根本尋址不到它們。
-        //   ⇒ 覆蓋層那張鍵的清單隻走**站台**那條路（`keyed_proxies_of` /
+        //   ⇒ 覆蓋層那張鍵的清單只走**站台**那條路（`keyed_proxies_of` /
         //     `proxy_key_fanout_of` 都只收 `SiteRt`），L4 這一格因此永遠不進去 ——
         //     由 `tests/l4.rs` 一條判據釘著。
         id: String::new(),

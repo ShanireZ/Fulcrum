@@ -1374,7 +1374,7 @@ if [ "$BODY" = "after-load" ]; then
 else
   fail "load 返回 200，但数据面还是老的：拿到「$BODY」"
 fi
-# ★ 同一次 load 裡沒動的那個站台必須**照舊能用** —— 換的是整份，不是隻換命中的那個。
+# ★ 同一次 load 裡沒動的那個站台必須**照舊能用** —— 換的是整份，不是只換命中的那個。
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   --resolve "only.example:$NAMED_PORT:$HOST" "http://only.example:$NAMED_PORT/")
 expect_status "同一份里没改动的站点照旧" 200 "$CODE"

@@ -279,7 +279,7 @@ expect_miss "GET /private（共享缓存不许存 private）" "$A" "$B"
 OUT=$(twice "$BASE/nofresh"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_hit "GET /nofresh（上游没说 ⇒ 兜底 ttl 生效）" "$A" "$B"
 
-# 錯誤回應不快取（500 不在可快取狀態碼錶裡）。
+# 錯誤回應不快取（500 不在可快取狀態碼表裡）。
 OUT=$(twice "$BASE/err"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_miss "GET /err（500 不可缓存）" "$A" "$B"
 

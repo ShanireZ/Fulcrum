@@ -175,7 +175,7 @@ for g in "gen1:$FDPROF_GEN1" "gen2:$FDPROF_GEN2" "gen3:$FDPROF_GEN3"; do
 done
 echo "  ✓ 三代的监听 fd 都是每个 socket 一个（移交来的 fd 带 CLOEXEC，没有被 fork 带进下一代）"
 
-# ★ 把**原因**也釘住，而不是隻釘後果。上面那條只說「沒有多出來」，
+# ★ 把**原因**也釘住，而不是只釘後果。上面那條只說「沒有多出來」，
 #   下面這條說明**為什麼**沒有多出來——兩者一起才擋得住「換了別的機制碰巧也是 1」。
 for fd in $(listener_fds 8081 tcp); do
   fd_has_cloexec "$GEN3" "$fd" \

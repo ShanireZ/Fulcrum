@@ -54,7 +54,7 @@ sources:
 
 # 2. 先讀原始碼得到的推斷
 
-`pingora-core 0.8.1` 的 `Service` trait 文件註解直接寫明瞭自建服務的**義務與權利**：
+`pingora-core 0.8.1` 的 `Service` trait 文件註解直接寫明了自建服務的**義務與權利**：
 
 > `fds` (Unix only): a collection of listening file descriptors. During zero downtime restart
 > the `fds` would contain the listening sockets passed from the old service, services should

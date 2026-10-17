@@ -385,7 +385,7 @@ async fn probe_file(p: PathBuf) -> Result<Probe, PathBuf> {
     //   之間彈一次的代價佔了餘下幾乎全部。⚠ 它**不表現為切換次數**
     //   （每請求只剩 1.46 次），表現為每請求 cache-miss **4.68 倍**、
     //   IPC 由 0.72 掉到 0.36、兩個核還空著 15%。
-    //   ⇒ 上一輪把切換次數砍掉三分之二隻換來 +18%：次數減少了，
+    //   ⇒ 上一輪把切換次數砍掉三分之二只換來 +18%：次數減少了，
     //   **每一次的破壞力沒變**。
     let p = match Probe::open_nowait(p, CHUNK as u64) {
         Ok(probe) => return Ok(probe),

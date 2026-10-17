@@ -56,7 +56,7 @@ if [ ! -r /proc/net/tcp ]; then
 else
   # 自己開一個監聽 socket。★ 連接埠交給核心挑（bind 到 0），
   #   不寫死一個「應該沒人用」的連接埠 —— 那種假設遲早會撞上別人。
-  # ⚠ 只監聽、不接受連接 ⇒ 關掉之後不會留 TIME_WAIT，下面的反方向才幹淨。
+  # ⚠ 只監聽、不接受連接 ⇒ 關掉之後不會留 TIME_WAIT，下面的反方向才乾淨。
   python3 -u -c 'import socket, time
 s = socket.socket()
 s.bind(("127.0.0.1", 0))

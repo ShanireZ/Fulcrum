@@ -1067,7 +1067,7 @@ impl FulcrumApp {
             return Err(rt.defaults.all_upstreams_down);
         }
 
-        // ★ **逐個候選試，不是隻試第一個** —— `localhost` 的第一個位址可能是 `[::1]`
+        // ★ **逐個候選試，不是只試第一個** —— `localhost` 的第一個位址可能是 `[::1]`
         //   而上游只聽 `127.0.0.1`，現場只有一句「連不上上游」。
         // ⚠ 只在**建連接**這一步退回：請求發出去之後再換上游那是重試語義，不歸這裡。
         let mut last_err: Option<String> = None;
