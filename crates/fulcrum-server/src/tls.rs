@@ -57,7 +57,7 @@ pub fn plan_tls(
             continue;
         }
         if site.hostnames.is_empty() {
-            // `:8080` 這種不帶主機名的位址籤不出證書——ACME 要一個網域。
+            // `:8080` 這種不帶主機名的位址簽不出證書——ACME 要一個網域。
             // ★ 但它也不該被當成錯誤：它可能就是個純 HTTP 的備援站台，
             //   而「連接埠協定不能混」那道門已經保證它不會落在 TLS 連接埠上。
             continue;
@@ -298,8 +298,8 @@ mod tests {
         p
     }
 
-    /// 現籤一對 PEM 放進 `dir`，回傳 `(证书路径, 私钥路径)`。
-    /// ★ 現籤而不是提交一張進儲存庫：提交的那張遲早過期，而過期那天紅的是「TLS 壞了」。
+    /// 現簽一對 PEM 放進 `dir`，回傳 `(证书路径, 私钥路径)`。
+    /// ★ 現簽而不是提交一張進儲存庫：提交的那張遲早過期，而過期那天紅的是「TLS 壞了」。
     fn 现签一对pem(dir: &Path, domain: &str) -> (String, String) {
         let key = rcgen::KeyPair::generate().expect("测试密钥");
         let params = rcgen::CertificateParams::new(vec![domain.to_string()]).expect("测试参数");

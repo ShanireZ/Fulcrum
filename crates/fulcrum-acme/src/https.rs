@@ -13,7 +13,7 @@
 //! # ⛔ 為什麼不用 `hyper-boring`
 //!
 //! 實測 **+9 個包**（整套舊版 hyper 0.14）。根因：它的 feature 表寫的是
-//! `runtime = [hyper_old/runtime]` —— **沒有 `dep:` 前綴**，意思是 hyper 0.14 本身是必需依賴，
+//! `runtime = [hyper_old/runtime]` —— **沒有 `dep:` 前綴**，意思是 hyper 0.14 本身是必需相依，
 //! `default-features = false` 攔不住。⇒ 自己寫一個 [`tower_service::Service<Uri>`]，
 //! 底下用 fork 裡已有的 [`pingora_boringssl::tokio_ssl::SslStream`]，**新增 0 個包**。
 //!
@@ -271,11 +271,11 @@ mod tests {
 
     /// 造一張 SAN 為 `san` 的葉子證書，外加簽它的那個 CA。
     ///
-    /// ★ 用 `rcgen`，它**已經在依賴圖裡**（`instant-acme` 拉的，見 `tlsalpn01.rs`）。
+    /// ★ 用 `rcgen`，它**已經在相依圖裡**（`instant-acme` 拉的，見 `tlsalpn01.rs`）。
     ///
     /// ⚠ ⚠ **兩個主體名必須不一樣，而這是被一次紅教出來的**：`CertificateParams`
     /// 的預設主體名是同一個常數，於是 CA 與葉子的 subject **逐字相同** ——
-    /// 檢核器會把葉子當成自籤（issuer == subject）、根本不去找那個 CA，
+    /// 檢核器會把葉子當成自簽（issuer == subject）、根本不去找那個 CA，
     /// 報的是 `CERTIFICATE_VERIFY_FAILED`。
     /// ★ 抓到它的是**正向那一條**（名字對的也該連得上），而不是被測的反向那一條 ——
     /// 沒有它，一次「CA 根本沒生效」會被讀成「主機名檢核生效了」。
@@ -304,7 +304,7 @@ mod tests {
         }
     }
 
-    /// 一張**自籤**證書（沒有 CA）。用來做「鏈檢核開著沒有」那一條。
+    /// 一張**自簽**證書（沒有 CA）。用來做「鏈檢核開著沒有」那一條。
     fn make_self_signed(san: &str) -> (Vec<u8>, Vec<u8>) {
         let key = rcgen::KeyPair::generate().expect("自签密钥");
         let params = rcgen::CertificateParams::new(vec![san.to_string()]).expect("自签参数");

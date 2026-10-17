@@ -13,7 +13,7 @@ use fulcrum_runtime::{
 use std::net::IpAddr;
 use std::time::UNIX_EPOCH;
 
-/// DSL → 執行環境圖。建置期回報錯誤就 panic（測試裡那是寫錯了用例）。
+/// DSL → 執行環境圖。建置期回報錯誤就 panic（測試裡那是寫錯了案例）。
 fn rt(dsl: &str) -> Runtime {
     let o = compile_str("t.Fulcrumfile", dsl);
     assert!(
@@ -315,7 +315,7 @@ fn 默认响应码就是_g63_写下的那三个() {
 
 #[test]
 fn 中间件累积而终结类第一个匹配即停() {
-    // ★ ★ 這條用例本身就是 G49 的演示：`respond` 寫在前面，`redir` 寫在後面，
+    // ★ ★ 這條案例本身就是 G49 的演示：`respond` 寫在前面，`redir` 寫在後面，
     //   而**執行時 redir 先跑**——因為順序表裡 redir 是 60、respond 是 70。
     //   ⚠ **書寫順序的直覺是錯的** —— 那正是 G49 換來「使用者隨便寫也能跑對」
     //   時付出的那份代價。
@@ -363,7 +363,7 @@ fn 站点内没有任何路由匹配时是_no_route() {
 
 #[test]
 fn rewrite_之后后续匹配器看到的是新路径() {
-    // ★ 這是 Caddy 的語義，也是唯一自洽的一種：否則 rewrite 就成了隻影響上游、
+    // ★ 這是 Caddy 的語義，也是唯一自洽的一種：否則 rewrite 就成了只影響上游、
     //   不影響本機路由的半吊子操作。
     let r = rt("a.com {\n  rewrite * /new/x\n  respond /new/* 201\n  respond 200\n}\n");
     let h = no_headers();
@@ -1584,7 +1584,7 @@ fn metrics终结在自己的表位上() {
     //      `handle` 什麼都不產出，才輪到 70 的 `respond`。
     //   ⚠ ⚠ 所以 `metrics @internal` 與備援 `respond 403` **並排寫在站台塊頂層是錯的**：
     //      `metrics` 自己排 75，403 在第 70 步就先終結了，`metrics` 一次也跑不到。
-    //      ⇒ 示例裡那個 `handle` 不是排版習慣，是唯一正確的寫法；寫錯時
+    //      ⇒ 範例裡那個 `handle` 不是排版習慣，是唯一正確的寫法；寫錯時
     //      `FUL-DSL-0028` 會說出來（口徑在 `docs/architecture/dsl-reference.md`）。
     let r = rt(
         "a.com {\n  @i remote_ip 10.0.0.0/8\n  handle @i {\n    metrics\n  }\n  \
@@ -1814,7 +1814,7 @@ fn 不同站点里的同一台机器是两格() {
 fn 同一条_reverse_proxy_里把同一个地址写两遍只算一条() {
     // ★ 邊界（`ProxyKeyFanout::proxies` 的文件寫著）：那兩個 `Upstream` 是**同一條**
     //   `reverse_proxy` 上的同一臺機器，一次 `disable` 把它們一起摘掉本來就是要的語義
-    //   ⇒ 計數里**不該**因此顯示「這一格管著兩條 reverse_proxy」——
+    //   ⇒ 計數裡**不該**因此顯示「這一格管著兩條 reverse_proxy」——
     //   那會讓 `/stats` 對一個完全正常的寫法喊狼來了。
     let r = 装得上("a.com {\n  reverse_proxy 10.0.0.1:8080 10.0.0.1:8080\n}\n");
     assert_eq!(

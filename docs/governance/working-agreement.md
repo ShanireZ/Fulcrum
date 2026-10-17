@@ -14,7 +14,7 @@ sources:
     title: AGENTS.md「Working rules」
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G6（三條硬約束）、G19（效能驗收）、G29（依賴策略）
+    title: PLAN.md §10 G6（三條硬約束）、G19（效能驗收）、G29（相依策略）
   - id: plan-9
     resource: /references/plan.md
     title: PLAN.md §9 主要風險（單人 + AI 承擔網路關鍵路徑的安全責任）
@@ -74,7 +74,9 @@ sources:
 
 ★ **不要新增第二條持久化寫路徑。** G18 的判據是：HAProxy 的病根不是 runtime 改動會丟，而是**丟得無聲無息**——問題的本質是「可見與否」，不是「持久化與否」。
 
-# 依賴
+<a id="依賴"></a>
+
+# 相依
 
 追新（G29），**但不得裸跑 `cargo update`** ——那會跳過 24 小時安全懷疑期，而懷疑期正是 G29 存在的理由。
 
@@ -85,7 +87,7 @@ python tools/dep-check.py --apply    # 採納通過懷疑期的
 
 ★ **升級之後必須跑完當前里程碑的全部驗證**（M0 是 `tests/m0/run.sh`；M3 之後是全量對拍）。
 
-詳見 [依賴策略](/platform/dependency-policy.md) 與 [供應鏈現狀](/platform/supply-chain.md)。
+詳見 [相依策略](/platform/dependency-policy.md) 與 [供應鏈現狀](/platform/supply-chain.md)。
 
 # 建置與驗證
 

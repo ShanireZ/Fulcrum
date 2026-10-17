@@ -13,7 +13,7 @@
 //! - [`gen_id`]：代標識、SCID 的形狀、資料報歸屬判定。
 //! - [`retry`]：位址驗證的 token（抗放大，同時保證「DCID 是我們選的」）。
 //! - [`h3_session`]：**h3 → 現有執行鏈的那座橋**（實作 `SessionCustom`）。
-//! - [`listener`]：自建 `Service` + 參與 socket 移交 + Retry / 版本協商 / 歸屬散布。
+//! - [`listener`]：自建 `Service` + 參與 socket 移交 + Retry / 版本協商 / 歸屬散佈。
 //! - [`h3_conn`]：`quiche::h3` 事件循環。
 //! - [`relay`]：換代時的**跨處理程序轉交通道**（unix datagram，路徑由 `gen_id` 推導，
 //!   兩代之間不需要任何握手；通道**單向**）。

@@ -50,7 +50,7 @@ trap cleanup EXIT
 #   寫 `ss -lnt "sport = :$1"` 是不行的：**建置鏡像里根本沒有 ss**
 #   （iproute2 只裝在 systemd 測試鏡像裡）—— 於是這個原語**恆回傳 false**：
 #   步驟 0 那句「連接埠都空著」永遠成立（危險方向），而 `wait_port` 永遠超時（安全方向）。
-#   ⚠ 它是靠後者才暴露的：如果指令碼里只有前者，這道檢查會安靜地什麼都不查。
+#   ⚠ 它是靠後者才暴露的：如果指令碼裡只有前者，這道檢查會安靜地什麼都不查。
 #   ★ 判據掛在**行為**上（真連一次），不掛在某個工具在不在上 —— 同 tests/serve/run.sh。
 port_listening() {
   timeout 1 bash -c "exec 3<>/dev/tcp/$HOST/$1" 2>/dev/null
@@ -77,7 +77,7 @@ ok "$PORT / $TLS_PORT / $DEAD_PORT 都是空的"
 
 # ── 自簽證書：給「證書鏈驗不過要被認出來」那一條當靶子 ─────────────────────
 #
-# ★ 現籤而不是提交進儲存庫：儲存庫裡的測試證書遲早過期，而過期那天紅的是「TLS 壞了」。
+# ★ 現簽而不是提交進儲存庫：儲存庫裡的測試證書遲早過期，而過期那天紅的是「TLS 壞了」。
 openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   -keyout "$WORK/tls.key" -out "$WORK/tls.crt" \
   -subj "/CN=secure.smoke" -addext "subjectAltName=DNS:secure.smoke" \

@@ -84,7 +84,7 @@ body() { curl -sS --max-time 3 "http://$BIND_HOST:$HTTP_PORT/" 2>/dev/null || ec
 #
 #   換代時老一代收到 SIGQUIT 後，先把監聽 fd 送給新一代，**然後還要再等
 #   `CLOSE_TIMEOUT`（5 秒，pingora 寫死在 server/mod.rs）才停止 accept**。
-#   也就是說那 5 秒裡**新舊兩代都在同一個監聽 socket 上 accept**，核心在兩者之間散布。
+#   也就是說那 5 秒裡**新舊兩代都在同一個監聽 socket 上 accept**，核心在兩者之間散佈。
 #   ⇒ 剛看到 pid 檔案變了就發一個請求，它**完全可能落在老一代身上**，
 #     而老一代讀的是舊設定 —— 本機跑十次都落在新一代，CI 上第一次就落在了老一代。
 #

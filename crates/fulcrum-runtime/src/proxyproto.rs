@@ -203,7 +203,7 @@ fn decode_v1(buf: &[u8]) -> Verdict {
 }
 
 fn find_crlf(buf: &[u8]) -> Option<usize> {
-    // ★ 有意不用正則也不用 memchr：兩個位元組的固定串，寫清楚比引一個依賴便宜。
+    // ★ 有意不用正則也不用 memchr：兩個位元組的固定串，寫清楚比引一個相依便宜。
     let mut i = 0;
     while i + 1 < buf.len() {
         if buf[i] == b'\r' && buf[i + 1] == b'\n' {

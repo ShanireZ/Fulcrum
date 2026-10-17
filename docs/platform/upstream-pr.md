@@ -3,7 +3,7 @@ type: 技術基線
 title: 向上遊 pingora 提 PR 的流程清單
 description: 兩份投稿（G32 的 lru 升級、G38 的 fd 洩漏修復）共用一套上游規範；本頁把它逐條落成可核對項。
 resource: ../../vendor/pingora/FORK.md
-tags: [依賴, 上游, 流程, 必讀, 易錯]
+tags: [相依, 上游, 流程, 必讀, 易錯]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -43,7 +43,7 @@ G32 拍板時寫的是「推 `lru` 與 `prometheus` 兩條」。★ ★ **實測
 
 它列的「不需要 issue 的小修」是：**改錯別字、小重構、文件或註解編輯**。
 
-★ **依賴的大版本升級 + 跨 crate 的呼叫點適配不在其中，屬於 non-trivial** → **必須先開 issue**。直接開 PR 就是違反流程。
+★ **相依的大版本升級 + 跨 crate 的呼叫點適配不在其中，屬於 non-trivial** → **必須先開 issue**。直接開 PR 就是違反流程。
 
 issue 的作用是先談設計，避免「做完了才發現方向不被接受」。
 
@@ -91,7 +91,7 @@ toolchain 矩陣：**`nightly` / `1.85.0`（MSRV）/ `1.97.1`（latest stable）
 | 文件測試 | `cargo test --verbose --doc` | 除 `1.85.0` |
 | clippy | `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | **僅 `1.97.1`** |
 | 稽核 | `cargo audit` | **僅 `1.97.1`** |
-| 未用依賴 | `cargo machete`（0.7.0）| **僅 `1.97.1`** |
+| 未用相依 | `cargo machete`（0.7.0）| **僅 `1.97.1`** |
 
 ★ 測試環境裝了 **openresty**（當作測試用的伺服器端），本機復跑要一併準備。
 
@@ -253,7 +253,7 @@ MSRV 用 crates.io API 查 `rust_version`：`https://crates.io/api/v1/crates/<na
 上游 `main` 的同一函式仍是 `MsgFlags::empty()`、accept 的連接仍然沒人關，
 且儲存庫裡**沒有任何 issue/PR 提過 CLOEXEC**。
 
-★ **PR 正文裡主動寫了一段「範圍說明」**：同一函式里 `SOCK_CLOEXEC` / `accept4()` 那兩處
+★ **PR 正文裡主動寫了一段「範圍說明」**：同一函式裡 `SOCK_CLOEXEC` / `accept4()` 那兩處
 也缺，但它們的 fd 在函式回傳前就關掉了，只暴露一個很窄的 fork 競態視窗，
 故**有意不動**並說明理由。★ 審閱者一定會問「為什麼只修這兩處」——
 **與其等他問，不如先答**；而答案必須是真實的取捨，不是遺漏。
@@ -262,4 +262,4 @@ MSRV 用 crates.io API 查 `rust_version`：`https://crates.io/api/v1/crates/<na
 
 # 相關
 
-[fork 說明](../../vendor/pingora/FORK.md) · [依賴策略](/platform/dependency-policy.md) · [供應鏈現狀](/platform/supply-chain.md)
+[fork 說明](../../vendor/pingora/FORK.md) · [相依策略](/platform/dependency-policy.md) · [供應鏈現狀](/platform/supply-chain.md)

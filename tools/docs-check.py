@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""docs/ 这个 OKF v0.2 bundle 的结构门。
+"""docs/ 這個 OKF v0.2 bundle 的結構門。
 
-要拦的是两类漂移：
+要攔的是兩類漂移：
 
-  1. 新增一份文档却忘了写 frontmatter —— 它对 agent 就是一份无类型的散文，
-     渐进披露失效；
-  2. 新增文档却没进 `index.md` —— agent 从入口读目录时看不见它，等于没写。
+  1. 新增一份文件卻忘了寫 frontmatter —— 它對 agent 就是一份無類型的散文，
+     漸進披露失效；
+  2. 新增文件卻沒進 `index.md` —— agent 從入口讀目錄時看不見它，等於沒寫。
 
-★★★ 这道门是补的，枢衡此前**一份文档门都没有**。补它的直接原因是
-第 2 类漂移真的发生了：owner 08-21 把 `docs/agents/` 六份共享约定铺进来，同批还有
-五个子目录的 `index.md`，**从 `docs/index.md` 出发一份都到不了**——而 `docker-run.sh`
-的全部场景照样绿，因为没有任何一场看这件事。
+★★★ 這道門是補的，樞衡此前**一份文件門都沒有**。補它的直接原因是
+第 2 類漂移真的發生了：owner 08-21 把 `docs/agents/` 六份共享約定鋪進來，同批還有
+五個子目錄的 `index.md`，**從 `docs/index.md` 出發一份都到不了**——而 `docker-run.sh`
+的全部場景照樣綠，因為沒有任何一場看這件事。
 
-★★ 「被 index 列出」不等于「从入口走得到」：子目录有自己的 `index.md` 时，父 index
-必须链到那个子 index，**否则整棵子树都是孤儿**。判据因此取从入口出发的**传递闭包**。
+★★ 「被 index 列出」不等於「從入口走得到」：子目錄有自己的 `index.md` 時，父 index
+必須鏈到那個子 index，**否則整棵子樹都是孤兒**。判據因此取從入口出發的**傳遞閉包**。
 
-★ 为什么在宿主机跑而不进容器：这是纯文本检查，不需要 Rust 工具链，也不需要 Linux
-特有的任何东西（那才是 Docker 存在的理由）。而且构建镜像里**没有 python3**——
-真要进容器就得先改镜像，为一道几十毫秒的门不值得。
+★ 為什麼在宿主機跑而不進容器：這是純文字檢查，不需要 Rust 工具鏈，也不需要 Linux
+特有的任何東西（那才是 Docker 存在的理由）。而且建置鏡像裡**沒有 python3**——
+真要進容器就得先改鏡像，為一道幾十毫秒的門不值得。
 
 用法：
-    python tools/docs-check.py           # 检查，红了退出码 1
-    python tools/docs-check.py --list    # 顺带列出全部文档与它们的可达状态
+    python tools/docs-check.py           # 檢查，紅了結束代碼 1
+    python tools/docs-check.py --list    # 順帶列出全部文件與它們的可達狀態
 """
 
 from __future__ import annotations
@@ -47,10 +47,10 @@ OKF_LINE = re.compile(r"^okf_version:[ \t]*(\S.*)$", re.MULTILINE)
 
 
 def normalize(path: str) -> str:
-    """统一成 / 分隔并解掉 . 与 ..。
+    """統一成 / 分隔並解掉 . 與 ..。
 
-    ★★ 消不掉的 `..` 必须留着 —— 它是「这条链接指到仓库外面去了」的唯一证据。
-    把它折叠掉，门会以为那是本仓根下的文件，从而报一条假断链。
+    ★★ 消不掉的 `..` 必須留著 —— 它是「這條連結指到儲存庫外面去了」的唯一證據。
+    把它摺疊掉，門會以為那是本儲存庫根下的文件，從而報一條假斷鏈。
     """
     parts: list[str] = []
     for part in path.replace("\\", "/").split("/"):
@@ -66,7 +66,7 @@ def normalize(path: str) -> str:
 
 
 def walk() -> list[str]:
-    """递归收集 bundle 里的全部 Markdown，键是相对 docs/ 的 / 分隔路径。"""
+    """遞歸收集 bundle 裡的全部 Markdown，鍵是相對 docs/ 的 / 分隔路徑。"""
     found = []
     for dirpath, _dirnames, filenames in os.walk(DOCS):
         for name in filenames:
@@ -82,7 +82,7 @@ def source_of(rel: str) -> str:
 
 
 def links_of(rel: str) -> list[tuple[str, bool]]:
-    """一份文档里指向 Markdown 的链接，按它自己所在的目录解析。"""
+    """一份文件裡指向 Markdown 的連結，按它自己所在的目錄解析。"""
     directory = rel.rsplit("/", 1)[0] if "/" in rel else ""
     out = []
     for raw in MARKDOWN_LINK.findall(source_of(rel)):
@@ -101,7 +101,7 @@ def links_of(rel: str) -> list[tuple[str, bool]]:
 
 
 def reachable_from_index(files: list[str]) -> set[str]:
-    """从入口出发的传递闭包 —— 「被列出」不够，要走得到。"""
+    """從入口出發的傳遞閉包 —— 「被列出」不夠，要走得到。"""
     known = set(files)
     seen = {"index.md"}
     queue = ["index.md"]

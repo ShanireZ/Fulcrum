@@ -33,7 +33,7 @@ sources:
 | 設定怎麼熱更新 | G8 · G18 → [管理面](/architecture/control-plane.md) |
 | 什麼時候開放原始碼 | G10 |
 | 自動 HTTPS 怎麼做 | G12 · G15 → [TLS](/architecture/tls.md) |
-| 怎麼散布 | G13 → [技術棧](/platform/tech-stack.md) |
+| 怎麼散佈 | G13 → [技術棧](/platform/tech-stack.md) |
 | 管理面怎麼保證安全 | G14 → [安全基線](/platform/security-baseline.md) |
 | 能看到什麼指標 | G16（基線）· **G116 · G117 · G118 · G121**（Prometheus 指標怎麼落的）· **G122 · G123 · G124**（D32 / D31 / D30 結案：TLS 與連接兩族 · `purge` 拆族 · `status_class` 的 `none`）→ [觀測](/architecture/observability.md) |
 | 上游節點怎麼發現與摘除 | G17 → [資料路徑](/architecture/data-path.md) |
@@ -44,7 +44,7 @@ sources:
 | 里程碑怎麼切 | G24 → [實施路線](/governance/roadmap.md) |
 | 為什麼全在 Docker 裡跑 | G26 → [建置與驗證](/platform/build-and-test.md) |
 | M0 為什麼不含 QUIC | G27 · G28 → [M0 接縫驗證](/verification/m0-seam.md) |
-| 依賴怎麼升級 | G29 → [依賴策略](/platform/dependency-policy.md) |
+| 相依怎麼升級 | G29 → [相依策略](/platform/dependency-policy.md) |
 | ★ pingora 為什麼走 fork | **G30** → [供應鏈現狀](/platform/supply-chain.md) · [`FORK.md`](../../vendor/pingora/FORK.md) |
 | 靜態檔案怎麼發（符號連結 / 隱藏檔案 / 範圍請求 / MIME）| **G87 · G88 · G89 · G90**（§10）|
 
@@ -78,4 +78,4 @@ AI 當初的建議**。
 
 # 一處需要留意的編號事實
 
-★ **G29 同時是 D1 的結案。** `PLAN.md` §11 **只列仍然開著的**，D1 早已不在裡面 —— 結論在 §10 的 G29。讀到「依賴版本策略待定」這類舊錶述時，**它是過期的**。
+★ **G29 同時是 D1 的結案。** `PLAN.md` §11 **只列仍然開著的**，D1 早已不在裡面 —— 結論在 §10 的 G29。讀到「相依版本策略待定」這類舊錶述時，**它是過期的**。

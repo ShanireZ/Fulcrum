@@ -54,7 +54,7 @@ pub struct CertKey {
     /// ★ ★ **它由 [`crate::cert_key`] 從 `chain[0]` 自己讀出來，不由呼叫方傳進來。**
     /// 收一個參數的話，「這張證書說自己什麼時候到期」與「我們以為它什麼時候到期」
     /// 就成了兩份，而不一致的那天沒有任何東西會說 —— 表現是一條靜靜回報錯誤值的
-    /// `fulcrum_cert_expiry_seconds`，它在告警規則里長得完全正常。
+    /// `fulcrum_cert_expiry_seconds`，它在告警規則裡長得完全正常。
     /// ⇒ 讓分家在結構上做不到（D18/G66 同一條理由）。
     pub not_after: SystemTime,
 }
@@ -119,7 +119,7 @@ pub struct SniResolver {
     ///   · 用戶端提供了 `acme-tls/1` 時**只**看這張表 —— 否則會把使用者的真證書
     ///     交給一個只想驗證網域歸屬的對端；
     ///   · 沒提供 `acme-tls/1` 時**絕不**看這張表 —— 否則普通訪客會拿到
-    ///     一張自籤的挑戰證書，瀏覽器當場報證書錯誤，而伺服器端紀錄裡是一次成功的握手。
+    ///     一張自簽的挑戰證書，瀏覽器當場報證書錯誤，而伺服器端紀錄裡是一次成功的握手。
     ///   兩個方向各由一條斷言釘著（`tests/acme/run.sh`）。
     challenge: RwLock<BTreeMap<String, Arc<CertKey>>>,
 }
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn alpn_扫描器也能错过() {
         // ★ 這一半同樣重要：一個恆真的掃描器會把每一條普通連接都當成 ACME 驗證連接，
-        //   於是普通訪客拿到自籤的挑戰證書。
+        //   於是普通訪客拿到自簽的挑戰證書。
         assert!(!offers_alpn(
             &alpn_ext(&[b"h2", b"http/1.1"]),
             ACME_TLS_ALPN

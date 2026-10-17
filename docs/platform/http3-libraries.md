@@ -3,7 +3,7 @@ type: 技術基線
 title: HTTP/3 庫選型事實表（D11）
 description: 三條候選路線在「按 DCID 路由」「rustls 整合面」「維護活躍度」上的實測事實；★ quiche 用 BoringSSL 而不是 rustls，s2n-quic 根本不帶 HTTP/3。
 resource: ../../PLAN.md
-tags: [依賴, 待定, 必讀, 易錯]
+tags: [相依, 待定, 必讀, 易錯]
 status: draft
 generated:
   by: claude-code/opus-5
@@ -20,7 +20,7 @@ sources:
     title: 升級視窗內的 QUIC 連接歸屬；`ResolvesServerCert` 能否同時服務兩個入口
   - id: crates-io
     resource: https://crates.io/api/v1/crates
-    title: 各 crate 在 crates.io 上**自己宣告**的版本、依賴與 feature 表
+    title: 各 crate 在 crates.io 上**自己宣告**的版本、相依與 feature 表
   - id: docs-rs
     resource: https://docs.rs
     title: quiche / quinn-proto / s2n-quic 的公開 API 文件
@@ -32,7 +32,7 @@ sources:
 **本頁原樣保留** —— 它是拍板時看的那張表，不是拍板之後的追述。
 
 > ★ ★ **「原樣保留」保的是哪一部分**（owner 2026-09-03 拍板，寫在這裡免得下一個人再猜）：
-> **保的是當時查到的事實與比較** —— 版本號、feature 表、依賴關係、各條路線的取捨，
+> **保的是當時查到的事實與比較** —— 版本號、feature 表、相依關係、各條路線的取捨，
 > ⛔ **一個字都不許改**，錯了也留著（本頁第 3 節那條「沒有實測、只是把兩句話放在一起」
 > 就是這麼留下來的，而它後來被實測換成了另一件事）。
 > ⚠ **不保路標**：指向 `§` 號、`D` 號、`G` 號、檔案路徑這一類**引用**允許後補更正 ——
@@ -41,7 +41,7 @@ sources:
 
 > ★ 拍板同時定了另外兩條，都由本頁的事實直接推出來：
 > **G104** TLS 棧**整體換到 BoringSSL**（⚠ 推翻 §5.1 第 1 條 —— 因為第 2 節那條
-> 「quiche 用 BoringSSL、依賴表裡沒有 rustls」使得「繼續鎖 rustls」等價於「兩套 TLS 並存」）；
+> 「quiche 用 BoringSSL、相依表裡沒有 rustls」使得「繼續鎖 rustls」等價於「兩套 TLS 並存」）；
 > **G105** HTTP/3 語義層用 `quiche::h3` **不自研**（第 0 節 (b) 與安全基線第 5 條）。
 > ✅ ★ **那條未驗前置已驗完，通過**：
 > 記錄 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md) —— **G103 不重議**。
@@ -58,7 +58,7 @@ sources:
 下面凡是推斷，都單獨標著，並寫明要拿什麼把它坐實。
 
 ⚠ **全部數字的採集日期是 2026-08-25。** 這一頁的每次複查都要換日期 ——
-「上游停更了」與「我們上次看是三個月前」在句子里長得一樣。
+「上游停更了」與「我們上次看是三個月前」在句子裡長得一樣。
 
 ---
 
@@ -137,7 +137,7 @@ D11 當初把候選寫成 **`h3` / `quiche` / `s2n-quic` 三選一**（⚠ **它
 | | TLS 後端 | 與我們這份 rustls 的關係 |
 |---|---|---|
 | **quinn 0.11.11** | `rustls ^0.23.5`（可選，但 `default` 裡含 `rustls-ring` ⇒ 預設就開）| ✅ **同一個大版本**，不產生第二份 rustls |
-| **quiche 0.29.3** | `boring ^4.3`（BoringSSL），`default = ["boringssl-boring-crate"]` | ❌ **依賴表裡沒有 rustls，9 個 feature 沒有一條通向它** |
+| **quiche 0.29.3** | `boring ^4.3`（BoringSSL），`default = ["boringssl-boring-crate"]` | ❌ **相依表裡沒有 rustls，9 個 feature 沒有一條通向它** |
 | **s2n-quic 1.88.0** | 預設 `provider-tls-default` → `s2n-quic-tls-default`（平台探測，即 s2n-tls）；`provider-tls-rustls` → `s2n-quic-rustls` | ✅ 拿得到，但**要顯式關掉 default**；`s2n-quic-rustls 0.88.0` 宣告的是 `rustls ^0.23`（**非可選**）⇒ 同大版本 |
 
 ## ★★★ quiche 那一格的後果比「不整合」嚴重
@@ -150,7 +150,7 @@ D11 當初把候選寫成 **`h3` / `quiche` / `s2n-quic` 三選一**（⚠ **它
    ⇒ D11 的第二條前置（[「`ResolvesServerCert` 能否同時服務兩個入口」](/verification/open-seams.md)）
    對 quiche **不是「要驗」，是「結構上做不到」** —— 兩個入口會有兩套完全獨立的挑證書機制，
    而自動 HTTPS / On-Demand 全建在 rustls 那一條路上（§5.1 第 1 條，**選定後不能改主意**）。
-3. **BoringSSL 是 C 依賴**，而 §5 的散布口徑是 **musl 單靜態二進位**。
+3. **BoringSSL 是 C 相依**，而 §5 的散佈口徑是 **musl 單靜態二進位**。
    ⚠ 這一條**沒有實測**，只是把兩句話放在一起；要判它得真去 musl 上編一次。
    > ✅ **2026-08-25 補記（本頁其餘部分維持拍板時的原文）**：真去編過了，**通過** ——
    > 見 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md)。
@@ -162,10 +162,10 @@ quinn 的三個 rustls feature：
 | feature | 後果 |
 |---|---|
 | `rustls-ring` | ring（**我們現在就是 ring**，`Cargo.lock` 裡 `ring 0.17.14`）|
-| `rustls-aws-lc-rs` | ⚠ **把 `aws-lc-rs` 拖回依賴圖** |
+| `rustls-aws-lc-rs` | ⚠ **把 `aws-lc-rs` 拖回相依圖** |
 | `rustls-aws-lc-rs-fips` | 同上 |
 
-★ 本儲存庫為把 `aws-lc-rs` 擋在依賴圖外面付過**三次**代價：G41/G45 那輪
+★ 本儲存庫為把 `aws-lc-rs` 擋在相依圖外面付過**三次**代價：G41/G45 那輪
 （`pingora-core/rustls` 實測多解析 46 個包、**而 aws-lc-rs 不在其中**，`PLAN.md` §1）、
 `instant-acme` 的 default feature、`hyper-rustls` 的 default feature。
 
@@ -291,7 +291,7 @@ fn validate(&self, connection_info: &ConnectionInfo, buffer: &[u8]) -> Option<us
 
 ⚠ **但仍然沒有證據說明 s2n-quic 對認不出的 CID 做什麼**（丟包？stateless reset？）——
 ★ 這正是 quinn 那條栽過的地方：**鉤子的形狀說明不了失效形態。**
-⇒ 要判它得讀 `s2n-quic-transport` 的 endpoint 散布路徑，與讀 quinn 那次同樣的做法。
+⇒ 要判它得讀 `s2n-quic-transport` 的 endpoint 散佈路徑，與讀 quinn 那次同樣的做法。
 
 ## 一句話對比
 
@@ -356,7 +356,7 @@ s2n-quic 的 `default` 是 `['provider-address-token-default', 'provider-tls-def
 
 | | 欠什麼 | 怎麼補 |
 |---|---|---|
-| ④ | **s2n-quic 對認不出的 CID 做什麼**（丟包？stateless reset？）| 讀 `s2n-quic-transport` 的 endpoint 散布路徑 —— ★ ① 那條教訓正是：**鉤子的形狀說明不了失效形態** |
+| ④ | **s2n-quic 對認不出的 CID 做什麼**（丟包？stateless reset？）| 讀 `s2n-quic-transport` 的 endpoint 散佈路徑 —— ★ ① 那條教訓正是：**鉤子的形狀說明不了失效形態** |
 | ⑤ | **quiche 對認不出的 CID 做什麼** | ★ 嚴格說這一條不存在：quiche 是 sans-IO，訊息交給誰由我們決定，庫沒有機會自作主張。⇒ 登記在這裡只是為了讓這一欄三家都有話說 |
 
 > ★ ★ ★ **補 ① 的過程本身值得記一句**：三條欠賬裡，只有 ① 的答案**改變了結論的方向** ——
@@ -371,5 +371,5 @@ s2n-quic 的 `default` 是 `['provider-address-token-default', 'provider-tls-def
 [尚未驗證的接縫](/verification/open-seams.md)（兩條前置的完整推導） ·
 [決策紀錄](/governance/decision-log.md)（D11 由 **G103** 結案：取 `quiche`） ·
 [技術棧](/platform/tech-stack.md) ·
-[供應鏈現狀](/platform/supply-chain.md)（脫字號需求自帶上界；重複依賴讓整張迴歸網停擺過一次） ·
+[供應鏈現狀](/platform/supply-chain.md)（脫字號需求自帶上界；重複相依讓整張迴歸網停擺過一次） ·
 [TLS 與自動 HTTPS](/architecture/tls.md)

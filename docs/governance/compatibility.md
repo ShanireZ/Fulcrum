@@ -38,7 +38,7 @@ sources:
 
 ## 二、五個面，各自的 breaking 長得不一樣
 
-⚠ **「對外」指的是這個專案之外的人或機器依賴的東西。** 六個 crate 全是 `publish = false`，
+⚠ **「對外」指的是這個專案之外的人或機器相依的東西。** 六個 crate 全是 `publish = false`，
 沒有 crates.io 下游 ⇒ **Rust 層面的 API 不是對外面**，跨 crate 改簽名不進這張表。
 
 | 面 | 誰在消費 | 什麼算 breaking |

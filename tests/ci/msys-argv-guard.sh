@@ -211,7 +211,7 @@ if [ -z "${EXPORT_LINE:-}" ]; then
 fi
 
 # 區域②：docker-run.sh 裡引用到的每個 $REPO_UNIX/….sh
-# shellcheck disable=SC2016  # ★ 這裡要的**正是字面值** `$REPO_UNIX` —— 我們在原始碼文字里
+# shellcheck disable=SC2016  # ★ 這裡要的**正是字面值** `$REPO_UNIX` —— 我們在原始碼文字裡
 #   找它，⛔ 不是要展開它（展開了反而什麼都找不到）。
 mapfile -t REFED < <(grep -oE '\$REPO_UNIX/[A-Za-z0-9_./-]+\.sh' "$DRUN" | sed 's|^\$REPO_UNIX/||' | sort -u)
 

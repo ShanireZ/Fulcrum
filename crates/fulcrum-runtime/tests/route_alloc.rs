@@ -63,7 +63,7 @@ fn rt() -> Runtime {
     Runtime::build(&o.config.unwrap()).expect("运行时图应当能建起来")
 }
 
-/// ★ 內置反證：分配器真的在數。少了它，下面那幾條的 0 也可能只是「什麼都沒數」。
+/// ★ 內建反證：分配器真的在數。少了它，下面那幾條的 0 也可能只是「什麼都沒數」。
 #[test]
 fn 计数分配器自己数得到分配() {
     let (_, n) = count_allocs(|| std::hint::black_box(Vec::<u8>::with_capacity(16)));

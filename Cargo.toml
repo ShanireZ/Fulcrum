@@ -14,8 +14,8 @@ members = [
 exclude = ["vendor/pingora"]
 
 # G30：pingora-core 0.8.1 的清單裡有十條版本上界（`brotli = "3"` 這類脫字號需求
-# 自帶 `<4.0.0`），把 44 個傳遞依賴釘在舊版上，其中兩個帶安全公告。
-# ★ [patch] 打不破版本需求——被 patch 的 crate 仍須滿足依賴方的需求，
+# 自帶 `<4.0.0`），把 44 個傳遞相依釘在舊版上，其中兩個帶安全公告。
+# ★ [patch] 打不破版本需求——被 patch 的 crate 仍須滿足相依方的需求，
 #   所以唯一的槓桿是替換 pingora-core 本身。fork 在 vendor/pingora，
 #   改動只在各 Cargo.toml 的版本上界與隨之而來的呼叫點適配。
 # 現狀、實測破壞面與重跑方式見 docs/platform/supply-chain.md。
@@ -25,17 +25,17 @@ pingora-core = { path = "vendor/pingora/pingora-core" }
 #   資料面要直接用 `RequestHeader` / `ResponseHeader`，而 vendor 裡的 pingora-core
 #   走 `path = "../pingora-http"`。若產品 crate 從 crates.io 再拿一份，
 #   **同名同版本卻是兩個不同的類型**，編譯期就會撞上一堆看不懂的類型不匹配。
-#   ⚠ 只 patch 真正進依賴圖的那些——patch 了沒人用的會讓 cargo 每次打一行
+#   ⚠ 只 patch 真正進相依圖的那些——patch 了沒人用的會讓 cargo 每次打一行
 #   「patch was not used」的噪音。
 pingora-http = { path = "vendor/pingora/pingora-http" }
 # ★ （G104）TLS 後端是 BoringSSL，同樣必須 patch —— `fulcrum-tls` 要用
 #   `X509` / `PKey` / `ClientHello`，而它們經 `pingora-boringssl` 再匯出。
 #   從 crates.io 另拿一份會得到**兩個同名不同物的類型**。
-#   ⚠ `pingora-rustls` 曾經也在這裡，三處 TLS 全換之後根 workspace 沒有任何 crate 依賴它，
+#   ⚠ `pingora-rustls` 曾經也在這裡，三處 TLS 全換之後根 workspace 沒有任何 crate 相依它，
 #     按上面那條紀律刪掉；fork 裡那個 crate 本身還在（vendor 成員、迴歸網照跑）。
 pingora-boringssl = { path = "vendor/pingora/pingora-boringssl" }
 
-# 依賴版本策略見 PLAN.md G29：`>=` 下界、不設上界、`Cargo.lock` 入庫、
+# 相依版本策略見 PLAN.md G29：`>=` 下界、不設上界、`Cargo.lock` 入庫、
 # 每週由 tools/dep-check.py 檢查並跟進最新，且任何版本必須已發佈滿 24 小時才允許採納。
 #
 # ★ 下界抬到「實際鎖定並跑過驗證的那個版本」，不是隨手寫的舊值。
@@ -51,14 +51,14 @@ async-trait = ">=0.1.92"
 tokio = { version = ">=1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync", "process", "signal"] }
 log = ">=0.4.33"
 env_logger = ">=0.11.11"
-# G31 指定的 sd_notify 實作：純 Rust、零非 libc 依賴、可 musl 靜態連結（G13）。
+# G31 指定的 sd_notify 實作：純 Rust、零非 libc 相依、可 musl 靜態連結（G13）。
 # 只有 M1 spike 用它。
 sd-notify = ">=0.5.0"
-# 只為 `kill(2)`（給自己發 SIGQUIT）。sd-notify 與 pingora 本來就把它拖進依賴樹，
-# 這裡只是把它變成一條顯式的直接依賴。
+# 只為 `kill(2)`（給自己發 SIGQUIT）。sd-notify 與 pingora 本來就把它拖進相依樹，
+# 這裡只是把它變成一條顯式的直接相依。
 libc = ">=0.2.189"
-# 結構化設定那一層是 JSON（G48）。serde 本來就在依賴圖裡（pingora 拖進來的），
-# serde_json 是這一輪新加的直接依賴。
+# 結構化設定那一層是 JSON（G48）。serde 本來就在相依圖裡（pingora 拖進來的），
+# serde_json 是這一輪新加的直接相依。
 # ★ 只開 `derive`，不開 default 之外的任何東西——「上游 crate 的 default 是一條靜默的
 #   供應鏈入口」在本儲存庫已經現身四次（rustls / tokio-rustls / pingora-core 的 dev-dep /
 #   instant-acme）。這兩條由 crates/fulcrum/tests/supply_gates.rs 的結構門守著，不是靠這行註解。
@@ -66,10 +66,10 @@ serde = { version = ">=1.0.229", features = ["derive"] }
 serde_json = ">=1.0.151"
 # `path_regexp`（G60 的指令清單裡就有）需要一個正則引擎。
 # ★ 不自己寫：正則引擎的壞法是**指數級回溯**，而 `regex` 的賣點恰恰是線性時間保證——
-#   拿一個會被設定裡一行 `(a+)+$` 打掛的手寫實作去服務公用網路入口，不是省依賴，是留後門。
+#   拿一個會被設定裡一行 `(a+)+$` 打掛的手寫實作去服務公用網路入口，不是省相依，是留後門。
 regex = ">=1.13.1"
-# 資料面直接用到的 pingora 類型與它們的底層類型。三條都已經在依賴圖裡
-# （pingora-core 拖進來的），這裡只是把它們變成顯式的直接依賴。
+# 資料面直接用到的 pingora 類型與它們的底層類型。三條都已經在相依圖裡
+# （pingora-core 拖進來的），這裡只是把它們變成顯式的直接相依。
 pingora-http = ">=0.9.0"
 bytes = ">=1.12.1"
 http = ">=1.5.0"
@@ -89,7 +89,7 @@ pingora-boringssl = ">=0.9.0"
 quiche = { version = ">=0.30.0", default-features = false, features = [
     "boringssl-boring-crate",
 ] }
-# ⚠ ★ **G111：`boring` 破例成為直接依賴**（紀律本是「BoringSSL 的類型只經
+# ⚠ ★ **G111：`boring` 破例成為直接相依**（紀律本是「BoringSSL 的類型只經
 #   `pingora-boringssl` 拿」）。理由與代價：
 # · **要的是 `symm` 的 AEAD**（AES-256-GCM）—— Retry token 的位址驗證（RFC 9000 §8.1）。
 #   `pingora-boringssl` 只 re-export 了 `error`/`hash`/`nid`/`pkey`/`ssl`/`x509`，夠不到它。
@@ -104,9 +104,9 @@ quiche = { version = ">=0.30.0", default-features = false, features = [
 boring = ">=5.2.0"
 # 連接 ID 與 Retry token 的隨機源（M2 批 J）。
 #
-# ★ **新增 0 個包**：`rand 0.10.2` 本來就是 `pingora-core` 的 **normal** 依賴
+# ★ **新增 0 個包**：`rand 0.10.2` 本來就是 `pingora-core` 的 **normal** 相依
 #   （實測 `cargo tree -e normal -i rand`：rand ← pingora-core ← fulcrum-server），
-#   這裡只是把一條早就編進產物的依賴變成顯式的直接依賴。
+#   這裡只是把一條早就編進產物的相依變成顯式的直接相依。
 # ⚠ ⚠ **隨機性在這裡是安全屬性不是便利**：RFC 9000 §5.1 要求連接 ID 不可被關聯，
 #   而 Retry token 可被預測等於位址驗證形同虛設。⇒ 取的是 `rand::rng()`
 #   （`ThreadRng`，OS 播種的 ChaCha，`impl TryCryptoRng`），**不是** `SmallRng`。
@@ -114,34 +114,34 @@ boring = ">=5.2.0"
 rand = ">=0.10.2"
 # `futures::Stream` —— 只為了**寫得出** `SessionCustom` 那兩個方法的簽名
 # （`take/restore_custom_message_reader` 收發的是 `Box<dyn Stream<…>>`）。
-# ★ **新增 0 個包**：`futures 0.3.34` 本來就是 `pingora-core` 的 normal 依賴。
+# ★ **新增 0 個包**：`futures 0.3.34` 本來就是 `pingora-core` 的 normal 相依。
 # ⚠ 它**不代表本儲存庫開始用 futures 的組合子**：資料面一律 tokio + async/await。
 futures = ">=0.3.34"
-# 從 DER 裡讀證書有效期與 SAN。★ 它本來就在依賴圖裡（pingora-core 的 rustls feature 拖進來的）。
+# 從 DER 裡讀證書有效期與 SAN。★ 它本來就在相依圖裡（pingora-core 的 rustls feature 拖進來的）。
 x509-parser = ">=0.16.0"
 # ★ **純類型定義 crate**（DER/證書那幾個 newtype），沒有 crypto、沒有 provider。
 #   ⚠ 與 G41/G45 點名的 `rustls` / `tokio-rustls` **不是一類東西**：那兩條是
 #   「default feature 會把 aws-lc-rs 拖進來」，這一條一個 feature 都沒有。
-#   直接依賴它是因為 `instant-acme` 的 `CertificateIdentifier` 只有
+#   直接相依它是因為 `instant-acme` 的 `CertificateIdentifier` 只有
 #   `TryFrom<&CertificateDer>` 一個入口，而我們的證書類型是 BoringSSL 的 `X509`。
 #   ★ **新增 0 個包**。
 rustls-pki-types = ">=1.9"
 # 造 TLS-ALPN-01 的挑戰證書（RFC 8737，G54 的「主」）。
 #
-# ★ **新增 0 個包**：`instant-acme` 本來就把它當正常依賴拉進來
+# ★ **新增 0 個包**：`instant-acme` 本來就把它當正常相依拉進來
 #   （實測 `cargo tree -e normal -i rcgen`：rcgen ← instant-acme ← fulcrum-acme）。
 # ⚠ ⚠ **`default-features = false` 同樣不是風格問題**：rcgen 有一個 `aws_lc_rs` feature，
-#   而本儲存庫剛把 aws-lc-rs 趕出依賴圖（G41/G45）。這裡顯式只要 `ring`。
+#   而本儲存庫剛把 aws-lc-rs 趕出相依圖（G41/G45）。這裡顯式只要 `ring`。
 #   ★ 守它的是 `crates/fulcrum/tests/supply_gates.rs`（`rcgen` 已在門 2 的名單裡），不是這行註解。
 rcgen = { version = ">=0.14.9", default-features = false, features = ["ring"] }
 # 出站 HTTPS：ACME 協定本身，外加原生 Cloudflare / DNSPod（G57）的 API 呼叫。
 #
 # ★ ★ 出站那條路的 TLS 是 BoringSSL（`crates/fulcrum-acme/src/https.rs`：自己寫的
 #   `tower_service::Service<Uri>` 連接器 + fork 裡已有的 `pingora_boringssl::tokio_ssl`）
-#   ⇒ `hyper-rustls` / `rustls` / `tokio-rustls` / `schannel` 都不在**依賴圖**裡。
-#   ⚠ ⚠ **離開的是依賴圖，不是這把鎖**：它們仍然寫在 `Cargo.lock` 裡
+#   ⇒ `hyper-rustls` / `rustls` / `tokio-rustls` / `schannel` 都不在**相依圖**裡。
+#   ⚠ ⚠ **離開的是相依圖，不是這把鎖**：它們仍然寫在 `Cargo.lock` 裡
 #     （`instant-acme` 的 `ring` feature 裡那句 `"hyper-rustls?/ring"`）——
-#     **`Cargo.lock` 是依賴圖的超集** ⇒ 判「圖裡有沒有」要用 `cargo tree`
+#     **`Cargo.lock` 是相依圖的超集** ⇒ 判「圖裡有沒有」要用 `cargo tree`
 #     （`supply_gates.rs` 門 5），不能讀這把鎖。
 #   ⚠ **不走 `hyper-boring`**：它把 `hyper 0.14` 那一整套拖進來（**+9 個包**），因為它的
 #     feature 表裡 `hyper_old` **沒有 `dep:` 前綴** ⇒ `default-features = false` 攔不住。
@@ -154,8 +154,8 @@ rcgen = { version = ">=0.14.9", default-features = false, features = ["ring"] }
 hyper = { version = ">=1.11.0", features = ["client", "http1"] }
 hyper-util = { version = ">=0.1.20", features = ["client", "client-legacy", "http1", "tokio"] }
 http-body-util = ">=0.1.5"
-# ★ **新增 0 個包**：`hyper-util` 的 `client` feature 本來就把它當必需依賴拉進來
-#   （`client = [..., "dep:tower-service"]`）。這裡只是把它變成一條顯式的直接依賴 ——
+# ★ **新增 0 個包**：`hyper-util` 的 `client` feature 本來就把它當必需相依拉進來
+#   （`client = [..., "dep:tower-service"]`）。這裡只是把它變成一條顯式的直接相依 ——
 #   出站連接器要實作的正是 `tower_service::Service<Uri>`，那是 `hyper-util` 的
 #   `Connect` 唯一認得的形狀。
 # ⚠ 它與 §5.1 第 2 條（「tower 中介軟體生態用不上」）**不衝突**：那一條說的是
@@ -166,7 +166,7 @@ tower-service = ">=0.3.3"
 #
 # ⚠ ⚠ **`default-features = false` 不是風格問題**：`instant-acme` 的 default feature
 #   裡**就含 `aws-lc-rs`**（實測 0.8.5 的 `default = ["aws-lc-rs", "hyper-rustls"]`），
-#   照預設寫一行，G41/G45 把 aws-lc-rs 趕出依賴圖的成果當場作廢。
+#   照預設寫一行，G41/G45 把 aws-lc-rs 趕出相依圖的成果當場作廢。
 #   ★ 守它的不是這行註解，是 `crates/fulcrum/tests/supply_gates.rs` 的門 1（查兩把鎖）
 #     與門 2（查清單寫法）——**門 2 從今天起不再是空跑的**。
 # ★ `x509-parser` + `time` 兩個 feature 是給 **ARI**（RFC 9773）用的：

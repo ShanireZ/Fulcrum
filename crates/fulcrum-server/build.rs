@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     // ⚠ 一旦列印了任何一條 `rerun-if-changed`，cargo 就**不再**使用「包內任何檔案變了就重跑」
-    //   那個預設值。這裡是有意的：這個指令碼的產物只依賴「HEAD 指向哪」與那個環境變數，
+    //   那個預設值。這裡是有意的：這個指令碼的產物只相依「HEAD 指向哪」與那個環境變數，
     //   原始碼改動本來就會走正常的重編譯路徑。
     println!("cargo:rerun-if-env-changed=FULCRUM_BUILD_ID");
 

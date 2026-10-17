@@ -23,7 +23,7 @@
 //! ★ ★ **換的是載體，不是對證書的理解**：有效期與 SAN 仍由 [`store::validity_of`]
 //! 走 `x509-parser` 從 DER 裡讀，逐字未改。⇒ 這一批紅了，紅的一定是後端那一層。
 //!
-//! ★ ★ **BoringSSL 的類型只經 `pingora-boringssl` 拿**，本 crate 不直接依賴 `boring`。
+//! ★ ★ **BoringSSL 的類型只經 `pingora-boringssl` 拿**，本 crate 不直接相依 `boring`。
 //! 理由與「只經 `pingora-rustls` 拿 rustls」完全一樣，而且更硬：
 //! `boring` 的版本必須與 `quiche` 解到同一個（G103/G104），
 //! **多一處版本宣告就多一個把它們劈成兩份的機會**，而劈開之後

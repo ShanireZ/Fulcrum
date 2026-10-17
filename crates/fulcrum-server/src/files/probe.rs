@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 ///
 /// ② **位元組只能按路徑取回**（[`Probe::bytes_for`] / [`Probe::check_bytes_for`]，路徑不符回 `None`）。
 ///    ⇒ 預壓縮旁檔案讀的是**另一個檔案**，它會自動落回分塊路徑，
-///    ⛔ 不再依賴呼叫方在傳送那一行寫對「表示是不是原檔案」。
+///    ⛔ 不再相依呼叫方在傳送那一行寫對「表示是不是原檔案」。
 pub(super) struct Probe {
     path: PathBuf,
     meta: Metadata,

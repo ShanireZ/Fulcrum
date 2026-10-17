@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ACME 端到端：在門禁裡跑一個**真的 CA**（pebble，G64），讓樞衡真籤一張證書出來。
+# ACME 端到端：在門禁裡跑一個**真的 CA**（pebble，G64），讓樞衡真簽一張證書出來。
 #
 # ★ ★ **這個場景存在的全部理由是「判據」**：帳戶、訂單、HTTP-01、ARI、退避、跨代鎖、
 #   熱裝 —— G54 的三種挑戰與 G58 那條「簽發並續期一次通配符證書」，
@@ -46,7 +46,7 @@ TLS_PORT=${TLS_PORT:-9443}
 #   `pebble.tlsPort` 是 pebble **發起 TLS-ALPN-01 驗證時去連的連接埠**。
 #   在這之前它被設成一個沒人要的連接埠（9444），因為那一批還沒做這個挑戰。
 #   現在把它指向**樞衡自己的 HTTPS 連接埠** —— 於是「CA 來驗」這件事是真的發生的：
-#   pebble 拿著 `acme-tls/1` 連過來，樞衡在握手裡回那張自籤的挑戰證書。
+#   pebble 拿著 `acme-tls/1` 連過來，樞衡在握手裡回那張自簽的挑戰證書。
 #   ⚠ 真實環境裡這個連接埠恆為 443（RFC 8737 §3 寫死），只有 pebble 允許改。
 PEBBLE_TLSALPN_PORT=${PEBBLE_TLSALPN_PORT:-$TLS_PORT}
 
@@ -70,7 +70,7 @@ HTTP01_DOMAIN=http01.example
 WILDCARD_SITE='*.wild.example'
 WILDCARD_HOST=x.wild.example
 # ★ 另一個通配符站台，**故意不配 DNS-01** —— 用來守「推遲 ≠ 失敗」那條判據。
-#   兩個通配符站台同時在場，才能在一次跑裡同時驗「配了就能籤」與「沒配就推遲」。
+#   兩個通配符站台同時在場，才能在一次跑裡同時驗「配了就能簽」與「沒配就推遲」。
 NODNS_SITE='*.nodns.example'
 
 STATE="$WORK/state"
@@ -127,7 +127,7 @@ echo "=== [1/6] 起 pebble（本地 CA）与 challtestsrv（假 DNS）==="
 acme_make_api_cert "ACME TESTS"
 acme_write_pebble_config "$DIR_PORT" "$MGMT_PORT" "$HTTP_PORT" "$PEBBLE_TLSALPN_PORT"
 acme_start_challtestsrv "$DNS_PORT" "$CTS_MGMT_PORT"
-# ★ 授權重複使用留在 pebble 的預設值（50%）：本場景每個網域只籤一次，重複使用與否都碰不到。
+# ★ 授權重複使用留在 pebble 的預設值（50%）：本場景每個網域只簽一次，重複使用與否都碰不到。
 #   續期場景把它關掉，理由見 lib.sh。
 acme_start_pebble "$DNS_PORT"
 
@@ -170,15 +170,15 @@ echo "=== [2/6] 起枢衡，等它把证书签下来 ==="
 
 # ★ ★ 挑戰站台寫的是 `respond 403` —— **這是判據本身，不是隨手寫的**。
 #   一份 `respond 403` 的設定完全合法，而 HTTP-01 的應答若走正常路由，
-#   **使用者的設定會把自己的證書籤發擋掉**，現場只看得到「CA 說驗不過」。
-#   於是：籤成功 ⇒ 應答確實繞過了路由；而下面 [4/6] 裡那個不認識的 token 拿到 403
+#   **使用者的設定會把自己的證書簽發擋掉**，現場只看得到「CA 說驗不過」。
+#   於是：簽成功 ⇒ 應答確實繞過了路由；而下面 [4/6] 裡那個不認識的 token 拿到 403
 #   ⇒ 繞過的面只有「當前有效的 token」這一點大。**兩個方向都在同一次跑裡。**
 #
 # ★ ★ 兩個通配符站台是**故意的**，它們各守一條判據：
 #   · `*.wild.example` 配了 `dns exec` + `resolvers` ⇒ 應當**真的簽下來**（G58）；
 #   · `*.nodns.example` 什麼都沒配 ⇒ 應當被記成**推遲**，不是**失敗**
 #     （失敗會進退避、進計數、進告警）。
-#   一次跑裡同時驗「配了就能籤」與「沒配就推遲」，兩個方向都在。
+#   一次跑裡同時驗「配了就能簽」與「沒配就推遲」，兩個方向都在。
 cat > "$WORK/acme.Fulcrumfile" <<CONF
 {
     acme_ca $DIR_URL
@@ -256,7 +256,7 @@ for p in "$HTTP_PORT" "$TLS_PORT"; do
 done
 ok "两个监听起来了"
 
-# ★ ★ 這一條永遠成立：`*.nodns.example` 沒配 DNS-01，這一批籤不出來，
+# ★ ★ 這一條永遠成立：`*.nodns.example` 沒配 DNS-01，這一批簽不出來，
 #   所以對它的握手必須被拒絕。判據掛在 **curl 的結束代碼**上——
 #   `%{http_code}` 的 `000` 也可能來自超時、連接埠沒開，分不出「被拒絕握手」這一種。
 curl_capture -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
@@ -369,7 +369,7 @@ expect_mode "私钥" 600 "$CERT_DIR/key.pem"
 expect_mode "证书" 644 "$CERT_DIR/cert.pem"
 expect_mode "账户凭据" 600 "$ACCOUNT_JSON"
 
-# ★ ★ `issuer_url` 記的是**籤它的那個 CA 的目錄 URL 原文**。
+# ★ ★ `issuer_url` 記的是**簽它的那個 CA 的目錄 URL 原文**。
 #   目錄名（`ca-localhost-14000`）是有損映射，兩個 CA 可能落到同一個名字上——
 #   判據掛在資料上，不掛在命名約定上。
 META="$CERT_DIR/meta.json"
@@ -453,7 +453,7 @@ else
   fail "响应体期望「acme-secure」，实际「$BODY」"
 fi
 
-# ★ 這張證書是不是 pebble 籤的，問證書自己，別問我們自己寫的 meta。
+# ★ 這張證書是不是 pebble 簽的，問證書自己，別問我們自己寫的 meta。
 ISSUER_CN=$(openssl x509 -in "$CERT_DIR/cert.pem" -noout -issuer 2>/dev/null || true)
 if printf '%s' "$ISSUER_CN" | grep -qi 'pebble'; then
   ok "证书的签发者是 pebble：$ISSUER_CN"
@@ -464,7 +464,7 @@ fi
 # ── ★ ★ ★ 通配符證書真的能服務一個子域（G58 的正面判據）────────────────────
 #
 # ⚠ 「證書檔案躺在盤上」與「它真能用」是兩件事。這一條走完整條鏈：
-#   SNI 是 `x.wild.example` → 解析器按通配符挑中那張證書 → 用戶端用 pebble 的根驗籤。
+#   SNI 是 `x.wild.example` → 解析器按通配符挑中那張證書 → 用戶端用 pebble 的根驗簽。
 WCODE=$(run_curl -s -o "$WORK/wbody" -w '%{http_code}' --max-time 10 \
   --cacert "$WORK/pebble-root.pem" \
   --resolve "$WILDCARD_HOST:$TLS_PORT:$HOST" "https://$WILDCARD_HOST:$TLS_PORT/")
@@ -476,7 +476,7 @@ else
   fail "通配符站点响应体期望「wild-ok」，实际「$WBODY」"
 fi
 
-# ★ 證書上的 SAN 必須真的是通配符，而不是恰好籤了 `x.wild.example` 這一個名字。
+# ★ 證書上的 SAN 必須真的是通配符，而不是恰好簽了 `x.wild.example` 這一個名字。
 #   ⚠ 少了這一條，一個「把通配符悄悄降級成單網域」的實作照樣全綠。
 WSAN=$(openssl x509 -in "$WILD_CERT_DIR/cert.pem" -noout -ext subjectAltName 2>/dev/null || true)
 if printf '%s' "$WSAN" | grep -q '\*\.wild\.example'; then
@@ -498,11 +498,11 @@ expect_status "签发完之后，不认识的挑战 token 落回路由（配置�
 # 這是兩條方向相反的安全屬性，缺一不可：
 #   ① 協商到 `acme-tls/1` 卻沒有掛著的挑戰證書 ⇒ **拒絕握手**，
 #      絕不回落到真證書（否則等於把使用者的真證書交給任何一個說 `acme-tls/1` 的對端）；
-#   ② 普通流量（h2 / http/1.1）**拿不到**挑戰證書 —— 那張是自籤的，
+#   ② 普通流量（h2 / http/1.1）**拿不到**挑戰證書 —— 那張是自簽的，
 #      拿到它的瀏覽器會當場報證書錯誤，而伺服器端紀錄裡是一次**成功**的握手。
 #
 # ⚠ 現在挑戰早已用完摘掉，所以 ① 直接可驗：帶 `acme-tls/1` 連過去必須失敗。
-#   ② 由下面那條「證書的簽發者是 pebble」間接守著——挑戰證書是自籤的，
+#   ② 由下面那條「證書的簽發者是 pebble」間接守著——挑戰證書是自簽的，
 #   一旦漏進普通流量，簽發者就不是 pebble 了。
 set +e
 openssl s_client -connect "$HOST:$TLS_PORT" -servername "$DOMAIN" \

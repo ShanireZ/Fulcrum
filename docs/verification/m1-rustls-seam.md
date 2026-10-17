@@ -36,7 +36,7 @@ sources:
 | `tools/supply-audit.py` | 同第一條 | 同第一條 |
 
 ★ **「根 lock 不含它」不是特例**：實測 `sentry`／`x509-parser`／`ouroboros` 同樣缺席——
-**未啟用的可選依賴一個都不在根鎖裡**。也就是說這個盲區的形狀是通用的，不只針對 rustls。
+**未啟用的可選相依一個都不在根鎖裡**。也就是說這個盲區的形狀是通用的，不只針對 rustls。
 
 **實測代價**：
 
@@ -45,13 +45,13 @@ cargo tree -p pingora-core -e normal            → 133 个 crate
 cargo tree -p pingora-core --features rustls    → 175 个 crate
 ```
 
-> ★ ★ **M1 第一天打開那個 feature，產品依賴圖會一次進來 42 個從未過任何一道門的 crate。**
+> ★ ★ **M1 第一天打開那個 feature，產品相依圖會一次進來 42 個從未過任何一道門的 crate。**
 
 # 二、一個具體缺陷：明明用 ring，卻把 aws-lc-rs 一起編了進去
 
 `pingora-rustls` 的清單兩處都沒寫 `default-features = false`：
 
-| 依賴 | 上游寫法 | 那個 crate 的 `default` |
+| 相依 | 上游寫法 | 那個 crate 的 `default` |
 |---|---|---|
 | `rustls` | `{ version = "0.23.12", features = ["ring"] }` | `["aws_lc_rs", "logging", "prefer-post-quantum", "std", "tls12"]` |
 | `tokio-rustls` | `"0.26.0"` | `["logging", "tls12", "aws_lc_rs"]` |
@@ -75,7 +75,7 @@ crate 裡另一處密碼學呼叫是 `ring::digest`。**aws-lc-rs 編進去了�
 | `ring` | 8.5 MB | Rust + 少量彙編 |
 | **`aws-lc-sys`** | ★ **69 MB** | **C（AWS-LC，BoringSSL 分支），走 cmake** |
 
-這直接頂到 G13 的 **musl 靜態二進位**散布，也是白送的攻擊面。
+這直接頂到 G13 的 **musl 靜態二進位**散佈，也是白送的攻擊面。
 
 ## 修法與實測
 
@@ -89,7 +89,7 @@ tokio-rustls = { version = "0.26.0",  default-features = false,
 | 判據 | 結果 |
 |---|---|
 | 編譯 | ✅ 通過 |
-| 依賴圖 | 175 → **173**，★ **只少了 `aws-lc-rs` 與 `aws-lc-sys`**，別的一個沒動 |
+| 相依圖 | 175 → **173**，★ **只少了 `aws-lc-rs` 與 `aws-lc-sys`**，別的一個沒動 |
 | 迴歸網 | stock 與改後**逐項相同**（跑了對照組，見下）|
 
 ★ **唯一被丟掉的預設項是 `prefer-post-quantum`，而它是安全的**——
@@ -124,7 +124,7 @@ rustls 原始碼裡每一處 `#[cfg(feature = "prefer-post-quantum")]` 都在 `s
 
 ★ **落法上刻意不給 dev-dependency 指定任何 provider**（只留 `logging`/`std`/`tls12`）：
 它只被 `connectors/http` 的測試拿去用類型，執行環境的 provider 本來就經 `pingora-rustls` 進來。
-帶 `ring` 的寫法也量過——**依賴圖一模一樣**，所以不指定不損失什麼，卻能不和上游
+帶 `ring` 的寫法也量過——**相依圖一模一樣**，所以不指定不損失什麼，卻能不和上游
 [#630](https://github.com/cloudflare/pingora/pull/630) /
 [#887](https://github.com/cloudflare/pingora/pull/887) 的 provider 選型工作打架。
 
@@ -230,7 +230,7 @@ if let (Some(error), []) = (first_error, certs.as_slice()) {
 落法：`certs.is_empty() && !errors.is_empty()` 才判失敗；`errors` 裡的內容改為 `warn!` 一行——
 **控制流與 0.7.3 完全一致，只是不再無聲**（0.7.3 是直接丟掉）。
 
-連帶：`0.8.4` 自帶 `openssl-probe 0.2.1`，所以最終依賴圖是 **174** 而不是 173。
+連帶：`0.8.4` 自帶 `openssl-probe 0.2.1`，所以最終相依圖是 **174** 而不是 173。
 
 # 六、可以帶走的幾條
 

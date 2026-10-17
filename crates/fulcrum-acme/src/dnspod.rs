@@ -38,14 +38,14 @@ const API: &str = "https://dnsapi.cn";
 /// ⚠ ⚠ **這個值不能按「越小越好」拍，DNSPod 按套餐給 TTL 下限。**
 /// 免費版的下限是 **600 秒**，寫 60 會被直接拒：
 /// `Record.Create` 回 `code 32 / Record TTL value exceeded limit`，
-/// 於是**原生 DNSPod 在免費帳號上一張證書都籤不下來**。
+/// 於是**原生 DNSPod 在免費帳號上一張證書都簽不下來**。
 ///
 /// ★ 在 `example.com` 上實測撞到的 —— 而門禁裡**撞不到**：
 /// 那裡的對端是 pebble + challtestsrv，沒有套餐這個概念。
 /// 這正是 G57 把「我們對 dnsapi.cn 的理解是對的」押在真網域上的原因，
 /// 而這一條恰恰是那句話裡**理解錯了的那一小塊**。
 ///
-/// ★ 取 600 而不是「按套餐探測」：TTL 隻影響**遞歸解析器的快取**，
+/// ★ 取 600 而不是「按套餐探測」：TTL 只影響**遞歸解析器的快取**，
 /// 而 G58 的可見性判據是**直接問權威 NS**，CA 也一樣 ⇒ 抬到 600 對簽發幾乎零成本，
 /// 而它在所有套餐上都合法。**一個在所有帳號上都能用的常數，勝過一次需要猜的探測。**
 const TTL: &str = "600";
@@ -506,7 +506,7 @@ mod tests {
     fn 凭据读不出来是_fatal_而不是_inconclusive() {
         // ⚠ 反面：這是**本機的、確定的**問題，網路再好也不會變對。
         //   一個把它歸成 Inconclusive 的實作會讓「憑證檔案沒掛上」這種事
-        //   變成一條 error 紀錄然後繼續跑——而那臺機器一張證書都籤不出來。
+        //   變成一條 error 紀錄然後繼續跑——而那臺機器一張證書都簽不出來。
         unsafe { std::env::remove_var("FULCRUM_TEST_DP_MISSING") };
         let d = Dnspod::new(
             Arc::new(Unreachable),

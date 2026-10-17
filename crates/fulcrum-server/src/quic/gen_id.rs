@@ -239,7 +239,7 @@ mod tests {
     fn dcid_短于八字节判不出来而不是判成本代() {
         let me = g(0);
         // ⚠ `g(0)` 的位元組全是 0，而短 DCID 補零之後看起來正好像它 ——
-        //   這條用例挑 0 就是為了把「補零當成命中」這種寫法釘死。
+        //   這條案例挑 0 就是為了把「補零當成命中」這種寫法釘死。
         for len in 0..GEN_ID_LEN {
             assert_eq!(
                 ownership(&me, Type::Short, &vec![0u8; len], false),

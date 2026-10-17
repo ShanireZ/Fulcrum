@@ -10,7 +10,7 @@ description = "枢衡的 TLS 层：证书存储（G55）、按 SNI 的动态证�
 #   它是純邏輯（只帶 serde），不引入任何供應鏈面。
 fulcrum-config = { path = "../fulcrum-config" }
 # ★ ★ ★ **（G104）：從 `pingora-rustls` 換成 `pingora-boringssl`。**
-#   BoringSSL 的類型**只經這一個 crate 拿**，不直接依賴 `boring`。
+#   BoringSSL 的類型**只經這一個 crate 拿**，不直接相依 `boring`。
 #   理由與「只經 `pingora-rustls` 拿 rustls」完全一樣，而且更硬：
 #   ⚠ ⚠ `boring` 的版本必須與 `quiche` 解到**同一個**（G103/G104），
 #   而**多一處版本宣告就多一個把它們劈成兩份的機會** ——
@@ -30,7 +30,7 @@ libc = { workspace = true }
 [dev-dependencies]
 # 只給判據用：`default_sni` 那幾條要真的往表裡裝證書，而**造一張真證書**是唯一的裝法
 # （`CertKey` 收的是 `X509` + `PKey`）。
-# ⚠ 判據裡的證書**一律現籤**，不提交進儲存庫：提交的那張遲早過期，而過期那天紅的是
+# ⚠ 判據裡的證書**一律現簽**，不提交進儲存庫：提交的那張遲早過期，而過期那天紅的是
 #   「TLS 壞了」，要繞一圈才發現是證書到期（`tests/serve/run.sh` 那段同理）。
-# ★ 新增 0 個包：rcgen 早就在依賴圖裡（instant-acme 拉的，見根清單）。
+# ★ 新增 0 個包：rcgen 早就在相依圖裡（instant-acme 拉的，見根清單）。
 rcgen = { workspace = true }

@@ -27,7 +27,7 @@ sources:
 | 接縫 | 已知事實 | 待驗證 |
 |---|---|---|
 | **建置鏡像編不出 musl 產物** | 實測：Debian trixie 只有 `musl-gcc`（C），沒有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ✅ **已由 G131 結案**（曾掛號 D21）：口徑 = Alpine 原生 + qemu 跑 aarch64。✅ qemu 那一趟的耗時已量到：`ShanireHomePC` 2026-09-05 冷建 **18m07s**、`ShanirePCX` 2026-09-06 冷建 **34m05s**（⚠ 近兩倍，**機器本機**，⛔ 別互相照抄）。✅ **曾掛號 D24 的「何時跑 aarch64」已由 `G144` 結案 = 候選 ②**：只在 `Cargo.lock` 或那三張釘 rustc 的 Dockerfile 變化時跑。⚠ binfmt 是**機器本機狀態**，兩臺開發機現在都裝了 |
-| **產物裡真的連結了哪幾套 TLS** | 依賴圖裡只有一套（`cargo tree -e all --target all` 為空） | ✅ **已由 G138 結案**（曾掛號 D23）：判據掛在 musl 靜態產物上，`tests/ci/tls-linkage.sh` 取數 + `tests/musl/product.sh` 判**符號表**。⛔ 不判 `strings` —— `rustls` 那 4 次全來自純類型 crate `rustls_pki_types`，靠 Rust v0 名字修飾的長度前綴（`_6rustls` ≠ `_16rustls_pki_types`）才分得開 |
+| **產物裡真的連結了哪幾套 TLS** | 相依圖裡只有一套（`cargo tree -e all --target all` 為空） | ✅ **已由 G138 結案**（曾掛號 D23）：判據掛在 musl 靜態產物上，`tests/ci/tls-linkage.sh` 取數 + `tests/musl/product.sh` 判**符號表**。⛔ 不判 `strings` —— `rustls` 那 4 次全來自純類型 crate `rustls_pki_types`，靠 Rust v0 名字修飾的長度前綴（`_6rustls` ≠ `_16rustls_pki_types`）才分得開 |
 
 # ✅ 已解除的
 
@@ -35,7 +35,7 @@ sources:
 |---|---|
 | 自建 Service 掛載 · socket 移交（認領路徑） | ✅ M0 實測：三類服務並掛，自建 TCP/UDP 監聽器的 fd 經 `SCM_RIGHTS` 傳到第二代 → [M0 接縫驗證](/verification/m0-seam.md) |
 | 未被認領的繼承 fd 會怎樣 | ✅ **已修**（2026-09-24，pingora 0.9.0 的 `f82478a` + 樞衡與 spike 的每個自建服務都實作了 `listen_addresses()`）。常設判據 [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) 從「重現壞行為」反寫成「驗修復」：第二代關掉那個 fd、老一代退出後連接埠拒連、不再傳給第三代；反證實測：任一服務回傳 `None` ⇒ 它當場紅。見下 |
-| **`bind()` 攥著全域 `ListenFds` 鎖**（vendor 0.8.1 時） | ✅ **2026-09-24 隨 rebase 到 0.9.0 解除**：上游 `1d9371191` 把 `ListenFds` 換成 `parking_lot::Mutex` + 按位址的非同步鎖（`flurry` 隨之進依賴圖，過了供應鏈門）。⚠ 鎖換成同步鎖之後守衛不許跨 `.await` ⇒ 產品三處 + spike 三處取用改成短持鎖 |
+| **`bind()` 攥著全域 `ListenFds` 鎖**（vendor 0.8.1 時） | ✅ **2026-09-24 隨 rebase 到 0.9.0 解除**：上游 `1d9371191` 把 `ListenFds` 換成 `parking_lot::Mutex` + 按位址的非同步鎖（`flurry` 隨之進相依圖，過了供應鏈門）。⚠ 鎖換成同步鎖之後守衛不許跨 `.await` ⇒ 產品三處 + spike 三處取用改成短持鎖 |
 | **`listen_addresses()` 的串接** | ✅ **2026-09-24 接上**：`fulcrum-server` 的 L4 TCP / L4 UDP / QUIC 三個自建服務回傳各自的 **fd 表鍵**（⛔ 不是 bind 位址 —— 那會讓新一代先關掉自己要繼承的 fd），由單測 `*_服务声明的正是它的_fd_表键` 釘住（先紅後綠）。⚠ 它帶預設實作（回傳 `None` = 關掉**整個處理程序**的清理），**漏實作不會有任何編譯錯誤** —— 這正是要單測的原因 |
 | 移交來的監聽 fd 沒有 `FD_CLOEXEC` | ✅ 由 **G38** 在 fork 裡修掉（包 `OwnedFd` + `MSG_CMSG_CLOEXEC`），並已投上游（[pingora#959](https://github.com/cloudflare/pingora/issues/959) → [#960](https://github.com/cloudflare/pingora/pull/960)）。★ 上游走批量重放，**「PR 被 close」是成功不是拒絕** —— 看改動有沒有進 `main`。✅ **上游 0.9.0 已含（`b2b35fd`），fork 裡那處改動 2026-09-24 歸零**；M1 `[7/9]` 的三條斷言照舊留著（上游單測看不到 fork+exec 的逐代累加）|
 | 兩個入口能否共用同一份挑證書實作 | ✅ **不是被驗證通過，是被取消了前提**：G104 換到 BoringSSL 之後共用的不再是 `ResolvesServerCert`，而是同一個 `select_certificate_callback` → [TLS](/architecture/tls.md) |
@@ -77,7 +77,7 @@ quinn 的 `Endpoint::handle()` 對認不出的 DCID **回 stateless reset** —�
 讀待辦的人看不見它，而讀這一頁的人已經在做別的事了。
 ⇒ 本頁往後新增的每一條「最晚要在 X 之前驗」，都要同時在 `PLAN.md` §11 掛一個 D 號。
 
-同族的還有另外兩條：**「被驗證通過」與「被取消了前提」在結論里長得一模一樣，而它們對判據的
+同族的還有另外兩條：**「被驗證通過」與「被取消了前提」在結論裡長得一模一樣，而它們對判據的
 要求相反** —— 後者意味著沒有任何判據需要為它存在，再寫一條門那條門會永遠綠；以及
 **一個 spike 證明的是「這條路走得通」，不是「產品走在這條路上」**，而這個差別在門裡看不見，
 因為門測的就是 spike。

@@ -109,7 +109,7 @@ impl MemStore {
     /// `调小容量是惰性的_下一次写入才把占用压回去`。
     ///
     /// ⚠ `Relaxed` 夠用：這裡沒有「靠它來發布別的資料」的語義，
-    /// 讀側要的只是「早晚會看到新值」，而 `load` 與 `put` 之間沒有其它順序依賴。
+    /// 讀側要的只是「早晚會看到新值」，而 `load` 與 `put` 之間沒有其它順序相依。
     pub fn set_capacity(&self, capacity: u64) {
         self.capacity.store(capacity, Ordering::Relaxed);
     }

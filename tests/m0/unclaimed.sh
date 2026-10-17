@@ -49,10 +49,10 @@ LIFECYCLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lifecycle.sh"
 lifecycle_init "$RUN"
 trap lifecycle_cleanup EXIT
 
-# ★ 連接埠是否有人 LISTEN —— 讀 /proc/net/tcp{,6}，**不依賴 bash 的 /dev/tcp**。
+# ★ 連接埠是否有人 LISTEN —— 讀 /proc/net/tcp{,6}，**不相依 bash 的 /dev/tcp**。
 #   /dev/tcp 是編譯期特性（--enable-net-redirections），精簡鏡像裡可能沒有；
 #   之前這裡寫過一句「自證它可用」的檢查，實際測的是 /dev/null 且結果被丟棄——
-#   是個假的守衛。改成兩套互不依賴的機制，還能互相交叉驗證（見 [2/6]）。
+#   是個假的守衛。改成兩套互不相依的機制，還能互相交叉驗證（見 [2/6]）。
 #
 # ★ ★ **兩個檔案都要掃。** tcp6 裡放的是全部 AF_INET6 socket，雙棧監聽 `[::]:port`
 #   **只**出現在那裡，/proc/net/tcp 一行都沒有（在本鏡像裡實測過）。

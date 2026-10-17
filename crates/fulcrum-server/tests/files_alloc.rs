@@ -63,7 +63,7 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
     (out, ALLOCS.with(|n| n.get()), REALLOCS.with(|n| n.get()))
 }
 
-/// ★ 內置反證：兩個計數器真的在數。少了它，下面那幾條的 0 也可能只是「什麼都沒數」。
+/// ★ 內建反證：兩個計數器真的在數。少了它，下面那幾條的 0 也可能只是「什麼都沒數」。
 #[test]
 fn 计数分配器自己数得到分配与重新分配() {
     let (_, a, r) = counted(|| {

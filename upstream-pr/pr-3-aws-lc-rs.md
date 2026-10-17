@@ -9,7 +9,7 @@ Don't compile aws-lc-rs when the ring provider is requested
 **Base**: `cloudflare/pingora` `main` · **Head**: `ShanireZ/pingora` `no-aws-lc-rs-with-ring`
 
 > ★ **2026-08-19 複審重寫**，三處改動：① 補上與 #630 / #887 的關係（上一版漏查了未合併的 PR）；
-> ② 提交資訊裡的依賴圖數字由 fork 的「175 → 173」改為上游實測的「178 → 176」；
+> ② 提交資訊裡的相依圖數字由 fork 的「175 → 173」改為上游實測的「178 → 176」；
 > ③ 驗證表按上游 `.github/workflows/build.yml` 的原命令在 pristine 克隆上重跑。
 
 ---

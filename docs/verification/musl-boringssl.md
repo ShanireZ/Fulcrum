@@ -3,7 +3,7 @@ type: 驗證記錄
 title: musl + BoringSSL 靜態連結（G103/G104 的未驗前置）
 description: 通過 —— 靜態二進位在 FROM scratch 裡跑完了一次 QUIC 握手；★★★ 而卡住這件事的從來不是 musl，是建置宿主：Alpine 上 build script 預設靜態，靜態二進位不能 dlopen，bindgen 就死在這裡。
 resource: ../../tests/musl/probe.sh
-tags: [驗證, 已通過, 依賴, 必讀, 易錯]
+tags: [驗證, 已通過, 相依, 必讀, 易錯]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -14,10 +14,10 @@ sources:
     title: `PLAN.md` §10 G103–G105（D11 結案：取 quiche，TLS 棧換 BoringSSL）
   - id: plan-51
     resource: /references/plan.md
-    title: PLAN.md §5.1 第 1 條（原「鎖死 rustls」，已由 G104 推翻）、§5 散布口徑 = musl 單靜態二進位（G13）
+    title: PLAN.md §5.1 第 1 條（原「鎖死 rustls」，已由 G104 推翻）、§5 散佈口徑 = musl 單靜態二進位（G13）
   - id: plan-9
     resource: /references/plan.md
-    title: PLAN.md §9 風險表「BoringSSL 是 C 依賴，而散布口徑是 musl 單靜態二進位」
+    title: PLAN.md §9 風險表「BoringSSL 是 C 相依，而散佈口徑是 musl 單靜態二進位」
   - id: http3-libs
     resource: /platform/http3-libraries.md
     title: HTTP/3 庫選型事實表（D11）
@@ -49,7 +49,7 @@ ARCHES="amd64" bash tests/musl/probe.sh
 | | 判據 | 它單獨存在的理由 |
 |---|---|---|
 | **A** | `boring-sys` 能在 musl 上把 BoringSSL 編出來 | D11 取 quiche 的前提 |
-| **B** | 產物**完全靜態**（無 `INTERP` 段、無 `NEEDED` 條目）| §5 的散布口徑 = 單靜態二進位（G13）|
+| **B** | 產物**完全靜態**（無 `INTERP` 段、無 `NEEDED` 條目）| §5 的散佈口徑 = 單靜態二進位（G13）|
 | **C** | 在 musl 上**真的跑完**一次 QUIC 握手 **且** 一次 1-RTT 應用資料往返 | ★ 分成 C1/C2 兩條：握手證金鑰交換與證書鏈，應用資料證 1-RTT AEAD —— BoringSSL 裡是兩段程式碼 |
 | **D** | `set_select_certificate_callback` **真的被呼叫過** | ★ ★ ★ **G104 整條決策就壓在這一個回呼上** |
 
@@ -127,7 +127,7 @@ could not be opened: Dynamic loading not supported"
 
 > ★ ★ ★ **這條失敗與「BoringSSL 能不能和 musl 靜態連結」一個字的關係都沒有。**
 > 它卡的是**建置宿主**（誰在編），不是**目標**（編給誰）。
-> ⚠ 而回報錯誤文字里只有 `libclang`、`Dynamic loading` 與一個 `boring-sys` 的棧影格 ——
+> ⚠ 而回報錯誤文字裡只有 `libclang`、`Dynamic loading` 與一個 `boring-sys` 的棧影格 ——
 > 三個詞都指向「BoringSSL 那邊有問題」。**把它記成「musl 不行」會直接推翻一條正確的選型。**
 
 ### 走通的順序：兩趟，而這不是優化
@@ -148,13 +148,13 @@ could not be opened: Dynamic loading not supported"
 
 ## 3. 沿路查實的事實（都是這次真撞到的，不是印象）
 
-1. **`boring-sys 4.22.0` 的建置依賴有四樣，而只有一樣被文件提到。**
+1. **`boring-sys 4.22.0` 的建置相依有四樣，而只有一樣被文件提到。**
    quiche 的 README 只說 **cmake**；實測還要 **C/C++ 編譯器**、**`git`**、**libclang**。
    ⚠ 缺 `git` 時的回報錯誤是 `Os { code: 2, kind: NotFound, message: "No such file or directory" }`
    —— **它不說自己找不到的是 git**（原始碼在 `build/main.rs:673`，
    `ensure_patches_applied` 會 `git init` + `git apply` 打自己的補丁）。
    ★ 在儲存庫那張 Debian 鏡像上撞不到這一條，因為 `rust:*-trixie` 自帶 git；`rust:*-alpine` 不帶。
-   ⇒ **一條只在換基礎鏡像時才現形的建置依賴。**
+   ⇒ **一條只在換基礎鏡像時才現形的建置相依。**
    ✅ 2026-09-24 隨 rebase 升到 `boring-sys 5.2.0`：同一張 Alpine 建置鏡像**一個包沒增刪**就編過了 ⇒ 這四樣仍然夠。
 
 2. ⚠ ⚠ **`boring` 不能按 G29「追新」寫。** 實測 crates.io 上最新是 **5.2.0**，
@@ -214,9 +214,9 @@ x86_64 `INTERP=0 / NEEDED=0`、`static-pie linked`，二進位 **3,734,824** 位
 
 ★ 按 AGENTS.md「a spike proves the road exists; it does not prove the product is on it」逐條寫死：
 
-1. **它不是產品。** 跑這份探針時產品還一行都沒依賴 BoringSSL。
+1. **它不是產品。** 跑這份探針時產品還一行都沒相依 BoringSSL。
    ⇒ 「探針編得出來」證不了「樞衡編得出來」—— 真正的產品圖裡還有 `pingora-core`、
-   `instant-acme` 等一大票，**其中任何一個的 `*-sys` 依賴都可能在 musl 上另有說法**。
+   `instant-acme` 等一大票，**其中任何一個的 `*-sys` 相依都可能在 musl 上另有說法**。
    ✅ 那一問後來由 [`tests/musl/product.sh`](../../tests/musl/product.sh) 用**產品本體**答掉了
    （G108）。
 2. **它沒證明「產物裡只有一套 TLS」。** 探針裡 rustls 與 BoringSSL 並不共存，
@@ -254,15 +254,15 @@ x86_64 `INTERP=0 / NEEDED=0`、`static-pie linked`，二進位 **3,734,824** 位
    而 HTTP/3 的實施批次不需要先答它。
 2. ~~**D22 · 這份探針什麼時候必須變成一道常設的門。**~~ ✅ **2026-08-26 結案，
    而結論不是這條登記寫的那一條。** 原文保留在下面，因為它記錄了當初為什麼不掛。
-   > ~~現在它**不在門禁裡**，理由是產品今天一行都沒依賴 BoringSSL —— 把一個 qemu 上
-   > 幾十分鐘的建置掛進每一次門禁，等於給一個還不存在的依賴付全額保費。
+   > ~~現在它**不在門禁裡**，理由是產品今天一行都沒相依 BoringSSL —— 把一個 qemu 上
+   > 幾十分鐘的建置掛進每一次門禁，等於給一個還不存在的相依付全額保費。
    > ⚠ **到期條件寫死**：等 G104 真的落進產品（`fulcrum-tls` 換到 BoringSSL）的那一批，
    > 「產物是不是單靜態二進位」必須變成一道常設的門。~~
 
    ⚠ ⚠ **那個到期條件滿足之後又過了四輪才被發現，而每一輪都讀過 §11 那張表。**
    ★ **一條寫著「等 X 發生就到期」的登記，沒有任何東西會在 X 發生時通知它。**
 
-   ⇒ **owner 2026-08-26 改的是判據本身**：D22 想守的是 **G13 的散布口徑 ——「產物是不是
+   ⇒ **owner 2026-08-26 改的是判據本身**：D22 想守的是 **G13 的散佈口徑 ——「產物是不是
    單靜態二進位」**，而**這份探針答不了它**（正是上面第 5 節第 1 條自己寫下的那句話：
    「『探針編得出來』證不了『樞衡編得出來』」）。
    ⇒ 新的場景 [`tests/musl/product.sh`](../../tests/musl/product.sh) 拿**產品本體**去證；

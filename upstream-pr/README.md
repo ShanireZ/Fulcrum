@@ -94,7 +94,7 @@
 
 ★ **這個實驗自證有效**：形態②裡 aws-lc 消失了，說明探針既能命中也能落空。
 
-**二、提交資訊裡的依賴圖數字是 fork 的，不是上游的。**
+**二、提交資訊裡的相依圖數字是 fork 的，不是上游的。**
 
 正文寫「178 → 176」（上游），而 `git format-patch` 的提交資訊裡寫的是「175 → 173」——
 那是 **fork 的數字**（fork 抬過版本上界，解析出來的圖不一樣）。
@@ -129,7 +129,7 @@
 ⚠ **那 7 條失敗全是環境性的，且與 08-14 那次的「1 條」不矛盾**：這一次容器**沒裝**
 `iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`，於是 G42 查清的那批連接超時測試多紅 6 條
 （Docker 預設網路替 `192.0.2.1` 應答）；剩下那條仍是 `test_bind_to_port_range_on_connect`。
-★ **判據是「前後集合相同」，它不依賴環境**——但**數字依賴**，所以數字旁邊必須寫清環境。
+★ **判據是「前後集合相同」，它不相依環境**——但**數字相依**，所以數字旁邊必須寫清環境。
 
 ★ **發之前按 G32 重查了三件事**（2026-08-19）：
 
@@ -161,7 +161,7 @@
 | `cargo +1.85.0 check --workspace --exclude pingora-foundations` | ✅ MSRV 不受影響 |
 | `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | ✅ |
 | `cargo test -p pingora-core --lib --no-fail-fast` | 544 passed / 2 failed —— **與未改動的 main 逐項相同**（`connectors::l4` 那兩條，環境性），雙向差集為空 |
-| `cargo audit` | 不涉及（沒動任何依賴）|
+| `cargo audit` | 不涉及（沒動任何相依）|
 | `cargo machete` | 未跑（本機沒裝）；本改動不動任何清單 |
 
 ★ ★ **新測試的反證已分別做過**（一個只見過綠的測試與一個沒在測的測試無法區分）：
@@ -185,7 +185,7 @@ accept 出來的連接**仍然沒人關**，且儲存庫裡**沒有任何 issue/
 多出來的 `tests::test_eviction` 經兩條獨立證據判定與 lru 無關：
 
 - **基線也抖**：單獨重複跑那個測試二進位 20 次，基線紅 1 次、打補丁紅 1 次，**同一比率**；
-- **結構上夠不到**：`pingora-memory-cache` 不依賴 `lru`，它走 `TinyUFO`，
+- **結構上夠不到**：`pingora-memory-cache` 不相依 `lru`，它走 `TinyUFO`，
   而 `TinyUFO` 的 `src/` 一處都沒用 `lru`——`lru` 是它的 **dev-dependency**，只給 benchmark 用。
 
 ★ 兩條證據缺一不可：只有「基線也抖」會被質疑成巧合，只有「夠不到」會被質疑成沒跑過。
@@ -193,11 +193,11 @@ accept 出來的連接**仍然沒人關**，且儲存庫裡**沒有任何 issue/
 **② caveat 裡有一處推理是錯的（結論碰巧對）。** 原文用
 `cargo tree -i lru@0.16.4 --workspace` 無匹配來論證「不在預設 feature 圖裡」——
 而**普通解析下壓根沒有 0.16.4**（是 0.12.5），所以那條命令是因為**錯的原因**才無匹配。
-改成控住變數的 2×2 實測表，並寫明真正的機制：`aws-sdk-s3` 是 `pingora-runtime` 的**可選**依賴，
+改成控住變數的 2×2 實測表，並寫明真正的機制：`aws-sdk-s3` 是 `pingora-runtime` 的**可選**相依，
 只由非預設的 `dial9-worker-s3` feature 開啟。
 
 **③ 標題向上遊慣例靠攏。** 上游那些 `RUSTSEC-…:` 開頭的 issue **全是 `github-actions[bot]` 開的**
-（帶 `dependencies` 標籤）；人寫的依賴 issue 是「Update X …」那種形狀（如 #875）。
+（帶 `dependencies` 標籤）；人寫的相依 issue 是「Update X …」那種形狀（如 #875）。
 ★ 順帶查實：47 條 `dependencies` issue 裡**沒有** lru 這一條，機器人三個月來一次都沒為它開過——
 這條寫進了 issue 正文，解釋為什麼由人來報。
 
@@ -238,7 +238,7 @@ TinyLFU 存取資格）。已改成引用這兩條。★ **「我可以幫你報
 
 ## ★ 順序不能反
 
-上游 `CONTRIBUTING.md` 寫著 **"Non-trivial PRs will also require a GitHub issue"**，而依賴大版本升級不在它列舉的
+上游 `CONTRIBUTING.md` 寫著 **"Non-trivial PRs will also require a GitHub issue"**，而相依大版本升級不在它列舉的
 trivial 清單（錯別字／小重構／文件）裡。**先發 issue，等回應，再發 PR 並引用 issue 號。**
 
 ## 怎麼用
@@ -389,7 +389,7 @@ git push origin lru-0.18.2
 ⚠ ⚠ **本輪查出兩件把這份材料的形狀改掉的事**（2026-09-03，克隆實測，`main` = `09696b5`）：
 
 1. ★★★ **G122 裡那句「上游 `main` 已把 `prometheus` 整條刪掉」在今天的 `main` 上不成立** ——
-   `pingora-prometheus/src/lib.rs` 還在（131 行），`pingora` 與 `pingora-proxy` 都依賴它。
+   `pingora-prometheus/src/lib.rs` 還在（131 行），`pingora` 與 `pingora-proxy` 都相依它。
    ⚠ 而那句話是「投不投」這個判斷的**全部理由**（「口味未知」）⇒ **已登記給 owner**，
    ⛔ 我沒有替它改結論。
 2. ★★★ **上游已經有半個同位置的接縫**：`ConnectionFilter::should_accept`
@@ -436,9 +436,9 @@ git push origin lru-0.18.2
 
 ### 怎麼切：一份 issue、一份 PR、兩個提交（⛔ 沒有「投稿八」）
 
-- **合成一份**：C1 與 C2 在同一個函式里，立論相同（每條請求白做的功），驗證形狀也相同 ——
+- **合成一份**：C1 與 C2 在同一個函式裡，立論相同（每條請求白做的功），驗證形狀也相同 ——
   與前幾份「立論與驗證方式完全不同 ⇒ 各自開」的情形相反。拆成兩份 PR 反而會在同一函式上互相排隊。
-- **但分兩個提交，且各自都能單獨完成實作**：0008 不依賴 0007，單獨 `git am` 到 `main` 上乾淨應用、門全過
+- **但分兩個提交，且各自都能單獨完成實作**：0008 不相依 0007，單獨 `git am` 到 `main` 上乾淨應用、門全過
   （下表「C1 單獨 / C2 單獨」兩行）。上游走**批量重放、按提交取**，維護者可以只拿一個。
 - **為什麼不壓成一個提交**：風險形狀不同 —— C1 在 pingora 裡**零 `unsafe`**（只是換 httparse 的入口），
   C2 新加**一個 `unsafe` 塊**（把已寫的前綴當 `&[KVRef]`）。維護者若對後者有意見，不該拖住前者。
@@ -470,7 +470,7 @@ fork 側量到的 `clock_gettime −2/请求` 與此一致（keep-alive 上每�
 |---|---|---|
 | **A. 不投**（我的推薦）| 無 | fork 那 4 處刪除照舊隨 rebase 重放（守衛測試會在被合掉時變紅）。上游 8 個月前剛為它加了讀者，說明他們在用這份資料；省下的只是每次掛起→就緒的兩次 vDSO 讀鍾 |
 | B. 執行期開關，預設開 | 例如 `Stream::set_track_pending_time(bool)`，關掉時不讀鍾、getter 回 0 | 對現有使用者語義不變；但為很小的收益加公開 API。樞衡拿到的是 `ServerSession` 裡的 `Box<dyn IO>`，要用還得在 accept 處串接（形狀類似投稿六的監聽器 `Tracer`）⇒ 改面不小 |
-| C. cargo feature 關掉 | `no-pending-time` 之類 | ⛔ 不推薦：「關能力」的 feature 違反 feature 可加性 —— 同一依賴圖裡的 `pingora-proxy` 會靜默拿到 0 |
+| C. cargo feature 關掉 | `no-pending-time` 之類 | ⛔ 不推薦：「關能力」的 feature 違反 feature 可加性 —— 同一相依圖裡的 `pingora-proxy` 會靜默拿到 0 |
 | D. 只關讀側 | 讀側沒有樹內讀者 | 仍是公開 trait 方法的行為變更，只省一半 |
 
 若選 B：按本目錄紀律**先開 issue 問要不要**，⛔ 別直接做補丁。
@@ -516,7 +516,7 @@ fork 側量到的 `clock_gettime −2/请求` 與此一致（keep-alive 上每�
 | 同上，**C1 單獨** / **C2 單獨** | — | 575 / 3 / 2 · 578 / 3 / 2；失敗集合同上（clippy 也各自 rc=0）|
 | `cargo test --doc -p pingora-core` | ✅ 1 passed / 10 ignored | ✅ 同 |
 | `cargo test --verbose --lib --bins --tests --no-fail-fast`（CI 原命令，全 workspace）| 1155 / 129 / 6 | **1160 / 129 / 6**；失敗集合**按測試名**比雙向差集為空，多出的 5 條全是新測試。失敗的 4 個 target 兩側相同：`pingora-core --lib`（上面那 3 條）· `pingora-load-balancing --lib`（`health_check::test::test_tcp_check`）· `pingora-proxy` 的 `test_basic`（18）/ `test_upstream`（107）—— 後兩者要 openresty |
-| `cargo check -p pingora-core --features patched_http1` | ✗ rc=101，唯一錯誤 E0599 `parse_unchecked` 不存在 | ✗ 同一個錯誤、只此一個 ⇒ 補丁裡 patched 那條路的其餘部分過了類型檢查（借用檢查沒走到）|
+| `cargo check -p pingora-core --features patched_http1` | ✗ rc=101，唯一錯誤 E0599 `parse_unchecked` 不存在 | ✗ 同一個錯誤、只此一個 ⇒ 補丁裡 patched 那條路的其餘部分過了型別檢查（借用檢查沒走到）|
 | `cargo audit` / `cargo machete` / nightly 檔 / openresty 整合測試 | 未跑 | 未跑（本機沒裝 audit/machete、沒裝 openresty）|
 
 那 3 條兩側都紅：`connectors::l4::tests::test_bind_to_port_range_on_connect`（老面孔，宿主機相關）與
@@ -605,7 +605,7 @@ future 216 不變是探針讀數，審閱者要自己寫一行 `size_of_val` 才
 
 ### 怎麼切：一份 issue、一份 PR、一個提交
 
-- **不拆**：兩處在同一個函式里、立論相同（每條回應白做的分配）、風險形狀相同（都零 `unsafe`、都改私有函式或常數），驗證也是同一個測試 —— 與投稿七「C2 新加 `unsafe`」那種值得分開的情形不同。
+- **不拆**：兩處在同一個函式裡、立論相同（每條回應白做的分配）、風險形狀相同（都零 `unsafe`、都改私有函式或常數），驗證也是同一個測試 —— 與投稿七「C2 新加 `unsafe`」那種值得分開的情形不同。
 - **仍先開 issue**：CONTRIBUTING 的免 issue 清單是錯別字、小重構、文件；新加一個帶 `#[global_allocator]` 的測試二進位不算 trivial。
 
 ### G46 查重（2026-10-16，唯讀）
@@ -650,7 +650,7 @@ future 216 不變是探針讀數，審閱者要自己寫一行 `size_of_val` 才
 `http::v2::server` 的 `test_req_conflicting_content_length_rejected` / `test_req_malformed_stream_budget_exhausted`（走 h2、不經過本函式；✅ 根因是 h2 0.4.20 —— 本次兩份現生成的鎖都解析到它，見投稿九）、
 `pingora-load-balancing` 的 `health_check::test::test_tcp_check`。★ `pingora-proxy` 的 `test_basic` / `test_upstream` 這次**全過**（投稿七那次 125 條全紅，原因見下 ②）——
 其中真查 `Connection` 值的 `test_connect_close`（keep-alive 與 close 兩處）· `test_duplex`（keep-alive）· `test_close_on_response_before_downstream_finish`（close）在打補丁的樹上都過了。
-`cargo audit` 那 2 條公告是 `rustls` 0.21.12 的 RUSTSEC-2026-0346 / -0349（2026-10-14 發佈，修復版 ≥ 0.23.46），4 條 warning 是 `derivative` · `paste` · `rustls-pemfile` · `unsafe-libyaml` 失維 —— 依賴圖兩側相同，本補丁一個依賴都沒動。
+`cargo audit` 那 2 條公告是 `rustls` 0.21.12 的 RUSTSEC-2026-0346 / -0349（2026-10-14 發佈，修復版 ≥ 0.23.46），4 條 warning 是 `derivative` · `paste` · `rustls-pemfile` · `unsafe-libyaml` 失維 —— 相依圖兩側相同，本補丁一個相依都沒動。
 
 **注入反證**（副本上，每次都有 `Compiling pingora-core`）：只退回 `Connection` 那處 ⇒ 只紅預算那條「made 2 allocations」；只退回 `freeze` 那處 ⇒ 同樣只紅它、同樣 2。
 
@@ -691,7 +691,7 @@ future 216 不變是探針讀數，審閱者要自己寫一行 `size_of_val` 才
 | [`pr-9-h2-content-length-tests.md`](pr-9-h2-content-length-tests.md) | PR 正文草稿；發前換 `#<ISSUE_NUMBER>` |
 | [`0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch`](0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch) | 一個提交：兩條測試改斷言（第二條改名）+ workspace `h2 = ">=0.4.20"`。author 與 `Signed-off-by` 都是 `Shanire <shanire86@gmail.com>`，0 個 CR，`git apply --check` 對 `4487f7b` 通過 |
 
-與 fork 改動 20 的差別只有兩處：註解裡不提樞衡；補丁多抬了 workspace 的 `h2` 下界（兩條測試從此依賴 0.4.20 的行為，寫進清單才不靠鎖碰運氣）。⛔ fork 那邊沒抬，理由是不為它再多一處 fork 改動、鎖已釘 0.4.20。
+與 fork 改動 20 的差別只有兩處：註解裡不提樞衡；補丁多抬了 workspace 的 `h2` 下界（兩條測試從此相依 0.4.20 的行為，寫進清單才不靠鎖碰運氣）。⛔ fork 那邊沒抬，理由是不為它再多一處 fork 改動、鎖已釘 0.4.20。
 
 ### G46 查重（2026-10-16，唯讀）
 
@@ -730,7 +730,9 @@ future 216 不變是探針讀數，審閱者要自己寫一行 `size_of_val` 才
 2. G46 重跑（兩條通道、帶正對照）。
 3. 外部寫入（都要 owner 按 G40 單獨授權）：發 issue → 拿號 → 推 `ShanireZ/pingora` 分支 → 開 PR；再回頭把投稿七、八草稿裡的 `#<H2_ISSUE_NUMBER>` 換掉。
 
-## ❌ 投稿五（**已撤銷，不發**）· rustls 監聽器用不上自定義證書解析器
+<a id="投稿五已撤銷不發-rustls-監聽器用不上自定義證書解析器"></a>
+
+## ❌ 投稿五（**已撤銷，不發**）· rustls 監聽器用不上自訂證書解析器
 
 > owner 2026-08-20 拍板 **「什麼都不做」**：不開 issue、不開 PR、也不去別人的執行緒留言。
 

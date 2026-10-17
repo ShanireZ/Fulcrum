@@ -61,7 +61,7 @@ downstream connections it currently has」。
 | 查什麼 | 實測 |
 |---|---|
 | `pingora-prometheus/src/lib.rs` | **在**，131 行 |
-| 誰依賴它 | `pingora/Cargo.toml:48` 與 `pingora-proxy/Cargo.toml:53`（`pingora-prometheus = "0.8.0"`），外加 `prometheus = "0.14"` |
+| 誰相依它 | `pingora/Cargo.toml:48` 與 `pingora-proxy/Cargo.toml:53`（`pingora-prometheus = "0.8.0"`），外加 `prometheus = "0.14"` |
 
 ⚠ ⚠ **這不是「G122 錯了」，而是「G122 的一條前提今天需要 owner 重新看一眼」**：
 那句話是**投不投上游**這個判斷的**全部理由**（「口味未知」）。前提變了，判斷的依據就變了。
@@ -85,7 +85,7 @@ downstream connections it currently has」。
 
 ⇒ ★★★ **只看 `pingora-core` 的話，prometheus 確實「整條消失」了** —— 那句前提幾乎必定是這麼寫下的。
 而在 workspace 層面它是**被搬走**：`pingora-prometheus` 是 workspace 成員，
-`pingora` 與 `pingora-proxy` 今天都依賴它，而 `pingora-core` 對它**零引用**。
+`pingora` 與 `pingora-proxy` 今天都相依它，而 `pingora-core` 對它**零引用**。
 ⚠ 那 −16 行還正好在 `services/listening.rs` —— **fork 改動 15 動的就是這個檔案**。
 
 **⇒ 「口味未知」這個推斷今天有了精確的答案，而且方向對我們有利**
@@ -98,7 +98,7 @@ downstream connections it currently has」。
 （草稿裡那句 "Nothing in what we are describing knows about metrics" 就是這個意思）——
 **我們站在那條線的同一側。**
 
-**另外三條不依賴 prometheus 的口味證據**（全部當天實測）：
+**另外三條不相依 prometheus 的口味證據**（全部當天實測）：
 
 | | 證據 |
 |---|---|
@@ -214,7 +214,7 @@ pub trait ConnectionFilter: Debug + Send + Sync {
 ### 2.2 ✅ 2026-09-04 再補：**補丁已備好**（owner 拍板「現在就備」）
 
 ⚠ ⚠ **§2 與 §2.1 的理由被一件事推翻了一半**：更正評論把形狀換成了「讓監聽器側能掛
-`Tracer`」（見 §6）—— 那個形狀**不依賴維護者先回話**，因為它重複使用的是上游已有的機制，
+`Tracer`」（見 §6）—— 那個形狀**不相依維護者先回話**，因為它重複使用的是上游已有的機制，
 沒有新 trait、沒有簽名變更。⇒ 補丁可以現在就備。
 
 **[`0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch`](0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch)**
@@ -432,7 +432,7 @@ hook」）—— ⇒ 兩條路**都存在**，那句話作為唯一口徑太強�
 1. ⛔ **不提 `ConnectionCounter` 這個名字，也不提「新接縫」** —— 形狀 ② 的全部要點就是
    「補完已有的」。提了就正面撞上上游 2026-08-25 那句「#671 已經加了連接級過濾器」。
 2. ⛔ **一個效能數字都沒有**（`PLAN.md` §8：沒有可重現的端到端測量就不寫）。
-3. ⚠ 順帶看到 trait 文件裡那段示例的簽名是**舊的**（寫著 `&SocketAddr`，實際是
+3. ⚠ 順帶看到 trait 文件裡那段範例的簽名是**舊的**（寫著 `&SocketAddr`，實際是
    `Option<&SocketAddr>`）—— 是個真的小錯，但**與本 issue 無關，⛔ 不夾帶**：
    夾帶會稀釋立論，而這正是投稿一栽過的形狀。
 
@@ -455,7 +455,7 @@ feature 開時是 `async fn should_accept(&self, _addr: Option<&SocketAddr>)`（
 | | 查了什麼 | 結果 |
 |---|---|---|
 | ✅ | 上游 `main` 有沒有移動（正文釘的是 `09696b5`）| **沒動**，仍是 `09696b5`（2026-08-25）⇒ 釘的那個號今天仍然準 |
-| ✅ | `connection_filter` 是不是隻在 main 上（維護者會問版本）| **不是** —— 已發佈的 `0.8.1` tag 上 `connection_filter.rs` 與那個 feature 都在 ⇒ 正文不需要版本告示 |
+| ✅ | `connection_filter` 是不是只在 main 上（維護者會問版本）| **不是** —— 已發佈的 `0.8.1` tag 上 `connection_filter.rs` 與那個 feature 都在 ⇒ 正文不需要版本告示 |
 | ✅ | 那條「兩份定義簽名不一致」是不是 main 上的臨時狀態 | **不是**，`0.8.1` 上同樣如此（real 收 `Option<&SocketAddr>` 且 `async`，stub 收 `&SocketAddr` 且同步）|
 
 ★★★ **這一輪真正逮到的一條（技術上要緊，前兩輪都沒想到）：`Drop` 不能 `await`。**

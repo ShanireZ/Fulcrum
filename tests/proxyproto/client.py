@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""tests/proxyproto/run.sh 的裸 socket 客户端（M2 批 L 第 ① 步）。
+"""tests/proxyproto/run.sh 的裸 socket 用戶端（M2 批 L 第 ① 步）。
 
-★ ★ **为什么不能用 curl**：这一格要在 HTTP 请求（或 TLS ClientHello）**之前**
-先写一段 PROXY protocol 头，而 curl 没有任何办法让我们在连接开头塞自己的字节。
-⇒ 自带一个客户端，而它只做三件事：连、按指定方式写、把结果印成一行。
+★ ★ **為什麼不能用 curl**：這一格要在 HTTP 請求（或 TLS ClientHello）**之前**
+先寫一段 PROXY protocol 頭，而 curl 沒有任何辦法讓我們在連接開頭塞自己的位元組。
+⇒ 自帶一個用戶端，而它只做三件事：連、按指定方式寫、把結果印成一行。
 
-⚠ ⚠ **它必须能表达「头和请求在同一个 TCP 段里」与「分两次发」的区别** ——
-那正是 fork 那一侧 `rewind()` 存在的全部理由：一次 read 很可能把 PROXY 头
-与它后面的请求**一起**读回来，而多读到的那几个字节必须原样还回流里。
-★ 少了 `--split` 这个开关，两条路会被同一条判据盖住，
-  而**丢掉 rewind 的实现只在「一起发」时才坏**。
+⚠ ⚠ **它必須能表達「頭和請求在同一個 TCP 段裡」與「分兩次發」的區別** ——
+那正是 fork 那一側 `rewind()` 存在的全部理由：一次 read 很可能把 PROXY 頭
+與它後面的請求**一起**讀回來，而多讀到的那幾個位元組必須原樣還回流裡。
+★ 少了 `--split` 這個開關，兩條路會被同一條判據蓋住，
+  而**丟掉 rewind 的實作只在「一起發」時才壞**。
 
-输出（永远一行，便于 shell 直接比对）：
-    STATUS=<码> BODY=<体>     正常拿到响应
-    CLOSED                    对端在给出任何响应之前关掉了连接
-    ERROR=<原因>              别的失败（连不上、超时、TLS 失败……）
+輸出（永遠一行，便於 shell 直接比對）：
+    STATUS=<码> BODY=<体>     正常拿到回應
+    CLOSED                    對端在給出任何回應之前關掉了連接
+    ERROR=<原因>              別的失敗（連不上、超時、TLS 失敗……）
 """
 
 import argparse
@@ -28,7 +28,7 @@ V2_SIG = bytes([0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54
 
 
 def build_header(spec, dst_port):
-    """把 `--header` 的写法翻成真的字节。`None` = 不发头。"""
+    """把 `--header` 的寫法翻成真的位元組。`None` = 不發頭。"""
     if spec is None or spec == "none":
         return b""
 

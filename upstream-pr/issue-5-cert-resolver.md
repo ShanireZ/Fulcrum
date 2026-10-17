@@ -1,4 +1,6 @@
-# 投稿五（**已撤銷，不發**）· rustls 監聽器無法使用自定義證書解析器
+<a id="投稿五已撤銷不發-rustls-監聽器無法使用自定義證書解析器"></a>
+
+# 投稿五（**已撤銷，不發**）· rustls 監聽器無法使用自訂證書解析器
 
 > ❌ **狀態：2026-08-20 撤銷，owner 拍板「什麼都不做」。**
 > **不開 issue、不開 PR、也不去別人的執行緒裡留言。** 下面的立論**沒有錯**，
@@ -63,7 +65,7 @@ rustls 的 `ResolvesServerCert`：
 
 - 一個監聽連接埠只能有**一張**證書；
 - 換證書要重新啟動或重載設定；
-- **按 SNI 在握手期選證書 / 現籤**（ACME 的 on-demand 形態）無從實作。
+- **按 SNI 在握手期選證書 / 現簽**（ACME 的 on-demand 形態）無從實作。
 
 而 rustls 提供的正是這條路（`ResolvesServerCert`），且它是**唯一**一條——
 openssl / boringssl 後端的 `certificate_callback` 在 rustls 下不存在，
@@ -81,7 +83,7 @@ pub fn with_cert_resolver(resolver: Arc<dyn ResolvesServerCert>) -> Result<Self>
 的行為與這條路無關）。
 
 配套還要在 `pingora-rustls` 裡再匯出 `ResolvesServerCert` / `CertifiedKey` / `ClientHello`——
-否則依賴方拿不到那幾個類型，只能自己再依賴一份 `rustls`，
+否則相依方拿不到那幾個類型，只能自己再相依一份 `rustls`，
 而那會**多一處 feature 宣告**（`rustls` 的 default 裡含 `aws_lc_rs`，
 參見投稿三 #965/#966 裡那條「兩個 provider 一起編進產物」）。
 
@@ -93,6 +95,6 @@ pub fn with_cert_resolver(resolver: Arc<dyn ResolvesServerCert>) -> Result<Self>
 ## 環境
 
 - 上游 tag `0.8.1`
-- 我們在 fork 裡按上面的形狀加了這條並跑通：`--cacert` 驗籤通過、
+- 我們在 fork 裡按上面的形狀加了這條並跑通：`--cacert` 驗簽通過、
   ALPN 協商到 h2、未知 SNI 被拒絕握手（rustls 報
   `no server certificate chain resolved`，正是期望的行為）。

@@ -46,7 +46,7 @@ set -euo pipefail
 #   而 shellcheck 在 POSIX locale 下會在**輸出報告時**炸掉
 #   （`commitBuffer: invalid argument (cannot encode character …)`），結束代碼 2 ——
 #   那樣它紅得像是發現了問題，實際是它自己說不出話，排查方向會整個跑偏。
-#   ⇒ 設在指令碼里，誰來調都逃不掉這一條。
+#   ⇒ 設在指令碼裡，誰來調都逃不掉這一條。
 export LC_ALL=C.UTF-8
 
 # ★ 先回到儲存庫根再用**相對**路徑掃：報告裡的路徑要能直接粘進編輯器，

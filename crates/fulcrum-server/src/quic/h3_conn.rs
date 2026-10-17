@@ -54,7 +54,7 @@ const BODY_QUEUE: usize = 32;
 /// 一條 h3 請求交給誰去跑。
 ///
 /// ★ ★ **這一層存在的理由是方向**：`quic` 模組不該知道 `FulcrumApp` ——
-/// 那會讓 HTTP/3 入口反向依賴資料面本體，而資料面本體又要依賴這個入口。
+/// 那會讓 HTTP/3 入口反向相依資料面本體，而資料面本體又要相依這個入口。
 /// ⇒ 入口只認這個 trait，誰來實作由串接那一步決定（G110）。
 #[async_trait]
 pub trait H3RequestHandler: Send + Sync + 'static {

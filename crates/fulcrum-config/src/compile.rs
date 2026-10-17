@@ -204,7 +204,7 @@ struct Cx<'a> {
     /// **第一個** `cache` 塊選的後端（`Some(dir)` = 磁碟，`None` = 記憶體）與它的 span。
     ///
     /// ★ ★ 快取後端是**處理程序級**的，所以這條檢查天然是跨站台的 —— 它不可能
-    /// 在「編譯一條 `cache` 指令」那個函式里做完，那裡看不見別的站台。
+    /// 在「編譯一條 `cache` 指令」那個函式裡做完，那裡看不見別的站台。
     /// ⚠ 記的是**第一個**，而診斷指著**後面那個不一樣的**：錯的那一條才是要改的。
     cache_backend: Option<(Option<String>, Span)>,
 }
@@ -1135,7 +1135,7 @@ impl Cx<'_> {
         }
 
         // ★ ★ G136：旋鈕寫了、而 `passive_fail` 沒寫 ⇒ 那兩行**一個都不生效**。
-        //   ⚠ 必須說出來：它與「正在生效」在設定里長得一模一樣，沉默就是讓人以為它生效了
+        //   ⚠ 必須說出來：它與「正在生效」在設定裡長得一模一樣，沉默就是讓人以為它生效了
         //   （與 `METRICS_UNGUARDED` 同一條紀律）。★ 但**從來不是** error ——
         //   判紅會把「先把旋鈕調好、待會兒再開」這種正當的分步操作一起擋掉。
         if let (None, Some((knob, span))) = (passive.fail_threshold, passive_knob) {
@@ -1449,7 +1449,7 @@ impl Cx<'_> {
                         //   「打一行 error，本站台的 DNS-01 不啟用」——
                         //   ⚠ `validate` 結束代碼仍然是 0，站台照常起來，
                         //   於是一份寫錯 `resolvers` 的設定**在每一處都顯得正常**，
-                        //   直到那張證書永遠籤不下來。
+                        //   直到那張證書永遠簽不下來。
                         //   ★ 編譯期判形狀不需要網路，所以它可以在這裡判；
                         //   真去解析主機名要網路，那一步留到簽發那一刻（見 host.rs 註解）。
                         for a in &sub.args {
@@ -2427,7 +2427,7 @@ pub fn parse_address(raw: &str) -> Result<Address, &'static str> {
         return Err("至少要写主机名或端口");
     }
 
-    // ★ 沒有主機名就籤不出證書，所以 `:8080` 這種一律是 HTTP、不自動升級。
+    // ★ 沒有主機名就簽不出證書，所以 `:8080` 這種一律是 HTTP、不自動升級。
     //   這不是取捨，是 ACME 的事實。
     let scheme = scheme_given.unwrap_or(if host.is_empty() { "http" } else { "https" });
     let auto_https = scheme == "https" && !host.is_empty();

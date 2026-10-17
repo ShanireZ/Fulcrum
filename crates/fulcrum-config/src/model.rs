@@ -5,7 +5,7 @@
 //!
 //! - ★ ★ **`None` 照樣序列化成 `null`，不用 `skip_serializing_if`。**
 //!   鍵集合穩定，兩個版本的 diff 才只反映真實變化；否則「把某項從有改成無」
-//!   會表現為**刪掉一行**，與「這個版本的結構變了」在 diff 里長得一模一樣。
+//!   會表現為**刪掉一行**，與「這個版本的結構變了」在 diff 裡長得一模一樣。
 //! - **不做反向生成**（結構化 → DSL）：註解、縮進、簡寫在往返中必然丟失。
 //!
 //! ⚠ 欄位會隨自研進度增加，
@@ -220,11 +220,11 @@ pub struct Condition {
 pub enum TlsMode {
     /// 自動 HTTPS（預設）。
     Automatic,
-    /// `tls internal` —— 自籤。
+    /// `tls internal` —— 自簽。
     Internal,
     /// `tls <cert> <key>` —— 使用者自帶證書。
     Manual { cert: String, key: String },
-    /// `http://` 位址：不籤、不升級。
+    /// `http://` 位址：不簽、不升級。
     Off,
 }
 
@@ -301,7 +301,7 @@ pub struct LogConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Step {
     /// 執行順序表裡的序號（G49）。★ 它進結構化設定，是為了讓「它實際跑在第幾步」
-    /// 成為**可被讀到的事實**，而不是隻能靠背那張表。
+    /// 成為**可被讀到的事實**，而不是只能靠背那張表。
     pub order: u16,
     pub matcher: Option<MatcherRef>,
     #[serde(flatten)]

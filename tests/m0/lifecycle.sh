@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 兩個 M0 場景共用的「起了幾代 / 怎麼把它們收乾淨」。
 #
-# 用法（在場景指令碼里）：
+# 用法（在場景指令碼裡）：
 #     . "$(dirname "${BASH_SOURCE[0]}")/lifecycle.sh"
 #     lifecycle_init "$RUN"
 #     trap lifecycle_cleanup EXIT

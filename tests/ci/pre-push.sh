@@ -25,7 +25,7 @@
 # 跑了**四趟** `COMPILE_ONLY` 全綠 —— 而 `COMPILE_ONLY` 那一格當時是
 # `CMD='cargo test …'` **直接替換**，不是 `CMD="$CMD && …"` 追加 ⇒ 它不含 `LINT_CMD`。
 # ★ ★ ★ 於是**一次純 shell 的改動可以完整地穿過這道門**，而那四個綠對它沒有任何判別力。
-# ⇒ owner 拍板把 `shellcheck-all.sh` 掛進那一格（⛔ 不掛 `fmt`/`clippy`：clippy 要先編依賴，
+# ⇒ owner 拍板把 `shellcheck-all.sh` 掛進那一格（⛔ 不掛 `fmt`/`clippy`：clippy 要先編相依，
 #   會把這道門從秒級拖成分鐘級，而**門變慢正是它被 `--no-verify` 繞過的起點**）。
 # ⚠ 仍然不攔的：`fmt` 差異、clippy 告警、以及所有測試。那三格歸完整門禁。
 #

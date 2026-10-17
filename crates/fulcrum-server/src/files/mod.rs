@@ -130,7 +130,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 一次讀多少。★ 64 KiB 是個**沒有實測依據**的起點，寫在這裡是為了讓它可被質疑。
 const CHUNK: usize = 64 * 1024;
 
-/// `file_server` 從請求裡要的全部東西：方法 + 5 個頭（**HTTP 層診斷髮現 2 · 請求頭不整份克隆**，2026-09-26）。
+/// `file_server` 從請求裡要的全部東西：方法 + 5 個頭（**HTTP 層診斷發現 2 · 請求頭不整份克隆**，2026-09-26）。
 ///
 /// ★ 在寫回應**之前**從借來的請求頭裡取出來 ⇒ 資料面不必為 `files` 克隆一整份 `RequestHeader`。
 ///   h1 上 `HeaderValue` 是從共享讀緩衝切出來的 `Bytes`，clone 只增引用計數、不分配；
@@ -199,7 +199,7 @@ fn text(v: &Option<HeaderValue>) -> Option<&str> {
 ///
 /// ⚠ **405 不走這條 `Err` 路**：RFC 9110 要求 405 必須帶 `Allow`，
 /// 而錯誤處理器那條路沒有地方放額外的頭。⇒ 405 在這裡直接寫掉。
-/// ★ 代價寫在明處：站台的 `handle_errors` 定製不到 405 那一頁。
+/// ★ 代價寫在明處：站台的 `handle_errors` 客製不到 405 那一頁。
 //
 // ⚠ **`pub(crate)` 而不是 `pub`**（批 J 第六步）：它收的是
 // `crate::Downstream`，而那個類型是 `pub(crate)` 的 —— 一個 `pub` 函式收
@@ -1292,7 +1292,7 @@ mod tests {
         }
     }
 
-    /// ★ `FileReq` 的三條取值口徑（HTTP 層診斷髮現 2 · 請求頭不整份克隆）：
+    /// ★ `FileReq` 的三條取值口徑（HTTP 層診斷發現 2 · 請求頭不整份克隆）：
     ///   同名頭取**第一個**、`to_str()` 不過的當作沒有、沒帶的就是沒有。
     #[test]
     fn file_req_取第一个同名头_坏值当作没有() {

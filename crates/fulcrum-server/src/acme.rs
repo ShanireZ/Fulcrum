@@ -1,11 +1,11 @@
 //! 把 [`fulcrum_acme`] 掛到 Pingora 的後台服務上。
 //!
-//! ★ ★ **這個檔案是薄的，而且必須薄。** ACME 的全部邏輯（什麼時候該籤、怎麼籤、
-//! 失敗怎麼退避）都在 `fulcrum-acme` 裡，那個 crate **不依賴 pingora**——
+//! ★ ★ **這個檔案是薄的，而且必須薄。** ACME 的全部邏輯（什麼時候該簽、怎麼簽、
+//! 失敗怎麼退避）都在 `fulcrum-acme` 裡，那個 crate **不相依 pingora**——
 //! 與 `fulcrum-runtime` 同一條紀律。這裡只做三件事：
-//! 從執行環境圖挑出要籤的網域、把 `ShutdownWatch` 遞進去、給它一個能跑的執行緒。
+//! 從執行環境圖挑出要簽的網域、把 `ShutdownWatch` 遞進去、給它一個能跑的執行緒。
 //!
-//! # ★ 為什麼是後台服務而不是啟動時同步籤一遍
+//! # ★ 為什麼是後台服務而不是啟動時同步簽一遍
 //!
 //! **HTTP-01 要求 CA 能連上本機的 80 連接埠**（RFC 8555 §8.3）。而監聽器是
 //! `run_forever()` 裡才起來的——在那之前簽發，CA 來驗的時候沒人應答，
@@ -32,7 +32,7 @@ use std::time::Duration;
 
 /// exec hook 單次呼叫的超時。
 ///
-/// ★ 一個卡住的 hook 會把整條簽發鏈掛住，而症狀只是「證書永遠籤不下來」。
+/// ★ 一個卡住的 hook 會把整條簽發鏈掛住，而症狀只是「證書永遠簽不下來」。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 /// 單次 DNS 查詢的超時。
 const DNS_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -47,7 +47,7 @@ const DNS_VISIBLE_DEADLINE: Duration = Duration::from_secs(120);
 /// 從執行環境圖挑出「要自動簽發」的網域。
 ///
 /// ★ 判據是**站台的 TLS 模式**，不是「位址寫成了 https」：`tls <cert> <key>` 的站台
-/// 也是 https，但它的證書是使用者自己給的，去給它籤一張只會白消耗配額，
+/// 也是 https，但它的證書是使用者自己給的，去給它簽一張只會白消耗配額，
 /// 而且**握手時用哪一張會變成兩份設定打架**。
 pub fn targets_of(rt: &Runtime) -> Vec<Target> {
     let mut out = Vec::new();
@@ -60,7 +60,7 @@ pub fn targets_of(rt: &Runtime) -> Vec<Target> {
         //   而 G57 選那兩家的理由正是 example.com 在 DNSPod、example.net 在 Cloudflare。
         let dns01 = build_dns01(site);
         for host in &site.hostnames {
-            // ⚠ 同一個網域可能被多個站台寫到（不同連接埠），只籤一次。
+            // ⚠ 同一個網域可能被多個站台寫到（不同連接埠），只簽一次。
             if out.iter().any(|t: &Target| t.domain == *host) {
                 continue;
             }
@@ -168,7 +168,7 @@ fn build_dns01(site: &fulcrum_runtime::SiteRt) -> Option<Arc<Dns01>> {
     // ── 權威 NS：**存寫法，不存解析結果** ──────────────────────────────────
     //
     // ★ ★ 這一段改過兩件事：
-    //   ① **認主機名**（此前只認 `IP:port`，而 DSL 參考 §4.4 的示例寫的就是主機名 ——
+    //   ① **認主機名**（此前只認 `IP:port`，而 DSL 參考 §4.4 的範例寫的就是主機名 ——
     //      文件與實作對不上，寫主機名的人得到的是「本站台 DNS-01 不啟用」）；
     //   ② **形狀判據搬到編譯期**（`fulcrum_config::host::parse_resolver`），
     //      所以走到這裡的寫法**已經是對的**；這裡剩下的只有「現在解不解析得出來」，
@@ -300,7 +300,7 @@ pub fn build(
 ///
 /// ★ 抽成一個純函式是為了能測：那條 ⏳ 紀錄本身測不了，而**「算得對不對」才是判據**。
 /// ⚠ 大小寫不敏感：證書儲存的目錄名與設定裡的寫法可能不同一種大小寫，
-/// 而一次大小寫造成的「假待籤」會讓這行警告在每次 reload 後都出現 —— 又變回假警報。
+/// 而一次大小寫造成的「假待簽」會讓這行警告在每次 reload 後都出現 —— 又變回假警報。
 fn pending_of<'a>(names: &[&'a str], known: &[String]) -> Vec<&'a str> {
     names
         .iter()
@@ -329,7 +329,7 @@ mod tests {
              http://plain.example.com {\n  respond 200\n}\n",
         );
         let names: Vec<String> = targets_of(&rt).into_iter().map(|t| t.domain).collect();
-        // ★ `tls <cert> <key>` 的站台**不能**進來：給它籤一張會白耗配額，
+        // ★ `tls <cert> <key>` 的站台**不能**進來：給它簽一張會白耗配額，
         //   而且握手時用哪一張會變成兩份設定打架。
         assert_eq!(names, vec!["auto.example.com".to_string()]);
     }
@@ -357,7 +357,7 @@ mod tests {
         let known = vec!["a.example.com".to_string(), "*.c.example.com".to_string()];
         assert_eq!(pending_of(&names, &known), vec!["b.example.com"]);
 
-        // 全都裝上了 ⇒ 一個都不待籤（這一支對應那條 ✅ 紀錄）
+        // 全都裝上了 ⇒ 一個都不待簽（這一支對應那條 ✅ 紀錄）
         let all = vec![
             "a.example.com".to_string(),
             "b.example.com".to_string(),
@@ -365,7 +365,7 @@ mod tests {
         ];
         assert!(pending_of(&names, &all).is_empty());
 
-        // 一個都沒裝 ⇒ 全都待籤（處理程序第一次起來時的真實形態）
+        // 一個都沒裝 ⇒ 全都待簽（處理程序第一次起來時的真實形態）
         assert_eq!(pending_of(&names, &[]), names);
 
         // ⚠ 大小寫不敏感：不然一次大小寫差異就會讓它變回假警報
@@ -379,14 +379,14 @@ mod tests {
 
     #[test]
     fn 不带主机名的站点不进清单() {
-        // `:8080` 籤不出證書：ACME 要一個網域。
+        // `:8080` 簽不出證書：ACME 要一個網域。
         let (_cfg, rt) = rt_of("http://:8080 {\n  respond 200\n}\n");
         assert!(targets_of(&rt).is_empty());
     }
 
     #[test]
     fn 没配_dns_的通配符进清单但接不了() {
-        // ★ 進清單是對的：G58 要求 M1 能籤通配符。把它從清單裡刪掉，
+        // ★ 進清單是對的：G58 要求 M1 能簽通配符。把它從清單裡刪掉，
         //   就沒有東西提醒維運「你這個站台差一段 dns 設定」。
         let (_cfg, rt) = rt_of("*.example.com {\n  respond 200\n}\n");
         let targets = targets_of(&rt);
@@ -417,7 +417,7 @@ mod tests {
         //
         //   舊契約：位址寫錯 ⇒ 裝載時打一行 ERROR，**這個站台的 DNS-01 整條不啟用**。
         //   ⚠ 而 `validate` 結束代碼是 **0**、站台照常起來、其餘紀錄一切正常 ——
-        //   於是一份寫錯的設定**在每一處都顯得正常**，直到那張證書永遠籤不下來。
+        //   於是一份寫錯的設定**在每一處都顯得正常**，直到那張證書永遠簽不下來。
         //
         //   新契約：**形狀在編譯期判**（`FUL-DSL-0029`），設定根本編不過。
         //   ⇒ 判據也跟著換：不再斷言「執行環境圖裡 dns01 是 None」，

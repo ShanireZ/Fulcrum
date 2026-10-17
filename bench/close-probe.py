@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
-"""行为核对：发一个带 `Connection: close` 的请求之后，服务端**真的先关了**吗？
+"""行為核對：發一個帶 `Connection: close` 的請求之後，伺服器端**真的先關了**嗎？
 
     python3 bench/close-probe.py <host> <port> <path>
     python3 bench/close-probe.py --capture-request <port> <输出文件>
     python3 bench/close-probe.py --self-check
 
-探针的退出码：
-    0  限时内读到了 EOF，且状态行是 200 ⇒ 服务端关了
-    3  限时内没读到 EOF ⇒ 服务端**没关**（回了什么头都不算数）
-    4  读到了 EOF，但状态行不是 200
-    1  连不上
-    2  用法错
+探針的結束代碼：
+    0  限時內讀到了 EOF，且狀態行是 200 ⇒ 伺服器端關了
+    3  限時內沒讀到 EOF ⇒ 伺服器端**沒關**（回了什麼頭都不算數）
+    4  讀到了 EOF，但狀態行不是 200
+    1  連不上
+    2  用法錯
 
-`--capture-request`：在 127.0.0.1:<port> 上只接一条带完整请求头的连接，把**请求头**原文落进
-<输出文件>，回 200 + `Connection: close`；0 = 抓到了，1 = 20 秒内没等到。用例脚本拿它抓
-**oha 真正发出的那个请求**（用负载那一组参数发一次），判据 ⑥ ② 判里面有没有 `Connection: close`
-（owner 2026-09-23 改判：原先用 TIME_WAIT 占比判「服务端先关」，实测是竞态、且会被截断）。
+`--capture-request`：在 127.0.0.1:<port> 上只接一條帶完整請求頭的連接，把**請求頭**原文落進
+<输出文件>，回 200 + `Connection: close`；0 = 抓到了，1 = 20 秒內沒等到。案例指令碼拿它抓
+**oha 真正發出的那個請求**（用負載那一組參數發一次），判據 ⑥ ② 判裡面有沒有 `Connection: close`
+（owner 2026-09-23 改判：原先用 TIME_WAIT 佔比判「伺服器端先關」，實測是競態、且會被截斷）。
 
-★ ★ ★ **判在行为上，⛔ 不判响应头。** 一个回了 `Connection: close` 却不关连接的实现，
-  头是对的、行为是错的 —— 而「高并发短连接」那一类要的是**服务端先关**这个行为
-  （owner 2026-09-23 拍板；理由之一是 TIME_WAIT 该落在服务端、不压压测端的临时端口）。
+★ ★ ★ **判在行為上，⛔ 不判回應頭。** 一個回了 `Connection: close` 卻不關連接的實作，
+  頭是對的、行為是錯的 —— 而「高並行短連接」那一類要的是**伺服器端先關**這個行為
+  （owner 2026-09-23 拍板；理由之一是 TIME_WAIT 該落在伺服器端、不壓壓測端的臨時連接埠）。
 
-⚠ `bench/case/short-connection-throughput.sh` 开跑前用它核四家各一次，并且**先跑本文件的
-  自测**，自测不过整类不跑 —— ⛔ 一个从没见过「不关」的探针，与一个恒报「关了」的坏探针
-  给出完全相同的输出。
+⚠ `bench/case/short-connection-throughput.sh` 開跑前用它核四家各一次，並且**先跑本文件的
+  自測**，自測不過整類不跑 —— ⛔ 一個從沒見過「不關」的探針，與一個恆報「關了」的壞探針
+  給出完全相同的輸出。
 """
 
 import pathlib
@@ -59,12 +59,12 @@ def probe(host, port, path, timeout=TIMEOUT):
 
 
 def capture_once(listener, outfile, deadline):
-    """只接一条**带完整请求头**的连接，把请求头原文（到第一个空行为止）写进 `outfile`，
-    回 200 + `Connection: close` 然后关。返回 0 = 抓到了；1 = 截止前没等到。
+    """只接一條**帶完整請求頭**的連接，把請求頭原文（到第一個空行為止）寫進 `outfile`，
+    回 200 + `Connection: close` 然後關。回傳 0 = 抓到了；1 = 截止前沒等到。
 
-    ⚠ 先来的空连接（连上就断、一个字节都不发 —— 编排脚本的 `wait_port` 就是这样）与残缺请求
-      **跳过、接着等**，⛔ 不能被它们打发掉。
-    ⚠ 只存请求头，⛔ 不存正文 —— 判据只看头（`bench/lib.sh` 的 `bench_request_close_violations`）。
+    ⚠ 先來的空連接（連上就斷、一個位元組都不發 —— 編排指令碼的 `wait_port` 就是這樣）與殘缺請求
+      **跳過、接著等**，⛔ 不能被它們打發掉。
+    ⚠ 只存請求頭，⛔ 不存正文 —— 判據只看頭（`bench/lib.sh` 的 `bench_request_close_violations`）。
     """
     while True:
         left = deadline - time.monotonic()
@@ -98,7 +98,7 @@ def capture_once(listener, outfile, deadline):
 
 
 def _serve_once(listener, status, close_after):
-    """合成被测：只接一条连接、回一份固定响应；`close_after` 决定回完关不关。"""
+    """合成被測：只接一條連接、回一份固定回應；`close_after` 決定回完關不關。"""
     try:
         conn, _ = listener.accept()
     except OSError:

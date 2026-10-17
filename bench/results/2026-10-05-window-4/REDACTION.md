@@ -34,7 +34,7 @@
 | | |
 |---|---|
 | 檔案 | [`raw/short-connection-throughput/oha-request.txt`](raw/short-connection-throughput/oha-request.txt) |
-| 原件 | 用例指令碼把 oha 發出的請求原樣寫入磁碟，HTTP 的行尾就是 CRLF —— 7 個 CR，**全部**成對出現在 CRLF 裡 |
+| 原件 | 案例指令碼把 oha 發出的請求原樣寫入磁碟，HTTP 的行尾就是 CRLF —— 7 個 CR，**全部**成對出現在 CRLF 裡 |
 | 入庫版 | 每個 CRLF 換成 LF，⛔ 別的位元組一個沒動：入庫版 = 原件刪掉全部 CR，逐位元組相等（機械核過） |
 | 為什麼 | 本儲存庫 `.gitattributes` 是 `* text=auto eol=lf` ⇒ 原樣提交會讓門禁的行尾檢查當場紅；owner 2026-10-05 拍的是「轉 LF 並寫明」 |
 | 不影響判定 | 視窗清單 8d 用的 `bench_request_close_violations`（`bench/lib.sh`）自己先刪 `\r` 再判 |

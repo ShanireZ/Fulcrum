@@ -247,7 +247,7 @@ fn 占位符全表都在文档里出现过() {
 
 #[test]
 fn 文档样例里的那个错误码就是代码里的那个() {
-    // ★ DSL 參考 §九的樣例印著 `FUL-DSL-0007: unknown directive`。
+    // ★ DSL 參考 §九的範例印著 `FUL-DSL-0007: unknown directive`。
     //   印出去的號碼就是契約的一部分——G51 明寫「一旦發出就不能改含義」。
     assert_eq!(DiagCode::UNKNOWN_DIRECTIVE.as_str(), "FUL-DSL-0007");
     assert!(
@@ -272,8 +272,8 @@ fn code_block_after(md: &str, heading: &str) -> String {
 fn 文档里印出来的示例必须真能编译() {
     // ★ ★ 這一條是**契約測試裡最直接的一個**：文件裡那份設定是給人抄的，
     //   抄下來編不過就是文件在騙人。而它同時還是 G49 那條容器排位的活判據——
-    //   §一的示例只有在 `handle` 跑在 `respond` 之前時才成立。
-    // ★ `### \`metrics\``（批 M）：那一份示例正是 G116 教人怎麼把指標圈起來的那一份，
+    //   §一的範例只有在 `handle` 跑在 `respond` 之前時才成立。
+    // ★ `### \`metrics\``（批 M）：那一份範例正是 G116 教人怎麼把指標圈起來的那一份，
     //   ⚠ 而它同時是**唯一**印出「`handle` 必須罩住 `metrics`」的地方 ——
     //   抄下來編不過，等於把唯一那份正確寫法印錯了。
     for heading in ["# 一、總覽", "## 4.5 頂層非站台塊", "### `metrics`"] {

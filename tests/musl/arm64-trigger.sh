@@ -5,7 +5,7 @@
 #   bash tests/musl/arm64-trigger.sh --self-check
 #   bash tests/musl/arm64-trigger.sh --hash        # 打當前觸發集的雜湊
 #
-# ★ ★ ★ 判據只回答一個問題：**「當前這個依賴狀態，有沒有被 arm64 真的驗證過。」**
+# ★ ★ ★ 判據只回答一個問題：**「當前這個相依狀態，有沒有被 arm64 真的驗證過。」**
 #   ⛔ 它不回答「這臺機器能不能跑 arm64」（那是 binfmt，機器本機狀態，由呼叫方探）。
 #
 # ── 觸發集為什麼是這幾個檔案 ────────────────────────────────────────────────
@@ -24,7 +24,7 @@
 #
 # ⚠ ⚠ ★ **原始碼改動有意不觸發，而這是一條判斷、不是一條讀數。**
 #   `Dockerfile.musl-product` 確實是 `COPY . .`，但我們自己那幾個 crate 是架構中立的、
-#   amd64 那一格每趟都編；aarch64 會壞在**依賴 / 工具鏈 / 基礎鏡像**上，那正是這個集合。
+#   amd64 那一格每趟都編；aarch64 會壞在**相依 / 工具鏈 / 基礎鏡像**上，那正是這個集合。
 #   ⛔ 它錯的方向是「漏掉一次原始碼引起的 arm64 迴歸」。真出現那麼一次時，
 #   要改的是**這個集合**，而不是給它加一條豁免。
 
@@ -60,12 +60,12 @@ fulcrum_arm64_trigger_hash() {
 
 # ── 純函式：當前雜湊 + 驗證記錄正文 ⇒ 三選一 ─────────────────────────────────
 #
-#   verified —— 這個依賴狀態被 arm64 真的驗證過，本趟不必再跑
-#   stale    —— 驗證過，但驗證的是**另一個**依賴狀態
+#   verified —— 這個相依狀態被 arm64 真的驗證過，本趟不必再跑
+#   stale    —— 驗證過，但驗證的是**另一個**相依狀態
 #   never    —— 從來沒有過一份驗證記錄
 #
 # ⚠ `never` 與 `stale` 有意分開：給人的話不一樣（一個是「還沒有過」，
-#   一個是「你剛改了依賴」），而**合成同一個「要跑」並不會讓判據更簡單**。
+#   一個是「你剛改了相依」），而**合成同一個「要跑」並不會讓判據更簡單**。
 fulcrum_arm64_state() {
   local cur=$1 stamp=${2:-} recorded
   recorded=$(printf '%s\n' "$stamp" | sed -n 's/^hash=//p' | head -1)
@@ -218,7 +218,7 @@ fulcrum_arm64_selfcheck() {
   want_eq "已验证时不该因为跑不了 aarch64 就变卦" "amd64-only" "$(fulcrum_arm64_decide verified no)"
   want_eq "依赖变了且跑得了 ⇒ 该两个架构一起跑" "both" "$(fulcrum_arm64_decide stale yes)"
   want_eq "从没验证过且跑得了 ⇒ 该两个架构一起跑" "both" "$(fulcrum_arm64_decide never yes)"
-  # ★ ★ ★ **這兩條就是那條平時執行不到的紅路徑**：依賴變了、而這臺機器跑不了 ⇒
+  # ★ ★ ★ **這兩條就是那條平時執行不到的紅路徑**：相依變了、而這臺機器跑不了 ⇒
   #   必須判「驗不了」，⛔ 不許退化成 amd64-only 悄悄放行。
   want_eq "依赖变了但跑不了 ⇒ 必须判验不了" "cannot-verify" "$(fulcrum_arm64_decide stale no)"
   want_eq "从没验证过且跑不了 ⇒ 必须判验不了" "cannot-verify" "$(fulcrum_arm64_decide never no)"

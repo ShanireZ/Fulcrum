@@ -50,7 +50,7 @@ acme_cleanup() {
     kill -9 "$pid" 2>/dev/null || true
   done
   # ★ 把信任庫改回去。容器是 --rm 的，但這些指令碼也可能被人在別處跑，
-  #   而「往系統信任庫裡塞了一張自籤根然後不收拾」是一件不該留下的事。
+  #   而「往系統信任庫裡塞了一張自簽根然後不收拾」是一件不該留下的事。
   if [ -f "$TRUST_ANCHOR" ]; then
     rm -f "$TRUST_ANCHOR"
     update-ca-certificates --fresh >/dev/null 2>&1 || true
@@ -347,11 +347,11 @@ acme_port_snapshot() {
 
 # pebble 自己 HTTPS API 的證書，並把根裝進**系統**信任庫。
 #
-# ★ 現籤，不進儲存庫：儲存庫裡的測試證書遲早過期，
+# ★ 現簽，不進儲存庫：儲存庫裡的測試證書遲早過期，
 #   而過期那天紅的是「ACME 壞了」，要繞一圈才發現是證書到期。
 #
-# ★ ★ ★ **必須是「根 + 葉」兩級，不能拿一張自籤的 CA 證書直接當伺服器端證書。**
-#   `tests/serve/run.sh` 裡那張就是自籤 + `CA:TRUE` 一張打天下，curl 收得下——
+# ★ ★ ★ **必須是「根 + 葉」兩級，不能拿一張自簽的 CA 證書直接當伺服器端證書。**
+#   `tests/serve/run.sh` 裡那張就是自簽 + `CA:TRUE` 一張打天下，curl 收得下——
 #   **而 rustls 不收**：`rustls-platform-verifier` 當場判
 #   `invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`，
 #   現場表現是「建 ACME 帳戶失敗：client error (Connect)」，看不出跟證書有關。
@@ -460,7 +460,7 @@ acme_start_challtestsrv() {
 #     `let mut retries = 3`，即「首次 + 2 次重試」，三次全被拒就把 400 回傳給呼叫方。
 #     ★ 這一條是**讀原始碼讀出來的**，不是從行為猜的——猜出來的重試次數會讓下面的估算
 #     整個建在沙子上。
-#   · 於是一次 POST 永久失敗的概率是 p³，一輪簽發大約十來次 POST。
+#   · 於是一次 POST 永久失敗的機率是 p³，一輪簽發大約十來次 POST。
 #   · 實測（本機）：`NONCE_REJECT=50` 跑 5 次，**4 次綠、1 次紅**
 #     （紅在建帳戶那一步，紀錄裡是 `POST /sign-me-up` 連著三發）。
 #   · 按 p³ 縮放回預設的 5%：0.2 × (0.05/0.5)³ ≈ **兩萬分之一**量級。
@@ -468,7 +468,7 @@ acme_start_challtestsrv() {
 #   要重現那次測量：`NONCE_REJECT=50 bash tests/acme/run.sh`。
 #
 # 第二個參數是可選的 `PEBBLE_AUTHZREUSE`（百分比）。續期場景把它設成 0，
-# ⚠ 否則 pebble 有 50% 的概率重複使用上一次的授權，於是**續期那一趟根本不走挑戰**——
+# ⚠ 否則 pebble 有 50% 的機率重複使用上一次的授權，於是**續期那一趟根本不走挑戰**——
 #   一條「續期時 TXT 又寫了一遍」的斷言會變成擲硬幣。
 # ⚠ ⚠ 0 也**不是**「永不復用」，而是 1/100（pebble 的差一，原文見 renew.sh 判據四）⇒
 #   那條斷言不靠這個參數，而是按 CA 紀錄裡這一趟走了哪一支來判。

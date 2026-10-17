@@ -20,7 +20,7 @@ sources:
 
 | 章節 | 內容 | bundle 裡的導覽 |
 |---|---|---|
-| §1 | 當前狀態 | [直接閱讀唯一權威](../../PLAN.md#1-当前状态)；bundle 不復制當前狀態 |
+| §1 | 當前狀態 | [直接閱讀唯一權威](../../PLAN.md#1-当前状态)；bundle 不複製當前狀態 |
 | §2 | 專案定位 | [定位](/product/positioning.md) |
 | §3 | 要解決的問題；§3.1 競爭位置 | [定位](/product/positioning.md) |
 | §4 | 設計原則（七條）| [設計原則](/product/design-principles.md) |
@@ -42,4 +42,4 @@ sources:
 # 兩條容易讀錯的地方
 
 1. ★ **G5 的「全量」指對外能力面，不是自研程式碼面。** 不先讀這條，§6 整章都會讀錯。見 [首版範圍](/product/scope.md)。
-2. ★ **G29 同時是 D1 的結案。** 讀到「依賴版本策略待定」這類舊錶述時，它是過期的。見 [依賴策略](/platform/dependency-policy.md)。
+2. ★ **G29 同時是 D1 的結案。** 讀到「相依版本策略待定」這類舊錶述時，它是過期的。見 [相依策略](/platform/dependency-policy.md)。

@@ -8,7 +8,7 @@ use fulcrum_runtime::{Runtime, SharedRuntime};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// DSL → 執行環境圖。建置期回報錯誤就 panic（測試裡那是寫錯了用例）。
+/// DSL → 執行環境圖。建置期回報錯誤就 panic（測試裡那是寫錯了案例）。
 fn rt(dsl: &str) -> Runtime {
     let o = compile_str("t.Fulcrumfile", dsl);
     assert!(

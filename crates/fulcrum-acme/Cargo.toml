@@ -38,12 +38,12 @@ log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # ★ 本 crate **不掛在 pingora 的處理程序模型上**，與 `fulcrum-runtime` 同一條紀律：
-#   它是「什麼時候該籤、怎麼籤」的邏輯，不是「掛在哪個處理程序模型上」。
+#   它是「什麼時候該簽、怎麼簽」的邏輯，不是「掛在哪個處理程序模型上」。
 #   停機信號用 `tokio::sync::watch::Receiver<bool>` 接——那恰好就是
 #   `pingora_core::server::ShutdownWatch` 的真身，所以 `fulcrum-server` 直接傳進來即可。
 #
-# ⚠ ⚠ ★ **這句話就地改過，原話是「本 crate 不依賴 pingora」，而它現在不成立了。**
-#   上面那行 `pingora-boringssl` 是一條真的 pingora 依賴。
+# ⚠ ⚠ ★ **這句話就地改過，原話是「本 crate 不相依 pingora」，而它現在不成立了。**
+#   上面那行 `pingora-boringssl` 是一條真的 pingora 相依。
 #   ★ 改措辭而不是刪掉這條紀律，是因為**這條紀律要擋的東西一個字沒變**：
 #     `pingora-core`（處理程序模型、監聽器、優雅升級）仍然一行都沒進來，
 #     而 `pingora-boringssl` 是一層**純類型再匯出**（`pub use boring::ssl;` 那種）。

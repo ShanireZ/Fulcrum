@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""把 `bench/env-snapshot.sh` 采到的读数序列化成 JSON。
+"""把 `bench/env-snapshot.sh` 採到的讀數序列化成 JSON。
 
-★ 单独一个文件而不是内联：内联的 python 要穿过 bash 的引号层，而
-  **本仓的纪律是含反斜杠或反引号的内容一律写成文件** —— 内联那条路不报错，
-  它只是安静地把某个转义吃掉一层，产出一份看起来正常的坏文件。
+★ 單獨一個文件而不是內聯：內聯的 python 要穿過 bash 的引號層，而
+  **本儲存庫的紀律是含反斜槓或反引號的內容一律寫成文件** —— 內聯那條路不回報錯誤，
+  它只是安靜地把某個轉義吃掉一層，產出一份看起來正常的壞文件。
 
-⛔ 本文件不做任何判断，只做序列化。合格性判据在 `bench/lib.sh`。
+⛔ 本文件不做任何判斷，只做序列化。合格性判據在 `bench/lib.sh`。
 """
 
 import json
@@ -18,7 +18,7 @@ def env(name: str) -> str:
 
 
 def maybe_int(raw: str):
-    """读不出来就是 None，⛔ 不给 0 —— 0 会被下游当成一个真读数。"""
+    """讀不出來就是 None，⛔ 不給 0 —— 0 會被下游當成一個真讀數。"""
     try:
         return int(raw)
     except (TypeError, ValueError):
@@ -39,7 +39,7 @@ def read_sysctls(names: str) -> dict:
 
 
 def parse_cpu_list(spec: str):
-    """`0-1` / `0,2` / `2-3,6` → 逻辑 CPU 号的列表；写法不认识回 None（⛔ 不猜）。"""
+    """`0-1` / `0,2` / `2-3,6` → 邏輯 CPU 號的列表；寫法不認識回 None（⛔ 不猜）。"""
     out = []
     for part in spec.split(","):
         part = part.strip()
@@ -56,12 +56,12 @@ def parse_cpu_list(spec: str):
 
 
 def cpu_topology(siblings_raw: str, server: str, load: str):
-    """`<cpu>=<thread_siblings_list>` 一行一条 → `host.cpu_topology`（2026-10-05，诊断、⛔ 不判）。
+    """`<cpu>=<thread_siblings_list>` 一行一條 → `host.cpu_topology`（2026-10-05，診斷、⛔ 不判）。
 
-    物理核用它的超线程兄弟集合当名字（`/sys` 原样的写法，如 `0-1`）。
-    ★ `shared_cores` 非空 = 被测与压测端**共用物理核**（超线程兄弟互抢执行单元）。
-    ⚠ 一行都读不到 ⇒ None（「没记到」，⛔ 不是「没有超线程」）；
-      亲和没给、写法不认识、或指到不存在的 CPU ⇒ 那一组记 None（⛔ 不猜）。
+    物理核用它的超執行緒兄弟集合當名字（`/sys` 原樣的寫法，如 `0-1`）。
+    ★ `shared_cores` 非空 = 被測與壓測端**共用物理核**（超執行緒兄弟互搶執行單元）。
+    ⚠ 一行都讀不到 ⇒ None（「沒記到」，⛔ 不是「沒有超執行緒」）；
+      親和沒給、寫法不認識、或指到不存在的 CPU ⇒ 那一組記 None（⛔ 不猜）。
     """
     siblings = {}
     for line in siblings_raw.splitlines():
@@ -117,7 +117,7 @@ snapshot = {
     # ── 核心參數與資源上限（G145）────────────────────────────────────────
     # ★ 記的是「宣告了什麼」與「實測是什麼」**兩份**，⛔ 不是隻記實測：
     #   第三方要能自己重算那次比較，而只有實測值的話，一次不符與一次改了宣告
-    #   在快照里長得一模一樣。
+    #   在快照裡長得一模一樣。
     "kernel_params": {
         # 容器側四個鍵 —— 由 `docker run --sysctl` 設，由 env-snapshot 斷言。
         "declared_in_container": [

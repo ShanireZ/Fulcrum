@@ -110,7 +110,7 @@ pub fn default_threads(role: ThreadRole, cpus: usize) -> usize {
 ///
 /// ⚠ 探測失敗時回落到 1 **並打一行 warn**：這一格沒有「寧可多」的安全側 ——
 /// 超訂會讓所有 service 一起變慢，而回落到 1 至少與今天的行為相同。
-/// ⛔ 但不許靜默：一個悄悄退成 1 的資料面，與「設定生效了」在啟動紀錄里長得一樣。
+/// ⛔ 但不許靜默：一個悄悄退成 1 的資料面，與「設定生效了」在啟動紀錄裡長得一樣。
 pub fn detected_cpus() -> usize {
     match std::thread::available_parallelism() {
         Ok(n) => n.get(),
@@ -527,7 +527,7 @@ mod tests {
             MAX_THREADS,
             "上界没夹"
         );
-        // ⚠ `detected_cpus()` 不會回傳 0，但判據不該依賴那個前提。
+        // ⚠ `detected_cpus()` 不會回傳 0，但判據不該相依那個前提。
         assert_eq!(threads_for(ThreadRole::L7, g, 0), MIN_THREADS, "下界没夹");
     }
 
@@ -701,7 +701,7 @@ mod tests {
             std::process::id().to_string()
         );
 
-        // ⚠ 臨時檔案不許留下：它與 pid 檔案同目錄，而那是 systemd 的 RuntimeDirectory。
+        // ⚠ 暫存檔不許留下：它與 pid 檔案同目錄，而那是 systemd 的 RuntimeDirectory。
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())

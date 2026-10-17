@@ -59,11 +59,11 @@ sources:
 
 | 項 | 落法 | 換來什麼 |
 |---|---|---|
-| 特權丟棄 | systemd 的 `User=` / `Group=` | ★ `daemonize` 依賴整條刪除，**RUSTSEC-2025-0069 歸零**（✅ 2026-09-24 兌現：pingora 0.9.0 把它換成了 `daemonix`；後者仍在依賴圖裡，而樞衡恆 `daemon: false`、不走它）；特權丟棄交給比任何 crate 都更經得起稽核的 systemd |
+| 特權丟棄 | systemd 的 `User=` / `Group=` | ★ `daemonize` 相依整條刪除，**RUSTSEC-2025-0069 歸零**（✅ 2026-09-24 兌現：pingora 0.9.0 把它換成了 `daemonix`；後者仍在相依圖裡，而樞衡恆 `daemon: false`、不走它）；特權丟棄交給比任何 crate 都更經得起稽核的 systemd |
 | 紀錄 | stderr → journal | 不需要自己開紀錄檔案、不需要 logrotate |
 | 目錄 | `ConfigurationDirectory=` `/etc/fulcrum`<br>`StateDirectory=` `/var/lib/fulcrum`<br>`RuntimeDirectory=` `/run/fulcrum`<br>`CacheDirectory=` `/var/cache/fulcrum` | systemd 負責建立並按 `User=`/`Group=` 設權限。★ **但每一項都可被設定覆蓋**——D8 的磁碟快取要能掛到別的盤 |
 | PID 檔案 | ⚠ **這一格已被 M1 spike #1 的實測部分推翻** —— 見下一節 | 原話是「`Type=notify` 下 systemd 自己跟蹤 MainPID」，說的是 systemd 的 **`PIDFile=` 指令**不需要（那是對的，至今如此）。但它**不等於**「沒有任何東西需要知道當前是哪一代」：`ExitType=cgroup` 之下 MainPID 在首次換代後歸零，`ExecReload` 必須從一個**每代自寫**的 pid 檔案裡找當前這一代 |
-| 回落層 | `Wants=` / `After=` 宣告依賴，**不監管** | 見 [回落層](/architecture/fallback.md) |
+| 回落層 | `Wants=` / `After=` 宣告相依，**不監管** | 見 [回落層](/architecture/fallback.md) |
 
 ★ **一條獨立於安全考慮的收益**：`daemonize()` 會 fork，而 pingora 自己的文件註解寫著「`run()` 之前建立的任何執行緒都會丟失」。前台執行**解除了這條約束**——設定解析、ACME、回落層相關的東西可以在 `run()` 之前起來。
 

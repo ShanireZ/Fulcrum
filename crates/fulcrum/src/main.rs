@@ -19,8 +19,8 @@
 //! 而機器寫進來的一份根本不經過詞法與語法。正則編不過、CIDR 不合法、上游位址寫錯，
 //! 都只有建置執行環境圖時才看得見。
 //!
-//! ★ 沒有用任何命令行解析庫。三條子命令、兩個選項，手寫二十行比拖一棵依賴樹划算，
-//! 而 G29 那套「追新 + 24 小時隔離期 + 每週檢查」是按依賴條數收費的。
+//! ★ 沒有用任何命令行解析庫。三條子命令、兩個選項，手寫二十行比拖一棵相依樹划算，
+//! 而 G29 那套「追新 + 24 小時隔離期 + 每週檢查」是按相依條數收費的。
 
 use fulcrum_config::model::{MatcherRef, Step, StepBody, StructuredConfig};
 use fulcrum_config::{Outcome, compile_str};
@@ -302,7 +302,7 @@ fn split_args(rest: &[String]) -> Result<(Vec<String>, Flags), String> {
         //   **讓錯誤變成寫不出來的東西，而不是靠記得。**
         let consumed: usize = match rest[i].as_str() {
             // ★ 只有長寫法，沒有 `-s`：這是一次有後果的操作，
-            //   而單字母開關最容易在別人的指令碼里被順手加上。
+            //   而單字母開關最容易在別人的指令碼裡被順手加上。
             "--with-secrets" => {
                 f.with_secrets = true;
                 1

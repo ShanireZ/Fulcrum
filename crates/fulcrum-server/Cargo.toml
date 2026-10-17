@@ -11,7 +11,7 @@ fulcrum-config = { path = "../fulcrum-config" }
 fulcrum-runtime = { path = "../fulcrum-runtime" }
 fulcrum-tls = { path = "../fulcrum-tls" }
 # ★ ★ **`features = ["boringssl"]` 是硬要求，不是可選項**（G104）：
-#   不開任何 TLS feature 的話，產品連結的是另一套程式碼，而它那一批傳遞依賴會留在
+#   不開任何 TLS feature 的話，產品連結的是另一套程式碼，而它那一批傳遞相依會留在
 #   常規稽核視野之外（G41 查出的 rustls 那條就是這個形狀）。
 #   由 crates/fulcrum/tests/supply_gates.rs 門 3 守著 —— 不開就紅。
 pingora-core = { workspace = true, features = ["boringssl"] }
@@ -20,12 +20,12 @@ pingora-core = { workspace = true, features = ["boringssl"] }
 pingora-http = { workspace = true }
 # ★ **本 crate 與 rustls 再無任何關係**（G104）：L4 的 SNI/ALPN 分流已換到
 #   BoringSSL 的早回呼（`src/l4.rs` 的 `peek_client_hello`），FORK.md 改動 8 / 8b / 10
-#   隨之歸零。⇒ **「依賴圖裡只有一套 TLS」成立**
+#   隨之歸零。⇒ **「相依圖裡只有一套 TLS」成立**
 #   （`cargo tree … -i rustls` → nothing to print）。
 #   ⚠ ⚠ **但別說成「產物裡」**：那是第三個問題，由 **G138** 單獨回答（結案 **D23**）——
 #   `tests/ci/tls-linkage.sh` 取數 + `tests/musl/product.sh` 判**符號表**；
 #   而「鎖裡」是第一個問題 —— `rustls` 那一族**仍然寫在 `Cargo.lock` 裡**，
-#   因為鎖是依賴圖的超集。三個問題分別由門 4 / 門 5 / G138 那一格回答。
+#   因為鎖是相依圖的超集。三個問題分別由門 4 / 門 5 / G138 那一格回答。
 # BoringSSL 那側的類型（`SslAcceptor` / `SslMethod` / ALPN 那幾樣 / ClientHello 早回呼）。
 # ★ 紀律是「優先經這一個 crate 拿」，目的是**類型同一性**。
 #   ⚠ G111 破了例（下面那行 `boring`）：只有 `pingora-boringssl` 沒有 re-export 的那幾樣
@@ -43,9 +43,9 @@ pingora-boringssl = { workspace = true }
 quiche = { workspace = true }
 # ★ QUIC 的監聽側還要直接夠到 `quiche::Config::with_boring_ssl_ctx_builder()` 收的那個
 #   `boring::ssl::SslContextBuilder` —— 見下面 `boring` 那一行（G111）。
-# ⚠ ★ **G111 破例的那條直接依賴**：Retry token 要 `boring::symm` 的 AES-256-GCM，
+# ⚠ ★ **G111 破例的那條直接相依**：Retry token 要 `boring::symm` 的 AES-256-GCM，
 #   而 `pingora-boringssl` 沒有 re-export `symm`。理由、代價與「owner 給的理由是錯的、
-#   結論仍然成立」那一條，全寫在根清單裡那一段 —— 別隻讀這三行。
+#   結論仍然成立」那一條，全寫在根清單裡那一段 —— 別只讀這三行。
 boring = { workspace = true }
 # 連接 ID 與 Retry token 的隨機源（批 J）。★ 新增 0 個包，見根清單那一段。
 rand = { workspace = true }
@@ -59,18 +59,18 @@ bytes = { workspace = true }
 http = { workspace = true }
 # ★ 處理程序託管（G78）：`sd_notify(READY=1)` 與「給自己發 SIGQUIT」。
 # ★ 兩條都由 G31 指定過（純 Rust、可 musl 靜態連結，滿足 G13），而且**新增 0 個包**：
-#   `libc` 早就在依賴圖裡（pingora 自己就依賴它），`sd-notify` 此前只被 spike 用著。
+#   `libc` 早就在相依圖裡（pingora 自己就相依它），`sd-notify` 此前只被 spike 用著。
 sd-notify = { workspace = true }
 libc = { workspace = true }
 # 管理面（G8 的全量 load）收的是**結構化設定 JSON**（G48：與磁碟上那份同一種）。
-# ★ 兩條本來就在依賴圖裡，這裡只是變成顯式的直接依賴。
+# ★ 兩條本來就在相依圖裡，這裡只是變成顯式的直接相依。
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 # 只給判據用：QUIC 握手要一張證書，而這裡的用戶端那一半也是真的 quiche。
-# ★ 新增 0 個包：rcgen 早就在依賴圖裡（instant-acme 拉的，見根清單）。
+# ★ 新增 0 個包：rcgen 早就在相依圖裡（instant-acme 拉的，見根清單）。
 rcgen = { workspace = true }
 # 只給判據用：`keepalive` 的單測要暫停的 tokio 時間（`start_paused`），60 秒的空閒視窗才能毫秒級跑完。
-# ★ 新增 0 個包：`test-util` 只開 tokio 自己的 `rt` / `sync` / `time`；發佈建置不帶 dev 依賴 ⇒ 產物不受影響。
+# ★ 新增 0 個包：`test-util` 只開 tokio 自己的 `rt` / `sync` / `time`；發佈建置不帶 dev 相依 ⇒ 產物不受影響。
 tokio = { workspace = true, features = ["test-util"] }

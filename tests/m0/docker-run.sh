@@ -55,7 +55,7 @@ VOL_LOCK_LIB="$REPO_UNIX/tests/lib/vol-lock.sh"
 #
 # ★ 指紋 = 本指令碼 + `tests/lib/` 下全部 `.sh` 的內容 + 宿主工具身分
 #   （`BASH_VERSION` · `uname -sr`（MSYS 執行環境）· `git --version` —— Git for Windows
-#   的版本號，自測用到的 tr / sha256sum / cygpath / mkdir 都隨它一起散布）。
+#   的版本號，自測用到的 tr / sha256sum / cygpath / mkdir 都隨它一起散佈）。
 #   ★ 用 `tests/lib/` 整個目錄而不是點名 `vol-lock.sh`：往後多一個 lib 時不會安靜地漏掉；
 #     多算進來的檔案只會讓自測多跑幾次，方向是安全的。
 # ★ 記錄放在 `git rev-parse --git-path` 下：只屬於本機、本工作樹，不進儲存庫，
@@ -78,7 +78,7 @@ host_selftest_fp() {   # host_selftest_fp <文件>...：算不出（讀不到檔
 host_selftest_stamp_ok() {   # <记录文件> <指纹>：記錄裡的指紋與之逐字相同才答 0
   [ -n "$2" ] && [ -f "$1" ] && [ "$(sed -n 's/^fp=//p' "$1")" = "$2" ]
 }
-host_selftest_stamp_write() {   # <记录文件> <指纹>：先寫臨時檔案再 mv，讀的一方看不到半份
+host_selftest_stamp_write() {   # <记录文件> <指纹>：先寫暫存檔再 mv，讀的一方看不到半份
   local tmp="$1.tmp.$$"
   printf 'fp=%s\nat=%s\n' "$2" "$(date '+%Y-%m-%d %H:%M:%S')" > "$tmp" && mv -f "$tmp" "$1"
 }
@@ -146,7 +146,7 @@ host_selftest selftest_host_selftest_stamp
 #   ★ ★ 位置是硬要求，不是風格：`MSYS_NO_PATHCONV=1` 一旦生效，原生 git.exe 收到的
 #     就是未經轉換的 `/d/...`，`rev-parse` 會失敗，這道門會被**靜默跳過**。
 #
-# ★ ★ **拿不到 git 時不「跳過」，而是換一條不依賴 git 的路走完** ——
+# ★ ★ **拿不到 git 時不「跳過」，而是換一條不相依 git 的路走完** ——
 #   「沒能檢查」不算「檢查通過」，而這道門真實的失效模式恰恰就是 `git rev-parse` 失敗。
 
 # 逐位元組數 CR。★ **不要用 grep**：MSYS 的 grep 在讀取階段就把行尾規整掉了，
@@ -157,7 +157,7 @@ nul_count() { tr -dc '\000' < "$1" | wc -c; }   # 含 NUL 即二進位，同 gre
 
 # ★ ★ **這兩個原語必須自證沒瞎，每次都證。** 它們的失效方式是安靜的：換個平台、
 #   換個實作（比如有人「順手優化」成 grep），它們就恆回傳 0，這道門永遠綠。
-#   代價是三個臨時檔案、兩次 `tr` —— 比一份假綠便宜太多。
+#   代價是三個暫存檔、兩次 `tr` —— 比一份假綠便宜太多。
 selftest_byte_probes() {
   local d rc=0
   d=$(mktemp -d)
@@ -294,7 +294,7 @@ host_selftest selftest_tree_state
 # **且那個暫存掛載不隨容器退出釋放**（實測 `docker kill` 後仍在）。⇒ 一旦某一輪的
 # `pwd` 落在暫存路徑上，標籤就換一個，而它的 sha256 又正好是下一層暫存目錄的名字 ——
 # 每跑一輪生一個新卷（約 8.7GB），**快取從此永不命中**。
-# ⚠ ⚠ 2026-09-05 這臺宿主上量到過一條四節的鏈：37 分鐘里長出 4 個卷、約 34.7GB，
+# ⚠ ⚠ 2026-09-05 這臺宿主上量到過一條四節的鏈：37 分鐘裡長出 4 個卷、約 34.7GB，
 #   而門每一輪都是綠的 —— 失效形態裡沒有任何一行錯誤，只是慢，且磁碟無聲地漲。
 #   ⛔ 換臺機器讀到這裡別把這個數當成你面前這臺的讀數，自己數一遍。
 #
@@ -381,7 +381,7 @@ host_selftest selftest_tree_canon
 # 開發機 B（`ShanireHomePC`）12 個 `fulcrum*` 卷 / 6 個無主 / 約 48GB。
 # ★ 兩行並排是判據本身：卷是**機器本機狀態** ⇒ ⛔ 註解裡不帶機器名的「本機 / 實測」
 # 換臺機器讀就是一句會誤導人的話。到一臺新機器上先自己數，別用上面任何一個數。
-# ⇒ 補一條**不依賴建卷那一刻記下了什麼**的判據
+# ⇒ 補一條**不相依建卷那一刻記下了什麼**的判據
 # （`fulcrum_vol_shape`：今天的 `fulcrum_target_vol` 造不造得出這個名字）。
 #
 # 六條，每條守一個**不同的失效形態**：
@@ -392,7 +392,7 @@ host_selftest selftest_tree_canon
 #   ④ ★ ★ ★ **承重**：當代形狀 + 讀不到 label ⇒ **仍然 keep**。新規則一旦吞掉舊規則
 #      保守的那一半，症狀不是回報錯誤，是有一天它給出一條刪錯卷的命令。
 #   ⑤ 形狀判據這一輪不可信（shape_ok=0）⇒ 新規則整條不生效，退回原來的保守行為。
-#   ⑥ ★ 形狀用**真的生成出來的名字**釘住 —— 手寫一個樣例名去比是釘不住的：
+#   ⑥ ★ 形狀用**真的生成出來的名字**釘住 —— 手寫一個範例名去比是釘不住的：
 #      `fulcrum_target_vol` 改了形狀，這一條必須當場紅。
 selftest_vol_verdict() {
   local rc=0 probe gen
@@ -426,7 +426,7 @@ host_selftest selftest_vol_verdict
 # ⚠ ⚠ 它天生難自證：在一臺已經清乾淨的機器上它**永遠打不出一行**，而
 # 「桶是空的」與「這段程式碼根本沒跑」長得一模一樣 —— 這正是 2026-09-04 那次不得不
 # 造四個探針卷的原因。⇒ 下面全部用**合成輸入**，兩個方向各跑一遍，
-# ⛔ 不依賴這臺宿主上此刻恰好有什麼卷。
+# ⛔ 不相依這臺宿主上此刻恰好有什麼卷。
 #
 # 九條，每條守一個不同的失效形態：
 #   ① 別人家的卷 ⇒ `foreign`。錯了就是每趟刷一堆噪音，而**一道刷噪音的門很快就沒人看**。
@@ -572,7 +572,7 @@ if [ "$RUN_HOST_SELFTESTS" = 1 ] && [ -n "$HOST_SELFTEST_STAMP" ] && [ -n "$HOST
     || echo "⚠ 宿主机自测的通过记录没写成（$HOST_SELFTEST_STAMP）—— 下一趟 pre-push 会照跑自测。" >&2
 fi
 
-# 不依賴 git 的備援掃描：先一次性判「整棵樹有沒有 CR」（一遍就夠，常見情況到此為止），
+# 不相依 git 的備援掃描：先一次性判「整棵樹有沒有 CR」（一遍就夠，常見情況到此為止），
 # 有才逐個找是哪些檔案（這時候慢一點無所謂，因為已經要人來看了）。
 #
 # ★ 全程用 NUL 分隔（`-print0` / `read -d ''`），不用換行——**含換行符的檔案名**在按行
@@ -652,7 +652,7 @@ if [ -n "$CRLF_FILES" ]; then
   done
   echo "  一行修复（重新按索引里的 LF 检出）：" >&2
   echo "      git -C \"$REPO_UNIX\" rm --cached -r . >/dev/null && git -C \"$REPO_UNIX\" reset --hard" >&2
-  # ★ 這裡必須用 printf 而不是 echo：這行文字里帶著反斜槓，而 `echo` 展不展開轉義
+  # ★ 這裡必須用 printf 而不是 echo：這行文字裡帶著反斜槓，而 `echo` 展不展開轉義
   #   隨 shell 而變（bash 內建不展開，dash / sh 的 echo 會展開）。shellcheck SC2028 就是衝它來的。
   printf '  %s\n' '★ 或者只修这几个：用 LF 重写（Windows 版 Python 要按字节写或传 newline="\n"）。' >&2
   exit 1
@@ -985,7 +985,7 @@ CMD='{ cargo build --release --locked || { echo "⚠ --locked 构建失败，回
 #
 # ★ vendor 那些 `unexpected cfg condition value` 不會把這道門帶紅（實測）：
 #   `--` 之後的 `-D warnings` 只作用於 clippy 直接 lint 的那個 crate，
-#   `vendor/pingora` 作為依賴被普通 rustc 編譯，它的 warning 就只是 warning。
+#   `vendor/pingora` 作為相依被普通 rustc 編譯，它的 warning 就只是 warning。
 #
 # ★ ★ **shellcheck 與 Rust 那兩樣同等重要**：本儲存庫的判據大半寫在 shell 裡，而 shell 的
 #   失敗模式是安靜的 —— `cmd \n arg`（字面 `\n` 讓後面的參數整體錯位一個，SC1012）與
@@ -994,12 +994,12 @@ LINT_CMD='cargo fmt --all -- --check'
 # ★ ★ `spikes/musl-boringssl` **在根 workspace 之外**（它自己有一個空的 `[workspace]` 表），
 #   所以上面那條 `--all` 夠不到它 —— 而「夠不到」的表現是**綠**。
 #   ⇒ 單獨給它一條 `--manifest-path`。
-#   ⚠ **只給 fmt，不給 clippy**，而這是權衡不是遺漏：clippy 要先把依賴編出來，
+#   ⚠ **只給 fmt，不給 clippy**，而這是權衡不是遺漏：clippy 要先把相依編出來，
 #     那意味著**每一次 lint 都要編一遍 BoringSSL**；`cargo fmt` 唯讀原始碼，零建置成本。
 #     ⇒ 那份探針的 Rust 程式碼目前**沒有 clippy 看著**，已登記在
 #     docs/verification/musl-boringssl.md「這份探針證不了什麼」一節。
 LINT_CMD="$LINT_CMD && cargo fmt --manifest-path spikes/musl-boringssl/Cargo.toml --all -- --check"
-# ★ `vendor/pingora` 同理：它是**另一個 workspace**（根 `[patch]` 把它當路徑依賴，不是成員），
+# ★ `vendor/pingora` 同理：它是**另一個 workspace**（根 `[patch]` 把它當路徑相依，不是成員），
 #   根那條 `--all` 夠不到它，夠不到的表現同樣是**綠**。2026-10-16 實測漂了兩處，全是 fork
 #   自己寫的行（改動 19 的 `v1/server.rs`、改動 6 的 `pingora-rustls` 測試）；上游原碼在本鏡像的
 #   rustfmt 下是乾淨的 ⇒ 這一條只攔 fork 改動。⚠ rebase 後若紅在上游原碼上，先核是不是
@@ -1021,14 +1021,14 @@ LINT_CMD="$LINT_CMD && cargo clippy --workspace --all-targets --locked -- -D war
 #   ★ 順帶收掉一條舊的手動紀律：`tests/musl/` 那份探針跑在門禁外，但它**照樣被 lint 看**
 #     —— 現在這是推導的結果，不再需要誰記得。
 # ★ `LC_ALL=C.UTF-8` 那條（中文註解會讓 shellcheck 在 POSIX locale 下報不出話來）
-#   搬進了那個指令碼里，誰來調都逃不掉。
+#   搬進了那個指令碼裡，誰來調都逃不掉。
 LINT_CMD="$LINT_CMD && bash tests/ci/shellcheck-all.sh"
 # ★ ★ 「`MSYS_NO_PATHCONV=1` 生效那片區域裡，git 的 argv 不許出現路徑」。
 #   2026-09-08 實付一次：本檔案下面那句 `export` 漏給了它調起的子指令碼，
 #   於是 `arm64-trigger.sh` 裡的 `git -C "$_root"` 拿到未轉換的 `/d/...` 而失敗，
 #   代價是一份 `verified_commit=unknown` 的驗證記錄。
 #   ⚠ 本檔案頂部**早就寫下過**這條位置硬要求，⛔ 卻只有行尾檢查那一個消費者照做了
-#   ⇒ 這道門存在的意義是：這件事從此不再依賴誰記得。判據與自證在那個指令碼里。
+#   ⇒ 這道門存在的意義是：這件事從此不再相依誰記得。判據與自證在那個指令碼裡。
 # ⛔ 它只管 `git`。`docker` 正相反 —— 那句 export 本來就是為它加的。
 LINT_CMD="$LINT_CMD && bash tests/ci/msys-argv-guard.sh"
 # ★ ★ CI 那段搬運程式碼的自證（G94）。**掛在 lint 這一格而不是新開一個場景**：
@@ -1054,7 +1054,7 @@ LINT_CMD="$LINT_CMD && python3 tools/dep-check.py --self-check"
 LINT_CMD="$LINT_CMD && bash tests/ci/pre-push.sh --self-check"
 
 if [ "${VENDOR_ONLY:-0}" = "1" ]; then
-  # 只跑 fork 迴歸網。它不依賴 spike 二進位，所以連建置都跳過。
+  # 只跑 fork 迴歸網。它不相依 spike 二進位，所以連建置都跳過。
   CMD='bash tests/vendor/run.sh'
 elif [ "${UNIT_ONLY:-0}" = "1" ]; then
   CMD='bash tests/unit/run.sh'
@@ -1076,7 +1076,7 @@ elif [ "${COMPILE_ONLY:-0}" = "1" ]; then
   #     它是 `CMD="$CMD && …"` 還是 `CMD='…'`。
   #
   # ⚠ **只掛 `shellcheck`，⛔ 不掛 `fmt` / `clippy`**，這是權衡不是遺漏：
-  #   `clippy` 要先把依賴編出來（含 BoringSSL），那會把這道門從秒級拖成分鐘級，
+  #   `clippy` 要先把相依編出來（含 BoringSSL），那會把這道門從秒級拖成分鐘級，
   #   而**門變慢正是它被 `--no-verify` 繞過的起點**。`shellcheck` 唯讀原始碼、
   #   在本已起著的同一個容器裡跑，⇒ 邊際成本是這一格里最便宜的那一檔。
   #   ⚠ 代價寫在明處：**這一格仍然不攔 `fmt` 差異與 clippy 告警**，那兩格歸完整門禁。
@@ -1151,7 +1151,7 @@ elif [ "${BUILD_ONLY:-0}" != "1" ]; then
   #   ① 粒度細、跑得快的在前（lint → 單測 → fork 迴歸網），紅了指得最準；
   #   ② **驗產品的排在驗接縫的前面**（資料面 / L4 / 檔案 / 快取 / … 在 M0、M1 之前）——
   #      產品壞了先知道，免得對著一個接縫紀錄找一個其實在路由層的錯；
-  #   ③ 依賴別的格成立才有意義的排在後面（QUIC 跨處理程序轉交要 h3 與紀錄都先成立）。
+  #   ③ 相依別的格成立才有意義的排在後面（QUIC 跨處理程序轉交要 h3 與紀錄都先成立）。
   [ "${LINT:-1}" = "0" ] || CMD="$LINT_CMD && $CMD"
   [ "${UNIT_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/unit/run.sh"
   [ "${VENDOR_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/vendor/run.sh"
@@ -1354,7 +1354,7 @@ docker run --rm \
 #   **Alpine** 鏡像把產品編成 musl 靜態產物，再塞進 `FROM scratch` 裡跑一次
 #   `fulcrum validate`。⇒ 跑在宿主機側，掛不進上面那個容器 —— 與 M1 那四格同理。
 #
-# ⚠ ⚠ **它守的是 G13 的散布口徑（「Linux 單靜態二進位」），而在它之前那句話沒有任何門。**
+# ⚠ ⚠ **它守的是 G13 的散佈口徑（「Linux 單靜態二進位」），而在它之前那句話沒有任何門。**
 #   D22 原本登記的是「把 `tests/musl/probe.sh` 掛成常設的門」，而 owner
 #   拍板換掉了判據本身：**那份探針編的是 spike，答不了「產物是不是單靜態二進位」**
 #   （它自己的驗證記錄第 5 節第 1 條就寫著這句話）。⇒ 探針**留在門外**當歷史記錄。
@@ -1369,7 +1369,7 @@ if [ "${MUSL_TESTS:-1}" = "1" ] && ! env | only_mode_in; then
   #
   # ★ 判據與觸發集都在 `tests/musl/arm64-trigger.sh`，這裡只做編排。
   # ⚠ 走**子處理程序**而不是 `source`：那個檔案的自測會定義 `want_*` 這幾個名字，
-  #   source 進來會和本指令碼里的同名函式打架，而那種打架**不回報錯誤**，
+  #   source 進來會和本指令碼裡的同名函式打架，而那種打架**不回報錯誤**，
   #   只是讓某一邊的斷言悄悄換了一個實作。
   # ★ 自測排在最前，理由與 `bench/run.sh` 那條逐字相同：判據自己壞了的時候，
   #   它最典型的形態就是**恆回傳同一個答案**，而那種壞法在下面這個 case 裡

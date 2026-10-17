@@ -38,7 +38,7 @@ okf_version: "0.2"
 ## [技術與維運](/platform/index.md)
 
 * [技術棧](/platform/tech-stack.md) - Rust + Pingora 0.8.1 + **quiche** + **BoringSSL**（★ 由 G103/G104 換掉 quinn/h3 與 rustls）；單靜態二進位
-* [依賴策略](/platform/dependency-policy.md) - G29：追新 + 不設上界 + `Cargo.lock` 入庫 + **24 小時安全懷疑期**
+* [相依策略](/platform/dependency-policy.md) - G29：追新 + 不設上界 + `Cargo.lock` 入庫 + **24 小時安全懷疑期**
 * [供應鏈現狀](/platform/supply-chain.md) - ★ **必讀**：脫字號需求自帶上界、pingora 的十條天花板、4 條公告與可達性分析
 * [HTTP/3 庫選型事實表](/platform/http3-libraries.md) - D11 拍板前的事實，**不給推薦項**；★ quiche 用 BoringSSL 不是 rustls、s2n-quic 根本不帶 HTTP/3
 * [建置與驗證](/platform/build-and-test.md) - 一切在 Docker 裡跑（G26）；宿主機只需 Docker

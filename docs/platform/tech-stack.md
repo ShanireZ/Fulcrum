@@ -1,7 +1,7 @@
 ---
 type: 技術基線
 title: 技術棧
-description: Rust + Pingora 0.8.1 打底 + quiche 掛 QUIC/HTTP-3 + 統一 BoringSSL（★ 2026-08-25 由 G103/G104 從 quinn+h3 與 rustls 換過來）；Linux 單靜態二進位散布。
+description: Rust + Pingora 0.8.1 打底 + quiche 掛 QUIC/HTTP-3 + 統一 BoringSSL（★ 2026-08-25 由 G103/G104 從 quinn+h3 與 rustls 換過來）；Linux 單靜態二進位散佈。
 resource: ../../Cargo.toml
 tags: [技術選型, 必讀]
 status: stable
@@ -14,7 +14,7 @@ sources:
     title: PLAN.md §5 技術底盤、§5.1 G6 附帶的三條硬約束
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G1（Rust）、G6（Pingora + quinn/h3 + rustls）、G13（散布）
+    title: PLAN.md §10 G1（Rust）、G6（Pingora + quinn/h3 + rustls）、G13（散佈）
 ---
 
 ★ 選型結論的權威在 [`PLAN.md`](../../PLAN.md) §5。本頁補**當前儲存庫裡的實際狀態**。
@@ -28,7 +28,7 @@ sources:
 | HTTP/3 | ⚠ ~~`quinn` + `h3`~~ → **`quiche`**（**G103**），以自建 Service 掛 QUIC 入口 | ★ Pingora 0.8 **不帶 HTTP/3**；★ quiche 把傳輸層與 HTTP/3 語義層裝在同一個 crate 裡（`quiche::h3`，無 feature 門控）⇒ 不需要那個停更 15.6 個月的 `h3` crate |
 | TLS | ⚠ ⚠ ~~統一 rustls~~ → **統一 BoringSSL**（**G104**，同日）| ★ **「一套」這條目標沒變，變的是介質**：quiche 用 BoringSSL，繼續鎖 rustls 就必然兩套並存。⇒ 把 fork 當初刪掉的 `pingora-boringssl` 加回來，兩個入口共用同一個 `select_certificate_callback` |
 | 設定 | **自研 DSL（Caddyfile 式）編譯到結構化設定** | 人寫 DSL、機器寫結構化；結構化那份是唯一內部事實 |
-| 散布 | **Linux x86_64 + aarch64 單靜態二進位（musl）+ systemd + deb/rpm** | 一個檔案、零依賴；★ **不做官方容器鏡像**（G13）|
+| 散佈 | **Linux x86_64 + aarch64 單靜態二進位（musl）+ systemd + deb/rpm** | 一個檔案、零相依；★ **不做官方容器鏡像**（G13）|
 
 ★ **選 Pingora 的判據值得記住**：它白送的恰是**自測最難、錯了最致命**的那部分（優雅升級、連接池、快取框架）。
 
@@ -48,8 +48,8 @@ members = ["spikes/m0-seam"]
 | 項 | 值 |
 |---|---|
 | Rust edition | **2024** |
-| 依賴 resolver | **3** |
-| 直接依賴 | `pingora-core` · `tokio` · `async-trait` · `log` · `env_logger` —— ★ **全是最新**，見 [供應鏈現狀](/platform/supply-chain.md) |
+| 相依 resolver | **3** |
+| 直接相依 | `pingora-core` · `tokio` · `async-trait` · `log` · `env_logger` —— ★ **全是最新**，見 [供應鏈現狀](/platform/supply-chain.md) |
 | 建置鏡像 | `rust:1-trixie`（Debian 13，Rust 1.97.1）+ cmake + clang，見 [建置與驗證](/platform/build-and-test.md) |
 | ★ **pingora 來源** | **不是 crates.io**，而是 [`vendor/pingora/`](../../vendor/pingora/FORK.md) 的 fork，經 `[patch.crates-io]` 接入 |
 
@@ -57,7 +57,7 @@ members = ["spikes/m0-seam"]
 
 `Cargo.toml` 裡有一段 `[patch.crates-io]` 把 `pingora-core` 指向 `vendor/pingora/pingora-core`。
 
-**動機**（G30）：crates.io 上的 `pingora-core 0.8.1` 用十條版本上界把 44 個傳遞依賴釘在舊版，其中兩條帶真實安全公告。fork 只改各 `Cargo.toml` 的上界與隨之而來的 12 個呼叫點，**沒有任何行為變更**。
+**動機**（G30）：crates.io 上的 `pingora-core 0.8.1` 用十條版本上界把 44 個傳遞相依釘在舊版，其中兩條帶真實安全公告。fork 只改各 `Cargo.toml` 的上界與隨之而來的 12 個呼叫點，**沒有任何行為變更**。
 
 ★ **讀 pingora 原始碼時看 `vendor/pingora/`，不要看 crates.io 上那份。** 完整改動清單、維護方式與已知的輕微行為差異（含改動 17 有意改的頭名大小寫）見 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。
 
@@ -67,12 +67,12 @@ members = ["spikes/m0-seam"]
 
 > ⚠ **本節整段是（M0 時）的歷史，逐字保留，因為它記錄的是一個仍然成立的機制**
 > ——「`pingora-core` 的 `default = []`，不開 feature 就一個 TLS 後端都沒有，而**未啟用的
-> 可選依賴根本不在鎖裡** ⇒ 常規稽核看不見它」。★ 那正是後來 `supply_gates.rs` 門 3 存在的理由。
+> 可選相依根本不在鎖裡** ⇒ 常規稽核看不見它」。★ 那正是後來 `supply_gates.rs` 門 3 存在的理由。
 >
 > **今天的事實**：`crates/fulcrum-server` 帶的是 **`features = ["boringssl"]`**（G104，
 > 推翻了 §5.1 第 1 條），門 3 守著這一條。⚠ 下面那句「當前 `Cargo.lock` 裡沒有 `rustls`、
-> 沒有 `ring`」**已經不成立**：`ring` 是 `instant-acme` / `rcgen` 的正常依賴；
-> 而 `rustls` **仍然寫在鎖裡卻已不在依賴圖裡**（`Cargo.lock` 是依賴圖的超集，§10 實測）。
+> 沒有 `ring`」**已經不成立**：`ring` 是 `instant-acme` / `rcgen` 的正常相依；
+> 而 `rustls` **仍然寫在鎖裡卻已不在相依圖裡**（`Cargo.lock` 是相依圖的超集，§10 實測）。
 
 `pingora-core` 的 **`default = []`**——不開 feature 就**一個 TLS 後端都沒有**。當前 `Cargo.lock` 裡確實沒有 `pingora-rustls`、沒有 `rustls`、沒有 `ring`。
 
@@ -117,4 +117,4 @@ pingora-core 0.8.1 的 feature 全表：
 
 # 相關
 
-[供應鏈現狀](/platform/supply-chain.md) · [依賴策略](/platform/dependency-policy.md) · [建置與驗證](/platform/build-and-test.md)
+[供應鏈現狀](/platform/supply-chain.md) · [相依策略](/platform/dependency-policy.md) · [建置與驗證](/platform/build-and-test.md)

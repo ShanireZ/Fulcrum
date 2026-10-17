@@ -3,7 +3,7 @@
 # ★ ★ **它是自己的一個 workspace**（下面那個空的 `[workspace]` 表），
 #   故意不進根 workspace 的 `members`。理由有兩條，都不是風格：
 #   ① 進了根 workspace，`cargo build` / `cargo test --workspace` 就會在**十九場景門禁的
-#      每一次跑**裡編一遍 BoringSSL —— 為一個產品目前一行都沒依賴的 C 庫付這個代價；
+#      每一次跑**裡編一遍 BoringSSL —— 為一個產品目前一行都沒相依的 C 庫付這個代價；
 #   ② 它會把 `boring-sys` 拖進根 `Cargo.lock`，而 `crates/fulcrum/tests/supply_gates.rs`
 #      門 1 掃的正是那把鎖。⚠ 那道門今天說不出 boring 的話（它只認 aws-lc-rs），
 #      於是「產物裡有幾套 TLS」會在沒有任何門看著的情況下變成兩套。

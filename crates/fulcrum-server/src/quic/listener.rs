@@ -6,14 +6,14 @@
 //! |---|---|---|
 //! | **判定** | [`decide`]：一個資料報進來該做什麼 —— **純函式，不做任何 I/O** | ✅ 單測 |
 //! | **設定** | [`build_quic_config`]：G104 的落點，把 `SniResolver` 掛進 quiche | ✅ 單測 |
-//! | **I/O** | [`QuicListenerService`]：收包、按判定散布、per-連接任務 | ✅ 端到端 |
+//! | **I/O** | [`QuicListenerService`]：收包、按判定散佈、per-連接任務 | ✅ 端到端 |
 //!
 //! ★ ★ **把判定從 I/O 裡拆出來，與 `fulcrum-runtime`「純邏輯不引用 pingora」是同一條理由**：
 //! 它一旦長在收包循環裡，就只能靠真流量去測，而那樣紅了指不到具體哪條規則。
 //!
 //! # 這裡做了什麼
 //!
-//! - fd 移交、Retry、版本協商、歸屬散布、**QUIC 傳輸層握手真的能走完**；
+//! - fd 移交、Retry、版本協商、歸屬散佈、**QUIC 傳輸層握手真的能走完**；
 //! - **h3 事件循環** —— 見 [`super::h3_conn`]，請求經 [`H3RequestHandler`] 交出去；
 //! - **按 G110 串接**：有 `tls` 的連接埠自動開，串接在 `crate::run` 裡，
 //!   端到端判據是 `tests/h3/run.sh`；
@@ -269,7 +269,7 @@ pub struct QuicListenerService {
     retry_key: Arc<RetryKey>,
     resolver: Arc<SniResolver>,
     /// 一條 h3 請求交給誰去跑。
-    /// ★ 監聽器**不認識** `FulcrumApp` —— 那會讓 HTTP/3 入口反向依賴資料面本體。
+    /// ★ 監聽器**不認識** `FulcrumApp` —— 那會讓 HTTP/3 入口反向相依資料面本體。
     handler: Arc<dyn H3RequestHandler>,
     /// 換代轉交 socket 落在哪個目錄（**M2 批 K**，G109 ②）。
     ///
@@ -514,7 +514,7 @@ pub async fn serve(
     handler: Arc<dyn H3RequestHandler>,
     relay: Option<Relay>,
     // 這個監聽器的連接計數格（**M2 批 O**）。`None` = 不數（單測走這條）。
-    // ⚠ 名字不叫 `conn`：這個函式里 `conn` 已經是**一條 quiche 連接**了。
+    // ⚠ 名字不叫 `conn`：這個函式裡 `conn` 已經是**一條 quiche 連接**了。
     conn_stats_slot: Option<crate::conn_stats::BoundConn>,
 ) {
     let local: SocketAddr = match sock.local_addr() {
@@ -803,7 +803,7 @@ mod tests {
 
     fn client_config() -> quiche::Config {
         let mut c = quiche::Config::new(quiche::PROTOCOL_VERSION).expect("客户端配置");
-        // 自簽證書，測試裡不驗鏈 —— ★ 被測的是**我們的**散布與握手，不是 PKI。
+        // 自簽證書，測試裡不驗鏈 —— ★ 被測的是**我們的**散佈與握手，不是 PKI。
         c.verify_peer(false);
         c.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
             .expect("客户端 ALPN");
@@ -1052,7 +1052,7 @@ mod tests {
         assert_eq!(judge(&me, &key, &pkt, &none_known), Action::Relay(other));
     }
 
-    /// 票是別人籤的 / 過期了 / 被改過 ⇒ 一律 `BadToken`，而**不是** `Accept`。
+    /// 票是別人簽的 / 過期了 / 被改過 ⇒ 一律 `BadToken`，而**不是** `Accept`。
     #[test]
     fn 坏票判成_badtoken_而不是_accept() {
         let (me, key) = (GenId::random(), RetryKey::random());
@@ -1060,7 +1060,7 @@ mod tests {
         let mut ccfg = client_config();
         let (mut c, pkt1, odcid) = client_first_flight(&mut ccfg);
 
-        // 用**另一把鑰匙**籤票，其餘流程一模一樣。
+        // 用**另一把鑰匙**簽票，其餘流程一模一樣。
         let new_scid = me.mint_scid();
         let token = other_key.mint(&c_addr(), &odcid, NOW).expect("签票");
         let mut out = vec![0u8; DATAGRAM_MAX];

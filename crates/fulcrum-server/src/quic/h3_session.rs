@@ -43,7 +43,7 @@ use pingora_core::protocols::l4::socket::SocketAddr;
 // ★ h3 的 TLS 摘要（D27 結案）。⚠ 經 `pingora_core` 的 re-export 拿，
 //   與 `Digest` 同一條紀律。
 use pingora_core::protocols::tls::SslDigest;
-// ★ 經 `pingora_core` 的 re-export 拿，而不是再加一條 `pingora-error` 直接依賴 ——
+// ★ 經 `pingora_core` 的 re-export 拿，而不是再加一條 `pingora-error` 直接相依 ——
 //   與「BoringSSL 類型只經 pingora-boringssl 拿」同一條紀律（G111 破的是那一條，不是這一條）。
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -89,7 +89,7 @@ pub enum FromSession {
 /// | `retry_buffer_truncated` | `false` | 與 h2 在「從沒開過緩衝」時同值 |
 /// | `get_retry_buffer` | `None` | 同上：沒有緩衝 ⇒ 呼叫方不會拿它去重試 |
 /// | ~~`digest` / `digest_mut`~~ | ✅ **已兌現（D27 結案）** | ⚠ ★ ★ 曾經的理由是「pingora 的 `Digest` 是給 h1/h2 的連接摘要，h3 這側沒有對應物」——**那句話是錯的**：h3 連接一樣有 TLS 版本、SNI 與 ALPN，缺的只是一條把它們送出去的路。⇒ [`quic_digest`] 現造一份，`digest()` / `digest_mut()` 真的回傳它，**兩個名字都離開了這張表**。⚠ 只有 `cipher` 仍是空的（quiche 的 `Handshake::cipher()` 鎖在私有 `mod tls` 裡）|
-/// | `take_custom_message_*` | `None` | 「自定義訊息」通道本儲存庫一處都沒用 |
+/// | `take_custom_message_*` | `None` | 「自訂訊息」通道本儲存庫一處都沒用 |
 /// | `restore_custom_message_*` | `Err` | ★ 恢復一個從來沒被取走的東西是**呼叫方的邏輯錯**，不能靜默成功 |
 pub const NOT_HONORED: &[&str] = &[
     "enable_retry_buffering",

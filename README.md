@@ -13,7 +13,7 @@
 - **靜態檔案** —— 目錄索引、範圍請求、條件請求、預壓縮旁檔案
 - **HTTP 快取** —— 記憶體 + 磁碟兩級、防驚群、`POST /purge`
 - **回應壓縮** · **結構化訪問紀錄**（JSON）
-- **Prometheus 指標** —— 站台塊裡的 `metrics` 指令，零新依賴
+- **Prometheus 指標** —— 站台塊裡的 `metrics` 指令，零新相依
 - **HTTP/1.1 · HTTP/2 · HTTP/3**
 - **L4 面** —— TCP / UDP 透傳、SNI / ALPN 分流、PROXY protocol
 - **管理面**（Unix socket，預設不出機器）—— 全量原子 `POST /load`（`overrides` 必填：`keep` / `clear`）·
@@ -31,7 +31,7 @@ docker build -f docker/Dockerfile.musl-product --target build -t fulcrum-build .
 cid=$(docker create fulcrum-build) && docker cp "$cid:/fulcrum" ./fulcrum && docker rm "$cid"
 ```
 
-`./fulcrum` 是 musl 單靜態二進位（`INTERP=0 / NEEDED=0`），複製至 `/usr/local/bin/` 即可，單檔案、零執行環境依賴。
+`./fulcrum` 是 musl 單靜態二進位（`INTERP=0 / NEEDED=0`），複製至 `/usr/local/bin/` 即可，單檔案、零執行環境相依。
 
 
 ## 使用

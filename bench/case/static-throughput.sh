@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 用例類「靜態吞吐」——四家各服務**同一個固定資源**，同一個負載生成器打。
+# 案例類「靜態吞吐」——四家各服務**同一個固定資源**，同一個負載生成器打。
 #
 #   bash bench/case/static-throughput.sh <输出目录>
 #
@@ -28,8 +28,8 @@ set -euo pipefail
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ⚠ ⚠ ★ **只為拿那四個負載參數的預設**（`bench/lib.sh` 的「負載參數」一節）。
 #   ⛔ **不許在本檔案裡再寫一份 `:-` 預設** —— 2026-09-06 之前正是那樣：
-#   用例用「宣告值或預設」，而 `env-snapshot.sh` 記「宣告值」
-#   ⇒ 沒人顯式設的參數，用例真的用了預設而快照寫 `null`
+#   案例用「宣告值或預設」，而 `env-snapshot.sh` 記「宣告值」
+#   ⇒ 沒人顯式設的參數，案例真的用了預設而快照寫 `null`
 #   （那一趟的 `payload_bytes` 與門禁裡的 `workers` 都是這麼來的）。
 #   ⇒ 預設一處定義、兩邊都從這裡取，那一族缺陷就**結構性地不存在**。
 # ★ `lib.sh` 被 `source` 時什麼都不做（它自己那道 `BASH_SOURCE` 判斷），
@@ -65,7 +65,7 @@ FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 #   **自查用的篩子必須比被查的東西寬**；這裡正確的做法是直接讀那張表，⛔ 不是自己拼一條 grep。
 #
 # ⚠ ⛔ **一個都別改成 :80** —— 那個連接埠在門禁裡是共享的（G137），佔住它會讓一個
-#   與本用例毫無關係的場景起不來，而回報錯誤落在那個無辜的連接埠上。
+#   與本案例毫無關係的場景起不來，而回報錯誤落在那個無辜的連接埠上。
 PORT_FULCRUM=${BENCH_PORT_FULCRUM:-9940}
 PORT_CADDY=${BENCH_PORT_CADDY:-9941}
 PORT_HAPROXY=${BENCH_PORT_HAPROXY:-9942}

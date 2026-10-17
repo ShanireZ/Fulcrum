@@ -105,7 +105,7 @@ M1_KEEP=1        bash tests/m1/systemd-run.sh # 失敗後保留容器，進去�
   實測：那天改了兩個 `.sh`，跑了**四趟** `COMPILE_ONLY` 全綠，而那一格當時是
   `CMD='cargo test …'` **直接替換**、不是 `CMD="$CMD && …"` 追加 ⇒ 它不含 `LINT_CMD`。
   ★★★ **一次純 shell 的改動可以完整穿過這道門**，而那四個綠對它零判別力。
-  ⛔ **不掛 `clippy`**：它要先把依賴（含 BoringSSL）編出來，會把這道門從秒級拖成分鐘級，
+  ⛔ **不掛 `clippy`**：它要先把相依（含 BoringSSL）編出來，會把這道門從秒級拖成分鐘級，
   而**門變慢正是它被 `--no-verify` 繞過的起點**；`shellcheck` 唯讀原始碼、在同一個已起的容器裡跑。
   ★ 體檢法：讀 `*_ONLY` 那串 `elif` 時先看它是 `CMD="$CMD && …"` 還是 `CMD='…'` ——
   一個字元之差，決定 lint 那一整格在不在。
@@ -153,7 +153,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 ## 場景清單
 
 ⚠ ⚠ **這張表沒有門看著**，而它已經漂過多次 ——
-**一張自己不會變紅的清單隻會越落越遠，落後時讀起來還完全正常。**
+**一張自己不會變紅的清單只會越落越遠，落後時讀起來還完全正常。**
 ★ 加場景時，**加進這張表就是加場景的一部分**。
 
 > ★ [`tests/musl/probe.sh`](../../tests/musl/probe.sh)（musl + BoringSSL 靜態連結探針）
@@ -167,7 +167,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 |---|---|---|
 | ★ **lint** | `cargo fmt --all -- --check`（另對兩個獨立 workspace 各補一條 `--manifest-path`：`spikes/musl-boringssl`、`vendor/pingora` —— 根那條 `--all` 夠不到它們）+ `cargo clippy --workspace --all-targets -- -D warnings` + `shellcheck` | 見下 |
 | ★ **樞衡自己的 crate 測試** | [`tests/unit/run.sh`](../../tests/unit/run.sh) | `cargo test --workspace --locked --no-fail-fast` 全綠，**且條數不低於下界**，見下 |
-| **fork 迴歸網** | [`tests/vendor/run.sh`](../../tests/vendor/run.sh) | ★ 不是「零失敗」，而是**失敗集合與官方原版 0.8.1 逐項相同**（現為 2 條）。⚠ 它**依賴容器能上公用網路**，見下 |
+| **fork 迴歸網** | [`tests/vendor/run.sh`](../../tests/vendor/run.sh) | ★ 不是「零失敗」，而是**失敗集合與官方原版 0.8.1 逐項相同**（現為 2 條）。⚠ 它**相依容器能上公用網路**，見下 |
 | ★ **資料面端到端** | [`tests/serve/run.sh`](../../tests/serve/run.sh) | 真流量走完路由 → 轉發 → `rewrite` → `header_up` → 重定向 → 421 → **回落三向**（501 / 轉發 / 502）→ keep-alive → 一個約 4 KiB 的回應只許一個資料段（寫緩衝，G155）→ 錯誤頁裡的 `{header.X}` 取原始請求頭（第 11 節）|
 | ★ **L4 面端到端** | [`tests/l4/run.sh`](../../tests/l4/run.sh) | TCP/UDP 透傳、SNI/ALPN 分流（**不終止 TLS**，位元組原樣重放）、PROXY protocol 的收與發、★ **換代時 L4 長連接不斷**（自建監聽器參與 socket 移交）|
 | ★ **靜態檔案端到端** | [`tests/files/run.sh`](../../tests/files/run.sh) | 索引 / 尾斜槓 301 / browse / ETag+304 / 單段 Range / MIME；★ 它有一條別處都沒有的判據：**路徑穿越與 `hide` 清單** —— 那兩樣壞掉時服務完全正常，只是多發了幾個檔案 |
@@ -179,8 +179,8 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 | ★ ★ **結構化訪問紀錄** | [`tests/log/run.sh`](../../tests/log/run.sh) | **M2 批 L ②③**。★ ★ ★ **判據掛在那一行的內容上，不是「檔案非空」** —— 契約定的是欄位清單，而「有輸出」與「輸出對」之間隔著整張表。欄位用 `python3` 讀，**絕不 `grep '"status":200'`**（欄位順序/空格/轉義一變就靜默漏判）。一條請求正好一行 · `uri` 是 `rewrite` **之前**那個 · 打不開的紀錄路徑是**裝載期硬錯誤** · `outcome` 閉集逐個走一遍 · 白名單頭（★ 一條帶 `Authorization`/`Cookie` 的請求，整行**原始位元組**裡一個都找不到）· TLS 四格（★ **`--no-alpn` 那條反向是唯一分得出「量出來的」與「猜出來的」的判據**）· 敏感頭**兩條路各攔一次** |
 | ★ ★ **Prometheus 指標** | [`tests/metrics/run.sh`](../../tests/metrics/run.sh) | **M2 批 M**（G116–G121）。★ ★ ★ **判據掛在「增量」與「交叉對照」上，不掛在「抓到了東西」** —— 一個把指標硬編碼成常數的實作，能通過每一條只問「正文裡有沒有那幾個字」的判據。⚠ 計數發生在 `Record::finish`（回應寫完**之後**）⇒ 第 N 次抓取看到的是前 N−1 次的量，所以每條判據都**抓兩次做差**。正文用一個自帶自證的 `python3` 解析器讀（它先證「命中得了、也落空得了」）。格式（每個族的 HELP/TYPE，族的清單從 `FAMILIES` 派生 · `Content-Type` 逐字 · 標籤鍵集合**逐字相等**，多一個 `uri` 就紅 · ★ 上游兩族**族在、樣本無**，分得開「沒接上」與「沒資料」）· 訪問控制兩個方向（站台 C 把 `metrics` 圈在 `10.0.0.0/8` 裡 ⇒ 我們夠不著，拿到備援 403）· ★★★ **三條反向**：① 沒寫 `metrics` 的站台上同一路徑**不是**指標；② 50 個未知 `Host` 之後 series 條數不增長**且**那一格正好 +50（⚠ **兩句都要**：實測把那句 `inc` 刪掉之後，前半句是**綠的**）；③ 一致性門 —— 指標在站台 A 上的增量 = 訪問紀錄新增行數 + 1（那個 +1 是左端那次抓取自己）· ★★★ G121：同一條請求上指標的 `site="a2.example"` 與紀錄的 `site="http://a.example:9920"` 給出**不同的值**，且 `site` 標籤的取值是一個**閉集** = 四條位址字面值 + `<none>` · ★★★ **TLS 族**（G122 / G127）：明文請求一筆都不記 · h1 與 h2 **分開打分開斷**（合成一條的話，一個只在 h2 上記的實作照樣全綠）· 漲的那一條的 `{version,cipher}` 與**訪問紀錄剛報出來的那一對值**逐字相同（⛔ 不寫死套件名）· h3 落在 `cipher="<unknown>"` 而**同一條請求的紀錄行裡 `tls_cipher` 不出現** · **這個族裡一個空標籤值都不許有** —— ⚠ 實測：改成記空串之後「TLS 族正好 +1」**仍然是綠的**，逮住它的是空標籤那條 · ★★★ **`status_class="none"`**（G124）：兩邊一起斷（紀錄多一行 `status=0` + 指標那一格正好 +1，且兩邊落在同一個 `site` 上），⚠ 夾具是「不帶 `Content-Length` 的慢上游 + 發完立刻 RST」——**帶 `Content-Length` 的話 `status` 是 200**，因為回應頭 `write_all` 只進了使用者態緩衝、根本沒有 syscall |
 | ★ ★ ★ **換代時的 QUIC 跨處理程序轉交** | [`tests/quic-relay/run.sh`](../../tests/quic-relay/run.sh) | **M2 批 K**（G109 ②③④⑤）。★ 它驗的是一句**產品承諾**：「換代時長連接不斷」——TCP 那側 M0 早就驗過，而 h3 在批 K 之前**不成立**。⚠ 它是唯一一格會在一次跑裡**起兩代產品處理程序**的場景（`SIGQUIT` + `-u`）。兩代給**不同的回應體** ⇒「這一條是誰服務的」由**回應本身**說，不用去紀錄考古。★ ★ 三條自證缺一不可：空 UDP 連接埠上 `--http3-only` 必須失敗 · **不換代**時同一條連接能連打 3 個請求（否則「換代後失敗了」與「這條連線路徑本來就不行」分不開）· `num_connects` 之和 = 1（否則一個每次重連的 curl 會讓整格全綠，而它證明的是別的事）|
-| ★ **ACME 端到端（簽發）** | [`tests/acme/run.sh`](../../tests/acme/run.sh) | 門禁裡跑**真的 CA**（pebble，G64），一次籤兩張：HTTP-01 一張 + DNS-01 通配符一張（33 條）|
-| ★ ★ **ACME 端到端（續期）** | [`tests/acme/renew.sh`](../../tests/acme/renew.sh) | ★ G58 的**另一半**：證書壽命壓到 ~1.5 天，**跑著的**樞衡自己的巡檢循環按 ARI 重籤一張（21 條）。判據不是「出現了新證書」，見 [TLS 與自動 HTTPS](/architecture/tls.md) |
+| ★ **ACME 端到端（簽發）** | [`tests/acme/run.sh`](../../tests/acme/run.sh) | 門禁裡跑**真的 CA**（pebble，G64），一次簽兩張：HTTP-01 一張 + DNS-01 通配符一張（33 條）|
+| ★ ★ **ACME 端到端（續期）** | [`tests/acme/renew.sh`](../../tests/acme/renew.sh) | ★ G58 的**另一半**：證書壽命壓到 ~1.5 天，**跑著的**樞衡自己的巡檢循環按 ARI 重簽一張（21 條）。判據不是「出現了新證書」，見 [TLS 與自動 HTTPS](/architecture/tls.md) |
 | ★ ★ **冒煙（自證）** | [`tests/smoke/self-check.sh`](../../tests/smoke/self-check.sh) | ★ 它跑的是 [`tests/smoke/run.sh`](../../tests/smoke/run.sh)——**那個指令碼的正式用法是對著真網域跑**，門禁裡拿一個健康執行個體 + 一個死連接埠 + 一張自簽證書，證明它對好目標給綠、對壞目標給紅 |
 | ★ ★ **壓力** | [`tests/stress/run.sh`](../../tests/stress/run.sh) | 持續負載下**零錯誤、fd 不漲、記憶體不漲**，且負載中途走一次全量 load 仍然零失敗。⚠ **不產出效能宣告**，效能口徑見 [G19](/verification/performance-bar.md)（M3）|
 | ★ ★ **對拍流水線與判據**（M3 第一刀，G132）| [`tests/bench/run.sh`](../../tests/bench/run.sh) | ⛔ **它不判效能，也不產出任何效能數字** —— 判的是那條流水線還活著、判據還判得動。★ **2026-09-06 那句承諾兌現了**：合格宿主到位，第一組真實讀數在 [`bench/results/`](../../bench/results/2026-09-06-static-throughput/README.md)（結論是 `FAIL`）。⛔ 本格自身仍然出不了數字 —— 它跑在這臺開發機上，而這臺機器仍被判成不合格。它跑在**第三張鏡像**裡（樞衡 + Caddy + HAProxy + nginx + oha 同處一室，全部按 digest / sha256 釘死）。三組：① 釘死的版本與 [`bench/README.md`](../../bench/README.md) 那張表逐條對上，且兩張鏡像裡的 `oha` 是同一個（★ §8 要的「同一個負載生成器」）；② 四家真的起得來、真的回那個資源、原始資料真的寫入磁碟，**而這臺開發機被判成不合格宿主 ⇒ 判定拒絕出結論**；③ ★ ★ ★ **反證七條**（承重）—— 喂合成的**合格**快照，判定必須真的打出 PASS 與 FAIL。⚠ 沒有 ③，② 的判別力是零：**一個永遠拒絕出結論的判定器，與一個壞掉的判定器給出完全相同的輸出** |
@@ -201,7 +201,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 
 | 決定 | 理由 |
 |---|---|
-| `runs-on: ubuntu-24.04`（不是 `ubuntu-latest`）| M1 場景依賴宿主機是 **cgroup v2**；`latest` 換代時不會有任何一行輸出說環境變了 |
+| `runs-on: ubuntu-24.04`（不是 `ubuntu-latest`）| M1 場景相依宿主機是 **cgroup v2**；`latest` 換代時不會有任何一行輸出說環境變了 |
 | **沒有 `paths-ignore`** | ⚠ 「只改文件就跳過」是錯的：`doc_contract.rs` 用 `include_str!` 讀 `dsl-reference.md`，另一道門還**反向**斷言已串接的能力不許出現在裡面 ⇒ **純文件改動真的能把門禁弄紅** |
 | `concurrency` + `cancel-in-progress` | 連推幾次時只有最後一次跑到底 |
 | `timeout-minutes: 120` | ⚠ **止血閥**，不是預期耗時 |
@@ -243,7 +243,9 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 
 ## ⚠ 關於 fork 迴歸網的兩件事
 
-### 一、已查實：它**依賴容器能上公用網路**
+<a id="一已查實它依賴容器能上公用網路"></a>
+
+### 一、已查實：它**相依容器能上公用網路**
 
 `pingora-core` 的 `connectors::*` 裡有一批測試**連的是真的 `1.1.1.1:443` / `:80`**
 （`one.one.one.one`，見 `pingora-core/src/connectors/http/{mod,v1,v2}.rs`）。
@@ -332,7 +334,7 @@ G36 的 rustc 口徑只管建置鏡像（`G152` 把它的 M3 凍結擴到了對�
 > 曾掛號 **D24**，✅ **已由 `G144` 結案 = 候選 ②**：aarch64 只在 `Cargo.lock` 或那三張釘
 > rustc 的 Dockerfile 變化時才跑，其餘時候讀 [`tests/musl/arm64-verified.txt`](../../tests/musl/arm64-verified.txt)
 > 那份**驗證記錄**（判據與觸發集在 [`tests/musl/arm64-trigger.sh`](../../tests/musl/arm64-trigger.sh)）。
-> ⛔ 別把「這一格是綠的」讀成「G13 的散布口徑全都有門守著」：它**不看**產品功能對不對
+> ⛔ 別把「這一格是綠的」讀成「G13 的散佈口徑全都有門守著」：它**不看**產品功能對不對
 > （那是容器裡那些場景的事，而它們跑的是 glibc 產物）。
 > ⚠ ⚠ **binfmt 是機器本機狀態**：沒裝的機器上，一旦觸發集變了這一格會**判紅而不是靜默跳過**
 > （「沒能檢查」不算「檢查通過」），訊息裡給了兩條出路。
@@ -459,7 +461,7 @@ shellcheck 0.10 的 SC2030/SC2031 只認**寫在子 shell 那幾行裡**的賦�
 > 再關掉靶子要求它改口 —— 兩個方向都釘，只釘「看得見」的話一個恆說「看得見」的實作照樣全綠。
 
 ★ **vendor 的 `unexpected cfg condition value` 不會把這道門帶紅**（實測）：`--` 之後的
-`-D warnings` 只作用於 clippy 直接 lint 的那個 crate，`vendor/pingora` 作為依賴被普通 rustc
+`-D warnings` 只作用於 clippy 直接 lint 的那個 crate，`vendor/pingora` 作為相依被普通 rustc
 編譯，它的 warning 就只是 warning。
 
 # ⛔ 不要在宿主機上裝 Rust（G107）
@@ -530,7 +532,7 @@ G29 的精神是追新，所以這個釘子是**要定期拔的**，不是拿來
 python tools/dep-check.py     # 第三項就是建置鏡像檢查
 ```
 
-★ 判據只有 **rustc 版本**。建置鏡像不是執行環境鏡像（G13 散布的是 musl 靜態二進位，[首版範圍](/product/scope.md)不做官方容器鏡像），Debian 包一個都不進產物，所以 digest 漂移只打一行提示、**不判紅**——否則這道門會幾乎常年亮著。
+★ 判據只有 **rustc 版本**。建置鏡像不是執行環境鏡像（G13 散佈的是 musl 靜態二進位，[首版範圍](/product/scope.md)不做官方容器鏡像），Debian 包一個都不進產物，所以 digest 漂移只打一行提示、**不判紅**——否則這道門會幾乎常年亮著。
 
 結束代碼 **40** 表示要人管，含三種情況：rustc 有新版 / `@sha256` 釘子掉了 / ★ **本次沒能查證**（「沒能檢查」不算「檢查通過」）。
 
@@ -568,13 +570,13 @@ musl 那兩份的結論裡寫著「rustc 與 `Dockerfile.build` 是同一個版�
 | `target` | 命名卷 `fulcrum-target-<Dockerfile 哈希前 12 位>-<工作树路径哈希前 12 位>` | ★ **必須同時跟著鏡像和工作樹走**，見下 |
 | 執行期產物（pid / sock / 紀錄 / 探針輸出）| `run/m0/` | **已 gitignore** |
 
-★ **首次建置慢（要拉基礎鏡像 + 編譯全部依賴），之後增量建置約 25 秒。**
+★ **首次建置慢（要拉基礎鏡像 + 編譯全部相依），之後增量建置約 25 秒。**
 
 ## ★ ★ 為什麼 `target` 卷的名字裡帶 Dockerfile 雜湊與工作樹標籤
 
 cargo 的 fingerprint 覆蓋 rustc 版本與 flags，**但不覆蓋 C 工具鏈**——build script 產出的東西（`libz-ng-sys` 用 cmake 編的 zlib-ng、ring 的 `.o`）只在自身宣告的輸入變化時才重建。於是「**換基礎鏡像但 rustc 不變**」（正是  bookworm→trixie 那一次的形狀）會沿用舊鏡像編出來的 C 目標檔案。
 
-★ 那正是剛釘死的可重現性**在低一層漏掉**：鏡像釘住了，但「用這個鏡像產出的東西」沒釘住。那次是靠**手動** `docker volume rm` 才敢說「全綠歸屬於釘死後的鏡像」——**依賴人記得做的事，等於沒做**。
+★ 那正是剛釘死的可重現性**在低一層漏掉**：鏡像釘住了，但「用這個鏡像產出的東西」沒釘住。那次是靠**手動** `docker volume rm` 才敢說「全綠歸屬於釘死後的鏡像」——**相依人記得做的事，等於沒做**。
 
 現在卷名帶上 Dockerfile 的內容雜湊：換鏡像自動換卷，舊卷留著還能退回，指令碼會把殘留的舊卷列出來提示刪除。
 
@@ -619,7 +621,7 @@ cargo 的 fingerprint 覆蓋 rustc 版本與 flags，**但不覆蓋 C 工具鏈*
 
 ★★★ 那兩個 4.085 GB 的卷是**同一棵工作樹拿了兩份** —— `sha256("/d/WorkSpace/…")` 與 `sha256("D:/WorkSpace/…")` 是兩個標籤（兩個雜湊都逐字算過對上）。⇒ [`vol-lock.sh`](../../tests/lib/vol-lock.sh) 頂上警告的那種「兩處各歸一各」**真的發生過**，8.17 GB 就是它留在盤上的物證。
 
-⇒ 缺的不是「多讀一個 label 鍵」（那張歷史鍵清單自己就是一份會過期的抄件），是一條**不依賴建卷那一刻記下了什麼**的判據：
+⇒ 缺的不是「多讀一個 label 鍵」（那張歷史鍵清單自己就是一份會過期的抄件），是一條**不相依建卷那一刻記下了什麼**的判據：
 
 **規則：一個今天的 `fulcrum_target_vol` 造不出來的卷名，沒有任何現行呼叫點夠得著它。** ⛔ 這不是「看起來很舊」那種年齡啟發 —— 年齡是啟發，「現行程式碼造不出這個名字」是關於**今天這份程式碼**的陳述，讀一份推導就能證（三處呼叫點全走 `fulcrum_target_vol`）。
 
@@ -633,7 +635,7 @@ cargo 的 fingerprint 覆蓋 rustc 版本與 flags，**但不覆蓋 C 工具鏈*
 
 ★ **六個方向各一條自測**（`selftest_tree_state` 與 `selftest_vol_verdict`，與其它 `selftest_*` 同處）：樹還在 ⇒ `live`、樹沒了 ⇒ `gone`、讀不到 ⇒ `unknown`；label 說還在 ⇒ 一律留（★★ 它必須**短路在最前** —— 否則「舊代形狀 + 樹還活著」會掉進新規則，那就是勸人刪隔壁正在編譯的快取）· 當代形狀 + 無 label ⇒ 仍然留 · 形狀判據宣告不可信 ⇒ 新規則整條不生效。
 
-⚠ 第六條是**推導自證**：`selftest_vol_verdict` 拿 `fulcrum_target_vol` **真的生成一個名字**來比，⛔ 不是手寫一個樣例名 —— 手寫的那份釘不住形狀，改了推導它照樣綠。反證做過：把推導改成三段名 ⇒ 自測當場紅。
+⚠ 第六條是**推導自證**：`selftest_vol_verdict` 拿 `fulcrum_target_vol` **真的生成一個名字**來比，⛔ 不是手寫一個範例名 —— 手寫的那份釘不住形狀，改了推導它照樣綠。反證做過：把推導改成三段名 ⇒ 自測當場紅。
 
 ### ⚠ ⚠ ⚠ 2026-09-05：上面這一整套判據，**只在掃描集內說話**
 
@@ -671,7 +673,7 @@ docker volume ls -q --filter name=fulcrum-target      # 子串匹配
 
 ⚠ ⚠ ★ **這一行本身栽過一次，值得當反面教材留著。** 它的第一版寫的是「別人家 **11** − 匿名 **6**」，兩個數**都是錯的**（實際 10 與 7），而且被抄進了 `PLAN.md` 與 `docker-run.sh` 共**三處**。★ ★ ★ 它沒被任何東西抓住，原因不是門不夠多，而是 **`19 − 2 − 11 − 6` 與 `19 − 2 − 10 − 7` 的和都是 0** —— 那個「= 0」才是被引用的結論，中間項錯了**不與任何東西矛盾**。⇒ 修法不是「再加一道核數的門」（沒有門夠得著一臺機器上此刻有幾個卷），是**讓這個值只存在一處、其餘只留結論與指針**；`PLAN.md` 與 `docker-run.sh` 現在都不再複述中間項。★ 同族見 §10 裡對「抄件」的其它幾處處置。
 
-★ **九條自測**（`selftest_unattributed_vols`），⚠ **全部用合成輸入**、⛔ 不依賴宿主上此刻恰好有什麼卷 —— 因為在一臺已經清乾淨的機器上這個桶永遠打不出一行，而「桶是空的」與「這段程式碼根本沒跑」長得一模一樣（2026-09-04 那次正是為此不得不造四個探針卷）。七條釘判據（別人家 ⇒ `foreign` · 匿名 ⇒ `anonymous` · ★★★ **承重**：逃逸過的真名字 ⇒ `unattributed` · 白名單不許吞 `fulcrum*` 兩條 · 匿名判據釘在**長度**上，63 位不算 · 白名單是前綴不是子串），兩條釘集合層（管不著的原樣報出來 / 全在管轄內時一個字都不打）。
+★ **九條自測**（`selftest_unattributed_vols`），⚠ **全部用合成輸入**、⛔ 不相依宿主上此刻恰好有什麼卷 —— 因為在一臺已經清乾淨的機器上這個桶永遠打不出一行，而「桶是空的」與「這段程式碼根本沒跑」長得一模一樣（2026-09-04 那次正是為此不得不造四個探針卷）。七條釘判據（別人家 ⇒ `foreign` · 匿名 ⇒ `anonymous` · ★★★ **承重**：逃逸過的真名字 ⇒ `unattributed` · 白名單不許吞 `fulcrum*` 兩條 · 匿名判據釘在**長度**上，63 位不算 · 白名單是前綴不是子串），兩條釘集合層（管不著的原樣報出來 / 全在管轄內時一個字都不打）。
 
 ⚠ 集合層那兩條是**必須的**：判據函式對了、而循環裡一個 `continue` 放錯位置，症狀同樣是「一行都不打」。
 
@@ -692,9 +694,9 @@ docker volume ls -q --filter name=fulcrum-target      # 子串匹配
 1. ★ **`export MSYS_NO_PATHCONV=1`** —— git-bash 會把容器內的 `/w` 之類路徑改寫成 Windows 路徑
 2. ★ **掛載源必須是 Windows 形式的絕對路徑** —— 指令碼用 `cygpath -m` 轉換
 
-還有第三條不在指令碼里，在 [`.gitattributes`](../../.gitattributes)：
+還有第三條不在指令碼裡，在 [`.gitattributes`](../../.gitattributes)：
 
-★ ★ **行尾必須無條件是 LF。** 開發機上 `core.autocrlf=true` 時，checkout 會把 `tests/m0/*.sh` 轉成 CRLF，容器裡的 bash 會當場報 `\r: command not found`——**而且是克隆之後才發作，寫程式碼時看不出來**。行尾轉換髮生在 checkout 不在提交，所以 `git status` 乾淨**並不能證明什麼**。
+★ ★ **行尾必須無條件是 LF。** 開發機上 `core.autocrlf=true` 時，checkout 會把 `tests/m0/*.sh` 轉成 CRLF，容器裡的 bash 會當場報 `\r: command not found`——**而且是克隆之後才發作，寫程式碼時看不出來**。行尾轉換發生在 checkout 不在提交，所以 `git status` 乾淨**並不能證明什麼**。
 
 # 判定
 
@@ -716,4 +718,4 @@ docker volume ls -q --filter name=fulcrum-target      # 子串匹配
 
 # 相關
 
-[M0 接縫驗證](/verification/m0-seam.md) · [依賴策略](/platform/dependency-policy.md) · [工作方式](/governance/working-agreement.md)
+[M0 接縫驗證](/verification/m0-seam.md) · [相依策略](/platform/dependency-policy.md) · [工作方式](/governance/working-agreement.md)

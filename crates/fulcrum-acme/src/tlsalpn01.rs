@@ -3,7 +3,7 @@
 //! # 它是什麼
 //!
 //! CA 向 `<域名>:443` 發起一次 TLS 握手，ALPN 裡**只**提供 `acme-tls/1`。
-//! 伺服器必須協商到這個協定，並回一張**自籤**證書，其中帶一條**critical** 的
+//! 伺服器必須協商到這個協定，並回一張**自簽**證書，其中帶一條**critical** 的
 //! `id-pe-acmeIdentifier` 擴充（OID `1.3.6.1.5.5.7.1.31`），內容是
 //! key authorization 的 SHA-256。CA 看完這張證書就斷開——**這次握手不傳任何資料**。
 //!
@@ -33,9 +33,9 @@
 //! 把它接住了。★ **一道分不出「成功」與「失敗了但被兜住」的門，對這一層是瞎的**；
 //! 同理單測量的必須是 [`build_challenge_cert`] 的產物，**判據掛在替身上等於沒有判據**。
 //!
-//! ★ `rcgen` 已經在依賴圖裡（`instant-acme` 拉的），新增 0 個包。⚠ 但必須
+//! ★ `rcgen` 已經在相依圖裡（`instant-acme` 拉的），新增 0 個包。⚠ 但必須
 //! `default-features = false` —— 它另有一個 `aws_lc_rs` feature，而把 aws-lc-rs 趕出
-//! 依賴圖的成果不能被順手推翻。守它的是 `crates/fulcrum/tests/supply_gates.rs`。
+//! 相依圖的成果不能被順手推翻。守它的是 `crates/fulcrum/tests/supply_gates.rs`。
 
 use fulcrum_tls::{ChallengeCert, SniResolver, cert_key_from_der};
 use log::debug;

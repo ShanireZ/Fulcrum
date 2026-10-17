@@ -58,7 +58,7 @@ VERDICT: FAIL
 
 ## 口徑
 
-同機 · 同用例 · 同負載生成器（oha 1.15.0）· 明文 HTTP/1.1 + keep-alive ·
+同機 · 同案例 · 同負載生成器（oha 1.15.0）· 明文 HTTP/1.1 + keep-alive ·
 訪問紀錄四家全關 · 同一個 4096 位元組隨機 payload · **四家 worker 數一律 2**
 （樞衡 `threads_l7` · nginx `worker_processes` · HAProxy `nbthread` · Caddy `GOMAXPROCS`）。
 
@@ -69,7 +69,7 @@ VERDICT: FAIL
 
 > ⚠ ⚠ **這一趟的 [`env.json`](env.json) 裡 `load_params.payload_bytes` 是 `null`，
 > 而這一趟真的用了 4096 位元組。** ⛔ 那不是「沒設」——是當時的一個缺陷：
-> `env-snapshot.sh` 記的是**宣告值**，而用例跑的是**宣告值或預設**
+> `env-snapshot.sh` 記的是**宣告值**，而案例跑的是**宣告值或預設**
 > ⇒ 沒人顯式設的參數，快照就寫 `null`（同一趟只有 `payload_bytes` 露頭，
 > 是因為另外三個 owner 恰好顯式設了）。
 >

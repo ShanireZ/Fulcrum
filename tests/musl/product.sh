@@ -8,7 +8,7 @@
 # ── 它與 `tests/musl/probe.sh` 的分工（★ 這一條是全部意義所在）───────────────
 #
 # `probe.sh` 編的是 **spike**（`spikes/musl-boringssl`），本指令碼編的是 **產品**
-# （`crates/fulcrum` 的那個 bin）。D22 想守的那句話是 **G13 的散布口徑**
+# （`crates/fulcrum` 的那個 bin）。D22 想守的那句話是 **G13 的散佈口徑**
 # ——「Linux x86_64 + aarch64 單靜態二進位」——**而探針答不了它**：
 # 它自己的驗證記錄第 5 節第 1 條就寫著「『探針編得出來』證不了『樞衡編得出來』」。
 # ⇒ owner 拍板把判據換成產品自證；探針**留在門外**當歷史記錄。
@@ -41,7 +41,7 @@ CONTEXT="."
 # ★ 預設只跑 amd64。aarch64 要在 qemu 上編**整個產品**（不只是探針那點程式碼）。
 # ✅ 「何時也跑 aarch64」曾掛號 **D24**，已由 **G144** 結案 = 候選 ②：
 #   只在 `Cargo.lock` 或那三張釘 rustc 的 Dockerfile 變化時跑。
-#   ⚠ ⚠ **那個決定不在本指令碼里**（本指令碼只認 `ARCHES`）—— 編排在 `tests/m0/docker-run.sh`，
+#   ⚠ ⚠ **那個決定不在本指令碼裡**（本指令碼只認 `ARCHES`）—— 編排在 `tests/m0/docker-run.sh`，
 #   判據與觸發集在 `tests/musl/arm64-trigger.sh`。⇒ 直接手跑本指令碼時它**不會**替你判。
 ARCHES=${ARCHES:-"amd64"}
 REVERSE=${REVERSE:-1}
@@ -144,7 +144,7 @@ for arch in $ARCHES; do
 
   # ── ★ ★ ★ D23：產物裡真的連結了哪幾套 TLS ────────────────────────────────
   #
-  # ⚠ 它與供應鏈那兩道門問的**不是同一個問題**：門 4 看 `Cargo.lock`、門 5 看依賴圖，
+  # ⚠ 它與供應鏈那兩道門問的**不是同一個問題**：門 4 看 `Cargo.lock`、門 5 看相依圖，
   #   而「圖裡有、產物裡其實沒連結」是門 5 **原理上**看不見的那一半。
   # ★ 判據的推導在 `tests/ci/tls-linkage.sh` 的檔案頭，這裡只做判定。
   tls_nm=$(field "$ev" TLS_NM)

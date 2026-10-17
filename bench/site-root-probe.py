@@ -1,27 +1,27 @@
-"""站点根落在哪种文件系统上，以及**那里认不认 `RWF_NOWAIT`**。
+"""站台根落在哪種文件系統上，以及**那裡認不認 `RWF_NOWAIT`**。
 
     python3 bench/site-root-probe.py <目录>
-    → 两行 `键=值`，⛔ 自己不判红（判红是调用方的事，同 `env-snapshot.sh` 的其余读数）
+    → 兩行 `键=值`，⛔ 自己不判紅（判紅是呼叫方的事，同 `env-snapshot.sh` 的其餘讀數）
 
-## ★ 它为什么是口径的一部分，⛔ 不是一条可有可无的元数据
+## ★ 它為什麼是口徑的一部分，⛔ 不是一條可有可無的中繼資料
 
-枢衡的静态文件路径 2026-09-06 起先在**本线程**上试一次
-`open` + `fstat` + `preadv2(RWF_NOWAIT)`，读全了就整趟零跨线程。
-⚠ ⚠ ★ 而 **`RWF_NOWAIT` 是每个文件系统各自决定认不认的**：同一天在内核 `6.18`
-上实测 **ext4 认、overlayfs 与 tmpfs 回 `EOPNOTSUPP`**。
-⇒ **同一个二进制、同一份配置、同一台机器，站点根换一种文件系统，
-静态吞吐差 45%**（诊断台实测 28.6k → 44.4k）。
+樞衡的靜態文件路徑 2026-09-06 起先在**本執行緒**上試一次
+`open` + `fstat` + `preadv2(RWF_NOWAIT)`，讀全了就整趟零跨執行緒。
+⚠ ⚠ ★ 而 **`RWF_NOWAIT` 是每個文件系統各自決定認不認的**：同一天在核心 `6.18`
+上實測 **ext4 認、overlayfs 與 tmpfs 回 `EOPNOTSUPP`**。
+⇒ **同一個二進制、同一份設定、同一臺機器，站台根換一種文件系統，
+靜態吞吐差 45%**（診斷臺實測 28.6k → 44.4k）。
 
-⛔ 那就意味着：一份不说出站点根在哪种文件系统上的静态吞吐读数，
-**是复现不出来的**（G19 要求原始数据可被第三方复现）。⇒ 采进快照。
+⛔ 那就意味著：一份不說出站台根在哪種文件系統上的靜態吞吐讀數，
+**是重現不出來的**（G19 要求原始資料可被第三方重現）。⇒ 採進快照。
 
-## ⚠ 两个读数互相盯着
+## ⚠ 兩個讀數互相盯著
 
-一个坏掉的探测最典型的形态是**恒返回「不认」** —— 而那与「跑在 overlayfs 上」
-输出完全相同。⇒ 本脚本**同时**报文件系统类型（取自 `/proc/self/mountinfo`，
-与 `preadv2` 走的是完全不同的两条路）：
-`fs=ext4` 配 `rwf_nowait=no` 是一个**看得出来不对劲**的组合，
-而 `fs=overlay` 配 `rwf_nowait=no` 自洽。⛔ 两个读数一起看，别只看一个。
+一個壞掉的探測最典型的形態是**恆回傳「不認」** —— 而那與「跑在 overlayfs 上」
+輸出完全相同。⇒ 本指令碼**同時**報文件系統類型（取自 `/proc/self/mountinfo`，
+與 `preadv2` 走的是完全不同的兩條路）：
+`fs=ext4` 配 `rwf_nowait=no` 是一個**看得出來不對勁**的組合，
+而 `fs=overlay` 配 `rwf_nowait=no` 自洽。⛔ 兩個讀數一起看，別只看一個。
 """
 
 import ctypes
@@ -29,7 +29,7 @@ import ctypes.util
 import os
 import sys
 
-# uapi/linux/fs.h。⛔ 不從別處取：只要一個數，而多一層依賴多一處會漂的東西。
+# uapi/linux/fs.h。⛔ 不從別處取：只要一個數，而多一層相依多一處會漂的東西。
 RWF_NOWAIT = 0x00000008
 
 
@@ -38,7 +38,7 @@ class _Iovec(ctypes.Structure):
 
 
 def fs_type(path: str) -> str:
-    """`path` 所在挂载点的文件系统类型。取不到就 `unknown`，⛔ 不猜。"""
+    """`path` 所在掛載點的文件系統類型。取不到就 `unknown`，⛔ 不猜。"""
     try:
         dev = os.stat(path).st_dev
         want = f"{os.major(dev)}:{os.minor(dev)}"
@@ -53,10 +53,10 @@ def fs_type(path: str) -> str:
 
 
 def rwf_nowait_works(path: str) -> str:
-    """在 `path` 下真发一次 `preadv2(RWF_NOWAIT)`。回 `yes` / `no` / `unknown`。
+    """在 `path` 下真發一次 `preadv2(RWF_NOWAIT)`。回 `yes` / `no` / `unknown`。
 
-    ⚠ 探测文件有意**非空**：实测零长读被短路在 `FMODE_NOWAIT` 检查之前
-    ⇒ 拿空文件探会把「不认」误判成「认」。
+    ⚠ 探測文件有意**非空**：實測零長讀被短路在 `FMODE_NOWAIT` 檢查之前
+    ⇒ 拿空文件探會把「不認」誤判成「認」。
     """
     probe = os.path.join(path, ".bench-nowait-probe")
     try:

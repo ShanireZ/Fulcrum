@@ -25,7 +25,7 @@ sources:
 ⚠ ★ ★ **這份結論的兩個前提，必須和結論一起讀**（2026-08-14 補記——原先只有結論、沒有前提）：
 
 1. **全部證據都來自 `daemon: true`**（[`conf/m0.yaml`](../../conf/m0.yaml)），即 pingora 自己 fork 出守護處理程序的那條路。
-   而 **G31 定的產品路徑是 systemd `Type=notify` 前台執行、`daemonize` 依賴刪除**——
+   而 **G31 定的產品路徑是 systemd `Type=notify` 前台執行、`daemonize` 相依刪除**——
    也就是說，**產品將要走的那條路，本頁一個字都沒驗過**。
    G31 已把「systemd 下的 MainPID 交接 + 零停機升級」列為 **M1 的第一個 spike**，判據照 M0 的形式寫死；
    ★ 但在那個 spike 跑出來之前，**不要把本頁的綠當成「前台模式也沒問題」**。
@@ -40,7 +40,7 @@ sources:
 > ｜ pingora-core 0.8.1（★ 現為 [`vendor/pingora`](../../vendor/pingora/FORK.md) 的 fork）
 > ｜ 重跑方式：`bash tests/m0/docker-run.sh`
 >
-> ★ **六次獨立執行全綠**，其中三次是在 G30 的依賴 fork 之後——見 §5。
+> ★ **六次獨立執行全綠**，其中三次是在 G30 的相依 fork 之後——見 §5。
 
 # 1. 要回答的問題
 

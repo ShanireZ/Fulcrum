@@ -72,7 +72,7 @@ fn route_块内保持书写顺序() {
 
 #[test]
 fn 容器排在终结类之前所以文档首页那个例子成立() {
-    // handle @internal { … } + respond 403 備援 —— DSL 參考 §一的示例。
+    // handle @internal { … } + respond 403 備援 —— DSL 參考 §一的範例。
     let cfg = ok(
         "api.com {\n  @internal remote_ip 10.0.0.0/8\n  handle @internal {\n    reverse_proxy 10.0.0.1:8080\n  }\n  respond 403\n}\n",
     );
@@ -388,7 +388,7 @@ fn 地址的四种写法() {
         (a[2].scheme.as_str(), a[2].port, a[2].auto_https),
         ("http", 80, false)
     );
-    // ★ 沒有主機名就籤不出證書，所以 `:8080` 一律不自動升級。
+    // ★ 沒有主機名就簽不出證書，所以 `:8080` 一律不自動升級。
     assert_eq!(
         (a[3].scheme.as_str(), a[3].port, a[3].auto_https),
         ("http", 8080, false)
@@ -1772,7 +1772,7 @@ fn threads_三格的值不合法都是装载期错误() {
         //   （`check_sub_args` 先攔住了）⇒ 把它寫進上面那個循環，
         //   就是在要求一條永遠走不到的程式碼路徑去報一條它報不出來的診斷。
         //   ★ 而它仍然必須是**裝載期錯誤** —— 一行 `threads_l7` 靜默地什麼都不做，
-        //   與「寫了個數」在設定里長得一模一樣。
+        //   與「寫了個數」在設定裡長得一模一樣。
         let cs = codes(&with_global(key));
         assert!(
             cs.contains(&DiagCode::BAD_ARITY),
@@ -1862,7 +1862,7 @@ fn 只写_passive_fail_时两个旋钮取缺省() {
 
 /// 寫了旋鈕卻沒寫 `passive_fail` ⇒ **說出來，但不判紅**（G136）。
 ///
-/// ★ 那兩行此刻一個都不生效，而它與「正在生效」在設定里長得一模一樣
+/// ★ 那兩行此刻一個都不生效，而它與「正在生效」在設定裡長得一模一樣
 /// ⇒ 沉默就是讓人以為它生效了（與 [`DiagCode::METRICS_UNGUARDED`] 同一條紀律）。
 #[test]
 fn 只写旋钮没写_passive_fail_要出警告且从来不是错误() {
@@ -1899,7 +1899,7 @@ fn 写了_passive_fail_之后旋钮不再报警告() {
     );
 }
 
-// ── M3 對拍的 `respond` 上界診斷所依賴的一條 DSL 契約 ────────────────────────
+// ── M3 對拍的 `respond` 上界診斷所相依的一條 DSL 契約 ────────────────────────
 //
 // 對拍要拿 `respond` 量出「把回應推出去」的上界，與 `file_server` 背靠背比。
 // 為此那份被測設定必須內聯一份與靜態吞吐那一類**同樣位元組數**的正文

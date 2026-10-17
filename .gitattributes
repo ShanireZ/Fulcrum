@@ -5,7 +5,7 @@
 #   checkout 會把 `tests/m0/*.sh` 轉成 CRLF，容器裡的 bash 會當場報
 #   `\r: command not found` —— 而且是克隆之後才發作，寫程式碼時看不出來。
 #
-# ★ 行尾轉換髮生在 checkout，不在提交 —— 所以 `git status` 乾淨並不能證明什麼。
+# ★ 行尾轉換發生在 checkout，不在提交 —— 所以 `git status` 乾淨並不能證明什麼。
 
 * text=auto eol=lf
 
@@ -13,7 +13,7 @@
 #
 # ⚠ `* text=auto` 會讓 git 靠**內容啟發式**（前 8000 位元組裡有沒有 NUL）去猜二進位，
 #   大多數時候猜得對 —— 但這個儲存庫的紀律是**能寫死規則就別靠啟發式**。
-#   ★ 順帶：`tests/m0/docker-run.sh` 裡那條不依賴 git 的 CRLF 備援掃描
+#   ★ 順帶：`tests/m0/docker-run.sh` 裡那條不相依 git 的 CRLF 備援掃描
 #   也有一張按副檔名跳過的表，兩張表要一起改。
 *.png binary
 *.jpg binary

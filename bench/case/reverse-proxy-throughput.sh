@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 用例類「反代吞吐」（M3，§8 七類之二）——四家各作反向代理，轉發到**同一個常駐源站**。
+# 案例類「反代吞吐」（M3，§8 七類之二）——四家各作反向代理，轉發到**同一個常駐源站**。
 #
 #   bash bench/case/reverse-proxy-throughput.sh <输出目录>
 #
@@ -38,7 +38,7 @@ set -euo pipefail
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ⚠ ⚠ ★ **只為拿那四個負載參數的預設**（`bench/lib.sh` 的「負載參數」一節）。
 #   ⛔ **不許在本檔案裡再寫一份 `:-` 預設** —— 理由與 static-throughput.sh 逐字相同：
-#   用例用「宣告值或預設」而快照記「宣告值」，會讓沒人顯式設的參數在快照裡成 `null`。
+#   案例用「宣告值或預設」而快照記「宣告值」，會讓沒人顯式設的參數在快照裡成 `null`。
 # shellcheck source=bench/lib.sh
 . "$BENCH_DIR/lib.sh"
 
@@ -58,7 +58,7 @@ FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 
 # 連接埠：9949–9953（連接埠表在 docs/platform/host-and-gate-traps.md）。
 # ⚠ ⛔ 一個都別改成 :80 —— 那個連接埠在門禁裡是共享的（G137），佔住它會讓一個
-#   與本用例毫無關係的場景起不來，而回報錯誤落在那個無辜的連接埠上。
+#   與本案例毫無關係的場景起不來，而回報錯誤落在那個無辜的連接埠上。
 PORT_ORIGIN=${BENCH_PORT_RP_ORIGIN:-9949}
 PORT_FULCRUM=${BENCH_PORT_RP_FULCRUM:-9950}
 PORT_CADDY=${BENCH_PORT_RP_CADDY:-9951}
@@ -124,7 +124,7 @@ wait_port_gone() {
 
 # 本 netns 裡被動打開的 TCP 連接累計數（對齊口徑第 ⑥ 條的觀測量）。
 #
-# ⚠ ⚠ 它是**整個 netns 的**，⛔ 不是隻有「反代→源站」那一段（還含 oha→反代 那部分）。
+# ⚠ ⚠ 它是**整個 netns 的**，⛔ 不是只有「反代→源站」那一段（還含 oha→反代 那部分）。
 #   ★ 它夠用**不是因為它精確，而是因為對齊與不對齊之間隔著兩個數量級**：
 #     開發機 10s/50 連接實測，對齊後 0.4–2.1，未對齊 100.3（caddy）與 1001.5（nginx）。
 # ⚠ 逐列按**表頭**找 `PassiveOpens`，⛔ 不寫死列號：不同核心的 `/proc/net/snmp`

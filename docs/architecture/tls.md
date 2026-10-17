@@ -26,21 +26,21 @@ sources:
 >
 > **G104**（§10）**推翻了 §5.1 第 1 條**（「TLS 後端鎖死 rustls……不可回頭」），
 > 後端改為**統一 BoringSSL**。成因是 **G103 取 `quiche` 做 HTTP/3**，
-> 而 quiche 用 BoringSSL、依賴表裡沒有 rustls ⇒ 繼續鎖 rustls 就必然「兩套 TLS 並存」，
+> 而 quiche 用 BoringSSL、相依表裡沒有 rustls ⇒ 繼續鎖 rustls 就必然「兩套 TLS 並存」，
 > 而那正是本頁「最容易在哪做錯」**第 3 條**點名的形狀。
 >
 > | 這一條 | 現在是什麼 |
 > |---|---|
 > | 動態挑證書的介面 | ~~`ResolvesServerCert`~~ → **`boring::ssl::SslContextBuilder::set_select_certificate_callback`**（直接拿到 `ClientHello`）|
 > | 兩個入口的關係 | **仍然共用一套** —— 目標沒變，介質從 rustls 換成 BoringSSL |
-> | On-Demand 握手期現籤 | ★ **變容易了**：`set_async_select_certificate_callback` 是**原生非同步**的，而 `UNWIRED` 裡 `on_demand` 的登記理由正是「`resolve()` 是同步的，需要一座橋」⇒ **那條理由到期了** |
+> | On-Demand 握手期現簽 | ★ **變容易了**：`set_async_select_certificate_callback` 是**原生非同步**的，而 `UNWIRED` 裡 `on_demand` 的登記理由正是「`resolve()` 是同步的，需要一座橋」⇒ **那條理由到期了** |
 >
 > ✅ ★ ★ **產品的監聽器側已經換完了。**`crates/fulcrum-tls` 現在是 `CertKey`（`X509` + `PKey`）+ `set_select_certificate_callback`，`pingora-core` 掛 `boringssl` feature。
 > ✅ ★ ★ **第 ② 處 —— L4 的 ClientHello 預讀也換完了。**
 > `peek_client_hello` 現在起**一臺真的握手狀態機 + 一條記憶體傳輸**，在早回呼裡抄走 SNI 與 ALPN
 > 之後**當場把握手掐掉**；⚠ 記憶體傳輸的**寫那一半一律丟掉** —— 我們不是這條 TLS 連接的對端，
 > 往真用戶端寫一個位元組（哪怕只是一個 alert）都等於冒充上游說話。
-> ⇒ `pingora-rustls` 退出根 workspace 的依賴圖，**fork 改動 8 / 8b / 10 三條全部刪除**。
+> ⇒ `pingora-rustls` 退出根 workspace 的相依圖，**fork 改動 8 / 8b / 10 三條全部刪除**。
 > ★ ★ **一處行為變化，而它是變好的那一側**：早回呼發生在幾乎所有 ClientHello 檢核**之前**，
 > ⇒ 一個完整 TLS 棧會當場拒掉的 hello（缺 `signature_algorithms`）照樣按 SNI 分流 ——
 > **「能不能分流」終於只取決於「能不能讀出 SNI」**，而不再取決於某個 TLS 棧的嚴格程度。
@@ -51,7 +51,7 @@ sources:
 > ⚠ 檢核一行都不是自己寫的：鏈走 `SslConnector::builder` 裡的 `set_default_verify_paths()`，
 > 名字走 `configure()?.verify_hostname(true).into_ssl(domain)`。
 > ⚠ ⚠ **「產物裡只有一套 TLS」現在成立了，而證明它的不是門 4** ——
-> **`Cargo.lock` 是依賴圖的超集**：`hyper-rustls` / `rustls` / `schannel` **仍然寫在鎖裡**
+> **`Cargo.lock` 是相依圖的超集**：`hyper-rustls` / `rustls` / `schannel` **仍然寫在鎖裡**
 > （`instant-acme` 的 `ring` feature 裡那句 `hyper-rustls?/ring` 把它留住了），
 > 而 `cargo tree -e all --target all -i rustls` 已經是 **nothing to print**。
 > ⇒ 新立 **門 5**（讀 `cargo tree`，`supply_gates.rs`）；門 4 的口徑收窄成「鎖裡寫著哪些」。
@@ -70,7 +70,7 @@ sources:
 
 > ✅ **TLS 那條脊樑已經完成實作並跑通**（`crates/fulcrum-tls` + `crates/fulcrum-server/tls.rs`）：
 > 按 SNI 動態挑證書、每域一目錄的 PEM 儲存（原子寫 + `flock`）、續期判定（ARI → 1/3 → 退避）、
-> `tls <cert> <key>`。端到端由 `tests/serve/run.sh` 驗過：`--cacert` 驗籤通過、
+> `tls <cert> <key>`。端到端由 `tests/serve/run.sh` 驗過：`--cacert` 驗簽通過、
 > ALPN 協商到 h2、未知 SNI 被拒絕握手。
 > ✅ ★ **全域 `default_sni`（不帶 SNI 的用戶端）也接上了** —— 裝載時把**名字**交給
 > `SniResolver`（不是當時那張證書：存證書的話，自動簽發那張會因為「裝載時還沒簽下來」
@@ -142,9 +142,9 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 ★ ★ ★ **去補的時候發現它不是補一行 feature 的事**，全部證據見
 [rustls 接縫驗證](/verification/m1-rustls-seam.md)：
 
-- **打開它，產品依賴圖 133 → 175**——一次進來 **42 個從未受審的 crate**；
+- **打開它，產品相依圖 133 → 175**——一次進來 **42 個從未受審的 crate**；
 - **三道門（G30 上界稽核／迴歸網／`supply-audit.py`）結構上都夠不到 `pingora-rustls`**，
-  因為未啟用的可選依賴**根本不在根 `Cargo.lock` 裡**；
+  因為未啟用的可選相依**根本不在根 `Cargo.lock` 裡**；
 - 裡面有一條真缺陷：明明裝的是 ring，`aws-lc-rs`（69 MB C 原始碼）卻被一起編進產物。
 
 **已辦**（G41／G42）：fork 裡兩處清單修掉、`rustls-native-certs` 抬到 0.8；
@@ -185,7 +185,7 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 | 自己建構 `Acceptor` | 欄位私有，crate 外建構不出來 |
 | `add_address(ServerAddress)` | 枚舉只有 `Tcp` / `Uds`，帶不上 acceptor |
 
-後果：**一個連接埠只能一張證書、換證書要重載、握手期按 SNI 現籤無從實作**——
+後果：**一個連接埠只能一張證書、換證書要重載、握手期按 SNI 現簽無從實作**——
 而自動 HTTPS（G12）與 On-Demand（G15）都建在那條路上。
 
 **處置：fork 里加了 `TlsSettings::with_cert_resolver`**（見
@@ -202,8 +202,8 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 | 來源 | 觸發時機 | 說明 |
 |---|---|---|
 | 設定中宣告的網域 | 啟動 / 設定裝載時 | 預設行為，提前簽發與續期 |
-| **On-Demand** | TLS 握手時按 SNI | 面向多租戶與使用者自定義網域 |
-| 外部提供的 PEM | 設定中顯式指定 | 企業 CA、已購證書、內網自籤 |
+| **On-Demand** | TLS 握手時按 SNI | 面向多租戶與使用者自訂網域 |
+| 外部提供的 PEM | 設定中顯式指定 | 企業 CA、已購證書、內網自簽 |
 
 # ✅ ACME 落法（D4 已由 G53–G56 結案）
 
@@ -223,9 +223,9 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 `rustls-acme` 那類高層庫的模型是「給你一個 acceptor」，與 Pingora 的監聽器不是一套，
 存取資格控制也塞不進去。`instant-acme` 只做 RFC 8555 協定本身，挑戰求解與儲存排程歸我們。
 
-⚠ ⚠ **寫依賴時必須 `default-features = false` 再顯式開 `ring`。**
+⚠ ⚠ **寫相依時必須 `default-features = false` 再顯式開 `ring`。**
 `instant-acme` 的 default feature 裡**就含 `aws-lc-rs`**——照預設寫一行，
-[rustls 接縫那一輪](/verification/m1-rustls-seam.md)把 aws-lc-rs 趕出依賴圖的成果**當場作廢**。
+[rustls 接縫那一輪](/verification/m1-rustls-seam.md)把 aws-lc-rs 趕出相依圖的成果**當場作廢**。
 ★ 這是「上游 crate 的 `default` 是一條靜默的供應鏈入口」的**第四次**現身，
 **完成實作時要有一道門守住它**，別只寫在註解裡。
 
@@ -250,7 +250,7 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 ★ ★ **升級視窗內兩代處理程序共享同一個證書目錄**（M0 已證兩代並存），
 而 On-Demand 簽發是**執行期**行為，兩代可能同時寫同一個網域。所以：
 
-1. 寫入一律**寫臨時檔案再 `rename`**（同目錄內原子替換）；
+1. 寫入一律**寫暫存檔再 `rename`**（同目錄內原子替換）；
 2. 跨處理程序用**檔案鎖**串行化同一網域的簽發——否則兩代各簽一張、互相覆蓋，
    還各自消耗 CA 的速率配額。
 
@@ -259,7 +259,7 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 先問 CA 的 **ARI**（RFC 9773，`instant-acme` 自帶、Let's Encrypt 已提供）拿建議視窗；
 查不到時退回「剩餘壽命 1/3」。★ **Let's Encrypt 正在推 6 天短壽命證書**——
 「到期前 30 天」在那種證書上等於**永遠在續期**。
-★ ARI 還有比例制給不了的東西：CA 因安全事件需要**提前批量撤銷重籤**時，它是唯一的通知渠道。
+★ ARI 還有比例制給不了的東西：CA 因安全事件需要**提前批量撤銷重簽**時，它是唯一的通知渠道。
 
 失敗走指數退避（封頂）+ **隨機抖動** + 指標告警。抖動不是可選項：
 同機幾十個網域同時到期時，不抖動會把重試打成尖峰。
@@ -285,7 +285,7 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 
 ★ ★ **一條必須寫死的實作約束**：要等 TXT 記錄**可見**了才能通知 CA 檢核，
 而「可見」不等於「API 回傳 200」。**判據掛在行為上**——直接向該域的**權威 NS** 輪詢確認，
-**絕不能只 sleep 一個固定秒數**（快時浪費、慢時直接籤失敗，而失敗要消耗 CA 速率配額）。
+**絕不能只 sleep 一個固定秒數**（快時浪費、慢時直接簽失敗，而失敗要消耗 CA 速率配額）。
 
 ## ⚠ DNS 憑證比 On-Demand 被刷爆嚴重得多
 
@@ -303,7 +303,7 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
 
 存取資格來源二選一（或並用）：
 
-- **網域白名單 / 通配符**：無外部依賴，握手期零額外延遲
+- **網域白名單 / 通配符**：無外部相依，握手期零額外延遲
 - **ask 端點**：握手時回呼外部 HTTP 服務詢問該網域是否允許簽發，面向網域集合動態的場景
 
 存取資格之外還有三道保險：**簽發速率上限、失敗退避、指標告警**。
@@ -331,26 +331,26 @@ owner 已拍板：**加**。完成實作形態是**兩個**場景——
 
 ★ ★ **三條寫這套判據時踩到、值得記下來的**：
 
-1. **不能拿一張自籤的 `CA:TRUE` 證書直接當 pebble 的伺服器端證書。**
+1. **不能拿一張自簽的 `CA:TRUE` 證書直接當 pebble 的伺服器端證書。**
    curl 收得下，而 **產品裡的那個 TLS 用戶端不收**（當時是 rustls，報 `CaUsedAsEndEntity`），
    現場表現是「建 ACME 帳戶失敗：client error (Connect)」，看不出跟證書有關。
    ⚠ 真正要連上 CA 的是**產品裡的那個用戶端**，不是 curl——
    拿 curl 驗一遍會得到一份全綠的假報告。必須是「根 + 葉」兩級，葉還要有 `serverAuth`。
    ⚠ ★ **此後那個用戶端是 BoringSSL 了**（G104 第 ③ 處）。這條坑仍然成立，
    只是回報錯誤文字會變 —— ★ 而這正是「判據別釘在某個庫的錯誤串上」的一個現成例子：
-   這一段釘的是**形狀**（自籤 CA 當葉子用），不是那個 `CaUsedAsEndEntity`。
+   這一段釘的是**形狀**（自簽 CA 當葉子用），不是那個 `CaUsedAsEndEntity`。
 2. **challtestsrv 的 `-defaultIPv6 ''` 不是可選的**：它預設同時回 A 與 AAAA（`::1`），
    而樞衡若綁在 v4 上，CA 走 v6 來驗就連不上——現場同樣只有一句「驗不過」。
 3. **pebble 預設故意拒 5% 的合法 nonce**（逼用戶端實作 RFC 8555 §6.5 的重試），
    而 `instant-acme` 0.8.5 的重試上限是**三次**。留著它是對的（真 CA 就這樣），
-   但要先把偶發概率算清楚，見 `tests/acme/run.sh` 裡那段註解。
+   但要先把偶發機率算清楚，見 `tests/acme/run.sh` 裡那段註解。
 
 ## ★ ★ ★ TLS-ALPN-01：判據必須掛在 CA 的記錄上，不能掛在我們自己的紀錄上
 
 TLS-ALPN-01（RFC 8737 / G54 的「主」）已串接。它的形狀是：
-CA 向 `<域名>:443` 握手、ALPN 只提 `acme-tls/1`，伺服器回一張**自籤**證書，
+CA 向 `<域名>:443` 握手、ALPN 只提 `acme-tls/1`，伺服器回一張**自簽**證書，
 帶一條 critical 的 `id-pe-acmeIdentifier` 擴充（內容是 key authorization 的 SHA-256），
-CA 看完就斷開。**零路由佔用** —— 使用者的 `respond 403` 擋不住自己的證書籤發。
+CA 看完就斷開。**零路由佔用** —— 使用者的 `respond 403` 擋不住自己的證書簽發。
 
 ★ 兩張證書表**互不相通**是安全屬性：協商到 `acme-tls/1` 只查挑戰表（查不到就拒絕握手，
 絕不回落到真證書）；沒協商到就絕不查挑戰表（否則普通訪客拿到自簽證書，瀏覽器回報錯誤，
@@ -358,7 +358,7 @@ CA 看完就斷開。**零路由佔用** —— 使用者的 `respond 403` 擋�
 
 > ⚠ ⚠ ★ **這一批的反證用一種沒預料到的方式教了一課。**
 >
-> 把挑戰證書裡那條擴充去掉，本以為門會紅在「籤不出來」——**門全綠**。
+> 把挑戰證書裡那條擴充去掉，本以為門會紅在「簽不出來」——**門全綠**。
 > pebble 紀錄裡明明寫著 `authz … set INVALID`：破壞是生效的，
 > 只是退避到點之後，G54 的「備」把它接住了，HTTP-01 一次就過。
 > 而當時門裡那條「這個網域走的是 TLS-ALPN-01」的斷言**也是綠的**——
@@ -398,7 +398,7 @@ G58 的原話是「至少簽發**並續期**一次通配符證書」。簽發那
 而那正是續期的全部內容。取 129700s ⇒ 視窗在簽發後約 65s 開始。
 
 判據刻意**不是**「出現了一張新證書」——那分不出三種情形：按 ARI 續期、
-舊的讀不出來於是重籤、每一輪都在重籤。所以它釘的是**誰下的決定**（紀錄裡 ARI 那一句，
+舊的讀不出來於是重簽、每一輪都在重簽。所以它釘的是**誰下的決定**（紀錄裡 ARI 那一句，
 只有 `should_renew` 的 ARI 分支會打）、**序列號變了**、續期那趟的挑戰**按 CA 的選擇走對了**
 （CA 新建授權就必須重解 DNS-01、重複使用有效授權就不許重解；走哪一支從 CA 紀錄讀，
 ⚠ pebble 的 `PEBBLE_AUTHZREUSE=0` 仍有 1/100 重複使用，⛔ 不能當成「永不復用」）、
@@ -406,7 +406,7 @@ G58 的原話是「至少簽發**並續期**一次通配符證書」。簽發那
 （第一輪必須判「已是最新」，且 ARI 視窗還在將來）。
 
 ★ 續期那單的 `replaces` 必須**被 CA 接受**（pebble 說舊訂單已標成被替換、樞衡沒走退回）。
-為此第一代的序列號若帶 DER 符號位元組，就在續期之前重籤一張（G166）：pebble v2.10.1
+為此第一代的序列號若帶 DER 符號位元組，就在續期之前重簽一張（G166）：pebble v2.10.1
 認不出那種證書的 `replaces`。⚠ 這段只對 v2.10.1 成立，版本一變本格就紅，逼升級的人回來刪掉它。
 
 ★ 三條反證各自只紅該紅的那幾條，其中一條最說明問題：**把「簽完熱裝」那一步摘掉，
@@ -478,7 +478,7 @@ G58 的原話是「至少簽發**並續期**一次通配符證書」。簽發那
 
 # 最容易在哪做錯
 
-1. ★ ★ **照著 openssl 後端的例子寫 `certificate_callback`。** rustls 後端**沒有**這個東西。這是 G6 三條硬約束裡的第一條，[`AGENTS.md`](../../AGENTS.md) 也單獨重複了一遍——因為它是「看起來能用、實際編不過」的形態，而網上大量 Pingora 示例用的是 openssl 後端。
+1. ★ ★ **照著 openssl 後端的例子寫 `certificate_callback`。** rustls 後端**沒有**這個東西。這是 G6 三條硬約束裡的第一條，[`AGENTS.md`](../../AGENTS.md) 也單獨重複了一遍——因為它是「看起來能用、實際編不過」的形態，而網上大量 Pingora 範例用的是 openssl 後端。
 2. ★ **把「啟動失敗」實作成「執行環境告警」。** G15 的整個價值在於**錯誤在啟動時暴露**。降級成告警等於把它變回「被刷爆時才發現」——那正是它要防的。
 3. **給兩個入口各配一套。** 一套證書、一套 ALPN、一套工作階段快取是 G6 的原話；兩套會在 On-Demand 簽發時出現「h2 拿到了新證書而 h3 還是舊的」這類只在特定路徑出現的問題。<br>★ ★ ★ **這一條正是 G104 取「統一到 BoringSSL」而不是「兩套並存」的理由。** 當時它針對的是「兩套 rustls」，而它對「一套 rustls + 一套 BoringSSL」**同樣成立、甚至更成立** —— ⇒ 一條寫在「最容易做錯」清單裡的話，在一次選型裡**直接決定了拍板方向**。
 

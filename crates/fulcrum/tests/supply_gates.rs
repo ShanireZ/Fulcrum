@@ -1,14 +1,14 @@
 //! 供應鏈的五道結構門。
 //!
 //! ★ 起因：`instant-acme` 的 **default feature 裡就含 `aws-lc-rs`**（`ring` 要顯式開），
-//! 照預設寫一行依賴就會把它悄悄拉回來。「上游 crate 的 `default` 是一條靜默的供應鏈入口」
+//! 照預設寫一行相依就會把它悄悄拉回來。「上游 crate 的 `default` 是一條靜默的供應鏈入口」
 //! 在本儲存庫現身過四次，前三次都是**發現之後**才知道自己一直在付代價 ——
 //! 所以它要有一道門，不能只寫在註解裡。
 //!
 //! # 判據掛在**鎖**上，不掛在清單文字上
 //!
 //! 門 1 查的是「兩把 `Cargo.lock` 裡有沒有 `aws-lc-rs`」，不是「有沒有人忘寫
-//! `default-features = false`」：後者只覆蓋一種寫法，換個中間依賴或 feature 名就看不見了，
+//! `default-features = false`」：後者只覆蓋一種寫法，換個中間相依或 feature 名就看不見了，
 //! 而結果一樣。清單文字那兩道門是第二層，不是第一層。
 //!
 //! # 五道門各答一個**不同**的問題（★ 不該混著說）
@@ -17,11 +17,11 @@
 //! |---|---|
 //! | 1 | 兩把**鎖**裡有沒有 `aws-lc-rs` |
 //! | 2 | **清單文字**裡 `instant-acme` 等有沒有關掉 default |
-//! | 3 | 產品 crate 依賴 `pingora-core` 時有沒有開 `boringssl` |
+//! | 3 | 產品 crate 相依 `pingora-core` 時有沒有開 `boringssl` |
 //! | 4 | **鎖裡寫著**哪幾套 TLS 實作 |
-//! | 5 | **依賴圖裡真有**哪幾套 TLS 實作（`cargo tree`）|
+//! | 5 | **相依圖裡真有**哪幾套 TLS 實作（`cargo tree`）|
 //!
-//! ⚠ ⚠ **門 4 與門 5 不是一回事**：`Cargo.lock` 是依賴圖的**超集** —— 關掉
+//! ⚠ ⚠ **門 4 與門 5 不是一回事**：`Cargo.lock` 是相依圖的**超集** —— 關掉
 //! `instant-acme` 的 `hyper-rustls` feature 之後，`hyper-rustls` / `rustls` / `schannel`
 //! 仍然在鎖裡，卻已經沒有任何人連結它們。門 4 因此對那一次改動原理上是瞎的
 //! （它在自己的註解裡預言會紅，而它沒紅）。詳見門 4 那一段。
@@ -119,7 +119,7 @@ fn 锁扫描器自证能命中也能错过() {
     assert!(lock_packages("").is_empty());
 }
 
-// ── 門 2：已知會拖進 crypto provider 的依賴必須關掉 default ─────────────────
+// ── 門 2：已知會拖進 crypto provider 的相依必須關掉 default ─────────────────
 
 /// 這些 crate 的 default feature 會自己挑一個 crypto provider。
 /// ★ 名單會長，但它**不是**判據的全部——判據是門 1 那把鎖。這裡只是讓人早一步看見。
@@ -152,14 +152,14 @@ const MUST_DISABLE_DEFAULT: &[&str] = &[
     //   我們調的那個 API 乾脆不存在，同樣編不過。
     //   ⇒ 這正是 D18/G66 那條「**讓分家在結構上做不到**」，只是這次執行者是類型系統。
     //   ⚠ **仍然有一條它蓋不住的縫**：feature 是**並集**的 —— 若將來有別的 crate
-    //     也依賴 quiche 並開了 `boringssl-vendored`，兩個 feature 會同時打開，
+    //     也相依 quiche 並開了 `boringssl-vendored`，兩個 feature 會同時打開，
     //     我們調的 API 還在、編得過，而產物裡可能真有兩份 BoringSSL。
     //     今天全 workspace 只有 `fulcrum-server` 一個消費者，所以這條縫是空的；
     //     ★ **第二個消費者出現的那一天，這裡要重新想一遍**（登記在 PLAN.md §7 批 J）。
     "quiche",
 ];
 
-/// 一份清單裡，某個依賴有沒有關掉 default features。
+/// 一份清單裡，某個相依有沒有關掉 default features。
 ///
 /// 回傳 `None` 表示這份清單根本沒宣告它。
 ///
@@ -169,7 +169,7 @@ const MUST_DISABLE_DEFAULT: &[&str] = &[
 /// ⚠ 這一條是被這道門自己的**假警報**逼出來的：`fulcrum-acme` 裡寫的是
 /// `instant-acme = { workspace = true }`，根清單裡寫的是
 /// `instant-acme = { version = "…", default-features = false, features = [...] }`——
-/// 依賴圖裡**沒有** aws-lc-rs（門 1 那把鎖作證），而門 2 照樣判紅。
+/// 相依圖裡**沒有** aws-lc-rs（門 1 那把鎖作證），而門 2 照樣判紅。
 /// ★ 那正是本儲存庫反覆撞見的那個形狀：**判據只認得一種寫法**。
 /// 而假警報比沒有警報更糟——它會訓練人忽略這道門，連帶把真的那次一起埋掉。
 fn declares_without_default_off(manifest: &str, dep: &str) -> Option<bool> {
@@ -248,7 +248,7 @@ fn 清单扫描器自证能命中也能错过() {
     assert_eq!(declares_without_default_off("", "instant-acme"), None);
 }
 
-// ── 門 4：依賴圖裡到底有幾套 TLS **實作** —— 兩個方向都嚴 ────────────────
+// ── 門 4：相依圖裡到底有幾套 TLS **實作** —— 兩個方向都嚴 ────────────────
 //
 // ★ ★ ★ **（G104）新加的一道門，而它補的是一個此前沒有任何東西看著的洞。**
 //   §10 的作廢清單第 ⑥ 項寫著：門 1/2/3 那套口徑**整個建在 rustls 上**，
@@ -287,24 +287,24 @@ const KNOWN_TLS_IMPLS: &[&str] = &[
 
 /// 今天**允許**出現在根鎖裡的那些，按字典序。
 ///
-/// ⚠ ⚠ ★ **這道門讀的是鎖，而鎖不是依賴圖，更不是產物。**
+/// ⚠ ⚠ ★ **這道門讀的是鎖，而鎖不是相依圖，更不是產物。**
 /// 第一條邊界是它第一次跑就抓到的：`schannel`（Windows 的系統 TLS）**一直在根鎖裡**，
-/// 由 `rustls-platform-verifier` 按 target 條件拖進來，而 G13 的散布是 Linux musl
+/// 由 `rustls-platform-verifier` 按 target 條件拖進來，而 G13 的散佈是 Linux musl
 /// ⇒ 它**一行都不會被編譯進產物**。
 ///
 /// # ★ ★ 第二條邊界，而它推翻了本門自己寫下的一句預言
 ///
 /// 這段原文寫著「出站 HTTPS 換完之後這張表會只剩 boring 那兩條，**而這道門會先紅一次**」——
 /// **換完了，而它一個字都沒紅**：`hyper-rustls` / `rustls` / `tokio-rustls` / `schannel`
-/// 仍然在鎖裡。根因是 **`Cargo.lock` 是依賴圖的超集** —— `instant-acme` 的 `ring` feature
+/// 仍然在鎖裡。根因是 **`Cargo.lock` 是相依圖的超集** —— `instant-acme` 的 `ring` feature
 /// 裡那句 `"hyper-rustls?/ring"` 讓**包級解析照樣把它寫進鎖**，儘管 feature 解析沒打開它。
-/// ✅ 隔離實驗：一個只依賴 `instant-acme` 的空 crate，**鎖裡 129 個包而 `cargo tree` 只有 72 個**。
+/// ✅ 隔離實驗：一個只相依 `instant-acme` 的空 crate，**鎖裡 129 個包而 `cargo tree` 只有 72 個**。
 ///
 /// > ★ ★ **一道門的註解寫「本門守 X」不等於它判得動 X** —— 這一次它連自己會不會紅
 /// > 都預言錯了，而那句預言正是「換完之後會有人被迫來改這張表」的全部依據。
 ///
 /// ⇒ 本門的口徑就此收窄：**它答的是「鎖裡寫著哪些」**。它仍然有用（唯一一道離線、零成本、
-/// 連 fork 那把鎖一起看的），但 ⚠ 別拿它回答「產物裡有幾套」，答依賴圖的是**門 5**。
+/// 連 fork 那把鎖一起看的），但 ⚠ 別拿它回答「產物裡有幾套」，答相依圖的是**門 5**。
 const EXPECTED_TLS_IMPLS: &[&str] = &["boring", "boring-sys", "rustls", "schannel"];
 
 /// 一串包名裡出現了哪些 TLS 實作（去重、排序）。
@@ -391,13 +391,13 @@ fn tls_扫描器自证能命中也能错过() {
     );
 }
 
-// ── 門 3：產品 crate 依賴 pingora-core 時必須開 boringssl ──────────────
+// ── 門 3：產品 crate 相依 pingora-core 時必須開 boringssl ──────────────
 //
 // ⚠ ⚠ ★ **（G104）：這道門原本叫「必須開 rustls」。**
 //   §5.1 第 1 條把 TLS 後端鎖死在 rustls，而那條約束已被 G104 推翻——
 //   後端換成 BoringSSL（成因是 G103 取 quiche 做 HTTP/3）。
 //   ★ **門要守的那件事一個字沒變**：不開任何 TLS feature 的話，產品連結的是另一套程式碼，
-//     而它那一批傳遞依賴會留在常規稽核視野之外（G41 查出來 rustls 那條曾經
+//     而它那一批傳遞相依會留在常規稽核視野之外（G41 查出來 rustls 那條曾經
 //     **兩個月沒被編譯、測試或稽核過**）。變的只是「哪個 feature 才算數」。
 
 /// 一份清單裡，`pingora-core` 有沒有帶上 `boringssl` feature。
@@ -422,7 +422,7 @@ fn pingora_without_boringssl(manifest: &str) -> Option<bool> {
 
 #[test]
 fn 产品_crate_一旦依赖_pingora_core_就必须开_boringssl() {
-    // ✅ 這條**已經不是空跑的了**：`crates/fulcrum-server` 從此後真的依賴
+    // ✅ 這條**已經不是空跑的了**：`crates/fulcrum-server` 從此後真的相依
     //    pingora-core，並且帶著 `features = ["rustls"]`。
     //    ★ 打開它實測多解析出 46 個包（G41 當年量到的是 133 → 175），
     //    而 `aws-lc-rs` **不在其中**——門 1 那把鎖負責證明這一點。
@@ -462,11 +462,11 @@ fn pingora_扫描器自证能命中也能错过() {
     assert_eq!(pingora_without_boringssl(absent), None);
 }
 
-// ── 門 5：**依賴圖**裡到底有幾套 TLS —— 門 4 那把尺子夠不到的那一半 ────────
+// ── 門 5：**相依圖**裡到底有幾套 TLS —— 門 4 那把尺子夠不到的那一半 ────────
 //
 // ★ ★ ★ **（G104 第 ③ 處）新加，而加它的理由是一次實測反常**：
 //   ③ 做完之後，`hyper-rustls` / `rustls` / `tokio-rustls` / `schannel`
-//   **全部離開了依賴圖**（`cargo tree -e all --target all -i rustls` → nothing to print），
+//   **全部離開了相依圖**（`cargo tree -e all --target all -i rustls` → nothing to print），
 //   **而門 4 一個字都沒紅** —— 鎖裡它們還在。
 //   ⇒ 那一批的全部內容，門 4 原理上看不見。
 //
@@ -481,7 +481,7 @@ fn pingora_扫描器自证能命中也能错过() {
 //   再加一步「真的被連結了」（看符號）。⏳ 那一條仍未做，登記在 PLAN.md §11。
 //   ★ 但 `--target all` 是它的**超集**：這裡為空，musl 那一格必然也為空。
 
-/// 跑一次 `cargo tree`，拿回**真正在依賴圖裡**的包名（去重、排序）。
+/// 跑一次 `cargo tree`，拿回**真正在相依圖裡**的包名（去重、排序）。
 ///
 /// ⚠ ⚠ **拿不到就 panic，不許「跳過」**：本儲存庫反覆抓到的形狀正是
 /// 「沒能檢查」被當成「檢查通過」。

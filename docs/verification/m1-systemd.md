@@ -11,10 +11,10 @@ generated:
 sources:
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G31（處理程序模型 = Type=notify 前台執行；附帶強制做本 spike）
+    title: PLAN.md §10 G31（處理程序模型 = Type=notify 前台執行；附帶強製做本 spike）
   - id: plan-10-g33
     resource: /references/plan.md
-    title: PLAN.md §10 G33（路徑約定）、G34（回落層 systemd 依賴）
+    title: PLAN.md §10 G33（路徑約定）、G34（回落層 systemd 相依）
   - id: plan-10-d14
     resource: /references/plan.md
     title: PLAN.md §10 G37（D14 結案：Type=notify + 前台 + ExitType=cgroup，★ 不交接 MainPID）
@@ -156,7 +156,7 @@ M0 的第二代是**從 shell 起的**，與第一代沒有 fork 關係。M1 改
 | gen2 | 1 | 1 | 1 | fork 自 gen1，但 gen1 的 fd 有 CLOEXEC，繼承不過來 |
 | **gen3** | **2** | **2** | **2** | ★ 繼承 gen2 的一份（無 CLOEXEC）+ `SCM_RIGHTS` 再收一份 |
 
-**原因也已實測**，不是隻讀原始碼推的：`/proc/<gen3>/fdinfo/<fd>` 的 `flags`（八進制）裡
+**原因也已實測**，不是只讀原始碼推的：`/proc/<gen3>/fdinfo/<fd>` 的 `flags`（八進制）裡
 `O_CLOEXEC`(02000000) 位是 0，兩個 fd 都是。
 
 **後果**（按機制推，量級未實測）：
@@ -170,7 +170,7 @@ M0 的第二代是**從 shell 起的**，與第一代沒有 fork 關係。M1 改
 
 ## 4.1 ★ 還有一條：accept 出來的傳輸 socket 從來不 close
 
-讀上游程式碼準備投稿時發現的**第二處**，在同一個函式里：`get_fds_from()` 結尾只
+讀上游程式碼準備投稿時發現的**第二處**，在同一個函式裡：`get_fds_from()` 結尾只
 `close(listen_fd)`，而 `accept_with_retry_timeout()` 回傳的那個連接是**裸 `RawFd`、沒有
 `Drop`**，此後既不 close 也不轉移——**每完成一次優雅升級就永久洩漏一個已連接的 unix socket**。
 

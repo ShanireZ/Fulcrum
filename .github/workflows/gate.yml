@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   gate:
-    # ★ 釘住大版本，不用 `ubuntu-latest`：M1 的 systemd 場景依賴宿主機是 **cgroup v2**，
+    # ★ 釘住大版本，不用 `ubuntu-latest`：M1 的 systemd 場景相依宿主機是 **cgroup v2**，
     #   而 `ubuntu-latest` 換代時不會有任何一行輸出告訴我們環境變了。
     runs-on: ubuntu-24.04
     # ⚠ 這個上限是**止血閥**，不是預期耗時；真實耗時見每次執行的記錄。
@@ -100,7 +100,7 @@ jobs:
       - name: 全量门禁
         run: bash tests/m0/docker-run.sh
 
-      # ★ `always()`：門禁紅了也要存 —— 依賴照樣是編好的。
+      # ★ `always()`：門禁紅了也要存 —— 相依照樣是編好的。
       # ⚠ ⚠ **精確命中時整步跳過**：壓歸檔要幾分鐘，而下面「存建置快取」在命中時本就不跑
       #   ⇒ 壓出來的東西會被原樣扔掉。★ 一步只在「它的產物會被用到」時才該跑。
       # ★ 代價說在明處：命中時快取**不刷新**，快取裡那份 target 相對 HEAD 會越來越舊。

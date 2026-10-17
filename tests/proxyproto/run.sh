@@ -193,7 +193,7 @@ expect_line "v1，头与请求**分两段**发" "STATUS=200 BODY=real" "$R"
 
 # ★ ★ ★ 這一條是 fork 那側 `rewind()` 存在的**全部理由**。
 #   一次 read 會把 PROXY 頭與它後面的 `GET` **一起**讀回來；多讀到的那幾個位元組
-#   必須原樣還回流裡。⚠ 丟掉 rewind 的實作**只在這一條上壞**，
+#   必須原樣還迴流裡。⚠ 丟掉 rewind 的實作**只在這一條上壞**，
 #   而上面那條（分兩段發）照樣綠 —— 兩條缺一不可。
 R=$(python3 "$CLIENT" --port "$A_HTTP" --header v1:192.0.2.7:56324)
 expect_line "★★★ v1，头与请求在**同一个段**里（多读的字节要还回去）" "STATUS=200 BODY=real" "$R"

@@ -66,7 +66,7 @@
 | | |
 |---|---|
 | 檔案 | [`raw/short-connection-throughput/oha-request.txt`](raw/short-connection-throughput/oha-request.txt) 與 [`ws-off/` 下同名那份](ws-off/raw/short-connection-throughput/oha-request.txt) |
-| 原件 | 用例指令碼把 oha 發出的請求**原樣**寫入磁碟（合成伺服器端抓的），HTTP 的行尾就是 CRLF —— 每份 7 個 CR，**全部**成對出現在 CRLF 裡 |
+| 原件 | 案例指令碼把 oha 發出的請求**原樣**寫入磁碟（合成伺服器端抓的），HTTP 的行尾就是 CRLF —— 每份 7 個 CR，**全部**成對出現在 CRLF 裡 |
 | 入庫版 | 每個 CRLF 換成 LF，⛔ 別的位元組一個沒動：入庫版 = 原件刪掉全部 CR，逐位元組相等（機械核過） |
 | 為什麼 | 本儲存庫 `.gitattributes` 是 `* text=auto eol=lf`，原樣提交會在索引裡被轉成 LF、而工作樹仍是 CRLF ⇒ 門禁的行尾檢查（`git ls-files --eol`，工作樹 `w/crlf` 即紅）當場紅。owner 2026-10-05 在「轉 LF 並寫明」「保留位元組、改門禁」「不入庫」三條裡選了第一條 |
 | 不影響判定 | 視窗清單 8d 用的 `bench_request_close_violations`（`bench/lib.sh`）自己先刪 `\r` 再判；對入庫版重跑一次，照樣什麼都不打（= 請求裡帶著 `Connection: close`） |

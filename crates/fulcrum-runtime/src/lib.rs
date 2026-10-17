@@ -619,7 +619,7 @@ impl ProxyTarget {
     /// 等權迴歸護欄因此只能寫成「同一個處理程序裡，落點等於 `本函数(c) % n`」。
     pub fn random_source(&self, cursor: u64) -> u64 {
         // xorshift，種子在建置期取一次。不引 `rand`：這裡要的是「大致均勻」，
-        // 不是密碼學隨機，而多一條依賴要按 G29 的整套流程養。
+        // 不是密碼學隨機，而多一條相依要按 G29 的整套流程養。
         let mut x = self.seed ^ cursor.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         x ^= x >> 33;
         x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
@@ -709,7 +709,7 @@ impl ProxyTarget {
             LbPolicy::LeastConn => {
                 // ★ 比的是 `inflight / weight`（[`less_loaded`]，整數交叉相乘）。
                 //   ★ 平票時取**下標最小**的那個，不取「第一個碰到的」——
-                //   後者依賴迭代順序，讀起來像一樣，但一旦並行遍歷就不確定了。
+                //   後者相依迭代順序，讀起來像一樣，但一旦並行遍歷就不確定了。
                 //   ⚠ 全部權重為 1 時它退化成「比 `inflight`」，與這一批之前逐字相同。
                 let mut best = 0usize;
                 let mut best_load: Option<(usize, u32)> = None;
@@ -1136,7 +1136,7 @@ impl LogRt {
 /// RFC 9110 §5.1 的 `field-name` = RFC 9110 `token`。
 ///
 /// ★ 自己寫而不是拉一個 `http::HeaderName`：本 crate 是**純邏輯、不碰網路**，
-/// 而這條規則是一張字元表，抄它比多一條依賴便宜。
+/// 而這條規則是一張字元表，抄它比多一條相依便宜。
 fn is_header_token(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
@@ -1414,7 +1414,7 @@ pub struct Routed<'r> {
 
 /// 一份**可以在執行期整體換掉**的執行環境圖（G8 的「全量原子 load」那一側）。
 ///
-/// ★ 不用 `arc-swap`：它不在依賴圖裡（+1 個包），而寫入是「一天幾次」量級。
+/// ★ 不用 `arc-swap`：它不在相依圖裡（+1 個包），而寫入是「一天幾次」量級。
 /// `RwLock<Arc<Runtime>>` 的讀路徑只是一次無競爭讀鎖 + 一次 `Arc` 克隆。
 ///
 /// ⚠ ⚠ **一個請求必須自始至終看到同一份設定** ⇒ [`SharedRuntime::current`] 只在請求入口
@@ -1678,7 +1678,7 @@ fn keyed_proxies_of(sites: &[SiteRt]) -> Vec<KeyedProxy<'_>> {
                 }),
                 // ⚠ 容器裡的也要進來：一條藏在 `handle` 裡的 `reverse_proxy`
                 //   漏出這張清單的話，它就**沒有鍵**——覆蓋指不到它，
-                //   而它在 `proxy_key_fanout` 的計數里也不存在，兩件事一起靜默。
+                //   而它在 `proxy_key_fanout` 的計數裡也不存在，兩件事一起靜默。
                 BodyRt::Handle(arms) => {
                     for a in arms {
                         walk(&a.steps, site, out);
@@ -1729,7 +1729,7 @@ fn keyed_proxies_of(sites: &[SiteRt]) -> Vec<KeyedProxy<'_>> {
 /// 而「一起摘掉」多半正是要的語義：維運說「摘掉 `10.0.0.5:8080`」時那臺機器是壞的，
 /// 它不該從任何路由收流量。想細分的人寫一行 `id` 就能分開。
 ///
-/// ★ 但那個真實風險還在 —— 使用者可能**以為 `disable` 隻影響一條**。
+/// ★ 但那個真實風險還在 —— 使用者可能**以為 `disable` 只影響一條**。
 /// ⛔ 不用裝載期 warning 解決（那是給一個正常寫法加噪音），
 /// ⇒ 由 `/stats` 把 [`ProxyKeyFanout::proxies`] 顯示出來，
 /// 那才是 G18「不持久化但永遠可見」的正確形態。
@@ -1925,7 +1925,7 @@ impl SharedRuntime {
             inner: std::sync::RwLock::new(rt),
             overrides,
             // ★ R15：`new` 也算一次「裝載」——處理程序剛起來時服務的那份設定
-            // 同樣有一個裝載時刻，不是隻有 `swap` 才算數。
+            // 同樣有一個裝載時刻，不是只有 `swap` 才算數。
             loaded_at: std::sync::RwLock::new(std::time::SystemTime::now()),
             proxy_ports,
         })
@@ -2480,7 +2480,7 @@ impl Runtime {
     ///
     /// # ⚠ ⚠ 這裡走的是**第二份**遍歷，而它由一條判據釘住
     ///
-    /// [`keyed_proxies_of`] 是隻讀的（`&SiteRt`），掛格子要 `&mut` ⇒ 這一段是同一張圖的
+    /// [`keyed_proxies_of`] 是只讀的（`&SiteRt`），掛格子要 `&mut` ⇒ 這一段是同一張圖的
     /// 可變走法。**兩份遍歷分家的表現是完全靜默的**：漏掉一個分支（比如不下鑽進 `handle`），
     /// 那裡的上游就悄悄留著建構點上那格私有的佔位格子，管理面改登記處對它毫無作用。
     /// ⇒ `tests/overrides.rs` 那條判據**從 [`Self::keyed_proxies`] 枚舉每一個上游**，
@@ -2595,7 +2595,7 @@ impl Runtime {
     /// ⚠ 而「清單裡今天有哪幾條」隨串接進度變 ⇒ 拿 [`UNWIRED`] 本身當判據的門
     /// **會隨著能力一條條串接而啞掉，且啞掉的那一刻不紅**。
     /// ⇒ `tests/unwired_contract.rs` 從這裡喂一張形狀相同、內容與串接進度無關的合成表，
-    /// 於是判據不依賴今天恰好哪幾條沒串接。
+    /// 於是判據不相依今天恰好哪幾條沒串接。
     pub fn unwired_in_use_of(
         &self,
         table: &[(&'static str, &'static str)],
@@ -2775,11 +2775,11 @@ impl Runtime {
         })
     }
 
-    /// `handle_errors` 給的錯誤頁。`None` = 用內置預設（G63）。
+    /// `handle_errors` 給的錯誤頁。`None` = 用內建預設（G63）。
     ///
     /// ⚠ M1 的最小形態：只認 `handle_errors { respond <status> [body] }`。
     /// 更復雜的錯誤頁（走 reverse_proxy / file_server）是後面的事——
-    /// 而這裡回傳 `None` 時呼叫方會落到內置預設，**不會靜靜地什麼都不做**。
+    /// 而這裡回傳 `None` 時呼叫方會落到內建預設，**不會靜靜地什麼都不做**。
     pub fn error_page<'r>(&'r self, site: &'r SiteRt) -> Option<ErrorPage<'r>> {
         site.error_handler.iter().find_map(|s| match &s.body {
             BodyRt::Respond { status, body } => Some(ErrorPage {
@@ -2815,7 +2815,7 @@ struct Walk<'r, 'q> {
 
 impl<'r, 'q> Walk<'r, 'q> {
     /// 當前的請求視圖。★ `rewrite` 之後**後續匹配器看到的是新路徑**——
-    /// 這是 Caddy 的語義，也是唯一自洽的一種：否則 `rewrite` 就成了隻影響上游、
+    /// 這是 Caddy 的語義，也是唯一自洽的一種：否則 `rewrite` 就成了只影響上游、
     /// 不影響本機路由的半吊子操作。
     fn ctx(&self) -> RequestCtx<'_> {
         RequestCtx {
@@ -3247,7 +3247,7 @@ fn build_step(
 /// 自環的現場：請求打回自己 → 再轉發 → 再打回自己，直到 fd 或記憶體耗盡，
 /// 而紀錄裡只有源源不斷的**正常**轉發記錄。
 ///
-/// ⚠ **回傳話、不自己列印**（本 crate 有意不依賴 `log`）⇒ 由資料面的 `log_load_summary` 去說。
+/// ⚠ **回傳話、不自己列印**（本 crate 有意不相依 `log`）⇒ 由資料面的 `log_load_summary` 去說。
 /// ⚠ **是 warning 不是 error**：指回自己的 `reverse_proxy` 可能是有意的
 /// （第二趟落到另一個站台上而終止）⇒ 說出來，但不替使用者拒絕。
 /// 走遍一批站台，把全部 `cache` 步驟連同站台名收出來。

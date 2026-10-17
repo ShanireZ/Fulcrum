@@ -484,7 +484,7 @@ fi
 # ── 自簽證書（站台 T 要，M2 批 M′ 任務 3）─────────────────────────────────
 #
 # ⚠ SAN 必須有 `a.example`：樞衡按**證書自己的 SAN** 決定這張證書裝在哪些 SNI 上。
-# ★ 與 `tests/log/run.sh` 那段逐字同一套（現籤，⛔ 不入庫）。
+# ★ 與 `tests/log/run.sh` 那段逐字同一套（現簽，⛔ 不入庫）。
 openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   -keyout "$WORK/tls.key" -out "$WORK/tls.crt" \
   -subj "/CN=a.example" \
@@ -938,7 +938,7 @@ eq "★★ outcome=metrics 那一格随抓取增长（上一次抓取被这一�
 echo "=== fulcrum_tls_requests_total（M2 批 M′ 任务 3，G122 的 TLS 半 / G127）==="
 
 # 一條走 TLS 的請求。$1 = 路徑，其餘 = 額外的 curl 參數。回 HTTP 碼。
-# ⚠ `-k`：證書是現籤自籤的。⚠ `--resolve`：SNI 要是 `a.example`（證書的 SAN 就是它）。
+# ⚠ `-k`：證書是現簽自簽的。⚠ `--resolve`：SNI 要是 `a.example`（證書的 SAN 就是它）。
 tls_req() {
   local path=$1
   shift

@@ -1,12 +1,12 @@
 //! 診斷：原始碼位置、穩定錯誤碼、rustc 風格的繪製。
 //!
 //! 規格是 **G51**（`PLAN.md` §10）：**一次報全 + 穩定錯誤碼**，
-//! 每條至少帶 **行列號 + 原始碼片段 + caret**。樣例見
+//! 每條至少帶 **行列號 + 原始碼片段 + caret**。範例見
 //! [DSL 指令集參考](../../../docs/architecture/dsl-reference.md) §九。
 //!
 //! ★ ★ **錯誤碼一旦發出就不能改含義**（G51 明寫，與 D9 相鄰）。所以它們集中登記在
 //! [`DiagCode`] 的常數表裡，並由 `tests/` 裡的一條測試釘住「編號不重複、且與文件裡
-//! 那條樣例用的 `FUL-DSL-0007` 對得上」——文件裡印出去的那個號碼就是契約的一部分。
+//! 那條範例用的 `FUL-DSL-0007` 對得上」——文件裡印出去的那個號碼就是契約的一部分。
 
 use std::fmt::Write as _;
 
@@ -131,7 +131,7 @@ impl DiagCode {
     pub const SITE_BLOCK_EXPECTED: DiagCode = DiagCode(6);
 
     // ── 指令 ────────────────────────────────────────────────────────────────
-    /// 未知指令。★ 這個號碼印在 DSL 參考文件 §九的樣例裡，**不能改**。
+    /// 未知指令。★ 這個號碼印在 DSL 參考文件 §九的範例裡，**不能改**。
     pub const UNKNOWN_DIRECTIVE: DiagCode = DiagCode(7);
     /// 指令參數個數不對。
     pub const BAD_ARITY: DiagCode = DiagCode(8);
@@ -190,7 +190,7 @@ impl DiagCode {
     /// ★ ★ 新增。在此之前這一類錯誤長在**裝載期**，處置是
     /// 「打一行 error，本站台的 DNS-01 不啟用」—— 而 `validate` 結束代碼仍是 0、
     /// 站台照常起來，於是一份寫錯的設定**在每一處都顯得正常**，
-    /// 直到那張證書永遠籤不下來。⇒ 形狀判據搬到編譯期，它不需要網路。
+    /// 直到那張證書永遠簽不下來。⇒ 形狀判據搬到編譯期，它不需要網路。
     /// ⚠ 「主機名解析得出來嗎」**不在**這條裡：那要網路，留到簽發那一刻。
     pub const BAD_RESOLVER: DiagCode = DiagCode(29);
     /// 自動 HTTP 重定向合成的站台，在 :80 上蓋過了使用者自己寫的連接埠備援站台。
@@ -212,7 +212,7 @@ impl DiagCode {
     pub const MISSING_REQUIRED_SUB: DiagCode = DiagCode(32);
     /// 路徑必須是絕對路徑（G91）。
     ///
-    /// ★ ★ 相對路徑依賴處理程序 cwd，而 systemd 下 cwd 是 `/`、開發機上是專案目錄
+    /// ★ ★ 相對路徑相依處理程序 cwd，而 systemd 下 cwd 是 `/`、開發機上是專案目錄
     /// ⇒ **同一份設定在兩處指向兩個地方**。那正是「能裝載、行為不同」那一類事故，
     /// 現場看到的只是 404，沒有任何東西說「你的 root 解析到別處去了」。
     pub const PATH_NOT_ABSOLUTE: DiagCode = DiagCode(33);
@@ -289,7 +289,7 @@ impl DiagCode {
     /// 同一個上游寫了兩條 `weight`（**M2 批 N**）。
     ///
     /// ★ ★ 必須是 error，⛔ **不許「後寫的贏」**：那種規則下刪掉或挪動其中一行
-    /// 會**靜默**改掉權重，而它與「兩行本來就是一樣的」在設定里長得一模一樣。
+    /// 會**靜默**改掉權重，而它與「兩行本來就是一樣的」在設定裡長得一模一樣。
     pub const DUPLICATE_WEIGHT: DiagCode = DiagCode(39);
     /// 權重不在 `[1, 65535]` 裡 —— 含 `0`、負數、帶單位、不是數字（**M2 批 N**，裁決 R3）。
     ///
@@ -444,7 +444,7 @@ impl Diagnostic {
         self
     }
 
-    /// 繪製成 rustc 風格的一段文字。格式與 DSL 參考 §九的樣例逐字元對齊。
+    /// 繪製成 rustc 風格的一段文字。格式與 DSL 參考 §九的範例逐字元對齊。
     pub fn render(&self, src: &Source) -> String {
         let loc = src.location(self.span.start);
         let end = src.location(self.span.end.max(self.span.start));

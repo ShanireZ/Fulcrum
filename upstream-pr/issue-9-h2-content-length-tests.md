@@ -2,7 +2,7 @@
 
 > 對應 fork **改動 20**（`vendor/pingora/FORK.md`）：兩條上游 h2 測試在 h2 0.4.20 下紅。
 >
-> 範本：上游 `.github/ISSUE_TEMPLATE/bug_report.md` 的小標題（測試與依賴的行為對不上，是缺陷不是新功能）。
+> 範本：上游 `.github/ISSUE_TEMPLATE/bug_report.md` 的小標題（測試與相依的行為對不上，是缺陷不是新功能）。
 > 補丁：[`0010-…`](0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch)，基於上游 `main` = `4487f7b`（2026-09-11；2026-10-16 查仍是它）。
 > PR 正文草稿：[`pr-9-h2-content-length-tests.md`](pr-9-h2-content-length-tests.md)。
 >

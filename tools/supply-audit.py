@@ -1,48 +1,48 @@
 #!/usr/bin/env python3
-"""供应链全量审计 —— 刷新 docs/platform/supply-chain.md 的那组数字。
+"""供應鏈全量稽核 —— 刷新 docs/platform/supply-chain.md 的那組數字。
 
-★ **它和 `dep-check.py` 是两件不同的事，不要互相替代。**
+★ **它和 `dep-check.py` 是兩件不同的事，不要互相替代。**
 
-`dep-check.py` 只报告 `cargo update` 能动的东西，而 `cargo update` **只在现有版本需求范围内
-移动**。任何被上游清单的上界卡住的依赖，它一个都不会报——的实测里，
-`cargo update --dry-run` 一直说「无可用更新」，而当时有 44 个包落后、两条真漏洞在库里。
+`dep-check.py` 只報告 `cargo update` 能動的東西，而 `cargo update` **只在現有版本需求範圍內
+移動**。任何被上游清單的上界卡住的相依，它一個都不會報——的實測裡，
+`cargo update --dry-run` 一直說「無可用更新」，而當時有 44 個包落後、兩條真漏洞在庫裡。
 
-本脚本做的是 `dep-check.py` 结构上做不到的两件事：
+本指令碼做的是 `dep-check.py` 結構上做不到的兩件事：
 
-  1. **逐包对比 crates.io 的 `max_stable_version`** —— 找出陈旧包，不管它为什么陈旧
-  2. **对 `Cargo.lock` 全量查 OSV** —— 找出安全公告
+  1. **逐包對比 crates.io 的 `max_stable_version`** —— 找出陳舊包，不管它為什麼陳舊
+  2. **對 `Cargo.lock` 全量查 OSV** —— 找出安全公告
 
-## ★ 两条判据来自 supply-chain.md 记下的教训
+## ★ 兩條判據來自 supply-chain.md 記下的教訓
 
-**① 必须分桶。** 「在 lock 里」「在编译图里」「能不能升」是三件不同的事，混在一起就会得出
-吓人但无意义的数字——44 个陈旧包里有 17 个在目标平台上一行代码都不会被编译。
-传 `--cargo` 就能拿到编译图（`cargo tree --target ... -e normal`），据此分桶；不传则只报 lock 层面。
+**① 必須分桶。** 「在 lock 裡」「在編譯圖裡」「能不能升」是三件不同的事，混在一起就會得出
+嚇人但無意義的數字——44 個陳舊包裡有 17 個在目標平台上一行程式碼都不會被編譯。
+傳 `--cargo` 就能拿到編譯圖（`cargo tree --target ... -e normal`），據此分桶；不傳則只報 lock 層面。
 
-**② 陈旧不判红，未登记的公告才判红。** 目标构建里长期有 8–10 个升不动的陈旧包，成因全在
-第三方 crate 那一层（它们本身已是最新版）。把陈旧算作失败会让这道门**永远红**，
-而永远亮着的告警等于没有告警。已登记并接受的公告同理——它们照常打印，但不改退出码。
+**② 陳舊不判紅，未登記的公告才判紅。** 目標建置里長期有 8–10 個升不動的陳舊包，成因全在
+第三方 crate 那一層（它們本身已是最新版）。把陳舊算作失敗會讓這道門**永遠紅**，
+而永遠亮著的告警等於沒有告警。已登記並接受的公告同理——它們照常列印，但不改結束代碼。
 
 用法：
     python tools/supply-audit.py
     python tools/supply-audit.py --cargo "docker run --rm -v ...:/w -w /w fulcrum-build:local cargo"
     python tools/supply-audit.py --lock vendor/pingora/Cargo.lock
-    python tools/supply-audit.py --markdown        # 输出可直接贴进 supply-chain.md 的表
+    python tools/supply-audit.py --markdown        # 輸出可直接貼進 supply-chain.md 的表
 
-退出码（★ 会叠加，风格同 dep-check.py）：
-    0   没有未登记的安全公告，且两侧的查证覆盖率都达标
-    20  ★ 有未登记的安全公告
-    40  ★ 查证覆盖率不足（超过 --max-unresolved-pct，默认 10%）——**版本侧或公告侧任一**
-    60  两者都有
-    1   出错
+結束代碼（★ 會疊加，風格同 dep-check.py）：
+    0   沒有未登記的安全公告，且兩側的查證覆蓋率都達標
+    20  ★ 有未登記的安全公告
+    40  ★ 查證覆蓋率不足（超過 --max-unresolved-pct，預設 10%）——**版本側或公告側任一**
+    60  兩者都有
+    1   出錯
 
-★ 40 这一档来自复审的第 3 条：`unresolved` 原先**只影响打印、不影响退出码**，
-  于是 crates.io 整体不可达时，脚本会打一行警告然后照常 exit 0——只看退出码的 cron / CI
-  会把一次「什么都没查到」记成一次通过。
+★ 40 這一檔來自複審的第 3 條：`unresolved` 原先**只影響列印、不影響結束代碼**，
+  於是 crates.io 整體不可達時，指令碼會打一行警告然後照常 exit 0——只看結束代碼的 cron / CI
+  會把一次「什麼都沒查到」記成一次通過。
 
-★ ★ 把同一条纪律补到了**公告那一侧**。此前 `osv_batch` 没有任何错误处理：
-  OSV 不可达就直接抛异常（吵，但给不出诊断），而 `zip(chunk, results)` 在 OSV 少回几条时
-  会**静默地**把尾巴上那批包当成「查过且干净」。现在两侧用同一个阈值，且**公告没查全时
-  绝不打印「没有未登记的安全公告」**——那会是一句有依据感的假话。
+★ ★ 把同一條紀律補到了**公告那一側**。此前 `osv_batch` 沒有任何錯誤處理：
+  OSV 不可達就直接拋異常（吵，但給不出診斷），而 `zip(chunk, results)` 在 OSV 少回幾條時
+  會**靜默地**把尾巴上那批包當成「查過且乾淨」。現在兩側用同一個閾值，且**公告沒查全時
+  絕不列印「沒有未登記的安全公告」**——那會是一句有依據感的假話。
 """
 
 from __future__ import annotations
@@ -85,10 +85,10 @@ TREE_LINE = re.compile(r"^(\S+) v(\S+)")
 
 
 def parse_lock(path: Path) -> list[tuple[str, str]]:
-    """返回 lock 里所有**来自 registry** 的 (name, version)。
+    """回傳 lock 裡所有**來自 registry** 的 (name, version)。
 
-    ★ 没有 `source` 字段的是本地 path 包（工作区成员、vendor 的 fork），
-      它们不在 crates.io 上，查版本和公告都没有意义。
+    ★ 沒有 `source` 欄位的是本機 path 包（工作區成員、vendor 的 fork），
+      它們不在 crates.io 上，查版本和公告都沒有意義。
     """
     text = path.read_text(encoding="utf-8")
     out: list[tuple[str, str]] = []
@@ -104,7 +104,7 @@ def parse_lock(path: Path) -> list[tuple[str, str]]:
 
 
 def compiled_set(cargo: list[str], target: str) -> set[tuple[str, str]] | None:
-    """用 `cargo tree` 拿到**真正参与编译**的包集合。拿不到就返回 None（降级为只报 lock 层）。"""
+    """用 `cargo tree` 拿到**真正參與編譯**的包集合。拿不到就回傳 None（降級為只報 lock 層）。"""
     proc = subprocess.run(
         [*cargo, "tree", "--target", target, "-e", "normal", "--workspace", "--prefix", "none"],
         cwd=REPO,
@@ -125,10 +125,10 @@ def compiled_set(cargo: list[str], target: str) -> set[tuple[str, str]] | None:
 
 
 def max_stable(name: str) -> tuple[str | None, str | None]:
-    """返回 (最新稳定版, 失败原因)。**两者必有其一**。
+    """回傳 (最新穩定版, 失敗原因)。**兩者必有其一**。
 
-    ★ 绝不把「查不到」和「已是最新」混成同一个返回值——本页的数字是要贴回
-      supply-chain.md 当依据的，一次静默的网络抖动会让某个陈旧包凭空消失。
+    ★ 絕不把「查不到」和「已是最新」混成同一個回傳值——本頁的數字是要貼回
+      supply-chain.md 當依據的，一次靜默的網路抖動會讓某個陳舊包憑空消失。
     """
     url = f"https://crates.io/api/v1/crates/{name}"
     # ★ 有界重試。原先 429 時是 `return max_stable(name)` 的無限遞歸：
@@ -160,18 +160,18 @@ def max_stable(name: str) -> tuple[str | None, str | None]:
 def osv_batch(
     pkgs: list[tuple[str, str]],
 ) -> tuple[dict[tuple[str, str], list[str]], list[tuple[tuple[str, str], str]]]:
-    """对全量包查 OSV。
+    """對全量包查 OSV。
 
-    返回 `(hits, unqueried)`：
+    回傳 `(hits, unqueried)`：
       - `hits`     = {(name, version): [advisory_id, ...]}，只含有命中的
-      - `unqueried` = [((name, version), 原因)]，**本次根本没查成的包**
+      - `unqueried` = [((name, version), 原因)]，**本次根本沒查成的包**
 
-    ★ 为什么必须把「没查成」单独返回，而不是让它混进「没命中」：
-      这两者在数据结构上长得一模一样（都是 `hits` 里没有那个键），但含义相反——
-      一个是「查过，干净」，一个是「不知道」。原先本函数遇到网络错误直接抛异常，
-      虽然吵（退出码 1），却给不出「OSV 没查成」这个诊断；而一旦有人图省事在外面
-      裹一层 `try/except` 当成空结果，整份审计就会在**一条公告都没查过**的情况下
-      输出「没有未登记的安全公告」。这正是复审那批缺陷的形状。
+    ★ 為什麼必須把「沒查成」單獨回傳，而不是讓它混進「沒命中」：
+      這兩者在資料結構上長得一模一樣（都是 `hits` 裡沒有那個鍵），但含義相反——
+      一個是「查過，乾淨」，一個是「不知道」。原先本函式遇到網路錯誤直接拋異常，
+      雖然吵（結束代碼 1），卻給不出「OSV 沒查成」這個診斷；而一旦有人圖省事在外面
+      裹一層 `try/except` 當成空結果，整份稽核就會在**一條公告都沒查過**的情況下
+      輸出「沒有未登記的安全公告」。這正是複審那批缺陷的形狀。
     """
     hits: dict[tuple[str, str], list[str]] = {}
     unqueried: list[tuple[tuple[str, str], str]] = []
@@ -309,8 +309,8 @@ def main() -> int:
                 print(f"           接受理由：{ACCEPTED[aid]}")
 
     # ★ 反向檢核忽略名單：只查「命中時是否已登記」是不夠的，還要查
-    #   「已登記的條目是不是還命中得上」。否則依賴被刪掉之後條目會靜默留存，
-    #   將來某個依賴把它拉回來時這道門會直接放行。
+    #   「已登記的條目是不是還命中得上」。否則相依被刪掉之後條目會靜默留存，
+    #   將來某個相依把它拉回來時這道門會直接放行。
     #   （同一條教訓當初登記為 **D10**：過期的宣告比過期的狀態更危險。
     #     ⚠ 那一條已經結案，不在 `PLAN.md` §11 裡了。）
     # ★ 但這條反向檢核**只在公告確實查過時才成立**：一次 OSV 失敗會讓所有 ACCEPTED 條目
@@ -358,7 +358,7 @@ def main() -> int:
         print(f"  （另有 {len(lock_only)} 个仅在 lock 里，不进产物，已折叠）")
 
     # ★ 查不到的必須顯式報出來。它們既不是「陳舊」也不是「最新」，而是**沒查證**；
-    #   混進任何一邊都會讓貼回文件的數字失真。
+    #   混進任何一邊都會讓貼迴文件的數字失真。
     unresolved_pct = (100.0 * len(unresolved) / len(names)) if names else 0.0
     if unresolved:
         print(f"\n⚠ {len(unresolved)} 个包**未能查证**（不计入上面的陈旧数）"
@@ -397,7 +397,7 @@ def main() -> int:
 
     # ★ ★ 「什麼都沒查到」不許記成綠。
     #   crates.io 整體不可達時（公司網路、DNS、限流），全部包都會落進 unresolved，
-    #   而這一欄原先**隻影響列印、不影響結束代碼**——每週的 cron / CI 只看結束代碼，
+    #   而這一欄原先**只影響列印、不影響結束代碼**——每週的 cron / CI 只看結束代碼，
     #   於是一次**什麼都沒查證**的執行會被記成一次通過。這正是本專案複審兩輪
     #   反覆抓到的那個形狀：把「沒能檢查」當成「檢查通過」。
     #

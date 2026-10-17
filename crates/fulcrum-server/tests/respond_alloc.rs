@@ -2,7 +2,7 @@
 //!
 //! ★ 單獨一個測試二進位：`#[global_allocator]` 是整個二進位一份（同 `metrics_alloc.rs`、`files_alloc.rs`）。
 //! ★ 只數打開了開關的那個執行緒；整條請求在 current-thread 執行環境裡跑 ⇒ 都落在本執行緒。
-//! ⚠ **不釘整條請求的絕對次數**：那裡一大半是 pingora / tokio / http 的，升一次依賴就會變。
+//! ⚠ **不釘整條請求的絕對次數**：那裡一大半是 pingora / tokio / http 的，升一次相依就會變。
 //!   釘的是兩處「差」—— 頭表之外只多 `Content-Length` 一個值 · h1 入口那一層只多 pingora 要的那一次裝箱。
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -73,7 +73,7 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, u64) {
     (out, stop())
 }
 
-/// ★ 內置反證：計數器真的在數。少了它，下面那幾條的「差」也可能只是兩邊都數成了 0。
+/// ★ 內建反證：計數器真的在數。少了它，下面那幾條的「差」也可能只是兩邊都數成了 0。
 #[test]
 fn 计数分配器自己数得到分配() {
     let (_, n) = counted(|| std::hint::black_box(Vec::<u8>::with_capacity(64)));
