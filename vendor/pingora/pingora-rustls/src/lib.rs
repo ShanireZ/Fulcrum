@@ -48,23 +48,23 @@ pub use rustls_native_certs::load_native_certs;
 use rustls_pki_types::pem::{PemObject, SectionKind};
 pub use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 
-/// rustls-pemfile 的 `Item` 枚举覆盖到的段类型，**逐项照抄**它的 `Item::from_kind()`。
+/// rustls-pemfile 的 `Item` 枚舉覆蓋到的段類型，**逐項照抄**它的 `Item::from_kind()`。
 ///
-/// ★ 枢衡改动（G45）：`rustls-pemfile` 失维（RUSTSEC-2025-0134，仓库 2025-08 归档、
-/// 无补丁版本），改用 `rustls-pki-types` 自带的 `PemObject`——公告原文说得很清楚，
-/// 2.2.0 本来就是 pki-types **同一份解析代码**的薄包装，所以这不是换实现。
+/// ★ 樞衡改動（G45）：`rustls-pemfile` 失維（RUSTSEC-2025-0134，儲存庫 2025-08 歸檔、
+/// 無補丁版本），改用 `rustls-pki-types` 自帶的 `PemObject`——公告原文說得很清楚，
+/// 2.2.0 本來就是 pki-types **同一份解析程式碼**的薄包裝，所以這不是換實作。
 ///
-/// ⚠ **但有一处必须逐字保留，否则就是行为变更而不是适配**：
-/// `Item::from_kind()` 对 `SectionKind::EchConfigList` 返回 `None`，而它上面那层
-/// `read_one` 写的是 `None => continue`——**ECHCONFIG 段会被静默跳过**。
-/// pki-types 的 `(SectionKind, Vec<u8>)` 迭代器会把它交出来，于是
-/// [`load_ca_file_into_store`] 的「非证书即报错」会对一个含 ECHCONFIG 的 CA 文件判红。
+/// ⚠ **但有一處必須逐字保留，否則就是行為變更而不是適配**：
+/// `Item::from_kind()` 對 `SectionKind::EchConfigList` 回傳 `None`，而它上面那層
+/// `read_one` 寫的是 `None => continue`——**ECHCONFIG 段會被靜默跳過**。
+/// pki-types 的 `(SectionKind, Vec<u8>)` 迭代器會把它交出來，於是
+/// [`load_ca_file_into_store`] 的「非證書即回報錯誤」會對一個含 ECHCONFIG 的 CA 檔案判紅。
 ///
-/// ★ 这里用**白名单**而不是把 `EchConfigList` 单独排掉：`SectionKind` 是
-/// `#[non_exhaustive]`，白名单能让将来新增的段类型继续被跳过，
-/// 与 `rustls-pemfile` **冻结下来**的行为保持一致（它已归档，不会再长出新的 `Item`）。
+/// ★ 這裡用**白名單**而不是把 `EchConfigList` 單獨排掉：`SectionKind` 是
+/// `#[non_exhaustive]`，白名單能讓將來新增的段類型繼續被跳過，
+/// 與 `rustls-pemfile` **凍結下來**的行為保持一致（它已歸檔，不會再長出新的 `Item`）。
 ///
-/// 由 `tests::ca_store_silently_skips_echconfig` 守着。
+/// 由 `tests::ca_store_silently_skips_echconfig` 守著。
 const RUSTLS_PEMFILE_ITEM_KINDS: &[SectionKind] = &[
     SectionKind::Certificate,
     SectionKind::PublicKey,
@@ -94,15 +94,15 @@ where
 
 /// Read the pem file at the given path from disk
 ///
-/// ★ 枢衡改动（G45）：返回类型由 `Vec<Item>` 换成 `Vec<(SectionKind, Vec<u8>)>`——
-/// pki-types 没有 `Item` 那个枚举。过滤规则见 [`RUSTLS_PEMFILE_ITEM_KINDS`]。
+/// ★ 樞衡改動（G45）：回傳類型由 `Vec<Item>` 換成 `Vec<(SectionKind, Vec<u8>)>`——
+/// pki-types 沒有 `Item` 那個枚舉。過濾規則見 [`RUSTLS_PEMFILE_ITEM_KINDS`]。
 fn load_pem_file<P>(path: P) -> Result<Vec<(SectionKind, Vec<u8>)>>
 where
     P: AsRef<Path>,
 {
     <(SectionKind, Vec<u8>)>::pem_reader_iter(load_file(path)?)
-        // ★ 解析错误一律往上抛（与 rustls-pemfile 的 read_all 一致）；
-        //   只有「解析成功但类型是 Item 覆盖不到的」才丢掉。
+        // ★ 解析錯誤一律往上拋（與 rustls-pemfile 的 read_all 一致）；
+        //   只有「解析成功但類型是 Item 覆蓋不到的」才丟掉。
         .filter(|res| match res {
             Ok((kind, _)) => RUSTLS_PEMFILE_ITEM_KINDS.contains(kind),
             Err(_) => true,
@@ -143,14 +143,14 @@ where
 pub fn load_platform_certs_incl_env_into_store(ca_certs: &mut RootCertStore) -> Result<()> {
     // this includes handling of ENV vars SSL_CERT_FILE & SSL_CERT_DIR
     //
-    // ★ 枢衡调用点适配（G41）：rustls-native-certs 0.8 起，load_native_certs() 不再返回
-    //   Result，而是返回 CertificateResult { certs, errors } —— **部分成功从此是可表达的**。
+    // ★ 樞衡呼叫點適配（G41）：rustls-native-certs 0.8 起，load_native_certs() 不再回傳
+    //   Result，而是回傳 CertificateResult { certs, errors } —— **部分成功從此是可表達的**。
     //
-    // ★ ★ 语义按 0.7.3 逐字保留，而 0.7.3 的语义不是「有错就失败」：
-    //     它的 CertPaths::load() 结尾那句注释是 `promote first error if we have no certs
-    //     to return`，即 **只有一张都没读到时才返回 Err**；只要读到了哪怕一张，
-    //     错误就被咽掉。照搬「errors 非空即失败」会让本函数比 0.7.3 **更严**——
-    //     /etc/ssl/certs 里一个读不动的文件就能让反代起不来。那是行为变更，不是适配。
+    // ★ ★ 語義按 0.7.3 逐字保留，而 0.7.3 的語義不是「有錯就失敗」：
+    //     它的 CertPaths::load() 結尾那句註解是 `promote first error if we have no certs
+    //     to return`，即 **只有一張都沒讀到時才回傳 Err**；只要讀到了哪怕一張，
+    //     錯誤就被咽掉。照搬「errors 非空即失敗」會讓本函式比 0.7.3 **更嚴**——
+    //     /etc/ssl/certs 裡一個讀不動的檔案就能讓反代起不來。那是行為變更，不是適配。
     let result = load_native_certs();
 
     if result.certs.is_empty() && !result.errors.is_empty() {
@@ -160,8 +160,8 @@ pub fn load_platform_certs_incl_env_into_store(ca_certs: &mut RootCertStore) -> 
         );
     }
 
-    // 0.7.3 把这些非致命错误直接丢掉。0.8 既然把它们暴露了出来，就至少留下痕迹——
-    // ★ 控制流与 0.7.3 完全一致，只是不再无声。
+    // 0.7.3 把這些非致命錯誤直接丟掉。0.8 既然把它們暴露了出來，就至少留下痕跡——
+    // ★ 控制流與 0.7.3 完全一致，只是不再無聲。
     for err in &result.errors {
         warn!("ignored error while loading native certificates: {err}");
     }
@@ -198,10 +198,10 @@ pub fn load_certs_and_key_files<'a>(
     // These are the currently supported pk types -
     // [https://doc.servo.org/rustls/key/struct.PrivateKey.html]
     //
-    // ★ 枢衡改动（G45）：`PrivateKeyDer::from_pem()` 认的**恰好**是
-    //   RsaPrivateKey / EcPrivateKey / PrivateKey 三种，与原来那个手写的
-    //   Pkcs1/Sec1/Pkcs8 三分支逐项一致（pki-types 源码里就是这三条 match 臂）。
-    //   仍然取**文件里的第一把**，不按类型排优先级。
+    // ★ 樞衡改動（G45）：`PrivateKeyDer::from_pem()` 認的**恰好**是
+    //   RsaPrivateKey / EcPrivateKey / PrivateKey 三種，與原來那個手寫的
+    //   Pkcs1/Sec1/Pkcs8 三分支逐項一致（pki-types 原始碼裡就是這三條 match 臂）。
+    //   仍然取**檔案裡的第一把**，不按類型排優先級。
     let private_key_opt = key_file
         .into_iter()
         .find_map(|(kind, der)| PrivateKeyDer::from_pem(kind, der));
@@ -215,10 +215,10 @@ pub fn load_certs_and_key_files<'a>(
 
 /// Load the certificate
 ///
-/// ★ 枢衡改动（G45）：`rustls_pemfile::certs()` → `CertificateDer::pem_reader_iter()`。
-/// 两者形状相同——非证书段跳过、解析错误交出来——★ 且**仍然读完整个文件**，
-/// 所以第一张证书之后的语法错误照样判红（原实现先 `collect::<Result<Vec<_>>>()?`
-/// 再取 `first()`，这一点容易在「取到就返回」的重写里悄悄丢掉）。
+/// ★ 樞衡改動（G45）：`rustls_pemfile::certs()` → `CertificateDer::pem_reader_iter()`。
+/// 兩者形狀相同——非證書段跳過、解析錯誤交出來——★ 且**仍然讀完整個檔案**，
+/// 所以第一張證書之後的語法錯誤照樣判紅（原實作先 `collect::<Result<Vec<_>>>()?`
+/// 再取 `first()`，這一點容易在「取到就回傳」的重寫裡悄悄丟掉）。
 pub fn load_pem_file_ca(path: &String) -> Result<Vec<u8>> {
     let mut first = None;
     for cert_res in CertificateDer::pem_reader_iter(load_file(path)?) {
@@ -234,9 +234,9 @@ pub fn load_pem_file_ca(path: &String) -> Result<Vec<u8>> {
     Ok(first.unwrap_or_default())
 }
 
-/// ★ 枢衡改动（G45）：`rustls_pemfile::private_key()` → `PrivateKeyDer::pem_reader_iter()`。
-/// 原实现在拿到第一把密钥时就返回，**不再读后面的内容**，所以后面的语法错误看不见；
-/// 这里保持同样的早退。一把都没有时返回**空 Vec 而不是错误**，同样照旧。
+/// ★ 樞衡改動（G45）：`rustls_pemfile::private_key()` → `PrivateKeyDer::pem_reader_iter()`。
+/// 原實作在拿到第一把金鑰時就回傳，**不再讀後面的內容**，所以後面的語法錯誤看不見；
+/// 這裡保持同樣的早退。一把都沒有時回傳**空 Vec 而不是錯誤**，同樣照舊。
 pub fn load_pem_file_private_key(path: &String) -> Result<Vec<u8>> {
     for key_res in PrivateKeyDer::pem_reader_iter(load_file(path)?) {
         let key = key_res.or_err(
@@ -255,29 +255,29 @@ pub fn hash_certificate(cert: &CertificateDer) -> Vec<u8> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ★ 枢衡改动 3/3（G45）：PEM 加载的特征化测试。
+// ★ 樞衡改動 3/3（G45）：PEM 載入的特徵化測試。
 //
-// 这些测试**先照着 rustls-pemfile 的现有行为写并跑绿**，然后才做迁移
-// （RUSTSEC-2025-0134，rustls-pemfile 失维）。理由是一条实测出来的事实：
-// **迁移之前，pingora-rustls 这个 crate 一条测试都没有**——
-// 而「一个没有任何测试的 crate」与「一个没有门的改动」在退出码上完全一样。
+// 這些測試**先照著 rustls-pemfile 的現有行為寫並跑綠**，然後才做遷移
+// （RUSTSEC-2025-0134，rustls-pemfile 失維）。理由是一條實測出來的事實：
+// **遷移之前，pingora-rustls 這個 crate 一條測試都沒有**——
+// 而「一個沒有任何測試的 crate」與「一個沒有門的改動」在結束代碼上完全一樣。
 //
-// ★ 最要紧的一条是 `ca_store_silently_skips_echconfig`：
-// rustls-pemfile 的 `Item::from_kind()` 对 `SectionKind::EchConfigList` 返回 `None`，
-// 而 `read_one` 那一层写着 `None => continue`——所以 `read_all` **静默跳过 ECHCONFIG 段**。
-// pki-types 的 `(SectionKind, Vec<u8>)` 迭代器会把它**吐出来**，
-// 于是 `load_ca_file_into_store()` 的「非证书即报错」会对含 ECHCONFIG 的 CA 文件判红。
-// 那是行为变更，不是适配。这条测试就是拿来钉住它的。
+// ★ 最要緊的一條是 `ca_store_silently_skips_echconfig`：
+// rustls-pemfile 的 `Item::from_kind()` 對 `SectionKind::EchConfigList` 回傳 `None`，
+// 而 `read_one` 那一層寫著 `None => continue`——所以 `read_all` **靜默跳過 ECHCONFIG 段**。
+// pki-types 的 `(SectionKind, Vec<u8>)` 迭代器會把它**吐出來**，
+// 於是 `load_ca_file_into_store()` 的「非證書即回報錯誤」會對含 ECHCONFIG 的 CA 檔案判紅。
+// 那是行為變更，不是適配。這條測試就是拿來釘住它的。
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// 抄自 `pingora-core/tests/keys/server.crt`（上游自带的自签测试证书）。
+    /// 抄自 `pingora-core/tests/keys/server.crt`（上游自帶的自籤測試證書）。
     /// ★ 只有需要 `RootCertStore::add()` 真的解析成功的用例才用它；
-    ///   其余用例用结构合法但内容随意的假 PEM——那几个函数不做 DER 校验，
-    ///   用假的反而能证明「测的是 PEM 分派，不是 rustls 的证书解析」。
+    ///   其餘用例用結構合法但內容隨意的假 PEM——那幾個函式不做 DER 檢核，
+    ///   用假的反而能證明「測的是 PEM 分派，不是 rustls 的證書解析」。
     const REAL_CERT: &str = "\
 -----BEGIN CERTIFICATE-----
 MIIB9zCCAZ2gAwIBAgIUMI7aLvTxyRFCHhw57hGt4U6yupcwCgYIKoZIzj0EAwIw
@@ -301,13 +301,13 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
         "-----BEGIN RSA PRIVATE KEY-----\ncGsx\n-----END RSA PRIVATE KEY-----\n";
     const SEC1_KEY: &str = "-----BEGIN EC PRIVATE KEY-----\nc2Mx\n-----END EC PRIVATE KEY-----\n";
     const PUBLIC_KEY: &str = "-----BEGIN PUBLIC KEY-----\ncHVi\n-----END PUBLIC KEY-----\n";
-    /// ★ rustls-pemfile 的 `Item` 覆盖不到的段类型——它会被静默跳过。
+    /// ★ rustls-pemfile 的 `Item` 覆蓋不到的段類型——它會被靜默跳過。
     const ECH_CONFIG: &str = "-----BEGIN ECHCONFIG-----\nZWNo\n-----END ECHCONFIG-----\n";
 
     static SEQ: AtomicU32 = AtomicU32::new(0);
 
-    /// 写一个临时 PEM 文件并返回路径。★ 不引 tempfile 依赖：
-    /// 给一个失维包搬家的改动，不该顺手再添一个新依赖。
+    /// 寫一個臨時 PEM 檔案並回傳路徑。★ 不引 tempfile 依賴：
+    /// 給一個失維包搬家的改動，不該順手再添一個新依賴。
     fn pem_file(body: &str) -> String {
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
         let mut path = std::env::temp_dir();
@@ -354,8 +354,8 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn certs_and_key_takes_the_first_key_in_file_order() {
-        // ★ 现有实现是 `.filter_map(..).next()`，即**文件里的第一把**，
-        //   与密钥类型的偏好无关。迁移后必须还是同一把。
+        // ★ 現有實作是 `.filter_map(..).next()`，即**檔案裡的第一把**，
+        //   與金鑰類型的偏好無關。遷移後必須還是同一把。
         let certs = pem_file(FAKE_CERT_A);
         let key = pem_file(&format!("{SEC1_KEY}{PKCS8_KEY}{PKCS1_KEY}"));
         let (_, loaded) = load_certs_and_key_files(&certs, &key).unwrap().unwrap();
@@ -364,12 +364,12 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn certs_and_key_is_none_when_a_half_is_missing() {
-        // 有证书没密钥
+        // 有證書沒金鑰
         let certs = pem_file(FAKE_CERT_A);
         let no_key = pem_file(PUBLIC_KEY);
         assert!(load_certs_and_key_files(&certs, &no_key).unwrap().is_none());
 
-        // 有密钥没证书
+        // 有金鑰沒證書
         let no_cert = pem_file(PUBLIC_KEY);
         let key = pem_file(PKCS8_KEY);
         assert!(load_certs_and_key_files(&no_cert, &key).unwrap().is_none());
@@ -377,8 +377,8 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn certs_and_key_ignores_non_certificate_sections_in_the_cert_file() {
-        // ★ 与 load_ca_file_into_store 不同：这一个是 filter_map，多余的段被**丢掉**而不是报错。
-        //   两个函数对同一份文件的态度不一样，这本身就值得钉住。
+        // ★ 與 load_ca_file_into_store 不同：這一個是 filter_map，多餘的段被**丟掉**而不是回報錯誤。
+        //   兩個函式對同一份檔案的態度不一樣，這本身就值得釘住。
         let certs = pem_file(&format!("{PUBLIC_KEY}{FAKE_CERT_A}"));
         let key = pem_file(PKCS8_KEY);
         let (loaded, _) = load_certs_and_key_files(&certs, &key).unwrap().unwrap();
@@ -408,16 +408,16 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn ca_store_silently_skips_echconfig() {
-        // ★ ★ ★ 本文件里最要紧的一条。rustls-pemfile 的 Item 覆盖不到 ECHCONFIG，
-        //   于是 read_all **根本不会把它交出来**，循环体一次都不进，函数返回 Ok(())。
-        //   pki-types 的 (SectionKind, Vec<u8>) 迭代器**会**把它交出来——照直迁移会判红。
+        // ★ ★ ★ 本檔案裡最要緊的一條。rustls-pemfile 的 Item 覆蓋不到 ECHCONFIG，
+        //   於是 read_all **根本不會把它交出來**，循環體一次都不進，函式回傳 Ok(())。
+        //   pki-types 的 (SectionKind, Vec<u8>) 迭代器**會**把它交出來——照直遷移會判紅。
         let path = pem_file(ECH_CONFIG);
         let mut store = RootCertStore::empty();
         load_ca_file_into_store(&path, &mut store)
             .expect("an ECHCONFIG section is skipped, not an error");
         assert_eq!(store.len(), 0);
 
-        // 与真证书混在一起时也一样：证书进店，ECHCONFIG 无声消失。
+        // 與真證書混在一起時也一樣：證書進店，ECHCONFIG 無聲消失。
         let mixed = pem_file(&format!("{ECH_CONFIG}{REAL_CERT}"));
         let mut store = RootCertStore::empty();
         load_ca_file_into_store(&mixed, &mut store).unwrap();
@@ -442,9 +442,9 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn pem_file_ca_still_errors_on_a_malformed_section_after_the_first_cert() {
-        // ★ 原实现是 `collect::<Result<Vec<_>>>()?` 之后才取 `first()`，也就是**读完整个文件**。
-        //   把它重写成「取到第一张就返回」看起来等价，实际会把这里的错误吞掉。
-        //   这条测试是为了不让那句注释停留在断言上——**断言型注释比没注释更危险**。
+        // ★ 原實作是 `collect::<Result<Vec<_>>>()?` 之後才取 `first()`，也就是**讀完整個檔案**。
+        //   把它重寫成「取到第一張就回傳」看起來等價，實際會把這裡的錯誤吞掉。
+        //   這條測試是為了不讓那句註解停留在斷言上——**斷言型註解比沒註解更危險**。
         let path = pem_file(&format!("{FAKE_CERT_A}-----BEGIN CERTIFICATE-----\nYWFh\n"));
         assert!(
             load_pem_file_ca(&path).is_err(),
@@ -454,8 +454,8 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn pem_file_private_key_stops_at_the_first_key() {
-        // ★ 反过来：私钥那个函数**是**早退的，第一把之后的语法错误看不见。
-        //   两个函数在这一点上不一样，而这不对称正是最容易在重写时被「统一」掉的东西。
+        // ★ 反過來：私鑰那個函式**是**早退的，第一把之後的語法錯誤看不見。
+        //   兩個函式在這一點上不一樣，而這不對稱正是最容易在重寫時被「統一」掉的東西。
         let path = pem_file(&format!("{PKCS8_KEY}-----BEGIN CERTIFICATE-----\nYWFh\n"));
         assert_eq!(
             load_pem_file_private_key(&path).unwrap(),
@@ -466,8 +466,8 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn pem_file_ca_returns_empty_when_there_is_no_certificate() {
-        // ★ 注意是**空 Vec 而不是错误**——`certs()` 过滤掉非证书段，`first()` 给 None，
-        //   然后 `unwrap_or_default()`。调用方拿到的是空，不是失败。
+        // ★ 注意是**空 Vec 而不是錯誤**——`certs()` 過濾掉非證書段，`first()` 給 None，
+        //   然後 `unwrap_or_default()`。呼叫方拿到的是空，不是失敗。
         let path = pem_file(PUBLIC_KEY);
         assert!(load_pem_file_ca(&path).unwrap().is_empty());
     }
@@ -482,7 +482,7 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
             let path = pem_file(body);
             assert_eq!(load_pem_file_private_key(&path).unwrap(), want);
         }
-        // 跳过前面的非密钥段，取第一把密钥
+        // 跳過前面的非金鑰段，取第一把金鑰
         let path = pem_file(&format!("{FAKE_CERT_A}{PUBLIC_KEY}{SEC1_KEY}{PKCS8_KEY}"));
         assert_eq!(load_pem_file_private_key(&path).unwrap(), b"sc1");
     }
@@ -493,7 +493,7 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
         assert!(load_pem_file_private_key(&path).unwrap().is_empty());
     }
 
-    // ── 错误路径 ─────────────────────────────────────────────────────────────
+    // ── 錯誤路徑 ─────────────────────────────────────────────────────────────
 
     #[test]
     fn a_missing_end_marker_is_an_error_everywhere() {
@@ -519,7 +519,7 @@ wD/AAF5fR6tXmBqlnpQOmtxfdy13wDr4MT3h
 
     #[test]
     fn junk_outside_sections_is_ignored() {
-        // PEM 解析器允许段与段之间有任意垃圾文本。
+        // PEM 解析器允許段與段之間有任意垃圾文字。
         let path = pem_file(&format!(
             "hello\n{FAKE_CERT_A}goodbye\n{FAKE_CERT_B}trailing"
         ));

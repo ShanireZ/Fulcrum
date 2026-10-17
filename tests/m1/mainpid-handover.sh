@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# M1 第三个场景：**把被否掉的那条路钉住**。
+# M1 第三個場景：**把被否掉的那條路釘住**。
 #
-# G31 拍板时的形状是「新进程落在同一个 cgroup 内**并抢过 MainPID**」。本 spike 实测下来，
-# 这条路**一半对一半错**，而错的那一半没有任何症状会在升级当时暴露：
+# G31 拍板時的形狀是「新處理程序落在同一個 cgroup 內**並搶過 MainPID**」。本 spike 實測下來，
+# 這條路**一半對一半錯**，而錯的那一半沒有任何症狀會在升級當時暴露：
 #
-#   · 对的一半：MainPID 交接确实被 systemd 接受，unit 确实活过了老代退出。
-#   · ★ ★ ★ 错的一半：交接过去的 pid 不是 systemd 亲生的（老进程 fork 的），
-#     systemd 把它标成 alien，**此后每一次 systemctl stop 都不再等排空**——
-#     SIGTERM 与 SIGKILL 几乎同时发出，unit 以 failed(signal) 收场。
-#     也就是说：**第一次升级之后，这台机器就再也没有优雅停机了**，
-#     而升级本身看起来一切正常。重启、`systemctl restart`、机器关机，全部变成硬杀。
+#   · 對的一半：MainPID 交接確實被 systemd 接受，unit 確實活過了老代退出。
+#   · ★ ★ ★ 錯的一半：交接過去的 pid 不是 systemd 親生的（老處理程序 fork 的），
+#     systemd 把它標成 alien，**此後每一次 systemctl stop 都不再等排空**——
+#     SIGTERM 與 SIGKILL 幾乎同時發出，unit 以 failed(signal) 收場。
+#     也就是說：**第一次升級之後，這臺機器就再也沒有優雅停機了**，
+#     而升級本身看起來一切正常。重新啟動、`systemctl restart`、機器關機，全部變成硬殺。
 #
-# 本场景跑的就是 G31 的原始形状（ExitType=main + 交接），把这两件事都断言下来。
-# ★ 它的价值不在「发现」，而在**防止有人照着 G31 的原文再实现一遍**：
-#   那段话还留在 PLAN.md 的决策日志里（决策日志不改写历史），下一个读到它的人
-#   完全可能照做。这个脚本是留给他的那条红线。
+# 本場景跑的就是 G31 的原始形狀（ExitType=main + 交接），把這兩件事都斷言下來。
+# ★ 它的價值不在「發現」，而在**防止有人照著 G31 的原文再實作一遍**：
+#   那段話還留在 PLAN.md 的決策紀錄裡（決策紀錄不改寫歷史），下一個讀到它的人
+#   完全可能照做。這個指令碼是留給他的那條紅線。
 #
-# ⚠ 若它红了：说明 systemd 对 alien MainPID 的停机行为变了。那是好消息，
-#   但要**重新评估**是否回到交接方案，而不是把这里改绿。
+# ⚠ 若它紅了：說明 systemd 對 alien MainPID 的停機行為變了。那是好訊息，
+#   但要**重新評估**是否回到交接方案，而不是把這裡改綠。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,8 +25,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib.sh"
 
 DROPIN_DIR="/etc/systemd/system/${UNIT}.d"
-# conf/m1.yaml 的 grace_period_seconds。正常停机实测 10 秒（grace 5 + graceful 5，见 run.sh [8/9]），
-# 所以「少于 5 秒」就是「一秒排空都没等」。
+# conf/m1.yaml 的 grace_period_seconds。正常停機實測 10 秒（grace 5 + graceful 5，見 run.sh [8/9]），
+# 所以「少於 5 秒」就是「一秒排空都沒等」。
 GRACE_FLOOR=5
 
 cleanup_all() {
@@ -38,9 +38,9 @@ trap cleanup_all EXIT
 
 echo "=== [0/5] 装 G31 原始形状的 drop-in（ExitType=main + M1_MAINPID=claim）==="
 mkdir -p "$DROPIN_DIR"
-# NotifyAccess 必须放宽到 all：发 MAINPID= 的是**下一代**，那一刻它既不是 MainPID，
-# 也不是任何 Exec* 拉起的进程。★ 这本身就是交接方案的一项代价——
-# cgroup 内任何进程都能给 systemd 发通知。
+# NotifyAccess 必須放寬到 all：發 MAINPID= 的是**下一代**，那一刻它既不是 MainPID，
+# 也不是任何 Exec* 拉起的處理程序。★ 這本身就是交接方案的一項代價——
+# cgroup 內任何處理程序都能給 systemd 發通知。
 printf '[Service]\nExitType=main\nNotifyAccess=all\nEnvironment=M1_MAINPID=claim\n' \
   > "$DROPIN_DIR/mainpid-handover.conf"
 systemctl daemon-reload
@@ -67,10 +67,10 @@ done
 [ -n "$GEN2" ] || fail "20 秒内 MainPID 一直是 $GEN1 —— 交接没有发生，本场景的前提不成立"
 echo "  ✓ 对的那一半成立：MainPID $GEN1 → $GEN2（systemd 接受了来自同 cgroup 非亲生进程的交接）"
 
-# ★ 把 systemd 自己那句警告也钉下来。它是「错的那一半」的直接来源，
-#   而且它**说得并不准**——原话是「多半察觉不到它退出」，实测 systemd 1 秒内就察觉了
-#   （新一代在老代退出后会被 reparent 给 PID 1，也就是 systemd 自己）。
-#   真正的后果不是「察觉不到」，而是**停机不再等它**。
+# ★ 把 systemd 自己那句警告也釘下來。它是「錯的那一半」的直接來源，
+#   而且它**說得並不準**——原話是「多半察覺不到它退出」，實測 systemd 1 秒內就察覺了
+#   （新一代在老代退出後會被 reparent 給 PID 1，也就是 systemd 自己）。
+#   真正的後果不是「察覺不到」，而是**停機不再等它**。
 journalctl -u "$UNIT" --no-pager -o cat --since "-3min" \
   | grep -q "which is not our child" \
   || fail "journal 里找不到 systemd 那句 'not our child' 警告 —— 交接的实现方式可能变了，
@@ -94,21 +94,21 @@ STATE=$(unit_state)
 RESULT_PROP=$(unit_prop Result)
 echo "  stop 耗时 ${STOP_SECS}s，最终 $STATE，Result=$RESULT_PROP"
 
-# ── 判据只挂在两个**稳定**的量上 ─────────────────────────────────────────────
+# ── 判據只掛在兩個**穩定**的量上 ─────────────────────────────────────────────
 #
-# ⚠ ★ ★ **`Result` 不能当判据，它会抖。** 实测：同一份代码、同一个容器口径，
-#   空闲时连跑三次都是 `failed/signal`，而在跑完整套验证（机器忙）的那一次是
-#   `inactive/dead` + `Result=success` —— 两次的**坏行为完全一样**（0 秒、主进程被 SIGKILL），
-#   差别只在 systemd 有没有来得及把 reparent 过来的主进程 wait 掉并读到 status=9/KILL。
-#   ★ **时快时慢的反证等于没有反证**。把判据挂在 `Result` 上的话，
-#   于是它在全量跑里红了一次——红的不是被测对象，是判据本身。
+# ⚠ ★ ★ **`Result` 不能當判據，它會抖。** 實測：同一份程式碼、同一個容器口徑，
+#   空閒時連跑三次都是 `failed/signal`，而在跑完整套驗證（機器忙）的那一次是
+#   `inactive/dead` + `Result=success` —— 兩次的**壞行為完全一樣**（0 秒、主處理程序被 SIGKILL），
+#   差別只在 systemd 有沒有來得及把 reparent 過來的主處理程序 wait 掉並讀到 status=9/KILL。
+#   ★ **時快時慢的反證等於沒有反證**。把判據掛在 `Result` 上的話，
+#   於是它在全量跑裡紅了一次——紅的不是被測物件，是判據本身。
 #
-# 稳定的是这两条（四次观测全部一致）：
+# 穩定的是這兩條（四次觀測全部一致）：
 [ "$STOP_SECS" -lt "$GRACE_FLOOR" ] \
   || fail "★ 交接之后停机竟然用了 ${STOP_SECS}s（≥ grace_period_seconds=${GRACE_FLOOR}）——
        说明 systemd 现在会等 alien MainPID 排空了。行为变了，MainPID 交接方案值得重新评估。"
 
-# systemd 必须是**动手杀**的，而不是等它自己退干净的。
+# systemd 必須是**動手殺**的，而不是等它自己退乾淨的。
 journalctl -u "$UNIT" --no-pager -o cat --since "-3min" \
   | grep -q "Killing process ${GEN2} .*with signal SIGKILL" \
   || fail "★ journal 里找不到「systemd 用 SIGKILL 杀掉主进程 ${GEN2}」这一句。

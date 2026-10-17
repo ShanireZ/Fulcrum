@@ -1,42 +1,42 @@
-# 这份数据里被改过的两处
+# 這份資料裡被改過的兩處
 
-> 本目录的原始数据与从宿主取回的原件逐字节相同，**只有两处例外**：① `env.json` 的 `attest`
-> 去标识；② `oha-request.txt` 的行尾 CRLF → LF。两处都机械核过，⛔ 没有第三处。
-> 规则与理由同[窗口三](../2026-10-05-window-3/REDACTION.md)（owner 2026-09-06 定、窗口二起沿用），这里只记本趟做了什么、怎么核的。
+> 本目錄的原始資料與從宿主取回的原件逐位元組相同，**只有兩處例外**：① `env.json` 的 `attest`
+> 去標識；② `oha-request.txt` 的行尾 CRLF → LF。兩處都機械核過，⛔ 沒有第三處。
+> 規則與理由同[視窗三](../2026-10-05-window-3/REDACTION.md)（owner 2026-09-06 定、視窗二起沿用），這裡只記本趟做了什麼、怎麼核的。
 
-## ① `attest` 去标识
+## ① `attest` 去標識
 
 | | |
 |---|---|
-| 字段 | [`env.json`](env.json) → `attest` |
-| 其余字段 | ⛔ **一个字都没动**（含 `qualified` / `disqualifiers` / `load_params` / `host.cpu_topology` / 全部读数） |
-| 标记 | `env.json` 末尾追加了 `"attest_redacted": true` |
-| 做法 | **文本替换恰好那一行**，再在末尾追加那一个键（上一行的 `}` 因此多了一个逗号）。⛔ 没有重新序列化 |
+| 欄位 | [`env.json`](env.json) → `attest` |
+| 其餘欄位 | ⛔ **一個字都沒動**（含 `qualified` / `disqualifiers` / `load_params` / `host.cpu_topology` / 全部讀數） |
+| 標記 | `env.json` 末尾追加了 `"attest_redacted": true` |
+| 做法 | **文字替換恰好那一行**，再在末尾追加那一個鍵（上一行的 `}` 因此多了一個逗號）。⛔ 沒有重新序列化 |
 
-**入库的这一版**与窗口三入库版**逐字相同**（本趟运行时的声明原文与窗口三的原文相同 —— 停服前逐个核过，仍在跑的进程集合逐类相同）：
+**入庫的這一版**與視窗三入庫版**逐字相同**（本趟執行環境的宣告原文與視窗三的原文相同 —— 停服前逐個核過，仍在跑的處理程序集合逐類相同）：
 
 ```text
 专机：该机上全部应用服务与数据存储（共 6 个） 已全部停止（owner 2026-10-05 授权）· 无 TUN：网络设备只有 lo/eth0/docker0（docker0 是容器桥，非代理）· 仍在跑：一个出站隧道客户端、云厂商的两个探针、系统基础服务（chrony/cron/rsyslog/tuned/unattended-upgrades/fwupd/ModemManager/udisks2/multipathd）—— 它们仍会偶尔占用 CPU
 ```
 
-与运行时原文相比，差别只有「具名 → 计数／角色」三处（被停掉的 6 个服务逐个具名 → 共 6 个 · 一个具名的隧道客户端 → 一个出站隧道客户端 ·
-两个具名的云厂商探针 → 云厂商的两个探针）。
+與執行環境原文相比，差別只有「具名 → 計數／角色」三處（被停掉的 6 個服務逐個具名 → 共 6 個 · 一個具名的隧道用戶端 → 一個出站隧道用戶端 ·
+兩個具名的雲廠商探針 → 雲廠商的兩個探針）。
 
-★ **机械核过，⛔ 不是自述**：对原文依次做这三处替换，结果与入库版逐字相等，且与窗口三入库版逐字相等；
-解析两份 JSON，除 `attest` 与新增的 `attest_redacted` 外每个字段的值都相等；按行比，变了的只有
-`attest` 那一行与末尾那三行。去标识后对整个目录扫他项目名 / IP / 主机名，零命中。
-完整原文留在本地运行记录里，⛔ 不入公开仓。
+★ **機械核過，⛔ 不是自述**：對原文依次做這三處替換，結果與入庫版逐字相等，且與視窗三入庫版逐字相等；
+解析兩份 JSON，除 `attest` 與新增的 `attest_redacted` 外每個欄位的值都相等；按行比，變了的只有
+`attest` 那一行與末尾那三行。去標識後對整個目錄掃他專案名 / IP / 主機名，零命中。
+完整原文留在本機執行記錄裡，⛔ 不入公開倉。
 
-⚠ 这份声明仍然只有纪律，没有门：「专机」与「无 TUN 代理」两件容器原理上看不见。⛔ 声明不是证明。
+⚠ 這份宣告仍然只有紀律，沒有門：「專機」與「無 TUN 代理」兩件容器原理上看不見。⛔ 宣告不是證明。
 
 ## ② `oha-request.txt` 的行尾 CRLF → LF
 
 | | |
 |---|---|
-| 文件 | [`raw/short-connection-throughput/oha-request.txt`](raw/short-connection-throughput/oha-request.txt) |
-| 原件 | 用例脚本把 oha 发出的请求原样落盘，HTTP 的行尾就是 CRLF —— 7 个 CR，**全部**成对出现在 CRLF 里 |
-| 入库版 | 每个 CRLF 换成 LF，⛔ 别的字节一个没动：入库版 = 原件删掉全部 CR，逐字节相等（机械核过） |
-| 为什么 | 本仓 `.gitattributes` 是 `* text=auto eol=lf` ⇒ 原样提交会让门禁的行尾检查当场红；owner 2026-10-05 拍的是「转 LF 并写明」 |
-| 不影响判定 | 窗口清单 8d 用的 `bench_request_close_violations`（`bench/lib.sh`）自己先删 `\r` 再判 |
+| 檔案 | [`raw/short-connection-throughput/oha-request.txt`](raw/short-connection-throughput/oha-request.txt) |
+| 原件 | 用例指令碼把 oha 發出的請求原樣寫入磁碟，HTTP 的行尾就是 CRLF —— 7 個 CR，**全部**成對出現在 CRLF 裡 |
+| 入庫版 | 每個 CRLF 換成 LF，⛔ 別的位元組一個沒動：入庫版 = 原件刪掉全部 CR，逐位元組相等（機械核過） |
+| 為什麼 | 本儲存庫 `.gitattributes` 是 `* text=auto eol=lf` ⇒ 原樣提交會讓門禁的行尾檢查當場紅；owner 2026-10-05 拍的是「轉 LF 並寫明」 |
+| 不影響判定 | 視窗清單 8d 用的 `bench_request_close_violations`（`bench/lib.sh`）自己先刪 `\r` 再判 |
 
-CRLF 的原件留在本地运行记录里。
+CRLF 的原件留在本機執行記錄裡。

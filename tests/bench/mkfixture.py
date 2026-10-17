@@ -55,8 +55,8 @@ def main() -> int:
     env = {
         "schema": "fulcrum-bench-env/1",
         "qualified": qualified,
-        # ⚠ 不合格时必须有理由：一个 `qualified: false` 配空理由列表的快照是坏的，
-        #   而 verdict 打出来的「不合格的理由：」下面会是空的 —— 那正是要能看见的。
+        # ⚠ 不合格時必須有理由：一個 `qualified: false` 配空理由列表的快照是壞的，
+        #   而 verdict 打出來的「不合格的理由：」下面會是空的 —— 那正是要能看見的。
         "disqualifiers": [] if qualified else ["fixture: 这是一份合成的不合格快照"],
         "attest": "FIXTURE · 这不是真实宿主" if qualified else None,
         "host": {"kernel": "fixture", "nproc": 16},

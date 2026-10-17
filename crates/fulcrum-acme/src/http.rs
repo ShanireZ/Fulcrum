@@ -1,20 +1,20 @@
-//! 一个够用就好的 HTTPS 客户端，只给原生 DNS 供应商（G57）调 API 用。
+//! 一個夠用就好的 HTTPS 用戶端，只給原生 DNS 供應商（G57）調 API 用。
 //!
-//! ★ **不拉 `reqwest`**：`hyper` + `hyper-util` + `http-body-util` 已经在产品图里，
-//! 直接用它们**新增 0 个包**。代价是自己写大约一百行，只做四件事：
-//! 建连接器、发请求、收 body、给上界。TLS 那一格是 [`crate::https::BoringHttpsConnector`]。
+//! ★ **不拉 `reqwest`**：`hyper` + `hyper-util` + `http-body-util` 已經在產品圖裡，
+//! 直接用它們**新增 0 個包**。代價是自己寫大約一百行，只做四件事：
+//! 建連接器、發請求、收 body、給上界。TLS 那一格是 [`crate::https::BoringHttpsConnector`]。
 //!
-//! ⚠ ★ `hyper-util` 的 `http1` feature 必须由本仓库显式开，不能靠别人顺带，
-//! 关掉那个 feature 之后必须自己在根清单里写上，否则 `Client` 连 HTTP/1 都不会说。
-//! **「能编过是因为别人替我开了」在本仓库出现过两次**（另一次是 `tokio` 的 `signal`）。
+//! ⚠ ★ `hyper-util` 的 `http1` feature 必須由本儲存庫顯式開，不能靠別人順帶，
+//! 關掉那個 feature 之後必須自己在根清單裡寫上，否則 `Client` 連 HTTP/1 都不會說。
+//! **「能編過是因為別人替我開了」在本儲存庫出現過兩次**（另一次是 `tokio` 的 `signal`）。
 //!
-//! # ⚠ ⚠ [`HttpTransport`] 这个接缝**证不了**什么
+//! # ⚠ ⚠ [`HttpTransport`] 這個接縫**證不了**什麼
 //!
-//! 假实现能断言「我们发出去的 URL / 方法 / 头 / body 正是我们以为的那些」——
-//! 那是**内部自洽**，不是「我们对它家 API 的理解是对的」。
-//! 假服务的行为也是我们自己想出来的，两边同时错的时候它照样全绿
-//! （**判据挂在替身上等于没有判据**）。
-//! ★ 后者的判据只能是真域名上的一次真签发。
+//! 假實作能斷言「我們發出去的 URL / 方法 / 頭 / body 正是我們以為的那些」——
+//! 那是**內部自洽**，不是「我們對它家 API 的理解是對的」。
+//! 假服務的行為也是我們自己想出來的，兩邊同時錯的時候它照樣全綠
+//! （**判據掛在替身上等於沒有判據**）。
+//! ★ 後者的判據只能是真網域上的一次真簽發。
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -22,21 +22,21 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use std::time::Duration;
 
-/// 响应 body 最多收多少。★ 与 exec hook 那条同一个理由：
-/// 一个疯掉（或被劫持）的对端不该能把内存吃光。
-/// 这几家的 JSON 响应都是几 KB 量级，1 MiB 已经宽出两个数量级。
+/// 回應 body 最多收多少。★ 與 exec hook 那條同一個理由：
+/// 一個瘋掉（或被劫持）的對端不該能把記憶體吃光。
+/// 這幾家的 JSON 回應都是幾 KB 量級，1 MiB 已經寬出兩個數量級。
 pub const MAX_BODY: usize = 1024 * 1024;
 
-/// 单次调用的超时。★ 挂住一个 DNS API 调用 = 挂住整条签发链。
+/// 單次呼叫的超時。★ 掛住一個 DNS API 呼叫 = 掛住整條簽發鏈。
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// 一次请求。★ 刻意做成朴素的数据，好让测试能逐字段断言。
+/// 一次請求。★ 刻意做成樸素的資料，好讓測試能逐欄位斷言。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: &'static str,
     pub url: String,
-    /// ⚠ 里面会有 `Authorization`。**这个结构不实现 `Debug` 之外的打印**，
-    /// 而且任何日志都不许整个打它——见下面 `redacted()`。
+    /// ⚠ 裡面會有 `Authorization`。**這個結構不實作 `Debug` 之外的列印**，
+    /// 而且任何紀錄都不許整個打它——見下面 `redacted()`。
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
 }
@@ -74,13 +74,13 @@ impl HttpRequest {
         self
     }
 
-    /// 能进日志的那一份：**头的值一律换成 `<redacted>`**。
+    /// 能進紀錄的那一份：**頭的值一律換成 `<redacted>`**。
     ///
-    /// ⚠ 不是只挡 `Authorization`：DNSPod 的凭据在 **body** 里
-    /// （`login_token=ID,Token`），而 Cloudflare 的在头里。
-    /// 一个「只挡 Authorization」的实现在 DNSPod 上完全失效，
-    /// 而失效的表现是**凭据出现在日志里**——没有任何报错。
-    /// 所以这里 body 也不打，只打长度。
+    /// ⚠ 不是隻擋 `Authorization`：DNSPod 的憑證在 **body** 裡
+    /// （`login_token=ID,Token`），而 Cloudflare 的在頭裡。
+    /// 一個「只擋 Authorization」的實作在 DNSPod 上完全失效，
+    /// 而失效的表現是**憑證出現在紀錄裡**——沒有任何回報錯誤。
+    /// 所以這裡 body 也不打，只打長度。
     pub fn redacted(&self) -> String {
         let names: Vec<&str> = self.headers.iter().map(|(k, _)| k.as_str()).collect();
         format!(
@@ -93,7 +93,7 @@ impl HttpRequest {
     }
 }
 
-/// 一次响应。
+/// 一次回應。
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub status: u16,
@@ -106,13 +106,13 @@ impl HttpResponse {
     }
 }
 
-/// 谁去把请求发出去。★ 生产是 [`HyperTransport`]，测试塞一个记录型假实现。
+/// 誰去把請求發出去。★ 生產是 [`HyperTransport`]，測試塞一個記錄型假實作。
 #[async_trait::async_trait]
 pub trait HttpTransport: Send + Sync + std::fmt::Debug {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, String>;
 }
 
-/// 真的那个。
+/// 真的那個。
 pub struct HyperTransport {
     client: Client<crate::https::BoringHttpsConnector, Full<Bytes>>,
 }
@@ -124,14 +124,14 @@ impl std::fmt::Debug for HyperTransport {
 }
 
 impl HyperTransport {
-    /// ⚠ 走**系统信任库**，与产品别处连 CA 的口径一致。
-    /// 两处不一致的话，「这台机器信任什么」就有两个答案，而排查时只会看其中一个。
+    /// ⚠ 走**系統信任庫**，與產品別處連 CA 的口徑一致。
+    /// 兩處不一致的話，「這臺機器信任什麼」就有兩個答案，而排查時只會看其中一個。
     ///
-    /// ★ ★ **G104 第 ③ 处：这里换成 BoringSSL 了。**
+    /// ★ ★ **G104 第 ③ 處：這裡換成 BoringSSL 了。**
     /// 原先是 `hyper_rustls::HttpsConnectorBuilder::new().with_native_roots()…`；
-    /// 现在与 ACME 协议本身共用同一个 [`crate::https::BoringHttpsConnector`]
-    /// —— 一套信任库、一套校验、一份 ALPN。
-    /// ⚠ 「口径一致」这句话此前只能靠人守着，现在**是结构上的**：两条路只有一个构造入口。
+    /// 現在與 ACME 協定本身共用同一個 [`crate::https::BoringHttpsConnector`]
+    /// —— 一套信任庫、一套檢核、一份 ALPN。
+    /// ⚠ 「口徑一致」這句話此前只能靠人守著，現在**是結構上的**：兩條路只有一個建構入口。
     pub fn new() -> Result<HyperTransport, String> {
         let https = crate::https::BoringHttpsConnector::new()?;
         Ok(HyperTransport {
@@ -143,9 +143,9 @@ impl HyperTransport {
 #[async_trait::async_trait]
 impl HttpTransport for HyperTransport {
     async fn send(&self, req: HttpRequest) -> Result<HttpResponse, String> {
-        // ⚠ 连接器那层也挡明文（`BoringHttpsConnector::call` 的第一句），
-        //   但这里再挡一次并给出**能看懂的**错误：那一层拒绝时说的是
-        //   「拒绝发非 HTTPS 请求」，看不出是哪个 DNS 供应商的哪次调用。
+        // ⚠ 連接器那層也擋明文（`BoringHttpsConnector::call` 的第一句），
+        //   但這裡再擋一次並給出**能看懂的**錯誤：那一層拒絕時說的是
+        //   「拒絕發非 HTTPS 請求」，看不出是哪個 DNS 供應商的哪次呼叫。
         if !req.url.starts_with("https://") {
             return Err(format!("拒绝发明文请求：{}", req.url));
         }
@@ -158,8 +158,8 @@ impl HttpTransport for HyperTransport {
             .body(body)
             .map_err(|e| format!("请求构造失败（{}）：{e}", req.redacted()))?;
 
-        // ★ 超时罩住**整段**（连接 + 发 + 收 body），不是只罩发出去那一下。
-        //   ⚠ 这条是 exec hook 那次的教训直接搬过来的：只罩一半的超时是一句空话。
+        // ★ 超時罩住**整段**（連接 + 發 + 收 body），不是隻罩發出去那一下。
+        //   ⚠ 這條是 exec hook 那次的教訓直接搬過來的：只罩一半的超時是一句空話。
         let fut = async {
             let rsp = self
                 .client
@@ -173,8 +173,8 @@ impl HttpTransport for HyperTransport {
                 .await
                 .map_err(|e| format!("读响应失败（{}）：{e}", req.redacted()))?;
             let full = collected.to_bytes();
-            // 超上界就截断，**不是报错**：一个超大的错误页不该让签发失败，
-            // 而截断之后的内容仍然足够写进日志。
+            // 超上界就截斷，**不是回報錯誤**：一個超大的錯誤頁不該讓簽發失敗，
+            // 而截斷之後的內容仍然足夠寫進紀錄。
             let body = full.iter().copied().take(MAX_BODY).collect::<Vec<u8>>();
             Ok::<HttpResponse, String>(HttpResponse { status, body })
         };
@@ -195,8 +195,8 @@ mod tests {
 
     #[test]
     fn 能进日志的那一份不含任何值() {
-        // ★ ★ 判据两个方向都要：**名字在、值不在**。
-        //   只断言「不含 token」的话，一个把整条 redacted() 变成空串的实现照样绿。
+        // ★ ★ 判據兩個方向都要：**名字在、值不在**。
+        //   只斷言「不含 token」的話，一個把整條 redacted() 變成空串的實作照樣綠。
         let req = HttpRequest::post(
             "https://api.example/x",
             "application/json",
@@ -208,8 +208,8 @@ mod tests {
         assert!(line.contains("https://api.example/x"), "{line}");
         assert!(line.contains("authorization"), "头的名字应当在：{line}");
         assert!(line.contains("42 字节"), "body 长度应当在：{line}");
-        // ⚠ 两处凭据：Cloudflare 在头里、DNSPod 在 body 里。一个只挡头的实现
-        //   在 DNSPod 上完全失效，而失效的表现是凭据出现在日志里，没有任何报错。
+        // ⚠ 兩處憑證：Cloudflare 在頭裡、DNSPod 在 body 裡。一個只擋頭的實作
+        //   在 DNSPod 上完全失效，而失效的表現是憑證出現在紀錄裡，沒有任何回報錯誤。
         assert!(!line.contains("SECRETTOKEN"), "凭据漏进日志了：{line}");
         assert!(
             !line.contains("login_token"),

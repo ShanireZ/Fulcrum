@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# 对拍的**宿主机侧启动器**（G145）。真要出数那天跑的就是它。
+# 對拍的**宿主機側啟動器**（G145）。真要出數那天跑的就是它。
 #
-#   BENCH_HOST_ATTEST="专机 · 无 TUN 代理" \
+#   BENCH_HOST_ATTEST="專機 · 無 TUN 代理" \
 #   BENCH_SERVER_CPUS=0-1 BENCH_LOAD_CPUS=2-3 \
 #   BENCH_FULCRUM_BIN=/path/to/fulcrum \
-#     bash bench/docker-run.sh [输出目录]
+#     bash bench/docker-run.sh [輸出目錄]
 #
-# ★ ★ ★ **它存在的唯一理由是那一个键**：`net.core.netdev_max_backlog` 非 netns 化
-#   ⇒ 它**设不进容器**（runc 当场拒绝），也**读不到容器里**
+# ★ ★ ★ **它存在的唯一理由是那一個鍵**：`net.core.netdev_max_backlog` 非 netns 化
+#   ⇒ 它**設不進容器**（runc 當場拒絕），也**讀不到容器裡**
 #   （`/proc/sys/net/core/netdev_max_backlog: No such file or directory`）。
-#   ⇒ 只能在宿主上设、在宿主上判。本脚本就是那道门。
+#   ⇒ 只能在宿主上設、在宿主上判。本指令碼就是那道門。
 #
-# ⚠ ⚠ 而它同时是「另外四个键真的被设上了」的**唯一**保证：那四个键由这里的
-#   `--sysctl` 旗标带进容器，`bench/env-snapshot.sh` 在容器内逐条断言。
-#   ⇒ 绕过本脚本手起容器 ⇒ 快照拿不到 `BENCH_HOST_SYSCTLS` ⇒ 判成不合格。
-#   ★ 那不是「相信这个环境变量」，是「没有它就不算数」—— 一个能被伪造的凭证，
-#     与一个根本不存在的检查，在**忘了跑**这件事上的表现完全不同。
+# ⚠ ⚠ 而它同時是「另外四個鍵真的被設上了」的**唯一**保證：那四個鍵由這裡的
+#   `--sysctl` 旗標帶進容器，`bench/env-snapshot.sh` 在容器內逐條斷言。
+#   ⇒ 繞過本指令碼手起容器 ⇒ 快照拿不到 `BENCH_HOST_SYSCTLS` ⇒ 判成不合格。
+#   ★ 那不是「相信這個環境變數」，是「沒有它就不算數」—— 一個能被偽造的憑證，
+#     與一個根本不存在的檢查，在**忘了跑**這件事上的表現完全不同。
 #
-# ⛔ 本脚本不判定、不比较、不打印任何性能数字。判定在容器里的 `bench/run.sh`。
+# ⛔ 本指令碼不判定、不比較、不列印任何效能數字。判定在容器裡的 `bench/run.sh`。
 
 set -euo pipefail
 
@@ -28,7 +28,7 @@ REPO_UNIX="$(cd "$BENCH_DIR/.." && pwd)"
 
 OUT_REL=${1:-bench/out}
 
-# ★ MSYS 会把容器内路径改写成 Windows 路径，必须关掉；理由同 tests/bench/run.sh。
+# ★ MSYS 會把容器內路徑改寫成 Windows 路徑，必須關掉；理由同 tests/bench/run.sh。
 export MSYS_NO_PATHCONV=1
 if command -v cygpath >/dev/null 2>&1; then
   REPO_HOST="$(cygpath -m "$REPO_UNIX")"
@@ -39,12 +39,12 @@ fi
 BENCH_IMAGE=${BENCH_IMAGE:-fulcrum-bench:local}
 FULCRUM_BIN_HOST=${BENCH_FULCRUM_BIN:-$REPO_UNIX/target/release/fulcrum}
 
-# ── 门 ①：宿主侧那个键 ─────────────────────────────────────────────────────
+# ── 門 ①：宿主側那個鍵 ─────────────────────────────────────────────────────
 #
-# ⛔ 读法用 `/proc/sys/...` 直读，不调 `sysctl(8)`：理由同 env-snapshot.sh ——
-#   一个恒失败的原语与「值不符」在输出上分不开。
-# ★ 比较本身复用 `bench_kparam_mismatches`（纯函数，已被 5 条注入反证钉过）
-#   ⇒ ⛔ 这里不另写一遍「怎么算相符」。
+# ⛔ 讀法用 `/proc/sys/...` 直讀，不調 `sysctl(8)`：理由同 env-snapshot.sh ——
+#   一個恆失敗的原語與「值不符」在輸出上分不開。
+# ★ 比較本身重複使用 `bench_kparam_mismatches`（純函式，已被 5 條注入反證釘過）
+#   ⇒ ⛔ 這裡不另寫一遍「怎麼算相符」。
 read_host_sysctl_kv() {
   local key path val
   while IFS= read -r key; do
@@ -80,7 +80,7 @@ FIXME
 fi
 echo "[bench/launch] 宿主内核参数逐条相符：$(printf '%s' "$HOST_KV" | tr '\n' ' ')"
 
-# ── 产物必须在 ─────────────────────────────────────────────────────────────
+# ── 產物必須在 ─────────────────────────────────────────────────────────────
 if [ ! -x "$FULCRUM_BIN_HOST" ]; then
   echo "BENCH LAUNCH REFUSED：找不到可执行的枢衡产物 $FULCRUM_BIN_HOST" >&2
   echo "  ⇒ 用 BENCH_FULCRUM_BIN=<路径> 指过去，或先在构建那一格产出一个。" >&2
@@ -92,9 +92,9 @@ else
   FULCRUM_BIN_MOUNT="$FULCRUM_BIN_HOST"
 fi
 
-# ── 旗标：从 lib.sh 那一份声明推导 ──────────────────────────────────────────
+# ── 旗標：從 lib.sh 那一份宣告推導 ──────────────────────────────────────────
 #
-# ⚠ 逐行读进数组，⛔ 不做无引号分词：`10240 65535` 自己带空格。
+# ⚠ 逐行讀進陣列，⛔ 不做無引號分詞：`10240 65535` 自己帶空格。
 DOCKER_ARGS=()
 while IFS= read -r tok; do
   [ -n "$tok" ] || continue
@@ -105,25 +105,25 @@ EOF
 
 echo "[bench/launch] 镜像 $BENCH_IMAGE · 产物 $FULCRUM_BIN_HOST · 输出 $OUT_REL"
 
-# ★ 把宿主实测值经环境变量传进去 —— 容器读不到它，只能这样过河。
-# ── 站点根挂在一个匿名卷上（⇒ ext4），⛔ 不是容器可写层 ────────────────────
+# ★ 把宿主實測值經環境變數傳進去 —— 容器讀不到它，只能這樣過河。
+# ── 站台根掛在一個匿名捲上（⇒ ext4），⛔ 不是容器可寫層 ────────────────────
 #
-# ★ ★ ★ **这是口径不是编排细节。** 枢衡的静态文件路径先在本线程上试一次
-#   `preadv2(RWF_NOWAIT)`，而**认不认由文件系统各自决定** —— 2026-09-06 实测
-#   ext4 认、**overlayfs 与 tmpfs 回 `EOPNOTSUPP`**；同一个二进制、同一台机器，
-#   站点根换一种文件系统，静态吞吐差 **45%**。
-# ⚠ ⚠ 而在此之前站点根来自 `mktemp -d`，落在**容器可写层（overlayfs）**上 ——
-#   那是编排的副产品，**从来没人挑过**，却决定了被测的哪条路径会被走到。
-#   ⇒ 而枢衡按 G13 的分发形状（systemd + 单静态二进制）在生产上是 ext4/xfs。
-# ★ 用**匿名卷**（`-v /bench-www`，没有源路径）而不是命名卷：`--rm` 会连它一起删
-#   ⇒ ⛔ 不跨趟留残留、不用管回收，也不会被门禁那道「说不出属主的卷」判据挑出来
-#   （它认得 docker 匿名卷那 64 位十六进制名字）。
-# ⚠ 用 `${VAR-default}`（**没有冒号**）⇒ 显式传一个空串就回到 overlayfs 那种形状，
-#   而两种形状都由 `bench/env-snapshot.sh` 写进 `env.json` 的 `site_root` 里
-#   ⇒ ⛔ 不管走哪条，原始数据都说得出自己是在哪种形状下量的。
-# ⚠ 必须 `export`：下面那行 `-e BENCH_WWW_ROOT`（不带 `=`）取的是**本进程环境里**
-#   的值，而一个没导出的普通赋值在那里是看不见的 —— 症状是站点根静默落回
-#   容器可写层，而输出看起来完全正常。
+# ★ ★ ★ **這是口徑不是編排細節。** 樞衡的靜態檔案路徑先在本執行緒上試一次
+#   `preadv2(RWF_NOWAIT)`，而**認不認由檔案系統各自決定** —— 2026-09-06 實測
+#   ext4 認、**overlayfs 與 tmpfs 回 `EOPNOTSUPP`**；同一個二進位、同一臺機器，
+#   站台根換一種檔案系統，靜態吞吐差 **45%**。
+# ⚠ ⚠ 而在此之前站台根來自 `mktemp -d`，落在**容器可寫層（overlayfs）**上 ——
+#   那是編排的副產品，**從來沒人挑過**，卻決定了被測的哪條路徑會被走到。
+#   ⇒ 而樞衡按 G13 的散布形狀（systemd + 單靜態二進位）在生產上是 ext4/xfs。
+# ★ 用**匿名卷**（`-v /bench-www`，沒有源路徑）而不是命名卷：`--rm` 會連它一起刪
+#   ⇒ ⛔ 不跨趟留殘留、不用管回收，也不會被門禁那道「說不出屬主的卷」判據挑出來
+#   （它認得 docker 匿名卷那 64 位十六進制名字）。
+# ⚠ 用 `${VAR-default}`（**沒有冒號**）⇒ 顯式傳一個空串就回到 overlayfs 那種形狀，
+#   而兩種形狀都由 `bench/env-snapshot.sh` 寫進 `env.json` 的 `site_root` 裡
+#   ⇒ ⛔ 不管走哪條，原始資料都說得出自己是在哪種形狀下量的。
+# ⚠ 必須 `export`：下面那行 `-e BENCH_WWW_ROOT`（不帶 `=`）取的是**本處理程序環境裡**
+#   的值，而一個沒匯出的普通賦值在那裡是看不見的 —— 症狀是站台根靜默落回
+#   容器可寫層，而輸出看起來完全正常。
 export BENCH_WWW_ROOT=${BENCH_WWW_ROOT-/bench-www}
 
 docker run --rm \

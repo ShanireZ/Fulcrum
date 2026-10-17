@@ -1,51 +1,51 @@
-//! 一个**只会查 TXT** 的最小 DNS 客户端，用来满足 G58 那条硬约束。
+//! 一個**只會查 TXT** 的最小 DNS 用戶端，用來滿足 G58 那條硬約束。
 //!
-//! # ★ ★ 它为什么存在：`sleep` 不是判据
+//! # ★ ★ 它為什麼存在：`sleep` 不是判據
 //!
-//! G58：DNS-01 要等 TXT **可见**了才通知 CA，而「可见」不是「API 返回 200」
-//! ⇒ 直接向该域的**权威 NS** 轮询。固定 sleep 在快的时候浪费时间、
-//! 在慢的时候**直接签失败**，而失败要消耗 CA 的速率配额。
+//! G58：DNS-01 要等 TXT **可見**了才通知 CA，而「可見」不是「API 回傳 200」
+//! ⇒ 直接向該域的**權威 NS** 輪詢。固定 sleep 在快的時候浪費時間、
+//! 在慢的時候**直接籤失敗**，而失敗要消耗 CA 的速率配額。
 //!
-//! # ★ 为什么手写而不是拉 crate（量过再决定）
+//! # ★ 為什麼手寫而不是拉 crate（量過再決定）
 //!
-//! `hickory-proto --no-default-features` = **+51 个包**（含整套 ICU/idna）·
-//! `hickory-resolver` = **+80** · 本模块 = **0**。产品整张依赖图也才 ~176 个包。
+//! `hickory-proto --no-default-features` = **+51 個包**（含整套 ICU/idna）·
+//! `hickory-resolver` = **+80** · 本模組 = **0**。產品整張依賴圖也才 ~176 個包。
 //!
-//! ⚠ **「自己写」不是免费的**：DNS 报文解析的经典坑是**名字压缩指针环**。
-//! 它与「正则的指数级回溯」不同 —— 那是一个已知、单一、有完整解法的坑（给跳转次数封顶，
-//! 见 [`MAX_JUMPS`]，并配了一条真的构造指针环的测试）。
-//! ★ 全模块**没有一处裸下标** —— 这条路径跑在后台巡检里，一次 panic 等于自动续期从此不工作。
-//! ⚠ 若将来需要完整解析（DNSSEC、任意 RR 类型、TCP 回落），**应当重新评估拉 crate**。
+//! ⚠ **「自己寫」不是免費的**：DNS 訊息解析的經典坑是**名字壓縮指針環**。
+//! 它與「正則的指數級回溯」不同 —— 那是一個已知、單一、有完整解法的坑（給跳轉次數封頂，
+//! 見 [`MAX_JUMPS`]，並配了一條真的建構指針環的測試）。
+//! ★ 全模組**沒有一處裸下標** —— 這條路徑跑在後台巡檢裡，一次 panic 等於自動續期從此不工作。
+//! ⚠ 若將來需要完整解析（DNSSEC、任意 RR 類型、TCP 回落），**應當重新評估拉 crate**。
 
 use log::info;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-/// 压缩指针最多跳多少次。★ **这就是「指针环」的完整解法**：
-/// 每跳一次计数加一，超了就报错。合法报文里跳一两次就到头了。
+/// 壓縮指針最多跳多少次。★ **這就是「指針環」的完整解法**：
+/// 每跳一次計數加一，超了就回報錯誤。合法訊息裡跳一兩次就到頭了。
 const MAX_JUMPS: usize = 16;
 
-/// 一个域名最多多少个标签。挡的是「1 字节标签 + 指针」拼出来的超长名字。
+/// 一個網域最多多少個標籤。擋的是「1 位元組標籤 + 指針」拼出來的超長名字。
 const MAX_LABELS: usize = 128;
 
-/// EDNS0 里向对方声明我们收得下多大的 UDP 应答。
+/// EDNS0 裡向對方宣告我們收得下多大的 UDP 應答。
 ///
-/// ★ 不声明的话，对方按 RFC 1035 只能发 512 字节，超了就置 TC 位截断。
-/// `_acme-challenge.<域名>` 通常只有一条 TXT，但**一个域名下有 SPF/DKIM/各种验证串
-/// 是常态**，512 并不宽裕。1232 是当前普遍推荐值（避开 IPv6 分片）。
+/// ★ 不宣告的話，對方按 RFC 1035 只能發 512 位元組，超了就置 TC 位截斷。
+/// `_acme-challenge.<域名>` 通常只有一條 TXT，但**一個網域下有 SPF/DKIM/各種驗證串
+/// 是常態**，512 並不寬裕。1232 是當前普遍推薦值（避開 IPv6 分片）。
 const EDNS_UDP_SIZE: u16 = 1232;
 
-/// TXT 记录的类型号。
+/// TXT 記錄的類型號。
 const TYPE_TXT: u16 = 16;
-/// OPT 伪记录（EDNS0）的类型号。
+/// OPT 偽記錄（EDNS0）的類型號。
 const TYPE_OPT: u16 = 41;
 const CLASS_IN: u16 = 1;
 
-/// 查一次 TXT。返回该名字下**所有** TXT 记录的值。
+/// 查一次 TXT。回傳該名字下**所有** TXT 記錄的值。
 ///
-/// `id` 由调用方给——**不在这里 `rand`**：同 [`crate::Jitter`] 的理由，
-/// 这个模块要能被确定性地测。
+/// `id` 由呼叫方給——**不在這裡 `rand`**：同 [`crate::Jitter`] 的理由，
+/// 這個模組要能被確定性地測。
 pub async fn query_txt(
     server: SocketAddr,
     name: &str,
@@ -54,7 +54,7 @@ pub async fn query_txt(
 ) -> Result<Vec<String>, String> {
     let query = build_query(name, id)?;
 
-    // 绑定与目标同族的通配地址，否则 v4/v6 混用时 `send_to` 直接失败。
+    // 綁定與目標同族的通配位址，否則 v4/v6 混用時 `send_to` 直接失敗。
     let bind: SocketAddr = if server.is_ipv4() {
         "0.0.0.0:0".parse().unwrap()
     } else {
@@ -76,21 +76,21 @@ pub async fn query_txt(
     parse_txt_response(&buf[..n], id, name)
 }
 
-/// 组一个 TXT 查询报文。
+/// 組一個 TXT 查詢訊息。
 fn build_query(name: &str, id: u16) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&id.to_be_bytes());
-    // ★ RD（递归期望）= 0：我们问的是**权威 NS**，不是递归解析器。
-    //   置 1 会让某些权威服务器直接拒答（RA=0 时的 REFUSED）。
+    // ★ RD（遞歸期望）= 0：我們問的是**權威 NS**，不是遞歸解析器。
+    //   置 1 會讓某些權威伺服器直接拒答（RA=0 時的 REFUSED）。
     out.extend_from_slice(&0u16.to_be_bytes()); // flags
     out.extend_from_slice(&1u16.to_be_bytes()); // qdcount
     out.extend_from_slice(&0u16.to_be_bytes()); // ancount
     out.extend_from_slice(&0u16.to_be_bytes()); // nscount
-    out.extend_from_slice(&1u16.to_be_bytes()); // arcount = 1（下面那条 OPT）
+    out.extend_from_slice(&1u16.to_be_bytes()); // arcount = 1（下面那條 OPT）
     encode_name(name, &mut out)?;
     out.extend_from_slice(&TYPE_TXT.to_be_bytes());
     out.extend_from_slice(&CLASS_IN.to_be_bytes());
-    // EDNS0 的 OPT 伪记录：根名字(0) + TYPE + CLASS(=UDP 载荷大小) + TTL(0) + RDLEN(0)
+    // EDNS0 的 OPT 偽記錄：根名字(0) + TYPE + CLASS(=UDP 載荷大小) + TTL(0) + RDLEN(0)
     out.push(0);
     out.extend_from_slice(&TYPE_OPT.to_be_bytes());
     out.extend_from_slice(&EDNS_UDP_SIZE.to_be_bytes());
@@ -99,7 +99,7 @@ fn build_query(name: &str, id: u16) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// 把 `a.example.com` 编成 `\x01a\x07example\x03com\x00`。
+/// 把 `a.example.com` 編成 `\x01a\x07example\x03com\x00`。
 fn encode_name(name: &str, out: &mut Vec<u8>) -> Result<(), String> {
     let trimmed = name.trim_end_matches('.');
     if trimmed.is_empty() {
@@ -107,7 +107,7 @@ fn encode_name(name: &str, out: &mut Vec<u8>) -> Result<(), String> {
         return Ok(());
     }
     for label in trimmed.split('.') {
-        // ⚠ 空标签（`a..b`）会编出一个提前结束的名字——那是**另一个域名**，不是错误提示。
+        // ⚠ 空標籤（`a..b`）會編出一個提前結束的名字——那是**另一個網域**，不是錯誤提示。
         if label.is_empty() {
             return Err(format!("域名 {name} 里有空标签"));
         }
@@ -124,10 +124,10 @@ fn encode_name(name: &str, out: &mut Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
-/// 从应答里抠出所有 TXT 值。
+/// 從應答裡摳出所有 TXT 值。
 ///
-/// ★ 三条校验缺一不可：**ID 对得上**（挡串包）、**QR=1**（是应答不是查询回声）、
-/// **RCODE=0**（NXDOMAIN 与「查到了但没记录」是两回事）。
+/// ★ 三條檢核缺一不可：**ID 對得上**（擋串包）、**QR=1**（是應答不是查詢回聲）、
+/// **RCODE=0**（NXDOMAIN 與「查到了但沒記錄」是兩回事）。
 fn parse_txt_response(buf: &[u8], want_id: u16, name: &str) -> Result<Vec<String>, String> {
     if buf.len() < 12 {
         return Err("DNS 应答短于报文头".to_string());
@@ -140,8 +140,8 @@ fn parse_txt_response(buf: &[u8], want_id: u16, name: &str) -> Result<Vec<String
     if flags & 0x8000 == 0 {
         return Err("收到的不是 DNS 应答（QR=0）".to_string());
     }
-    // ⚠ TC=1 说明对方截断了。**不能当成「没有这条记录」**——那会让轮询一直等到超时，
-    //   而真正的原因是应答太大。说出来，让人能查。
+    // ⚠ TC=1 說明對方截斷了。**不能當成「沒有這條記錄」**——那會讓輪詢一直等到超時，
+    //   而真正的原因是應答太大。說出來，讓人能查。
     if flags & 0x0200 != 0 {
         return Err(format!(
             "{name} 的 DNS 应答被截断（TC=1）——本模块不做 TCP 回落，\
@@ -151,14 +151,14 @@ fn parse_txt_response(buf: &[u8], want_id: u16, name: &str) -> Result<Vec<String
     let rcode = flags & 0x000f;
     match rcode {
         0 => {}
-        3 => return Ok(Vec::new()), // NXDOMAIN：名字还不存在 —— 对轮询来说就是「还没可见」
+        3 => return Ok(Vec::new()), // NXDOMAIN：名字還不存在 —— 對輪詢來說就是「還沒可見」
         other => return Err(format!("{name} 的 DNS 应答 RCODE={other}")),
     }
     let qdcount = u16::from_be_bytes([buf[4], buf[5]]) as usize;
     let ancount = u16::from_be_bytes([buf[6], buf[7]]) as usize;
 
     let mut pos = 12usize;
-    // 跳过问题段。
+    // 跳過問題段。
     for _ in 0..qdcount {
         pos = skip_name(buf, pos)?;
         pos = pos
@@ -182,7 +182,7 @@ fn parse_txt_response(buf: &[u8], want_id: u16, name: &str) -> Result<Vec<String
             .filter(|p| *p <= buf.len())
             .ok_or("DNS 应答的 RDLENGTH 超出报文")?;
         if rtype == TYPE_TXT {
-            // TXT 的 rdata 是若干「长度前缀字符串」，一条记录可能被拆成多段，要拼起来。
+            // TXT 的 rdata 是若干「長度前綴字串」，一條記錄可能被拆成多段，要拼起來。
             let mut s = String::new();
             let mut p = pos;
             while p < end {
@@ -201,28 +201,28 @@ fn parse_txt_response(buf: &[u8], want_id: u16, name: &str) -> Result<Vec<String
     Ok(out)
 }
 
-/// 跳过一个（可能被压缩的）域名，返回它后面那个字节的位置。
+/// 跳過一個（可能被壓縮的）網域，回傳它後面那個位元組的位置。
 ///
-/// ★ ★ **这是本模块唯一真正危险的地方**：压缩指针可以指回报文里任意位置，
-/// 包括指向自己 ⇒ 无限循环。[`MAX_JUMPS`] 就是它的完整解法。
+/// ★ ★ **這是本模組唯一真正危險的地方**：壓縮指針可以指回訊息裡任意位置，
+/// 包括指向自己 ⇒ 無限循環。[`MAX_JUMPS`] 就是它的完整解法。
 fn skip_name(buf: &[u8], start: usize) -> Result<usize, String> {
     let mut pos = start;
     let mut jumps = 0usize;
     let mut labels = 0usize;
-    // 第一次跳转之后，「名字后面那个字节」的位置就固定了，后面只是在别处读内容。
+    // 第一次跳轉之後，「名字後面那個位元組」的位置就固定了，後面只是在別處讀內容。
     let mut after: Option<usize> = None;
     loop {
         let len = *buf.get(pos).ok_or("DNS 名字越出报文")?;
         if len & 0xc0 == 0xc0 {
-            // 压缩指针：两个字节，低 14 位是偏移。
+            // 壓縮指針：兩個位元組，低 14 位是偏移。
             let b1 = *buf.get(pos + 1).ok_or("DNS 压缩指针只有一个字节")?;
             let target = (((len & 0x3f) as usize) << 8) | b1 as usize;
             jumps += 1;
             if jumps > MAX_JUMPS {
                 return Err("DNS 名字的压缩指针跳转过多（多半是指针环）".to_string());
             }
-            // ⚠ 只允许往**前**指。RFC 1035 的压缩就是这么定义的，
-            //   而且这一条本身就能挡掉绝大多数环。
+            // ⚠ 只允許往**前**指。RFC 1035 的壓縮就是這麼定義的，
+            //   而且這一條本身就能擋掉絕大多數環。
             if target >= pos {
                 return Err("DNS 压缩指针指向自身或后方".to_string());
             }
@@ -244,31 +244,31 @@ fn skip_name(buf: &[u8], start: usize) -> Result<usize, String> {
     }
 }
 
-/// 向一组权威 NS 轮询，直到某条 TXT 在**每一台**上都可见。
+/// 向一組權威 NS 輪詢，直到某條 TXT 在**每一臺**上都可見。
 ///
-/// ★ ★ **判据是「每一台都看得见」，不是「有一台看得见」。** CA 校验时会挑哪一台
-/// 我们管不着；只要有一台还没同步到，校验就会失败——而失败要消耗速率配额。
-/// 宁可多等几秒。
+/// ★ ★ **判據是「每一臺都看得見」，不是「有一臺看得見」。** CA 檢核時會挑哪一臺
+/// 我們管不著；只要有一臺還沒同步到，檢核就會失敗——而失敗要消耗速率配額。
+/// 寧可多等幾秒。
 ///
-/// ★ `now`/`sleep` 都走 tokio，但**超时与间隔从参数进来**，与 [`crate::Jitter`]
-/// 同一条纪律：判据不能挂在写死的常量上。
-/// 一台权威 NS 的**写法**：可能是 IP，也可能是主机名。
+/// ★ `now`/`sleep` 都走 tokio，但**超時與間隔從參數進來**，與 [`crate::Jitter`]
+/// 同一條紀律：判據不能掛在寫死的常數上。
+/// 一臺權威 NS 的**寫法**：可能是 IP，也可能是主機名。
 ///
-/// # ★ ★ ★ 为什么不在启动时就把主机名解析成 IP 存起来
+/// # ★ ★ ★ 為什麼不在啟動時就把主機名解析成 IP 存起來
 ///
-/// 那等于**赌这个名字对应的地址永远不变**。而 `resolvers` 指的恰恰是
-/// DNSPod / Cloudflare 这类 **anycast 权威**，它们的地址集合本来就会变 ——
-/// 一个跑了三个月的进程，握着三个月前解出来的 IP 去问「TXT 可见了吗」，
-/// 而那几台可能早就不在这个 anycast 集群里了。
+/// 那等於**賭這個名字對應的位址永遠不變**。而 `resolvers` 指的恰恰是
+/// DNSPod / Cloudflare 這類 **anycast 權威**，它們的位址集合本來就會變 ——
+/// 一個跑了三個月的處理程序，握著三個月前解出來的 IP 去問「TXT 可見了嗎」，
+/// 而那幾臺可能早就不在這個 anycast 集群裡了。
 ///
-/// ⚠ 现场表现会特别难查：**证书签不下来，而配置、凭据、DNS 记录全是对的**。
+/// ⚠ 現場表現會特別難查：**證書籤不下來，而設定、憑證、DNS 記錄全是對的**。
 ///
-/// ⇒ 存名字，**每次签发那一刻解析一次**。代价是每次多一次 DNS 查询（本地 stub
-/// 还会缓存），换来的是判据永远问的是**现在**的权威。
-/// ★ 这与 G76（上游域名定期重解析）是同一条道理的第二次应用。
+/// ⇒ 存名字，**每次簽發那一刻解析一次**。代價是每次多一次 DNS 查詢（本機 stub
+/// 還會快取），換來的是判據永遠問的是**現在**的權威。
+/// ★ 這與 G76（上游網域定期重解析）是同一條道理的第二次應用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverSpec {
-    /// 主机名或 IPv4 字面量（形状已由 `fulcrum_config::host::parse_resolver` 在编译期判过）。
+    /// 主機名或 IPv4 字面值（形狀已由 `fulcrum_config::host::parse_resolver` 在編譯期判過）。
     pub host: String,
     pub port: u16,
 }
@@ -281,15 +281,15 @@ impl ResolverSpec {
         }
     }
 
-    /// 解析成一到多个地址。
+    /// 解析成一到多個位址。
     ///
-    /// ★ ★ **一个名字解出几个就要问几个**，不是挑第一个：`drummer.dnspod.net`
-    /// 解出五个地址，那是五台**各自独立**的权威节点，而 TXT 是逐节点同步过去的。
-    /// 只问第一台，就会把「这一台已经有了」当成「全网都有了」——
-    /// ⚠ 真机上正是这个形状：三台权威都说可见，CA 那边仍然判 `Invalid`，
-    /// 43 秒后重试才成。**问得越全，告诉 CA 之前就越不会撒谎。**
+    /// ★ ★ **一個名字解出幾個就要問幾個**，不是挑第一個：`drummer.dnspod.net`
+    /// 解出五個位址，那是五臺**各自獨立**的權威節點，而 TXT 是逐節點同步過去的。
+    /// 只問第一臺，就會把「這一臺已經有了」當成「全網都有了」——
+    /// ⚠ 真機上正是這個形狀：三臺權威都說可見，CA 那邊仍然判 `Invalid`，
+    /// 43 秒後重試才成。**問得越全，告訴 CA 之前就越不會撒謊。**
     pub async fn resolve(&self) -> Result<Vec<SocketAddr>, String> {
-        // 先当 IPv4 字面量试一次：命中就不必走系统解析器。
+        // 先當 IPv4 字面值試一次：命中就不必走系統解析器。
         if let Ok(ip) = self.host.parse::<std::net::Ipv4Addr>() {
             return Ok(vec![SocketAddr::from((ip, self.port))]);
         }
@@ -298,7 +298,7 @@ impl ResolverSpec {
             .map_err(|e| format!("解析权威 NS `{}` 失败：{e}", self.host))?
             .collect();
         if addrs.is_empty() {
-            // ⚠ 解析成功但零个地址：说出来，别让它变成「查不到 TXT」。
+            // ⚠ 解析成功但零個位址：說出來，別讓它變成「查不到 TXT」。
             return Err(format!(
                 "权威 NS `{}` 解析出来是空的 —— 这个名字存在但没有地址",
                 self.host
@@ -310,16 +310,16 @@ impl ResolverSpec {
 
 #[derive(Debug)]
 pub struct TxtChecker {
-    /// 问哪些权威 NS。★ 来自 DSL 的 `resolvers`，**必须显式配**（见 `dns01.rs`）。
-    /// ⚠ 存的是**写法**（可能是主机名），解析发生在每次 [`TxtChecker::wait_visible`] 入口。
+    /// 問哪些權威 NS。★ 來自 DSL 的 `resolvers`，**必須顯式配**（見 `dns01.rs`）。
+    /// ⚠ 存的是**寫法**（可能是主機名），解析發生在每次 [`TxtChecker::wait_visible`] 入口。
     pub resolvers: Vec<ResolverSpec>,
-    /// 单次查询的超时。
+    /// 單次查詢的超時。
     pub query_timeout: Duration,
-    /// 两次轮询之间等多久。
+    /// 兩次輪詢之間等多久。
     pub poll_interval: Duration,
-    /// 总共最多等多久。
+    /// 總共最多等多久。
     pub deadline: Duration,
-    /// 查询 ID 的起点。★ 由调用方给，模块自己不 `rand`。
+    /// 查詢 ID 的起點。★ 由呼叫方給，模組自己不 `rand`。
     id: std::sync::atomic::AtomicU16,
 }
 
@@ -347,26 +347,26 @@ impl TxtChecker {
             .wrapping_add(1)
     }
 
-    /// 等到 `name` 上出现值为 `expected` 的 TXT，或者超时。
+    /// 等到 `name` 上出現值為 `expected` 的 TXT，或者超時。
     ///
-    /// ⚠ 返回 `Err` 的含义是「**没等到**」，调用方**不应该**继续通知 CA 来验——
-    /// 那只会换来一次必然失败的校验。
+    /// ⚠ 回傳 `Err` 的含義是「**沒等到**」，呼叫方**不應該**繼續通知 CA 來驗——
+    /// 那隻會換來一次必然失敗的檢核。
     pub async fn wait_visible(&self, name: &str, expected: &str) -> Result<(), String> {
         if self.resolvers.is_empty() {
-            // ★ 走到这里说明配置校验漏了。说清楚是哪一条，而不是「查不到」。
+            // ★ 走到這裡說明設定檢核漏了。說清楚是哪一條，而不是「查不到」。
             return Err(format!(
                 "没有配任何权威 NS（`tls {{ resolvers … }}`），无法确认 {name} 的 TXT 是否可见 —— \
                  G58 不允许用固定 sleep 代替这一步"
             ));
         }
-        // ★ 解析发生在**这里**，不是启动时（理由见 `ResolverSpec` 的文档注释）。
-        //   ⚠ 一台解析不出来就整趟失败，而不是少问一台 —— 少问一台会让
-        //   「全部可见」这个判据静静地变弱，而它正是我们敢通知 CA 的全部依据。
+        // ★ 解析發生在**這裡**，不是啟動時（理由見 `ResolverSpec` 的文件註解）。
+        //   ⚠ 一臺解析不出來就整趟失敗，而不是少問一臺 —— 少問一臺會讓
+        //   「全部可見」這個判據靜靜地變弱，而它正是我們敢通知 CA 的全部依據。
         let mut servers: Vec<SocketAddr> = Vec::new();
         for spec in &self.resolvers {
             let addrs = spec.resolve().await?;
-            // ★ info 不是 debug：owner 要的「把解到的 IP 打出来」就落在这里 ——
-            //   而这里是**唯一**说得准的地方（装载时说等于赌它到签发那刻还没变）。
+            // ★ info 不是 debug：owner 要的「把解到的 IP 打出來」就落在這裡 ——
+            //   而這裡是**唯一**說得準的地方（裝載時說等於賭它到簽發那刻還沒變）。
             info!(
                 "权威 NS {}:{} 解析到 {} 个地址：{:?}",
                 spec.host,
@@ -400,10 +400,10 @@ impl TxtChecker {
                 }
             }
             if all_ok {
-                // ★ ★ 这条是 **info 不是 debug**，而且是有意的：G58 把「真去问权威 NS」
-                //   写成了硬约束，那么「我确实问过、而且等到了」就该是**默认可见**的事实。
-                //   ⚠ 否则运维只能看到「签发成功」，而**固定 sleep 的实现也会打出那一行**——
-                //   两种实现从日志上分不出来。一次签发只打一条，不吵。
+                // ★ ★ 這條是 **info 不是 debug**，而且是有意的：G58 把「真去問權威 NS」
+                //   寫成了硬約束，那麼「我確實問過、而且等到了」就該是**預設可見**的事實。
+                //   ⚠ 否則維運只能看到「簽發成功」，而**固定 sleep 的實作也會打出那一行**——
+                //   兩種實作從紀錄上分不出來。一次簽發只打一條，不吵。
                 info!(
                     "{name} 的 TXT 已在全部 {} 台权威 NS 上可见（等了 {}ms）",
                     self.resolvers.len(),
@@ -427,7 +427,7 @@ impl TxtChecker {
 mod tests {
     use super::*;
 
-    /// 造一条应答：头 + 问题 + 若干 TXT 答案。
+    /// 造一條應答：頭 + 問題 + 若干 TXT 答案。
     fn answer(id: u16, name: &str, txts: &[&str], flags: u16) -> Vec<u8> {
         let mut b = Vec::new();
         b.extend_from_slice(&id.to_be_bytes());
@@ -441,7 +441,7 @@ mod tests {
         b.extend_from_slice(&TYPE_TXT.to_be_bytes());
         b.extend_from_slice(&CLASS_IN.to_be_bytes());
         for t in txts {
-            // 用压缩指针指回问题段的名字——真实服务器就是这么干的。
+            // 用壓縮指針指回問題段的名字——真實伺服器就是這麼幹的。
             b.push(0xc0);
             b.push(qname_at as u8);
             b.extend_from_slice(&TYPE_TXT.to_be_bytes());
@@ -469,8 +469,8 @@ mod tests {
 
     #[test]
     fn id_对不上要报错而不是当成没有记录() {
-        // ⚠ 这两者的区别是**安全性**的：把串包当成「没记录」只是慢，
-        //   把串包当成「有记录」就是让别人替我们回答。
+        // ⚠ 這兩者的區別是**安全性**的：把串包當成「沒記錄」只是慢，
+        //   把串包當成「有記錄」就是讓別人替我們回答。
         let buf = answer(0x1111, "a.com", &["x"], 0x8000);
         assert!(parse_txt_response(&buf, 0x2222, "a.com").is_err());
     }
@@ -483,8 +483,8 @@ mod tests {
 
     #[test]
     fn nxdomain_读作还没可见_而不是错误() {
-        // ★ 轮询期间 NXDOMAIN 是**正常中间状态**（记录还没写上去），
-        //   报成错误会让上层把它当成失败去退避。
+        // ★ 輪詢期間 NXDOMAIN 是**正常中間狀態**（記錄還沒寫上去），
+        //   報成錯誤會讓上層把它當成失敗去退避。
         let buf = answer(1, "a.com", &[], 0x8003);
         assert_eq!(
             parse_txt_response(&buf, 1, "a.com").unwrap(),
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn 截断的应答要说出来_不能当成没有记录() {
-        // ⚠ 当成「没有记录」会让轮询一路等到超时，而真正的原因是应答太大。
+        // ⚠ 當成「沒有記錄」會讓輪詢一路等到超時，而真正的原因是應答太大。
         let buf = answer(1, "a.com", &[], 0x8200); // TC=1
         let e = parse_txt_response(&buf, 1, "a.com").unwrap_err();
         assert!(e.contains("截断"), "{e}");
@@ -502,12 +502,12 @@ mod tests {
 
     #[test]
     fn 指针环不会把它转死() {
-        // ★ ★ 这是本模块最重要的一条测试：构造一个**指向自己**的压缩指针。
-        //   没有 MAX_JUMPS 与「只许往前指」这两条，下面这行会挂住整个后台巡检。
+        // ★ ★ 這是本模組最重要的一條測試：建構一個**指向自己**的壓縮指針。
+        //   沒有 MAX_JUMPS 與「只許往前指」這兩條，下面這行會掛住整個後台巡檢。
         let mut b = vec![0u8; 12];
         b[2] = 0x80; // QR=1
         b[5] = 1; // qdcount = 1
-        // 问题段的名字直接是一个指向自己（偏移 12）的指针
+        // 問題段的名字直接是一個指向自己（偏移 12）的指針
         b.push(0xc0);
         b.push(12);
         let e = parse_txt_response(&b, 0, "x").unwrap_err();
@@ -516,8 +516,8 @@ mod tests {
 
     #[test]
     fn 往回跳但成环的指针也会被跳数封顶挡住() {
-        // 两个指针互指：13 指向 12、12 指向 13 —— 都不满足「target >= pos」，
-        // 所以必须靠 MAX_JUMPS 兜住。
+        // 兩個指針互指：13 指向 12、12 指向 13 —— 都不滿足「target >= pos」，
+        // 所以必須靠 MAX_JUMPS 兜住。
         let mut b = vec![0u8; 12];
         b[2] = 0x80;
         b[5] = 1;
@@ -528,13 +528,13 @@ mod tests {
 
     #[test]
     fn 各种截断的报文都返回错误而不是_panic() {
-        // ★ 判据是「**一个都不 panic**」——这条路径跑在后台巡检里，
-        //   一次 panic 等于自动续期从此不工作。
+        // ★ 判據是「**一個都不 panic**」——這條路徑跑在後台巡檢裡，
+        //   一次 panic 等於自動續期從此不工作。
         let full = answer(7, "_acme-challenge.example.com", &["abc"], 0x8000);
         for cut in 0..full.len() {
             let _ = parse_txt_response(&full[..cut], 7, "x");
         }
-        // 再来一批乱字节
+        // 再來一批亂位元組
         for seed in 0..64u8 {
             let junk: Vec<u8> = (0..40u8)
                 .map(|i| i.wrapping_mul(seed).wrapping_add(seed))
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn rdlength_撒谎时不会读出界() {
         let mut b = answer(1, "a.com", &["x"], 0x8000);
-        // 把最后一条记录的 RDLENGTH 改成一个很大的值
+        // 把最後一條記錄的 RDLENGTH 改成一個很大的值
         let n = b.len();
         b[n - 4] = 0xff;
         b[n - 3] = 0xff;
@@ -557,11 +557,11 @@ mod tests {
     fn 查询报文的形状是对的() {
         let q = build_query("_acme-challenge.example.com", 0xabcd).unwrap();
         assert_eq!(&q[0..2], &[0xab, 0xcd]);
-        // ★ RD 必须是 0：问权威 NS 时置 1 会被某些服务器 REFUSED。
+        // ★ RD 必須是 0：問權威 NS 時置 1 會被某些伺服器 REFUSED。
         assert_eq!(u16::from_be_bytes([q[2], q[3]]) & 0x0100, 0, "RD 不该置位");
         assert_eq!(u16::from_be_bytes([q[4], q[5]]), 1, "qdcount");
         assert_eq!(u16::from_be_bytes([q[10], q[11]]), 1, "arcount（那条 OPT）");
-        // 结尾应当是 OPT：根名字 + TYPE 41
+        // 結尾應當是 OPT：根名字 + TYPE 41
         let opt_at = q.len() - 11;
         assert_eq!(q[opt_at], 0);
         assert_eq!(u16::from_be_bytes([q[opt_at + 1], q[opt_at + 2]]), TYPE_OPT);
@@ -573,10 +573,10 @@ mod tests {
 
     #[test]
     fn 空标签的域名被拒而不是编成另一个域名() {
-        // ⚠ `a..b` 里那个空标签会编出一个提前结束的名字 —— 那是**另一个域名**。
+        // ⚠ `a..b` 裡那個空標籤會編出一個提前結束的名字 —— 那是**另一個網域**。
         assert!(build_query("a..b", 1).is_err());
         assert!(build_query(&format!("{}.com", "x".repeat(64)), 1).is_err());
-        // 末尾的点是合法写法（FQDN），不该被拒。
+        // 末尾的點是合法寫法（FQDN），不該被拒。
         assert!(build_query("example.com.", 1).is_ok());
     }
 }

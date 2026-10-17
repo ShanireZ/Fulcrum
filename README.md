@@ -1,29 +1,29 @@
-# 枢衡 Fulcrum
+# 樞衡 Fulcrum
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg?style=flat-square)](LICENSE)
 
-**Web 服务器 + 反向代理 + 负载均衡，Rust 实现。**
+**Web 伺服器 + 反向代理 + 負載均衡，Rust 實作。**
 
-静态二进制 + Caddyfile 式配置 + 零停机换代 + HTTP/3
+靜態二進位 + Caddyfile 式設定 + 零停機換代 + HTTP/3
 
 ## Features
 
-- **反向代理与负载均衡** —— 四种 `lb_policy`、DNS 定期重解析、主动健康检查
-- **自动 HTTPS** —— ACME 三种挑战（TLS-ALPN-01 / HTTP-01 / DNS-01），原生 Cloudflare 与 DNSPod
-- **静态文件** —— 目录索引、范围请求、条件请求、预压缩旁文件
-- **HTTP 缓存** —— 内存 + 磁盘两级、防惊群、`POST /purge`
-- **响应压缩** · **结构化访问日志**（JSON）
-- **Prometheus 指标** —— 站点块里的 `metrics` 指令，零新依赖
+- **反向代理與負載均衡** —— 四種 `lb_policy`、DNS 定期重解析、主動健康檢查
+- **自動 HTTPS** —— ACME 三種挑戰（TLS-ALPN-01 / HTTP-01 / DNS-01），原生 Cloudflare 與 DNSPod
+- **靜態檔案** —— 目錄索引、範圍請求、條件請求、預壓縮旁檔案
+- **HTTP 快取** —— 記憶體 + 磁碟兩級、防驚群、`POST /purge`
+- **回應壓縮** · **結構化訪問紀錄**（JSON）
+- **Prometheus 指標** —— 站台塊裡的 `metrics` 指令，零新依賴
 - **HTTP/1.1 · HTTP/2 · HTTP/3**
-- **L4 面** —— TCP / UDP 透传、SNI / ALPN 分流、PROXY protocol
-- **管理面**（Unix socket，默认不出机器）—— 全量原子 `POST /load`（`overrides` 必填：`keep` / `clear`）·
-  增量 `POST /runtime` 改**临时覆盖层**（摘上游 / 改权重，不持久化但 `GET /stats` 里永远看得见）·
-  `POST /renew` · `POST /purge` · 只读快照 `GET /stats`
-- **零停机换代** —— systemd `Type=notify`，`systemctl reload` 换二进制、换配置、换监听端口集
+- **L4 面** —— TCP / UDP 透傳、SNI / ALPN 分流、PROXY protocol
+- **管理面**（Unix socket，預設不出機器）—— 全量原子 `POST /load`（`overrides` 必填：`keep` / `clear`）·
+  增量 `POST /runtime` 改**臨時覆蓋層**（摘上游 / 改權重，不持久化但 `GET /stats` 裡永遠看得見）·
+  `POST /renew` · `POST /purge` · 唯讀快照 `GET /stats`
+- **零停機換代** —— systemd `Type=notify`，`systemctl reload` 換二進位、換設定、換監聽連接埠集
 
-## 安装
+## 安裝
 
-从源码构建：
+從原始碼建置：
 
 ```bash
 git clone https://github.com/ShanireZ/Fulcrum.git && cd Fulcrum
@@ -31,7 +31,7 @@ docker build -f docker/Dockerfile.musl-product --target build -t fulcrum-build .
 cid=$(docker create fulcrum-build) && docker cp "$cid:/fulcrum" ./fulcrum && docker rm "$cid"
 ```
 
-`./fulcrum` 是 musl 单静态二进制（`INTERP=0 / NEEDED=0`），复制至 `/usr/local/bin/` 即可，单文件、零运行时依赖。
+`./fulcrum` 是 musl 單靜態二進位（`INTERP=0 / NEEDED=0`），複製至 `/usr/local/bin/` 即可，單檔案、零執行環境依賴。
 
 
 ## 使用
@@ -67,27 +67,27 @@ static.example.com {
 ```
 
 ```bash
-fulcrum validate Fulcrumfile   # 四层校验：诊断 → 结构化配置 → 运行时图 → TLS 装载
-fulcrum plan     Fulcrumfile   # 打印执行计划：每条指令实际跑在第几步
-fulcrum compile  Fulcrumfile   # DSL → 结构化配置（JSON），默认脱敏
-fulcrum serve    Fulcrumfile   # 起数据面
+fulcrum validate Fulcrumfile   # 四層檢核：診斷 → 結構化設定 → 執行環境圖 → TLS 裝載
+fulcrum plan     Fulcrumfile   # 列印執行計畫：每條指令實際跑在第幾步
+fulcrum compile  Fulcrumfile   # DSL → 結構化設定（JSON），預設脫敏
+fulcrum serve    Fulcrumfile   # 起資料面
 ```
 
-`serve` 常用选项：
+`serve` 常用選項：
 
-| 选项                 | 默认                                        |
+| 選項                 | 預設                                        |
 | -------------------- | ------------------------------------------- |
 | `--bind-host <H>`    | `0.0.0.0`                                   |
-| `--state-dir <D>`    | `/var/lib/fulcrum`（证书存在 `<D>/certs/`） |
+| `--state-dir <D>`    | `/var/lib/fulcrum`（證書存在 `<D>/certs/`） |
 | `--pid-file <P>`     | `/run/fulcrum/fulcrum.pid`                  |
 | `--upgrade-sock <S>` | `/run/fulcrum/upgrade.sock`                 |
-| `-u, --upgrade`      | 从正在跑的旧世代接管（零停机换代）          |
+| `-u, --upgrade`      | 從正在跑的舊世代接管（零停機換代）          |
 
-配置语法逐条见 [`docs/architecture/dsl-reference.md`](docs/architecture/dsl-reference.md)；
-生产部署（systemd unit、换代、证书续期）详见 [`docs/platform/deploy.md`](docs/platform/deploy.md)。
+設定語法逐條見 [`docs/architecture/dsl-reference.md`](docs/architecture/dsl-reference.md)；
+生產部署（systemd unit、換代、證書續期）詳見 [`docs/platform/deploy.md`](docs/platform/deploy.md)。
 
 ## License
 
-本项目采用 [GNU General Public License v3.0](LICENSE)（`GPL-3.0`）发布。
+本專案採用 [GNU General Public License v3.0](LICENSE)（`GPL-3.0`）發佈。
 
-`vendor/pingora/` 是 Cloudflare Pingora 的 fork，原项目按 Apache-2.0 授权，其许可证与版权声明原样保留在该目录下。
+`vendor/pingora/` 是 Cloudflare Pingora 的 fork，原專案按 Apache-2.0 授權，其授權條款與版權宣告原樣保留在該目錄下。

@@ -1,13 +1,13 @@
-# Issue — 投稿八（⏳ **材料已备，未发**；owner 2026-10-16 拍「投稿材料先备不发」）
+# Issue — 投稿八（⏳ **材料已備，未發**；owner 2026-10-16 拍「投稿材料先備不發」）
 
-> 对应 fork **改动 19（PLAN G165）**的 ① ②，两处一起投。
+> 對應 fork **改動 19（PLAN G165）**的 ① ②，兩處一起投。
 >
-> 模板：上游 `.github/ISSUE_TEMPLATE/feature_request.md` 的四个小标题（性能改进不是缺陷，⛔ 不用 bug_report）。
-> 补丁：[`0009-…`](0009-Avoid-two-allocations-when-writing-an-HTTP-1-response-header.patch)，
-> 基于上游 `main` = `4487f7b`（2026-09-11；2026-10-16 克隆时仍是它）。PR 正文草稿：[`pr-8-write-response-header.md`](pr-8-write-response-header.md)。
+> 範本：上游 `.github/ISSUE_TEMPLATE/feature_request.md` 的四個小標題（效能改進不是缺陷，⛔ 不用 bug_report）。
+> 補丁：[`0009-…`](0009-Avoid-two-allocations-when-writing-an-HTTP-1-response-header.patch)，
+> 基於上游 `main` = `4487f7b`（2026-09-11；2026-10-16 克隆時仍是它）。PR 正文草稿：[`pr-8-write-response-header.md`](pr-8-write-response-header.md)。
 >
-> ⚠ 文中每个数都能在上游复现：分配次数来自补丁自带的测试（`tests/write_response_header_allocations.rs`），
-> 4 KiB 是 `INIT_HEADER_BUF_SIZE`。⛔ fork 侧诊断台的计数（每请求 malloc 18 → 16 等）**没有**写进来。
+> ⚠ 文中每個數都能在上游重現：分配次數來自補丁自帶的測試（`tests/write_response_header_allocations.rs`），
+> 4 KiB 是 `INIT_HEADER_BUF_SIZE`。⛔ fork 側診斷臺的計數（每請求 malloc 18 → 16 等）**沒有**寫進來。
 
 **Title**
 

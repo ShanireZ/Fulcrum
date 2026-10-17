@@ -1,6 +1,6 @@
-//! 签发与续期的执行路径。
+//! 簽發與續期的執行路徑。
 //!
-//! 一轮巡检对每个域名做同一件事：
+//! 一輪巡檢對每個網域做同一件事：
 //!
 //! ```text
 //! 拿跨进程锁 ──▶ 重读存储 ──▶ 问 ARI ──▶ 判定该不该续（G56）
@@ -13,12 +13,12 @@
 //!                              写存储（原子，G55）──▶ 回读校验 ──▶ 热装到解析器
 //! ```
 //!
-//! ★ **顺序必须是「先拿锁、再读」**：升级窗口里两代共享同一个证书目录，
-//! 第二代在锁上等到的时候证书可能已经在那儿了。再签一张不只是白跑 ——
-//! CA 的速率配额**按账户**算，耗尽之后签不出来的不只是这一个域名。
+//! ★ **順序必須是「先拿鎖、再讀」**：升級視窗裡兩代共享同一個證書目錄，
+//! 第二代在鎖上等到的時候證書可能已經在那兒了。再籤一張不只是白跑 ——
+//! CA 的速率配額**按帳戶**算，耗盡之後籤不出來的不只是這一個網域。
 //!
-//! ★ **写完回读一次再装**：直接装内存里那份，等于从没验证过落盘那份能不能读，
-//! 而它读不出来的那天症状是「重启之后所有 HTTPS 全挂」。
+//! ★ **寫完回讀一次再裝**：直接裝記憶體裡那份，等於從沒驗證過寫入磁碟那份能不能讀，
+//! 而它讀不出來的那天症狀是「重新啟動之後所有 HTTPS 全掛」。
 
 use crate::{AcmeManager, Report, Target};
 use fulcrum_tls::renewal::{AriWindow, backoff_remaining, should_renew};
@@ -32,7 +32,7 @@ use log::{debug, error, info, warn};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// 不走 DNS-01 时，这一次用哪种挑战。**G54：TLS-ALPN-01 主、HTTP-01 备。**
+/// 不走 DNS-01 時，這一次用哪種挑戰。**G54：TLS-ALPN-01 主、HTTP-01 備。**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonDnsChallenge {
     TlsAlpn01,
@@ -40,7 +40,7 @@ pub enum NonDnsChallenge {
 }
 
 impl NonDnsChallenge {
-    /// 写进 `meta.json` 的名字，与 RFC 8555 的挑战类型串一致。
+    /// 寫進 `meta.json` 的名字，與 RFC 8555 的挑戰類型串一致。
     pub fn as_str(self) -> &'static str {
         match self {
             NonDnsChallenge::TlsAlpn01 => "tls-alpn-01",
@@ -49,34 +49,34 @@ impl NonDnsChallenge {
     }
 }
 
-/// 这一次该用主的还是备的。
+/// 這一次該用主的還是備的。
 ///
-/// ★ **这是 G54 那句「HTTP-01 是备」的全部落点**：只试 TLS-ALPN-01 的实现在 443 被挡住的
-/// 机器上永远签不出来，而日志每轮只说「CA 说验不过」。
+/// ★ **這是 G54 那句「HTTP-01 是備」的全部落點**：只試 TLS-ALPN-01 的實作在 443 被擋住的
+/// 機器上永遠籤不出來，而紀錄每輪只說「CA 說驗不過」。
 ///
-/// 规则一条：**上一次失败时用的那种，这一次换另一种。**
-/// 成功即清空（否则一次偶发失败会把域名永久钉在备用挑战上）；
-/// ⚠ 换挑战**不重置**失败计数，否则退避在「两种都不通」时永远长不大。
+/// 規則一條：**上一次失敗時用的那種，這一次換另一種。**
+/// 成功即清空（否則一次偶發失敗會把網域永久釘在備用挑戰上）；
+/// ⚠ 換挑戰**不重置**失敗計數，否則退避在「兩種都不通」時永遠長不大。
 pub fn pick_non_dns_challenge(last_failed: Option<&str>) -> NonDnsChallenge {
     match last_failed {
         Some("tls-alpn-01") => NonDnsChallenge::Http01,
-        // ★ 认不出来的值（旧版本写的、手工改坏的）一律走主的——
-        //   与「从来没失败过」同一处置，而不是当成错误。
+        // ★ 認不出來的值（舊版本寫的、手動改壞的）一律走主的——
+        //   與「從來沒失敗過」同一處置，而不是當成錯誤。
         _ => NonDnsChallenge::TlsAlpn01,
     }
 }
 
 impl AcmeManager {
-    /// **G59 第 2 条**：启动时把每份 DNS 凭据校验一遍。
+    /// **G59 第 2 條**：啟動時把每份 DNS 憑證檢核一遍。
     ///
-    /// 返回 `Err` = **拒绝启动**。形状照 G15：错误在启动时暴露，不等被滥用才发现。
+    /// 回傳 `Err` = **拒絕啟動**。形狀照 G15：錯誤在啟動時暴露，不等被濫用才發現。
     ///
-    /// ★ **两种失败处置相反，分法挂在类型上**（[`crate::provider::VerifyError`]）：
-    /// `Fatal`（对端说不行 / 凭据读不出来）⇒ 拒绝启动；`Inconclusive`（没连上）⇒ 打 error 继续。
+    /// ★ **兩種失敗處置相反，分法掛在類型上**（[`crate::provider::VerifyError`]）：
+    /// `Fatal`（對端說不行 / 憑證讀不出來）⇒ 拒絕啟動；`Inconclusive`（沒連上）⇒ 打 error 繼續。
     ///
-    /// ⚠ 后者不拒绝启动，是因为一次网络抖动不该让整台机器上所有站点都起不来。
-    /// ★ 这与「『没能检查』不许当成『检查通过』」有张力 ⇒ 处置**不是悄悄跳过**，
-    /// 而是打 error 说出「这份凭据没被验过」。**一处知情的取舍。**
+    /// ⚠ 後者不拒絕啟動，是因為一次網路抖動不該讓整臺機器上所有站台都起不來。
+    /// ★ 這與「『沒能檢查』不許當成『檢查通過』」有張力 ⇒ 處置**不是悄悄跳過**，
+    /// 而是打 error 說出「這份憑證沒被驗過」。**一處知情的取捨。**
     pub async fn verify_credentials(&self) -> Result<(), String> {
         let mut seen: std::collections::BTreeSet<(&str, String)> =
             std::collections::BTreeSet::new();
@@ -96,7 +96,7 @@ impl AcmeManager {
                     return Err(format!("站点 {} 的 DNS 凭据不可用：{m}", target.site));
                 }
                 Err(crate::provider::VerifyError::Inconclusive(m)) => {
-                    // ⚠ error 不是 warn：这份凭据**没有被验过**，而它有可能是坏的。
+                    // ⚠ error 不是 warn：這份憑證**沒有被驗過**，而它有可能是壞的。
                     error!(
                         "⚠ 站点 {} 的 {} 凭据**没能校验**（{m}）—— 不拒绝启动（一次网络抖动\
                          不该让整台机器起不来），但它没被验过；签发时若失败，先查这条",
@@ -109,15 +109,15 @@ impl AcmeManager {
         Ok(())
     }
 
-    /// 巡检一轮：该签的签、该续的续、已经好的装上。
+    /// 巡檢一輪：該籤的籤、該續的續、已經好的裝上。
     ///
-    /// # ⚠ ⚠ 计数记在这一层，正体在 [`Self::poll_once`]
+    /// # ⚠ ⚠ 計數記在這一層，正體在 [`Self::poll_once`]
     ///
-    /// 那一层有**三处早退**（没有目标 / 这一批一个都接不了 / 账户拿不到）。
-    /// 逐处记一遍迟早漏掉一处，而漏掉的那一处**不会有任何症状**：
-    /// `fulcrum_acme_issue_total` 照样在涨，只是少了一类。
-    /// ★ 与 `access_log::Record::finish` 同一条形状 —— 把「一定要做的收尾」
-    /// 放到一个**没有早退分支**的外层，让漏掉在结构上做不到。
+    /// 那一層有**三處早退**（沒有目標 / 這一批一個都接不了 / 帳戶拿不到）。
+    /// 逐處記一遍遲早漏掉一處，而漏掉的那一處**不會有任何症狀**：
+    /// `fulcrum_acme_issue_total` 照樣在漲，只是少了一類。
+    /// ★ 與 `access_log::Record::finish` 同一條形狀 —— 把「一定要做的收尾」
+    /// 放到一個**沒有早退分支**的外層，讓漏掉在結構上做不到。
     pub async fn run_once(&self) -> Report {
         let report = self.poll_once().await;
         self.issue_counts.record(&report);
@@ -130,21 +130,21 @@ impl AcmeManager {
             return report;
         }
 
-        // ── 0. 先把这一批接不了的挑出来 ───────────────────────────────────
+        // ── 0. 先把這一批接不了的挑出來 ───────────────────────────────────
         //
-        // ★ ★ **这一步必须在建账户之前。** 放在账户之后的话，一份只有通配符站点的
-        //   配置会先去 CA 那边建一个**一次都用不上的账户**；而 CA 连不上的时候，
-        //   那些本该被记成「推迟」的域名会被记成「失败」，进退避、进失败计数、进告警。
-        //   ⚠ **「这一批还没做」与「这一次没做成」是两件事，混在一起会让监控报假警。**
+        // ★ ★ **這一步必須在建帳戶之前。** 放在帳戶之後的話，一份只有通配符站台的
+        //   設定會先去 CA 那邊建一個**一次都用不上的帳戶**；而 CA 連不上的時候，
+        //   那些本該被記成「推遲」的網域會被記成「失敗」，進退避、進失敗計數、進告警。
+        //   ⚠ **「這一批還沒做」與「這一次沒做成」是兩件事，混在一起會讓監控報假警。**
         let mut actionable: Vec<&Target> = Vec::new();
         for target in &self.targets {
             if target.actionable() {
                 actionable.push(target);
             } else {
-                // ⏳ 走到这里只有一种情况：**通配符，但这个站点没配 `tls { dns … }`**。
+                // ⏳ 走到這裡只有一種情況：**通配符，但這個站台沒配 `tls { dns … }`**。
                 //   通配符只能走 DNS-01（G54），而 DNS-01 需要有人去改 TXT。
-                //   ★ 说清楚「谁、为什么、怎么办」——一个只说「跳过」的日志，
-                //     等于让人去猜是配置写错了还是功能没做。
+                //   ★ 說清楚「誰、為什麼、怎麼辦」——一個只說「跳過」的紀錄，
+                //     等於讓人去猜是設定寫錯了還是功能沒做。
                 warn!(
                     "⏳ 站点 {} 的 {} 是通配符，只能走 DNS-01（G54/G58），而这个站点没有配 \
                      `tls {{ dns … }}` 与 `resolvers …` —— 它不会被签发，对它的 TLS 握手会被拒绝",
@@ -161,8 +161,8 @@ impl AcmeManager {
             return report;
         }
 
-        // ★ 账户是**懒建**的：一份只有 `tls <cert> <key>` 的配置不该在启动时
-        //   去 CA 那边建一个用不上的账户。走到这里说明确实有域名要自动签发。
+        // ★ 帳戶是**懶建**的：一份只有 `tls <cert> <key>` 的設定不該在啟動時
+        //   去 CA 那邊建一個用不上的帳戶。走到這裡說明確實有網域要自動簽發。
         let account = match self
             .accounts
             .load_or_create(
@@ -174,10 +174,10 @@ impl AcmeManager {
         {
             Ok(a) => a,
             Err(e) => {
-                // ⚠ 账户拿不到 = 这一轮一个都签不了。逐个域名记一遍失败，
-                //   而不是打一行「ACME 挂了」——后者在有十个域名时看不出影响面。
+                // ⚠ 帳戶拿不到 = 這一輪一個都籤不了。逐個網域記一遍失敗，
+                //   而不是打一行「ACME 掛了」——後者在有十個網域時看不出影響面。
                 error!("ACME 账户不可用：{e}");
-                // ⚠ 只把**接得了的**那些记成失败：推迟的那些与账户能不能用无关。
+                // ⚠ 只把**接得了的**那些記成失敗：推遲的那些與帳戶能不能用無關。
                 for t in &actionable {
                     report.failed.push((t.domain.clone(), e.clone()));
                 }
@@ -208,23 +208,23 @@ impl AcmeManager {
         report
     }
 
-    /// 请求强制续期一个域名（**G74**）。管理面调它。
+    /// 請求強制續期一個網域（**G74**）。管理面調它。
     ///
-    /// 返回 `false` = **这个域名不在本进程的自动签发目标里**，什么都没做。
-    /// ⚠ 判据必须是「它在不在 `targets` 里」，不能只看域名格式 —— 一个静静接受任意域名
-    /// 然后什么都不发生的接口，比报错难查得多。
+    /// 回傳 `false` = **這個網域不在本處理程序的自動簽發目標裡**，什麼都沒做。
+    /// ⚠ 判據必須是「它在不在 `targets` 裡」，不能只看網域格式 —— 一個靜靜接受任意網域
+    /// 然後什麼都不發生的介面，比回報錯誤難查得多。
     ///
-    /// # 两档，默认那一档**不动退避**
+    /// # 兩檔，預設那一檔**不動退避**
     ///
-    /// | `clear_backoff` | 越过「还不到时候」 | 越过退避 |
+    /// | `clear_backoff` | 越過「還不到時候」 | 越過退避 |
     /// |---|---|---|
-    /// | `false`（默认）| ✅ | ❌ |
-    /// | `true` | ✅ | ✅ **并把失败计数清零** |
+    /// | `false`（預設）| ✅ | ❌ |
+    /// | `true` | ✅ | ✅ **並把失敗計數清零** |
     ///
-    /// ★ 默认不越过：一个随手绕开退避的口子等于给「反复重签把 CA 配额烧光」开一扇门，
-    /// 而配额**按账户**算。⇒ 第二档要显式 `"force": true`，且**每次清掉非零计数都打 warn**。
-    /// ⚠ 没有第二档时，凭据补好后想立刻重试就只能手删 `meta.json` 里的失败计数 ——
-    /// 那是把标准动作定义成了危险动作（删错一个文件就是删掉证书）。
+    /// ★ 預設不越過：一個隨手繞開退避的口子等於給「反覆重籤把 CA 配額燒光」開一扇門，
+    /// 而配額**按帳戶**算。⇒ 第二檔要顯式 `"force": true`，且**每次清掉非零計數都打 warn**。
+    /// ⚠ 沒有第二檔時，憑證補好後想立刻重試就只能手刪 `meta.json` 裡的失敗計數 ——
+    /// 那是把標準動作定義成了危險動作（刪錯一個檔案就是刪掉證書）。
     pub fn request_renew(&self, domain: &str, clear_backoff: bool) -> bool {
         let d = domain.trim().to_ascii_lowercase();
         if !self
@@ -235,12 +235,12 @@ impl AcmeManager {
             return false;
         }
         if let Ok(mut f) = self.force.lock() {
-            // ★ 同一轮里两次请求取**较强**的那一档：先 renew 再 force 不该被降级。
+            // ★ 同一輪裡兩次請求取**較強**的那一檔：先 renew 再 force 不該被降級。
             let e = f.entry(d.clone()).or_insert(false);
             *e = *e || clear_backoff;
         }
-        // ★ **先入队再叫醒**。反过来的话，被叫醒的那一轮可能刚好读到空队列，
-        //   然后一觉睡到 12 小时之后——而调用方那边看起来「命令成功了」。
+        // ★ **先入隊再叫醒**。反過來的話，被叫醒的那一輪可能剛好讀到空佇列，
+        //   然後一覺睡到 12 小時之後——而呼叫方那邊看起來「命令成功了」。
         self.wake.notify_one();
         if clear_backoff {
             info!("{d} 被要求强制续期（G74，**连退避一起清**），已叫醒巡检");
@@ -250,23 +250,23 @@ impl AcmeManager {
         true
     }
 
-    /// 这个域名这一轮是不是被强制续期了。**取走即清**（一次性）。
+    /// 這個網域這一輪是不是被強制續期了。**取走即清**（一次性）。
     ///
-    /// 返回 `None` = 没被强制；`Some(clear_backoff)` = 被强制，值说明是哪一档。
+    /// 回傳 `None` = 沒被強制；`Some(clear_backoff)` = 被強制，值說明是哪一檔。
     ///
-    /// ⚠ ⚠ **调用点必须在「有没有证书」这个分支之外**。之前它只长在
-    /// 「已经有一张证书」那一支里，于是**对一个从来没签成过的域名按强制续期，
-    /// 那个标记永远不会被取走** —— 它会一直躺在队列里，直到某一轮证书终于签出来了
-    /// 才被消费掉，而那时没有任何人还记得自己按过。
+    /// ⚠ ⚠ **呼叫點必須在「有沒有證書」這個分支之外**。之前它只長在
+    /// 「已經有一張證書」那一支裡，於是**對一個從來沒簽成過的網域按強制續期，
+    /// 那個標記永遠不會被取走** —— 它會一直躺在佇列裡，直到某一輪證書終於簽出來了
+    /// 才被消費掉，而那時沒有任何人還記得自己按過。
     fn take_forced(&self, domain: &str) -> Option<bool> {
         match self.force.lock() {
             Ok(mut f) => f.remove(domain),
-            // 锁中毒不该让签发停摆；当成「没有强制」继续走正常判定。
+            // 鎖中毒不該讓簽發停擺；當成「沒有強制」繼續走正常判定。
             Err(_) => None,
         }
     }
 
-    /// 一直巡检到收到停机信号。
+    /// 一直巡檢到收到停機信號。
     pub async fn run_loop(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         loop {
             if *shutdown.borrow() {
@@ -275,9 +275,9 @@ impl AcmeManager {
             }
             let report = self.run_once().await;
             let nap = report.sleep_for();
-            // ★ `select!` 而不是先 sleep 再看信号：一个 12 小时的 sleep 会把
-            //   优雅停机拖成 12 小时——而排空窗口只有几十秒。
-            // ★ 第三条臂是 G74 的强制续期：没有它，一次强制最长要等 12 小时才生效。
+            // ★ `select!` 而不是先 sleep 再看信號：一個 12 小時的 sleep 會把
+            //   優雅停機拖成 12 小時——而排空視窗只有幾十秒。
+            // ★ 第三條臂是 G74 的強制續期：沒有它，一次強制最長要等 12 小時才生效。
             tokio::select! {
                 _ = tokio::time::sleep(nap) => {}
                 _ = self.wake.notified() => {
@@ -293,7 +293,7 @@ impl AcmeManager {
         }
     }
 
-    /// 一个域名的完整处置。
+    /// 一個網域的完整處置。
     async fn ensure_one(
         &self,
         account: &Account,
@@ -301,38 +301,38 @@ impl AcmeManager {
         report: &mut Report,
     ) -> Result<(), String> {
         let domain = target.domain.as_str();
-        // ★ 抖动**一轮只取一次**：下面退避会被问到两次（`should_renew` 里一次、
-        //   步骤 3.5 一次），两次取到不同的抖动值会让它们对同一件事给出不同答案，
-        //   于是刚被 `should_renew` 放行的域名可能立刻被 3.5 拦下。
+        // ★ 抖動**一輪只取一次**：下面退避會被問到兩次（`should_renew` 裡一次、
+        //   步驟 3.5 一次），兩次取到不同的抖動值會讓它們對同一件事給出不同答案，
+        //   於是剛被 `should_renew` 放行的網域可能立刻被 3.5 攔下。
         let jitter = self.jitter.unit();
 
-        // ── 1. 跨进程锁（G55 第 2 条）。**先拿锁，再读存储。**───────────────
+        // ── 1. 跨處理程序鎖（G55 第 2 條）。**先拿鎖，再讀儲存。**───────────────
         let _lock = self.lock_domain(domain).await?;
 
-        // ── 2. 重读存储 ───────────────────────────────────────────────────
+        // ── 2. 重讀儲存 ───────────────────────────────────────────────────
         let existing = self
             .store
             .load(&self.issuer, domain)
             .map_err(|e| format!("读证书存储失败：{e}"))?;
 
-        // ★ ★ 续期状态**单独读**，不从证书那份里取。
-        //   `load()` 缺 `cert.pem` 就返回 `None`，于是一个从来没签成过的域名
-        //   连它自己的失败计数也读不回来——每一轮都从「零次失败」重新开始。
+        // ★ ★ 續期狀態**單獨讀**，不從證書那份裡取。
+        //   `load()` 缺 `cert.pem` 就回傳 `None`，於是一個從來沒簽成過的網域
+        //   連它自己的失敗計數也讀不回來——每一輪都從「零次失敗」重新開始。
         let mut meta = self.store.load_meta(&self.issuer, domain);
         meta.issuer = self.issuer.clone();
 
-        // ── 2.5 强制续期标记：**在分支之外取一次**（G74）───────────────────
+        // ── 2.5 強制續期標記：**在分支之外取一次**（G74）───────────────────
         //
-        // ★ 位置本身就是判据：放在「已经有一张证书」那一支里，会让一个从来没签成过的
-        //   域名的强制请求永远取不走（见 `take_forced` 的注释）。
+        // ★ 位置本身就是判據：放在「已經有一張證書」那一支裡，會讓一個從來沒簽成過的
+        //   網域的強制請求永遠取不走（見 `take_forced` 的註解）。
         let forced = self.take_forced(domain);
 
-        // ── 3. 已经有一张：先判它是不是我们这个 CA 签的，再判要不要续 ────────
+        // ── 3. 已經有一張：先判它是不是我們這個 CA 籤的，再判要不要續 ────────
         let mut replaces: Option<CertificateIdentifier<'static>> = None;
         if let Some(sc) = existing {
             let foreign = match &sc.meta.issuer_url {
-                // ★ `None` = 不是本程序签的（手工放进来的，或旧版本写的）。
-                //   **不当成外来证书**：那会把用户手工放进去的证书每次都重签一遍。
+                // ★ `None` = 不是本處理程序籤的（手動放進來的，或舊版本寫的）。
+                //   **不當成外來證書**：那會把使用者手動放進去的證書每次都重籤一遍。
                 None => false,
                 Some(url) => url != &self.cfg.directory_url,
             };
@@ -343,7 +343,7 @@ impl AcmeManager {
                     self.cfg.directory_url
                 );
             } else {
-                // ARI 优先（G56）。★ 问不到不是错误：CA 可能根本不支持。
+                // ARI 優先（G56）。★ 問不到不是錯誤：CA 可能根本不支援。
                 let ari = self.fetch_ari(account, &sc, &mut meta, &mut replaces).await;
                 let decision = should_renew(
                     SystemTime::now(),
@@ -355,12 +355,12 @@ impl AcmeManager {
                     jitter,
                 );
                 report.note_next_check(decision.next_check);
-                // ★ ★ **G74：强制续期在这里越过续期判定**（不是越过退避，见下）。
-                //   ⚠ 只越过「还不到时候」，**不越过 3.5 那道退避**：
-                //   一个能绕过退避的强制口子，等于给「反复按重签按钮把 CA 配额烧光」
-                //   开了一扇门——而配额是**按账户**算的，烧光之后连累同机所有域名。
-                //   ★ 所以现场表现是：强制之后若上一次刚失败过，它会说「退避中」并给出剩余秒数，
-                //   而不是静静地什么都不做。
+                // ★ ★ **G74：強制續期在這裡越過續期判定**（不是越過退避，見下）。
+                //   ⚠ 只越過「還不到時候」，**不越過 3.5 那道退避**：
+                //   一個能繞過退避的強制口子，等於給「反覆按重籤按鈕把 CA 配額燒光」
+                //   開了一扇門——而配額是**按帳戶**算的，燒光之後連累同機所有網域。
+                //   ★ 所以現場表現是：強制之後若上一次剛失敗過，它會說「退避中」並給出剩餘秒數，
+                //   而不是靜靜地什麼都不做。
                 if forced.is_some() {
                     info!(
                         "{domain} 收到强制续期请求（G74），越过续期判定：{}",
@@ -371,7 +371,7 @@ impl AcmeManager {
                     debug!("{domain} 暂不续期：{}", decision.reason);
                     self.install(sc)?;
                     report.fresh.push(domain.to_string());
-                    // meta 里可能刚记下新的 ARI 窗口，落一次盘（不动证书）。
+                    // meta 裡可能剛記下新的 ARI 視窗，落一次盤（不動證書）。
                     let _ = self.store.save_meta(&self.issuer, domain, &meta);
                     return Ok(());
                 }
@@ -379,13 +379,13 @@ impl AcmeManager {
             }
         }
 
-        // ── 3.5 退避（否决项）★ 对「从来没签成过」的域名同样有效 ─────────────
+        // ── 3.5 退避（否決項）★ 對「從來沒簽成過」的網域同樣有效 ─────────────
         //
-        // ★ 走到这里有两种域名：要续期的，与**从来没签成过的**。⚠ 第二种恰恰是退避
-        //   最该管的那一种（域名写错、80 不通、CAA 挡着 ⇒ 永远签不出来），
-        //   而 CA 的失败验证配额**按账户**算 —— 一个签不出来的域名能把整个账户耗光。
-        // ⚠ 第二档清零时**打 warn 而不是 info**：它把 CA 的失败配额重新暴露出来，
-        //   现场必须看得见是谁、清掉了多少。
+        // ★ 走到這裡有兩種網域：要續期的，與**從來沒簽成過的**。⚠ 第二種恰恰是退避
+        //   最該管的那一種（網域寫錯、80 不通、CAA 擋著 ⇒ 永遠籤不出來），
+        //   而 CA 的失敗驗證配額**按帳戶**算 —— 一個籤不出來的網域能把整個帳戶耗光。
+        // ⚠ 第二檔清零時**打 warn 而不是 info**：它把 CA 的失敗配額重新暴露出來，
+        //   現場必須看得見是誰、清掉了多少。
         if forced == Some(true) && meta.renewal.failures > 0 {
             warn!(
                 "{domain} 按请求清掉退避：失败计数 {} → 0（G74 的第二档）。\
@@ -395,14 +395,14 @@ impl AcmeManager {
             );
             meta.renewal.failures = 0;
             meta.renewal.last_attempt = None;
-            // 立刻落盘：中途崩了也不该让计数又冒出来。
+            // 立刻寫入磁碟：中途崩了也不該讓計數又冒出來。
             let _ = self.store.save_meta(&self.issuer, domain, &meta);
         }
         if let Some(wait) =
             backoff_remaining(SystemTime::now(), &meta.renewal, self.backoff, jitter)
         {
-            // ⚠ 这是 info 不是 warn：**退避正在工作**是正常状态，不是异常 ——
-            //   真正该报警的是那次失败本身，而它已经报过了。
+            // ⚠ 這是 info 不是 warn：**退避正在工作**是正常狀態，不是異常 ——
+            //   真正該報警的是那次失敗本身，而它已經報過了。
             info!(
                 "{domain} 上次签发失败 {} 次，退避中，{}s 后再试（本轮不去试）",
                 meta.renewal.failures,
@@ -413,12 +413,12 @@ impl AcmeManager {
             return Ok(());
         }
 
-        // ── 4. 签 ─────────────────────────────────────────────────────────
+        // ── 4. 籤 ─────────────────────────────────────────────────────────
         //
-        // ⚠ 无论成败都要落一次 meta：失败计数与上次尝试时刻是退避的**唯一输入**，
-        //   不落盘就等于每次重启都从「零次失败」开始，退避形同虚设。
+        // ⚠ 無論成敗都要落一次 meta：失敗計數與上次嘗試時刻是退避的**唯一輸入**，
+        //   不寫入磁碟就等於每次重新啟動都從「零次失敗」開始，退避形同虛設。
         meta.renewal.last_attempt = Some(unix_now());
-        // ★ G54 的主/备在这里选定。DNS-01 的站点不看它（通配符只有那一条路）。
+        // ★ G54 的主/備在這裡選定。DNS-01 的站台不看它（通配符只有那一條路）。
         let challenge = pick_non_dns_challenge(meta.last_challenge_failed.as_deref());
         if target.dns01.is_none() {
             debug!("{domain} 本次用 {} 挑战", challenge.as_str());
@@ -426,17 +426,17 @@ impl AcmeManager {
         match self.issue(account, target, replaces, challenge).await {
             Ok((cert_pem, key_pem)) => {
                 meta.renewal.failures = 0;
-                // ★ 成功即清空：一次偶发失败不该把这个域名永久钉在备用挑战上。
+                // ★ 成功即清空：一次偶發失敗不該把這個網域永久釘在備用挑戰上。
                 meta.last_challenge_failed = None;
                 meta.issuer_url = Some(self.cfg.directory_url.clone());
-                // ★ ARI 窗口是**跟着某一张证书**的：新签一张之后旧窗口立刻失效，
-                //   留着它会让新证书一上来就被判成「该续了」。
+                // ★ ARI 視窗是**跟著某一張證書**的：新籤一張之後舊視窗立刻失效，
+                //   留著它會讓新證書一上來就被判成「該續了」。
                 meta.ari_start = None;
                 meta.ari_end = None;
                 self.store
                     .save(&self.issuer, domain, &cert_pem, &key_pem, &meta)
                     .map_err(|e| format!("证书写不进存储：{e}"))?;
-                // 回读一次再装 —— 装上去的必须是盘上那份。
+                // 回讀一次再裝 —— 裝上去的必須是盤上那份。
                 let sc = self
                     .store
                     .load(&self.issuer, domain)
@@ -451,9 +451,9 @@ impl AcmeManager {
             }
             Err(e) => {
                 meta.renewal.failures = meta.renewal.failures.saturating_add(1);
-                // ★ 记下这次用的是哪种挑战 —— 下一轮换另一种（G54 的「备」）。
-                //   ⚠ 只对不走 DNS-01 的站点有意义；通配符换不了别的挑战，
-                //   记了反而会让它下一轮去试一个它根本用不了的。
+                // ★ 記下這次用的是哪種挑戰 —— 下一輪換另一種（G54 的「備」）。
+                //   ⚠ 只對不走 DNS-01 的站台有意義；通配符換不了別的挑戰，
+                //   記了反而會讓它下一輪去試一個它根本用不了的。
                 if target.dns01.is_none() {
                     meta.last_challenge_failed = Some(challenge.as_str().to_string());
                 }
@@ -461,7 +461,7 @@ impl AcmeManager {
                     .backoff
                     .delay(meta.renewal.failures, self.jitter.unit());
                 if let Err(e2) = self.store.save_meta(&self.issuer, domain, &meta) {
-                    // meta 写不进去时退避就失忆了 —— 说出来，别咽掉。
+                    // meta 寫不進去時退避就失憶了 —— 說出來，別咽掉。
                     warn!("{domain} 的续期状态没写进去（{e2}），退避会从头算");
                 }
                 report.note_next_check(wait);
@@ -474,11 +474,11 @@ impl AcmeManager {
         }
     }
 
-    /// 走一遍 RFC 8555 的下单流程，返回 `(证书链 PEM, 私钥 PEM)`。
+    /// 走一遍 RFC 8555 的下單流程，回傳 `(证书链 PEM, 私钥 PEM)`。
     ///
-    /// ★ ★ **DNS-01 留下的 TXT 必须被摘掉，而摘不掉不能让签发失败**——证书已经到手了。
-    /// 所以这里不用 `Drop` 守卫（析构里不能 await），而是把清理写成显式的一段，
-    /// **成功与失败两条路都会走到**。
+    /// ★ ★ **DNS-01 留下的 TXT 必須被摘掉，而摘不掉不能讓簽發失敗**——證書已經到手了。
+    /// 所以這裡不用 `Drop` 守衛（析構裡不能 await），而是把清理寫成顯式的一段，
+    /// **成功與失敗兩條路都會走到**。
     async fn issue(
         &self,
         account: &Account,
@@ -490,13 +490,13 @@ impl AcmeManager {
         let out = self
             .issue_inner(account, target, replaces, challenge, &mut planted)
             .await;
-        // ⚠ 清理排在**拿到结果之后**：提前清会让 CA 在 finalize 之后回来复验时扑空，
-        //   而那时的错误信息只说「验不过」。
+        // ⚠ 清理排在**拿到結果之後**：提前清會讓 CA 在 finalize 之後回來複驗時撲空，
+        //   而那時的錯誤資訊只說「驗不過」。
         if let Some(dns01) = &target.dns01 {
             for (name, value) in &planted {
                 if let Err(e) = dns01.provider.clear_txt(name, value).await {
-                    // ★ 只 warn：留一条 TXT 是卫生问题，不是可用性问题。
-                    //   升级成错误会让一次**成功的签发**被记成失败 ⇒ 进退避、进告警。
+                    // ★ 只 warn：留一條 TXT 是衛生問題，不是可用性問題。
+                    //   升級成錯誤會讓一次**成功的簽發**被記成失敗 ⇒ 進退避、進告警。
                     warn!("{name} 的挑战 TXT 没摘干净（{e}）—— 不影响服务，但要有人清");
                 }
             }
@@ -518,8 +518,8 @@ impl AcmeManager {
         let mut order = new_order_with_fallback(domain, replaces, |replaces| async move {
             let mut new_order = NewOrder::new(ids);
             if let Some(id) = replaces {
-                // ★ 只有确认 CA 支持 ARI 时才带上它：`new_order` 在 CA 不支持时会**直接报错**，
-                //   于是「顺手带一个能拿到优惠速率的字段」会变成「换个 CA 就一张都签不出来」。
+                // ★ 只有確認 CA 支援 ARI 時才帶上它：`new_order` 在 CA 不支援時會**直接回報錯誤**，
+                //   於是「順手帶一個能拿到優惠速率的欄位」會變成「換個 CA 就一張都籤不出來」。
                 new_order = new_order.replaces(id);
             }
             account.new_order(&new_order).await
@@ -527,13 +527,13 @@ impl AcmeManager {
         .await
         .map_err(|e| format!("下单失败：{e}"))?;
 
-        // ── 解挑战 ────────────────────────────────────────────────────────
+        // ── 解挑戰 ────────────────────────────────────────────────────────
         //
-        // ★ 守卫收在一个 Vec 里，活到订单 ready 为止。token 摘早了，
-        //   CA 来验的时候就 404 —— 而那时的错误信息只说「验不过」。
+        // ★ 守衛收在一個 Vec 裡，活到訂單 ready 為止。token 摘早了，
+        //   CA 來驗的時候就 404 —— 而那時的錯誤資訊只說「驗不過」。
         let mut provisioned = Vec::new();
-        // ★ TLS-ALPN-01 的守卫是另一个类型（挂的是证书不是 token），单独收一个 Vec。
-        //   两个 Vec 都活到订单 ready 为止。
+        // ★ TLS-ALPN-01 的守衛是另一個類型（掛的是證書不是 token），單獨收一個 Vec。
+        //   兩個 Vec 都活到訂單 ready 為止。
         let mut challenge_certs = Vec::new();
         {
             let mut authorizations = order.authorizations();
@@ -545,7 +545,7 @@ impl AcmeManager {
                     other => return Err(format!("授权状态是 {other:?}，签不下去")),
                 }
                 if let Some(dns01) = &target.dns01 {
-                    // ── DNS-01（G54 里通配符唯一可行的那条路 / G57 / G58）──────
+                    // ── DNS-01（G54 裡通配符唯一可行的那條路 / G57 / G58）──────
                     let Some(mut challenge) = authz.challenge(ChallengeType::Dns01) else {
                         return Err(format!("CA 没给 DNS-01 挑战 —— 域名 {domain}"));
                     };
@@ -556,13 +556,13 @@ impl AcmeManager {
                         .set_txt(&record, &value)
                         .await
                         .map_err(|e| format!("写 TXT 失败（{}）：{e}", dns01.provider.name()))?;
-                    // ★ **先记进清理清单，再去等可见**：中间任何一步失败，
-                    //   那条已经写上去的 TXT 都必须被摘掉。反过来写会漏掉失败路径。
+                    // ★ **先記進清理清單，再去等可見**：中間任何一步失敗，
+                    //   那條已經寫上去的 TXT 都必須被摘掉。反過來寫會漏掉失敗路徑。
                     planted.push((record.clone(), value.clone()));
 
-                    // ★ ★ ★ G58 那条硬约束就落在这一行：**真去问权威 NS，不 sleep**。
-                    //   固定 sleep 在快的时候浪费时间、在慢的时候直接签失败，
-                    //   而失败要消耗 CA 的速率配额。
+                    // ★ ★ ★ G58 那條硬約束就落在這一行：**真去問權威 NS，不 sleep**。
+                    //   固定 sleep 在快的時候浪費時間、在慢的時候直接籤失敗，
+                    //   而失敗要消耗 CA 的速率配額。
                     dns01.checker.wait_visible(&record, &value).await?;
 
                     debug!("{domain}：{record} 的 TXT 已在权威 NS 上可见，通知 CA 来验");
@@ -573,20 +573,20 @@ impl AcmeManager {
                 } else {
                     // ── TLS-ALPN-01（G54 的「主」，RFC 8737）───────────────
                     //
-                    // ★ 整件事在 TLS 握手里完成：CA 连过来、ALPN 只提 `acme-tls/1`、
-                    //   看一眼我们回的那张自签证书里的 acmeIdentifier 扩展就断开。
-                    //   **零路由占用** —— 用户的配置挡不住自己的证书签发。
+                    // ★ 整件事在 TLS 握手裡完成：CA 連過來、ALPN 只提 `acme-tls/1`、
+                    //   看一眼我們回的那張自簽證書裡的 acmeIdentifier 擴充就斷開。
+                    //   **零路由佔用** —— 使用者的設定擋不住自己的證書籤發。
                     //
-                    // ⚠ **`authz.challenge()` 一个授权只能调一次**（它借的是 handle
-                    //   自己的 `'a`）⇒「先试这个不行再试那个」直接编不过（E0499）。
-                    //   → 先用不可变视图看清 CA 给了哪几种，决定之后**只取一次 handle**。
+                    // ⚠ **`authz.challenge()` 一個授權只能調一次**（它借的是 handle
+                    //   自己的 `'a`）⇒「先試這個不行再試那個」直接編不過（E0499）。
+                    //   → 先用不可變視圖看清 CA 給了哪幾種，決定之後**只取一次 handle**。
                     let has_tls_alpn = authz
                         .challenges
                         .iter()
                         .any(|c| c.r#type == ChallengeType::TlsAlpn01);
                     let use_tls_alpn = challenge_kind == NonDnsChallenge::TlsAlpn01 && has_tls_alpn;
                     if challenge_kind == NonDnsChallenge::TlsAlpn01 && !has_tls_alpn {
-                        // ★ CA 不提供这种挑战不是错误，落回备用的那条。说出来即可。
+                        // ★ CA 不提供這種挑戰不是錯誤，落回備用的那條。說出來即可。
                         debug!("{domain}：CA 没给 TLS-ALPN-01 挑战，落回 HTTP-01");
                     }
                     let want = if use_tls_alpn {
@@ -602,25 +602,25 @@ impl AcmeManager {
                     };
                     let key_auth = challenge.key_authorization();
                     if use_tls_alpn {
-                        // ⚠ 验证连接用的 SNI 是**被授权的那个名字**，不是站点名。
-                        //   通配符站点走的是 DNS-01，不会落到这一支。
+                        // ⚠ 驗證連接用的 SNI 是**被授權的那個名字**，不是站台名。
+                        //   通配符站台走的是 DNS-01，不會落到這一支。
                         let digest = key_auth.digest();
                         challenge_certs.push(crate::tlsalpn01::provision(
                             &self.resolver,
                             domain,
                             digest.as_ref(),
                         )?);
-                        // ★ ★ **info 而不是 debug，理由与 G58 那条轮询日志一模一样**：
-                        //   「这一次用的是哪种挑战」是**唯一**可从外部观察到的痕迹。
-                        //   压成 debug 就等于把判据藏起来——而运维排查
-                        //   「为什么这台机器签不出证书」时，第一个要知道的就是它走了哪条路。
+                        // ★ ★ **info 而不是 debug，理由與 G58 那條輪詢紀錄一模一樣**：
+                        //   「這一次用的是哪種挑戰」是**唯一**可從外部觀察到的痕跡。
+                        //   壓成 debug 就等於把判據藏起來——而維運排查
+                        //   「為什麼這臺機器籤不出證書」時，第一個要知道的就是它走了哪條路。
                         info!("{domain}：本次挑战走 TLS-ALPN-01（G54 的主），挑战证书已挂上");
                     } else {
-                        // ── HTTP-01（G54 的「备」）──────────────────────────
+                        // ── HTTP-01（G54 的「備」）──────────────────────────
                         let token = challenge.token.clone();
                         provisioned.push(self.http01.provision(&token, key_auth.as_str()));
-                        // ⚠ token **不进 info 日志**：它连着 key authorization，
-                        //   而日志会被贴进 issue、进集中式日志系统。要看它请开 debug。
+                        // ⚠ token **不進 info 紀錄**：它連著 key authorization，
+                        //   而紀錄會被貼進 issue、進集中式紀錄系統。要看它請開 debug。
                         info!("{domain}：本次挑战走 HTTP-01（G54 的备）");
                         debug!("{domain}：HTTP-01 token {token} 已就位");
                     }
@@ -642,15 +642,15 @@ impl AcmeManager {
             .await
             .map_err(|e| format!("等订单就绪失败：{e}"))?;
         if status != OrderStatus::Ready {
-            // ★ ★ ★ **CA 已经把「为什么」写在授权里了，不去取它，现场就只剩「Invalid」三个字。**
+            // ★ ★ ★ **CA 已經把「為什麼」寫在授權裡了，不去取它，現場就只剩「Invalid」三個字。**
             //
-            //   在 `example.com` 上真的被这句话挡了一次：DNS-01 的 TXT
-            //   明明已在三台权威 NS 上可见，订单却回 Invalid，而日志里**没有一个字**
-            //   说得出 CA 到底在抱怨什么 —— 那一刻手上唯一的线索是「换个地方猜」。
-            //   ⚠ RFC 8555 §7.1.4/§6.7 的 problem document 就挂在挑战上（`challenge.error`），
-            //   取一次就有；不取，就等于**把对端说过的话丢掉，然后自己去猜**。
+            //   在 `example.com` 上真的被這句話擋了一次：DNS-01 的 TXT
+            //   明明已在三臺權威 NS 上可見，訂單卻回 Invalid，而紀錄裡**沒有一個字**
+            //   說得出 CA 到底在抱怨什麼 —— 那一刻手上唯一的線索是「換個地方猜」。
+            //   ⚠ RFC 8555 §7.1.4/§6.7 的 problem document 就掛在挑戰上（`challenge.error`），
+            //   取一次就有；不取，就等於**把對端說過的話丟掉，然後自己去猜**。
             //
-            //   ★ 只在**失败路径**上多问一次授权：成功路径一个请求都不多发。
+            //   ★ 只在**失敗路徑**上多問一次授權：成功路徑一個請求都不多發。
             let mut why: Vec<String> = Vec::new();
             let mut authorizations = order.authorizations();
             while let Some(result) = authorizations.next().await {
@@ -674,7 +674,7 @@ impl AcmeManager {
                             why.push(format!("{ident} 的授权状态是 {:?}", authz.status));
                         }
                     }
-                    // ⚠ 取不到就说取不到，别让它变成「没有原因」。
+                    // ⚠ 取不到就說取不到，別讓它變成「沒有原因」。
                     Err(e) => why.push(format!("取授权详情失败：{e}")),
                 }
             }
@@ -692,13 +692,13 @@ impl AcmeManager {
             .poll_certificate(&RetryPolicy::default())
             .await
             .map_err(|e| format!("取证书失败：{e}"))?;
-        // ★ 守卫在这里才析构：CA 有可能在 finalize 之后还回来验一次。
+        // ★ 守衛在這裡才析構：CA 有可能在 finalize 之後還回來驗一次。
         drop(provisioned);
         drop(challenge_certs);
         Ok((cert_pem, key_pem))
     }
 
-    /// 问一次 ARI（RFC 9773）。问不到就返回 `None`，**不算失败**。
+    /// 問一次 ARI（RFC 9773）。問不到就回傳 `None`，**不算失敗**。
     async fn fetch_ari(
         &self,
         account: &Account,
@@ -720,8 +720,8 @@ impl AcmeManager {
                 let end = info.suggested_window.end.unix_timestamp().max(0) as u64;
                 meta.ari_start = Some(start);
                 meta.ari_end = Some(end);
-                // ★ ARI 能问到 ⇒ 这个 CA 支持 ARI ⇒ 续期时可以带 `replaces`。
-                //   这条因果是**实测出来的**，不是推的：`new_order` 在 CA 不支持时直接报错。
+                // ★ ARI 能問到 ⇒ 這個 CA 支援 ARI ⇒ 續期時可以帶 `replaces`。
+                //   這條因果是**實測出來的**，不是推的：`new_order` 在 CA 不支援時直接回報錯誤。
                 *replaces = Some(id);
                 if let Some(url) = &info.explanation_url {
                     info!("CA 给了 ARI 窗口，理由页：{url}");
@@ -732,8 +732,8 @@ impl AcmeManager {
                 })
             }
             Err(e) => {
-                // ⚠ 这里**必须**是 debug 而不是 warn：绝大多数 CA 不支持 ARI，
-                //   把它打成警告会让日志里每天都有一条假警报——而假警报会把真的埋掉。
+                // ⚠ 這裡**必須**是 debug 而不是 warn：絕大多數 CA 不支援 ARI，
+                //   把它打成警告會讓紀錄裡每天都有一條假警報——而假警報會把真的埋掉。
                 debug!("问不到 ARI（多半是这个 CA 不支持）：{e}");
                 meta.ari_start = None;
                 meta.ari_end = None;
@@ -742,10 +742,10 @@ impl AcmeManager {
         }
     }
 
-    /// 拿一个域名的跨进程签发锁。
+    /// 拿一個網域的跨處理程序簽發鎖。
     ///
-    /// ★ `flock` 是**阻塞**的，扔到 blocking 池里。直接在 runtime 线程上等，
-    /// 等的时候这条线程上的**所有**请求都停着——而它等的正是另一代进程签完一张证书。
+    /// ★ `flock` 是**阻塞**的，扔到 blocking 池裡。直接在 runtime 執行緒上等，
+    /// 等的時候這條執行緒上的**所有**請求都停著——而它等的正是另一代處理程序簽完一張證書。
     async fn lock_domain(&self, domain: &str) -> Result<DomainLock, String> {
         let root: PathBuf = self.store.root().to_path_buf();
         let issuer = self.issuer.clone();
@@ -756,15 +756,15 @@ impl AcmeManager {
             .map_err(|e| format!("拿不到签发锁：{e}"))
     }
 
-    /// 把一张证书装到 SNI 解析器上（热装，立刻对新握手生效）。
+    /// 把一張證書裝到 SNI 解析器上（熱裝，立刻對新握手生效）。
     ///
-    /// ★ 按所有权接，不按引用接：`CertifiedKey` 本来就要持有自己的那份链与密钥，
-    /// 接引用只会逼着这里克隆一遍，然后把「谁拥有这份私钥」变模糊。
+    /// ★ 按所有權接，不按引用接：`CertifiedKey` 本來就要持有自己的那份鏈與金鑰，
+    /// 接引用只會逼著這裡克隆一遍，然後把「誰擁有這份私鑰」變模糊。
     fn install(&self, sc: fulcrum_tls::StoredCert) -> Result<(), String> {
         let loaded = to_loaded(sc)?;
         if loaded.domains.is_empty() {
-            // ★ 一张没有 DNS SAN 的证书装上去也永远挑不中——**静静地装完**是最难查的形态：
-            //   日志说「装载成功」，而每一次握手都被拒绝。
+            // ★ 一張沒有 DNS SAN 的證書裝上去也永遠挑不中——**靜靜地裝完**是最難查的形態：
+            //   紀錄說「裝載成功」，而每一次握手都被拒絕。
             warn!("要装的证书里没有任何 DNS SAN —— 它不会被任何 SNI 选中");
             return Ok(());
         }
@@ -773,17 +773,17 @@ impl AcmeManager {
     }
 }
 
-/// 一张证书的 ARI 标识（RFC 9773 §4.1）：`base64url(AKI keyIdentifier) "." base64url(序列号)`。
+/// 一張證書的 ARI 標識（RFC 9773 §4.1）：`base64url(AKI keyIdentifier) "." base64url(序列号)`。
 ///
-/// ⚠ 这里多一次 DER 往返：`instant-acme` 的 `CertificateIdentifier` 只有
-///   `TryFrom<&CertificateDer>` 这一个入口，而我们手里是 BoringSSL 的 `X509`。
-/// ★ **不自己抠 AKI 与序列号** —— ARI 标识抠错的后果是「续期请求被 CA 静静忽略」。
-/// ⚠ `rustls-pki-types` 因此是本 crate 的直接依赖（**新增 0 个包**）：它是纯类型
-///   定义 crate，没有 crypto / provider / default feature，与 `rustls` 不是一类东西。
-/// ★ ★ 序列号取的是 DER INTEGER 的内容字节：首字节 ≥ 0x80 时**带着**那个符号字节 `00`，
-///   RFC 9773 §4.1 的原例（`00:87:65:43:21` → `AIdlQyE`）就是这样。
-///   ⛔ 不许为了迁就哪个 CA 把它剥掉（G166）：剥了就是对规范 CA 发错标识。
-///   CA 不认的那一头由 [`new_order_with_fallback`] 兜。
+/// ⚠ 這裡多一次 DER 往返：`instant-acme` 的 `CertificateIdentifier` 只有
+///   `TryFrom<&CertificateDer>` 這一個入口，而我們手裡是 BoringSSL 的 `X509`。
+/// ★ **不自己摳 AKI 與序列號** —— ARI 標識摳錯的後果是「續期請求被 CA 靜靜忽略」。
+/// ⚠ `rustls-pki-types` 因此是本 crate 的直接依賴（**新增 0 個包**）：它是純類型
+///   定義 crate，沒有 crypto / provider / default feature，與 `rustls` 不是一類東西。
+/// ★ ★ 序列號取的是 DER INTEGER 的內容位元組：首位元組 ≥ 0x80 時**帶著**那個符號位元組 `00`，
+///   RFC 9773 §4.1 的原例（`00:87:65:43:21` → `AIdlQyE`）就是這樣。
+///   ⛔ 不許為了遷就哪個 CA 把它剝掉（G166）：剝了就是對規範 CA 發錯標識。
+///   CA 不認的那一頭由 [`new_order_with_fallback`] 兜。
 fn ari_cert_id(
     leaf: &pingora_boringssl::x509::X509,
 ) -> Result<CertificateIdentifier<'static>, String> {
@@ -794,15 +794,15 @@ fn ari_cert_id(
         .map_err(|e| format!("从证书里抠不出 ARI 标识：{e}"))
 }
 
-/// 下单；带着 `replaces` 被 CA 拒了，就去掉 `replaces` 再下一次（G166）。
+/// 下單；帶著 `replaces` 被 CA 拒了，就去掉 `replaces` 再下一次（G166）。
 ///
-/// ★ ★ 不回退的后果是**这个域名永远续不上**：失败进退避，下一轮 `fetch_ari` 拿同一张证书
-///   算出同一个 `replaces`，CA 再拒 —— 一直到证书过期。`replaces` 换来的只是 CA 那边的
-///   速率优惠，不值得拿续期本身去赌。
-/// ⚠ 真碰上过的一例：pebble v2.10.1 对序列号首字节 ≥ 0x80 的证书（约 1/255）一律回
-///   `serverInternal`（它存订单的键不带符号字节，查的时候却带着；上游 issue #550）。
-/// ⚠ 只认 CA 回的 problem 文档（`Error::Api`）：连不上、超时这类，去掉 `replaces`
-///   也照样失败，交给退避。⛔ 也不收窄成「只认 `alreadyReplaced`」—— 上面那一例就不是它。
+/// ★ ★ 不退回的後果是**這個網域永遠續不上**：失敗進退避，下一輪 `fetch_ari` 拿同一張證書
+///   算出同一個 `replaces`，CA 再拒 —— 一直到證書過期。`replaces` 換來的只是 CA 那邊的
+///   速率優惠，不值得拿續期本身去賭。
+/// ⚠ 真碰上過的一例：pebble v2.10.1 對序列號首位元組 ≥ 0x80 的證書（約 1/255）一律回
+///   `serverInternal`（它存訂單的鍵不帶符號位元組，查的時候卻帶著；上游 issue #550）。
+/// ⚠ 只認 CA 回的 problem 文件（`Error::Api`）：連不上、超時這類，去掉 `replaces`
+///   也照樣失敗，交給退避。⛔ 也不收窄成「只認 `alreadyReplaced`」—— 上面那一例就不是它。
 async fn new_order_with_fallback<'a, T, F, Fut>(
     domain: &str,
     replaces: Option<CertificateIdentifier<'a>>,
@@ -851,8 +851,8 @@ mod tests {
             Arc::new(Http01Store::new()),
             Vec::new(),
         );
-        // ★ 判据挂在「不会去建账户」上：一份只有手工证书的配置，
-        //   不该因为起了个后台任务就去 CA 那边留一条记录。
+        // ★ 判據掛在「不會去建帳戶」上：一份只有手動證書的設定，
+        //   不該因為起了個後台任務就去 CA 那邊留一條記錄。
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -860,14 +860,14 @@ mod tests {
         let report = rt.block_on(m.run_once());
         assert!(report.is_empty());
         assert_eq!(report.next_check, None);
-        // ★ **批 M** 的反向那半：一轮「什么都没有」不许在签发计数上留下任何一笔。
+        // ★ **批 M** 的反向那半：一輪「什麼都沒有」不許在簽發計數上留下任何一筆。
         assert_eq!(m.issue_counts().snapshot(), (0, 0, 0));
     }
 
     #[test]
     fn 通配符被推迟而不是被当成失败() {
-        // ⚠ 两者的区别不是措辞：失败会进退避、会计数、会在监控里报警，
-        //   而「这一批还没做」不该产生任何一条告警。
+        // ⚠ 兩者的區別不是措辭：失敗會進退避、會計數、會在監控裡報警，
+        //   而「這一批還沒做」不該產生任何一條告警。
         let cfg = AcmeConfig::new(Some("https://localhost:1/dir"), None, "/nonexistent");
         let m = AcmeManager::new(
             cfg,
@@ -876,7 +876,7 @@ mod tests {
             vec![Target {
                 domain: "*.example.com".into(),
                 site: "s".into(),
-                // ★ 没配 DNS-01 —— 这正是「推迟」的那一种。
+                // ★ 沒配 DNS-01 —— 這正是「推遲」的那一種。
                 dns01: None,
             }],
         );
@@ -888,9 +888,9 @@ mod tests {
         assert_eq!(report.deferred, vec!["*.example.com".to_string()]);
         assert!(report.failed.is_empty(), "通配符被记成失败了：{report:?}");
         assert!(report.issued.is_empty());
-        // ★ ★ **批 M**：这一轮走的是「一个都接不了」那处**早退**。
-        //   计数记在 `run_once` 外层，所以早退照样记得到 —— 记在 `poll_once` 里面的话，
-        //   这一格会是 `(0,0,0)`，而 `fulcrum_acme_issue_total` 不会有任何异样。
+        // ★ ★ **批 M**：這一輪走的是「一個都接不了」那處**早退**。
+        //   計數記在 `run_once` 外層，所以早退照樣記得到 —— 記在 `poll_once` 裡面的話，
+        //   這一格會是 `(0,0,0)`，而 `fulcrum_acme_issue_total` 不會有任何異樣。
         assert_eq!(m.issue_counts().snapshot(), (0, 0, 1));
     }
 
@@ -908,22 +908,22 @@ mod tests {
             }],
         );
 
-        // ① 不在目标里 ⇒ 什么都不做，而且**不入队**（静静接受是最难查的那种）。
+        // ① 不在目標裡 ⇒ 什麼都不做，而且**不入隊**（靜靜接受是最難查的那種）。
         assert!(!m.request_renew("nope.example.com", true));
         assert_eq!(m.take_forced("nope.example.com"), None);
 
-        // ② 默认档
+        // ② 預設檔
         assert!(m.request_renew("a.example.com", false));
         assert_eq!(m.take_forced("a.example.com"), Some(false));
-        // ★ 取走即清：第二次就没有了。
+        // ★ 取走即清：第二次就沒有了。
         assert_eq!(m.take_forced("a.example.com"), None);
 
-        // ③ 第二档
+        // ③ 第二檔
         assert!(m.request_renew("a.example.com", true));
         assert_eq!(m.take_forced("a.example.com"), Some(true));
 
-        // ④ ★ 同一轮里两次请求取**较强**的那一档，两个方向都验：
-        //   否则「先按了 force、又按了一次普通」会把 force 悄悄降级。
+        // ④ ★ 同一輪裡兩次請求取**較強**的那一檔，兩個方向都驗：
+        //   否則「先按了 force、又按了一次普通」會把 force 悄悄降級。
         assert!(m.request_renew("a.example.com", false));
         assert!(m.request_renew("a.example.com", true));
         assert_eq!(m.take_forced("a.example.com"), Some(true));
@@ -931,18 +931,18 @@ mod tests {
         assert!(m.request_renew("a.example.com", false));
         assert_eq!(m.take_forced("a.example.com"), Some(true));
 
-        // ⑤ 大小写与空白按目标那边的口径归一
+        // ⑤ 大小寫與空白按目標那邊的口徑歸一
         assert!(m.request_renew("  A.Example.COM  ", true));
         assert_eq!(m.take_forced("a.example.com"), Some(true));
     }
 
     #[test]
     fn 账户拿不到时强制标记不被消费() {
-        // ★ 这一条钉的是**取标记的时机**：账户都拿不到的那一轮压根没试过，
-        //   所以标记要留着等下一轮。⚠ 取走等于把一次「什么都没发生」记成
-        //   「你的请求已经用掉了」，而调用方那边看起来完全成功。
-        // （「取标记的位置」另有判据：`take_forced` 必须在「已经有证书」那个分支之外取，
-        //   否则从没签成过的域名按下强制之后标记永远取不走。）
+        // ★ 這一條釘的是**取標記的時機**：帳戶都拿不到的那一輪壓根沒試過，
+        //   所以標記要留著等下一輪。⚠ 取走等於把一次「什麼都沒發生」記成
+        //   「你的請求已經用掉了」，而呼叫方那邊看起來完全成功。
+        // （「取標記的位置」另有判據：`take_forced` 必須在「已經有證書」那個分支之外取，
+        //   否則從沒簽成過的網域按下強制之後標記永遠取不走。）
         let cfg = AcmeConfig::new(Some("https://localhost:1/dir"), None, "/nonexistent");
         let m = AcmeManager::new(
             cfg,
@@ -969,7 +969,7 @@ mod tests {
             Some(true),
             "★ 标记被一轮「什么都没试」的巡检吃掉了 —— 调用方会以为已经续过了"
         );
-        // ★ ★ **批 M**：这一轮走的是「账户拿不到」那处**早退**，一个域名记一次失败。
+        // ★ ★ **批 M**：這一輪走的是「帳戶拿不到」那處**早退**，一個網域記一次失敗。
         assert_eq!(m.issue_counts().snapshot(), (0, 1, 0));
     }
 
@@ -990,20 +990,20 @@ mod tests {
         assert_eq!(r2.sleep_for(), crate::MAX_IDLE);
     }
 
-    // ── G54 的主/备 ─────────────────────────────────────────────────────────
+    // ── G54 的主/備 ─────────────────────────────────────────────────────────
 
     #[test]
     fn 默认走主的_tls_alpn_01() {
-        // ★ G54 明写 TLS-ALPN-01 是「主」。它零路由占用，而且只要 443 ——
-        //   对 80 端口常年受限的 `.cn` 机房尤其要紧。
+        // ★ G54 明寫 TLS-ALPN-01 是「主」。它零路由佔用，而且只要 443 ——
+        //   對 80 連接埠常年受限的 `.cn` 機房尤其要緊。
         assert_eq!(pick_non_dns_challenge(None), NonDnsChallenge::TlsAlpn01);
     }
 
     #[test]
     fn 主的失败过一次就换备的() {
-        // ★ ★ 这一条就是「HTTP-01 是**备**」的全部含义。没有它，「主/备」只是措辞：
-        //   一个永远只试 TLS-ALPN-01 的实现，在 443 被挡住的机器上**永远签不出来**，
-        //   而日志里每一轮都只说「CA 说验不过」。
+        // ★ ★ 這一條就是「HTTP-01 是**備**」的全部含義。沒有它，「主/備」只是措辭：
+        //   一個永遠只試 TLS-ALPN-01 的實作，在 443 被擋住的機器上**永遠籤不出來**，
+        //   而紀錄裡每一輪都只說「CA 說驗不過」。
         assert_eq!(
             pick_non_dns_challenge(Some("tls-alpn-01")),
             NonDnsChallenge::Http01
@@ -1012,8 +1012,8 @@ mod tests {
 
     #[test]
     fn 备的也失败过就换回主的() {
-        // ⚠ 判据是**两个方向都要动**：一个「失败过就永远用 HTTP-01」的实现
-        //   在上一条里表现完全相同，而它会让一台只有 443 的机器永远签不出来。
+        // ⚠ 判據是**兩個方向都要動**：一個「失敗過就永遠用 HTTP-01」的實作
+        //   在上一條裡表現完全相同，而它會讓一臺只有 443 的機器永遠籤不出來。
         assert_eq!(
             pick_non_dns_challenge(Some("http-01")),
             NonDnsChallenge::TlsAlpn01
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn 认不出来的值当成没失败过() {
-        // 旧版本写的、手工改坏的 meta.json 不该让签发停摆。
+        // 舊版本寫的、手動改壞的 meta.json 不該讓簽發停擺。
         assert_eq!(
             pick_non_dns_challenge(Some("dns-01")),
             NonDnsChallenge::TlsAlpn01
@@ -1032,11 +1032,11 @@ mod tests {
 
     #[test]
     fn 写进_meta_的名字就是_rfc_8555_的挑战类型串() {
-        // ★ 这两个串会落进 `meta.json`，而下一轮靠它们分岔。
-        //   写错一个字母的后果不是报错，是**主/备永远不切换**——没有任何症状。
+        // ★ 這兩個串會落進 `meta.json`，而下一輪靠它們分岔。
+        //   寫錯一個字母的後果不是回報錯誤，是**主/備永遠不切換**——沒有任何症狀。
         assert_eq!(NonDnsChallenge::TlsAlpn01.as_str(), "tls-alpn-01");
         assert_eq!(NonDnsChallenge::Http01.as_str(), "http-01");
-        // 自证：这两个串真的能被 `pick` 认回来（否则上面两条断言等于没测）。
+        // 自證：這兩個串真的能被 `pick` 認回來（否則上面兩條斷言等於沒測）。
         assert_eq!(
             pick_non_dns_challenge(Some(NonDnsChallenge::TlsAlpn01.as_str())),
             NonDnsChallenge::Http01
@@ -1047,10 +1047,10 @@ mod tests {
         );
     }
 
-    // ── ARI 标识与 `replaces` 回退（G166）────────────────────────────────
+    // ── ARI 標識與 `replaces` 退回（G166）────────────────────────────────
 
-    /// 序列号 `0xb36f9903f33bc7`（首字节 ≥ 0x80）：2026-10-16 全量门禁里真撞上的那一个。
-    /// 固定字节，`openssl x509 -set_serial` 签的，AKI = `5f8a17d7…83d2`。
+    /// 序列號 `0xb36f9903f33bc7`（首位元組 ≥ 0x80）：2026-10-16 全量門禁裡真撞上的那一個。
+    /// 固定位元組，`openssl x509 -set_serial` 籤的，AKI = `5f8a17d7…83d2`。
     const 高位序列号证书: &str = "-----BEGIN CERTIFICATE-----
 MIIBgTCCASegAwIBAgIIALNvmQPzO8cwCgYIKoZIzj0EAwIwFzEVMBMGA1UEAwwM
 QVJJIHJlcHJvIENBMB4XDTI2MTAxNjA2NDk0MloXDTM2MTAxMzA2NDk0MlowGDEW
@@ -1063,7 +1063,7 @@ flqVKGGOMVOnsjMhB5F7yFMCAiEA1s8HbiyZwpsuEKCKtkyuSXtZ3hxS55Wqj5BG
 E8VL9Ew=
 -----END CERTIFICATE-----
 ";
-    /// 对照：同一个 CA、同样的序列号去掉最高位（`0x336f9903f33bc7`）。
+    /// 對照：同一個 CA、同樣的序列號去掉最高位（`0x336f9903f33bc7`）。
     const 低位序列号证书: &str = "-----BEGIN CERTIFICATE-----
 MIIBgDCCASagAwIBAgIHM2+ZA/M7xzAKBggqhkjOPQQDAjAXMRUwEwYDVQQDDAxB
 UkkgcmVwcm8gQ0EwHhcNMjYxMDE2MDY0OTQyWhcNMzYxMDEzMDY0OTQyWjAYMRYw
@@ -1081,8 +1081,8 @@ mYRjTQ==
     fn ari_标识照_rfc_9773_原例编码() {
         use instant_acme::CertificateIdentifier;
         use rustls_pki_types::Der;
-        // RFC 9773 §4.1 原文的例子：序列号 0x87654321 的 DER 内容是 `00:87:65:43:21`
-        //   （补一个 `00` 让它保持正数）⇒ 标识里的序列号是 `AIdlQyE`。
+        // RFC 9773 §4.1 原文的例子：序列號 0x87654321 的 DER 內容是 `00:87:65:43:21`
+        //   （補一個 `00` 讓它保持正數）⇒ 標識裡的序列號是 `AIdlQyE`。
         let aki = [
             0x69, 0x88, 0x5b, 0x6b, 0x87, 0x46, 0x40, 0x41, 0xe1, 0xb3, 0x7b, 0x84, 0x7b, 0xa0,
             0xae, 0x2c, 0xde, 0x01, 0xc8, 0xd4,
@@ -1098,15 +1098,15 @@ mYRjTQ==
     fn 高位序列号的_ari_标识带着符号字节() {
         use super::ari_cert_id;
         use pingora_boringssl::x509::X509;
-        // ★ 走的是 `fetch_ari` 那条真路径：BoringSSL `X509` → DER → `CertificateIdentifier`。
-        // `ALNvmQPzO8c` = `00 b3 6f 99 03 f3 3b c7`。⚠ 剥掉 `00` 会变成 `s2-ZA_M7xw`，
-        //   pebble v2.10.1 认那个，规范 CA 不认 —— ⛔ 不许为了前者改成后者（G166）。
+        // ★ 走的是 `fetch_ari` 那條真路徑：BoringSSL `X509` → DER → `CertificateIdentifier`。
+        // `ALNvmQPzO8c` = `00 b3 6f 99 03 f3 3b c7`。⚠ 剝掉 `00` 會變成 `s2-ZA_M7xw`，
+        //   pebble v2.10.1 認那個，規範 CA 不認 —— ⛔ 不許為了前者改成後者（G166）。
         let high = X509::from_pem(高位序列号证书.as_bytes()).unwrap();
         assert_eq!(
             ari_cert_id(&high).unwrap().to_string(),
             "X4oX19Tqp1-ctI6gLUtWdqoPg9I.ALNvmQPzO8c"
         );
-        // 对照：首字节 < 0x80 时没有符号字节 —— 证明上面那个 `00` 不是每次都补的。
+        // 對照：首位元組 < 0x80 時沒有符號位元組 —— 證明上面那個 `00` 不是每次都補的。
         let low = X509::from_pem(低位序列号证书.as_bytes()).unwrap();
         assert_eq!(
             ari_cert_id(&low).unwrap().to_string(),
@@ -1129,7 +1129,7 @@ mYRjTQ==
         instant_acme::CertificateIdentifier::new(Der::from_slice(b"aki"), Der::from_slice(b"sn"))
     }
 
-    /// pebble v2.10.1 那一句的原样（`serverInternal` 不是 `alreadyReplaced`）。
+    /// pebble v2.10.1 那一句的原樣（`serverInternal` 不是 `alreadyReplaced`）。
     fn ca_的拒绝() -> instant_acme::Error {
         instant_acme::Error::Api(
             serde_json::from_str(
@@ -1158,7 +1158,7 @@ mYRjTQ==
             },
         ));
         assert_eq!(r.unwrap(), 7);
-        // ★ 恰好两次，第二次**没带**：判据挂在调用上，不只挂在结果上。
+        // ★ 恰好兩次，第二次**沒帶**：判據掛在呼叫上，不只掛在結果上。
         assert_eq!(下单时带没带, [true, false]);
     }
 
@@ -1171,7 +1171,7 @@ mYRjTQ==
             async move { Err(ca_的拒绝()) }
         }));
         assert!(r.is_err());
-        // 没有可去掉的东西 ⇒ 不许再下第二次（那只是把同一个请求重发一遍）。
+        // 沒有可去掉的東西 ⇒ 不許再下第二次（那只是把同一個請求重發一遍）。
         assert_eq!(下单时带没带, [false]);
     }
 
@@ -1188,7 +1188,7 @@ mYRjTQ==
             },
         ));
         assert!(r.is_err());
-        // ⚠ 连不上去掉 `replaces` 也照样连不上 —— 交给退避，不在这里多打一次。
+        // ⚠ 連不上去掉 `replaces` 也照樣連不上 —— 交給退避，不在這裡多打一次。
         assert_eq!(下单时带没带, [true]);
     }
 }

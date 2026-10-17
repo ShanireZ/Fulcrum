@@ -1,675 +1,677 @@
-# 枢衡 Fulcrum · 产品与实施计划
+# 樞衡 Fulcrum · 產品與實施計畫
 
-> 本文件是枢衡（Fulcrum）项目的**唯一权威**。架构细节见 [`docs/architecture/`](docs/architecture/index.md)，
-> 它服从本文件；两者冲突时以本文件为准。
+> 本檔案是樞衡（Fulcrum）專案的**唯一權威**。架構細節見 [`docs/architecture/`](docs/architecture/index.md)，
+> 它服從本檔案；兩者衝突時以本檔案為準。
 >
-> 全部文档按 [Open Knowledge Format v0.2](docs/references/okf-spec.md) 组织在 [`docs/`](docs/index.md) 里。
+> 全部文件按 [Open Knowledge Format v0.2](docs/references/okf-spec.md) 組織在 [`docs/`](docs/index.md) 裡。
 
-## 1. 当前状态
+<a id="1-当前状态"></a>
 
-| 里程碑 | 状态 |
+## 1. 當前狀態
+
+| 里程碑 | 狀態 |
 |---|---|
-| **M0** 接缝验证 | ✅ **通过** |
-| **M1** 接管一台机 | ✅ **通过** |
-| **M2** 接管两台 | ⏳ **进行中** —— 自研批次全部做完，观测三件套 **3/3**；⛔ 只剩**退出条件**（两台机器由枢衡承载，那是**运维动作**不是工程任务）|
-| **M3** 对拍达标 | ⏳ **进行中** —— 方法学已落地（[`bench/`](bench/README.md)，门禁里一格）。★ **最新一组真实读数：2026-10-05 下午压测窗口四**（[`bench/results/2026-10-05-window-4/`](bench/results/2026-10-05-window-4/README.md)），§8 七类里跑了**三类**，**都是 `FAIL`**：静态吞吐 枢衡 **21652.9** rps 对最强者 nginx **55193.5**、门槛 **49674.2**；反代吞吐 枢衡 **7026.0** 对 nginx **13846.0**、门槛 **12461.4**（四家上游复用对齐 ⇒ 最强者与门槛可引用）；高并发短连接（第二组）枢衡 **12843.1** 对 nginx **15741.5**、门槛 **14167.4**。更早的三组（2026-10-05 上午窗口三、2026-09-10 窗口二、2026-09-06）留在各自目录；窗口三与本组同宿主同口径，两窗口之间三家竞品漂了 −0.9% 到 +2.9%，枢衡静态吞吐 +10.8% 大过这段漂移，⚠ 但仍是跨窗口的两组数 ⇒ ⛔ 不归因（窗口二 → 三那一对竞品漂了 −3.5% 到 −7.4%）。窗口三里只翻 `work_stealing` 的诊断二进制那一趟在它的 `ws-off/` 下，⛔ 不是 M3 读数。⚠ 其余四类没跑，⛔ 别读成整体结论；⛔ 也**没有**任何根因结论 |
-| **M4** 发布 | ⏳ 未开工 |
+| **M0** 接縫驗證 | ✅ **通過** |
+| **M1** 接管一臺機 | ✅ **通過** |
+| **M2** 接管兩臺 | ⏳ **進行中** —— 自研批次全部做完，觀測三件套 **3/3**；⛔ 只剩**退出條件**（兩臺機器由樞衡承載，那是**維運動作**不是工程任務）|
+| **M3** 對拍達標 | ⏳ **進行中** —— 方法學已完成實作（[`bench/`](bench/README.md)，門禁裡一格）。★ **最新一組真實讀數：2026-10-05 下午壓測視窗四**（[`bench/results/2026-10-05-window-4/`](bench/results/2026-10-05-window-4/README.md)），§8 七類裡跑了**三類**，**都是 `FAIL`**：靜態吞吐 樞衡 **21652.9** rps 對最強者 nginx **55193.5**、門檻 **49674.2**；反代吞吐 樞衡 **7026.0** 對 nginx **13846.0**、門檻 **12461.4**（四家上游重複使用對齊 ⇒ 最強者與門檻可引用）；高並行短連接（第二組）樞衡 **12843.1** 對 nginx **15741.5**、門檻 **14167.4**。更早的三組（2026-10-05 上午視窗三、2026-09-10 視窗二、2026-09-06）留在各自目錄；視窗三與本組同宿主同口徑，兩視窗之間三家競品漂了 −0.9% 到 +2.9%，樞衡靜態吞吐 +10.8% 大過這段漂移，⚠ 但仍是跨視窗的兩組數 ⇒ ⛔ 不歸因（視窗二 → 三那一對競品漂了 −3.5% 到 −7.4%）。視窗三里只翻 `work_stealing` 的診斷二進位那一趟在它的 `ws-off/` 下，⛔ 不是 M3 讀數。⚠ 其餘四類沒跑，⛔ 別讀成整體結論；⛔ 也**沒有**任何根因結論 |
+| **M4** 發佈 | ⏳ 未開工 |
 
-### 产品 crate
+### 產品 crate
 
-| crate | 职责 |
+| crate | 職責 |
 |---|---|
-| [`fulcrum-config`](crates/fulcrum-config) | DSL → 诊断 → 结构化配置 |
-| [`fulcrum-runtime`](crates/fulcrum-runtime) | 运行时对象图（站点索引／匹配器／执行链）。★ **纯逻辑，不引用 pingora** |
-| [`fulcrum-tls`](crates/fulcrum-tls) | 按 SNI 挑证书、每域一目录的 PEM 存储、续期判定 |
-| [`fulcrum-acme`](crates/fulcrum-acme) | ACME 客户端：三种挑战 + 原生 Cloudflare / DNSPod |
-| [`fulcrum-server`](crates/fulcrum-server) | 数据面：挂到 Pingora 上；L4、静态文件、缓存、压缩、HTTP/3 |
+| [`fulcrum-config`](crates/fulcrum-config) | DSL → 診斷 → 結構化設定 |
+| [`fulcrum-runtime`](crates/fulcrum-runtime) | 執行環境物件圖（站台索引／匹配器／執行鏈）。★ **純邏輯，不引用 pingora** |
+| [`fulcrum-tls`](crates/fulcrum-tls) | 按 SNI 挑證書、每域一目錄的 PEM 儲存、續期判定 |
+| [`fulcrum-acme`](crates/fulcrum-acme) | ACME 用戶端：三種挑戰 + 原生 Cloudflare / DNSPod |
+| [`fulcrum-server`](crates/fulcrum-server) | 資料面：掛到 Pingora 上；L4、靜態檔案、快取、壓縮、HTTP/3 |
 | [`fulcrum`](crates/fulcrum) | 命令行：`validate` / `compile` / `plan` / `serve` |
 
-`vendor/pingora/` 是 Pingora 0.9 的 fork（2026-09-24 从 0.8.1 rebase 到 0.9.0），改动逐条记在
-[`vendor/pingora/FORK.md`](vendor/pingora/FORK.md)。`spikes/` 是验证台，不是产品。
+`vendor/pingora/` 是 Pingora 0.9 的 fork（2026-09-24 從 0.8.1 rebase 到 0.9.0），改動逐條記在
+[`vendor/pingora/FORK.md`](vendor/pingora/FORK.md)。`spikes/` 是驗證臺，不是產品。
 
 ### 能力面
 
-✅ **已落地** —— DSL 全链路（诊断 → 结构化 → 运行时图 → TLS 装载）· 反向代理 + 四种自研
-`lb_policy` · DNS 定期重解析 · 主动健康检查 · **被动熔断**（`passive_fail`，含真半开恢复，G136）·
-自动 HTTPS（TLS-ALPN-01 / HTTP-01 / DNS-01）·
-全量原子 load（Unix socket）· systemd `Type=notify` 托管下的**换代零中断** ·
-L4 面（TCP/UDP 透传、SNI/ALPN 分流、PROXY protocol 收）· 静态文件 · HTTP 缓存（内存 + 磁盘 +
-防惊群 + `POST /purge`）· 响应压缩 · **HTTP/3**（quiche，含换代时的跨进程连接转交）·
-结构化访问日志（JSON）· **Prometheus 指标**（站点块里的终结指令 `metrics`，
-text exposition 自研零依赖）。
+✅ **已完成實作** —— DSL 全連線路徑（診斷 → 結構化 → 執行環境圖 → TLS 裝載）· 反向代理 + 四種自研
+`lb_policy` · DNS 定期重解析 · 主動健康檢查 · **被動熔斷**（`passive_fail`，含真半開恢復，G136）·
+自動 HTTPS（TLS-ALPN-01 / HTTP-01 / DNS-01）·
+全量原子 load（Unix socket）· systemd `Type=notify` 託管下的**換代零中斷** ·
+L4 面（TCP/UDP 透傳、SNI/ALPN 分流、PROXY protocol 收）· 靜態檔案 · HTTP 快取（記憶體 + 磁碟 +
+防驚群 + `POST /purge`）· 回應壓縮 · **HTTP/3**（quiche，含換代時的跨處理程序連接轉交）·
+結構化訪問紀錄（JSON）· **Prometheus 指標**（站台塊裡的終結指令 `metrics`，
+text exposition 自研零依賴）。
 
-⏳ **未落地** —— PROXY protocol 的「发」那半边。
-> ⚠ 上面那一行由 `unwired_contract.rs` 的「PLAN §1 未落地那一行」一测钉住：**它里面的每个
-> 反引号键名都必须还在 `fulcrum_runtime::UNWIRED` 里**。能力接线时先从 UNWIRED 销号，这一行跟着改。
-> ⛔ 判据只从「未落地 ——」读到**第一个句号**为止，⇒ 本注解不在判据范围内（否则这段话里
-> 提到的键名会把它自己判红 —— 一个把正确写法判红的门，最后会被人绕过去而不是被人满足）。
-> ★ 立它的直接原因：2026-09-06 发现被动熔断在这一行多挂了一天（G136 早已销号），而这句话
-> 不带 `§11` 字样，`plan-refs.py` 判据 ② **结构上**看不见它（那道门自己写明的第 1 类漏网）。
-> ⚠ 反过来那半边**有意不判**：本行是摘要不是全集（`tls_internal` / `on_demand` / `tracing`
-> 都在 UNWIRED 里而不在这一行），且 PROXY protocol「发」那半边**根本进不了 UNWIRED** ——
-> 它连 DSL 面都没有，而 UNWIRED 记的是「DSL 认得、运行时不做」。
+⏳ **未完成實作** —— PROXY protocol 的「發」那半邊。
+> ⚠ 上面那一行由 `unwired_contract.rs` 的「PLAN §1 未完成實作那一行」一測釘住：**它裡面的每個
+> 反引號鍵名都必須還在 `fulcrum_runtime::UNWIRED` 裡**。能力串接時先從 UNWIRED 銷號，這一行跟著改。
+> ⛔ 判據只從「未完成實作 ——」讀到**第一個句號**為止，⇒ 本註解不在判據範圍內（否則這段話裡
+> 提到的鍵名會把它自己判紅 —— 一個把正確寫法判紅的門，最後會被人繞過去而不是被人滿足）。
+> ★ 立它的直接原因：2026-09-06 發現被動熔斷在這一行多掛了一天（G136 早已銷號），而這句話
+> 不帶 `§11` 字樣，`plan-refs.py` 判據 ② **結構上**看不見它（那道門自己寫明的第 1 類漏網）。
+> ⚠ 反過來那半邊**有意不判**：本行是摘要不是全集（`tls_internal` / `on_demand` / `tracing`
+> 都在 UNWIRED 裡而不在這一行），且 PROXY protocol「發」那半邊**根本進不了 UNWIRED** ——
+> 它連 DSL 面都沒有，而 UNWIRED 記的是「DSL 認得、執行環境不做」。
 
-### 判据
+### 判據
 
-一条命令跑完全部门禁：
+一條命令跑完全部門禁：
 
 ```bash
 bash tests/m0/docker-run.sh
 ```
 
-⛔ **本机不跑 Rust（G107）** —— 构建与测试一律在容器里。逐格说明见
+⛔ **本機不跑 Rust（G107）** —— 建置與測試一律在容器裡。逐格說明見
 [`docs/platform/build-and-test.md`](docs/platform/build-and-test.md)。
 
-## 2. 项目定位
+## 2. 專案定位
 
-一句话：
+一句話：
 
-> **一个 Rust 单静态二进制，同时是 Web 服务器、反向代理与负载均衡器；
-> 简单时像 Caddy，复杂时不必换软件。**
+> **一個 Rust 單靜態二進位，同時是 Web 伺服器、反向代理與負載均衡器；
+> 簡單時像 Caddy，複雜時不必換軟體。**
 
-它要做的事，是把今天必须靠三个软件拼起来才能做到的事，收进一个进程：
+它要做的事，是把今天必須靠三個軟體拼起來才能做到的事，收進一個處理程序：
 
 ```text
 今天：Caddy（自动 HTTPS）+ HAProxy（L4 与调度）+ Nginx（静态与缓存）
 枢衡：一个进程、一份配置、一套观测
 ```
 
-## 3. 要解决的问题
+## 3. 要解決的問題
 
-三家各有所长也各有硬伤。枢衡的产品假设是：**这些长处不冲突，可以收进一个实现；而这些短处大多源自各自的历史包袱，不是必然代价。**
+三家各有所長也各有硬傷。樞衡的產品假設是：**這些長處不衝突，可以收進一個實作；而這些短處大多源自各自的歷史包袱，不是必然代價。**
 
-| | 长处（要吸收） | 短处（要避开） |
+| | 長處（要吸收） | 短處（要避開） |
 |---|---|---|
-| **Nginx** | 静态文件吞吐、`proxy_cache` 磁盘缓存、内存占用低、生态与文档最厚 | 自创 DSL 且语义有坑（`if` 不可靠、`location` 匹配顺序反直觉）；自动 HTTPS 要另装官方动态模块 `ngx_http_acme_module`，且只有 HTTP-01 / TLS-ALPN-01、没有 DNS-01；OSS 版无管理 API，只能整体 reload；**上游域名默认只在启动时解析一次**（1.27.3 起开源版可在 `upstream` 的 `server` 上显式写 `resolve`，要另配 `resolver` 与共享内存 `zone`）；`stream` 的 L4 能力弱于 HAProxy；模块要编译进二进制 |
-| **HAProxy** | L4/L7 调度深度（stick-table、慢启动、queue）、健康检查体系最完整、Runtime API 可热改、stats 原生 | **不是 Web 服务器**（静态内容只能用 `http-request return … file` 回固定的小文件）、缓存只有一层放在内存里的小对象缓存（不落盘、重载即失）、配置最晦涩、ACME 支持到 3.x 才成型、Data Plane API 是另一个独立进程、**runtime 改动 reload 后无声消失** |
-| **Caddy** | 自动 HTTPS/ACME 是标杆、默认即安全、Admin API 全量热加载且失败自动回退、配置最易上手 | Go GC 导致高并发下 P99 尾延迟与内存不如 C 系；调度深度远不及 HAProxy；缓存要装插件；插件生态要 `xcaddy` 重编译；**Admin API 默认绑回环且无认证**，同机任意进程可改配置 |
+| **Nginx** | 靜態檔案吞吐、`proxy_cache` 磁碟快取、記憶體佔用低、生態與文件最厚 | 自創 DSL 且語義有坑（`if` 不可靠、`location` 匹配順序反直覺）；自動 HTTPS 要另裝官方動態模組 `ngx_http_acme_module`，且只有 HTTP-01 / TLS-ALPN-01、沒有 DNS-01；OSS 版無管理 API，只能整體 reload；**上游網域預設只在啟動時解析一次**（1.27.3 起開放原始碼版可在 `upstream` 的 `server` 上顯式寫 `resolve`，要另配 `resolver` 與共享記憶體 `zone`）；`stream` 的 L4 能力弱於 HAProxy；模組要編譯進二進位 |
+| **HAProxy** | L4/L7 排程深度（stick-table、慢啟動、queue）、健康檢查體系最完整、Runtime API 可熱改、stats 原生 | **不是 Web 伺服器**（靜態內容只能用 `http-request return … file` 回固定的小檔案）、快取只有一層放在記憶體裡的小物件快取（不寫入磁碟、重載即失）、設定最晦澀、ACME 支援到 3.x 才成型、Data Plane API 是另一個獨立處理程序、**runtime 改動 reload 後無聲消失** |
+| **Caddy** | 自動 HTTPS/ACME 是標杆、預設即安全、Admin API 全量熱載入且失敗自動退回、設定最易上手 | Go GC 導致高並行下 P99 尾延遲與記憶體不如 C 系；排程深度遠不及 HAProxy；快取要裝外掛；外掛生態要 `xcaddy` 重編譯；**Admin API 預設綁回環且無認證**，同機任意處理程序可改設定 |
 
-### 3.1 竞争位置（必须诚实记录）
+### 3.1 競爭位置（必須誠實記錄）
 
-这一格并不空：Traefik、APISIX、Kong、Nginx Proxy Manager、Zoraxy，以及 Kubernetes Gateway API 及其多个实现，都在附近。
-2024 年后还多了 Cloudflare 的 **Pingora**（Rust 代理框架）和 ISRG 基于它的 **River**。
+這一格並不空：Traefik、APISIX、Kong、Nginx Proxy Manager、Zoraxy，以及 Kubernetes Gateway API 及其多個實作，都在附近。
+2024 年後還多了 Cloudflare 的 **Pingora**（Rust 代理框架）和 ISRG 基於它的 **River**。
 
-⚠ **「三合一」本身不是空位**（2026-09-24 按一手来源更正，旧版这里写的「没有任何一款现有软件同时做到这三件事」⛔ 不成立）：
-[Zoraxy](https://github.com/tobychui/zoraxy) 的 README 同时列着反代、负载均衡、ACME 自动证书（含 DNS 挑战）、TCP/UDP 转发与静态目录（`-webroot`）；
-[River](https://www.memorysafety.org/initiative/reverse-proxy/) 0.5.0 起也能服务静态文件（其项目页同时写明开发已暂停）；
-nginx 1.27.3 起开源版有[上游动态重解析](https://nginx.org/en/docs/http/ngx_http_upstream_module.html)，另有官方的 [ACME 动态模块](https://nginx.org/en/docs/http/ngx_http_acme_module.html)；
-HAProxy 有一层[内存小对象缓存](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/performance/caching/)。
+⚠ **「三合一」本身不是空位**（2026-09-24 按一手來源更正，舊版這裡寫的「沒有任何一款現有軟體同時做到這三件事」⛔ 不成立）：
+[Zoraxy](https://github.com/tobychui/zoraxy) 的 README 同時列著反代、負載均衡、ACME 自動證書（含 DNS 挑戰）、TCP/UDP 轉發與靜態目錄（`-webroot`）；
+[River](https://www.memorysafety.org/initiative/reverse-proxy/) 0.5.0 起也能服務靜態檔案（其專案頁同時寫明開發已暫停）；
+nginx 1.27.3 起開放原始碼版有[上游動態重解析](https://nginx.org/en/docs/http/ngx_http_upstream_module.html)，另有官方的 [ACME 動態模組](https://nginx.org/en/docs/http/ngx_http_acme_module.html)；
+HAProxy 有一層[記憶體小物件快取](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/performance/caching/)。
 
-枢衡的空位是真实但狭窄的，**它在「整合的深度与治理方式」，⛔ 不在「别家没有这项功能」**。比较维度是这三条：
+樞衡的空位是真實但狹窄的，**它在「整合的深度與治理方式」，⛔ 不在「別家沒有這項功能」**。比較維度是這三條：
 
-- **默认交付的整合程度**：一个静态二进制、一份配置里同时有 L4（TCP/UDP 透传、SNI/ALPN 分流）、静态文件、磁盘缓存、HTTP/3 与自动 HTTPS（三种挑战，含原生 Cloudflare / DNSPod 的 DNS-01），⛔ 不靠插件、定制构建或另装模块；
-- **配置与运行态的治理**：DSL 与结构化配置都是合法入口、全量原子 load、临时覆盖不持久化但永远可见（G8 / G11 / G18）；
-- **运维成本**：非 K8s 环境，一个进程、一套观测。
+- **預設交付的整合程度**：一個靜態二進位、一份設定裡同時有 L4（TCP/UDP 透傳、SNI/ALPN 分流）、靜態檔案、磁碟快取、HTTP/3 與自動 HTTPS（三種挑戰，含原生 Cloudflare / DNSPod 的 DNS-01），⛔ 不靠外掛、定製建置或另裝模組；
+- **設定與執行態的治理**：DSL 與結構化設定都是合法入口、全量原子 load、臨時覆蓋不持久化但永遠可見（G8 / G11 / G18）；
+- **維運成本**：非 K8s 環境，一個處理程序、一套觀測。
 
-⛔ 它们是**比较维度**，不是「别家都做不到」的断言；功能深度与性能是否等同，只能按 §8 同机实测，⛔ 不按实现语言推定。
+⛔ 它們是**比較維度**，不是「別家都做不到」的斷言；功能深度與效能是否等同，只能按 §8 同機實測，⛔ 不按實作語言推定。
 
-## 4. 设计原则
+## 4. 設計原則
 
-1. **一个进程，一份配置，一套观测。** 这是产品的全部理由；任何让用户"再装一个东西"的设计都要被质疑。
-2. **吸收长处，不继承短处。** 每采纳一个三家已有的设计，必须能说清它避开了对应的哪个坑。
-3. **期望状态是唯一权威，例外必须可见。** 临时覆盖不持久化，但永远显示在 stats 与 API 里。
-4. **先验证，再发布；失败即回滚。** 配置变更是事务，不是文件写入。
-5. **默认即安全。** 管理面默认不出机器；危险能力（On-Demand TLS）默认要求显式准入配置。
-6. **性能以端到端实测为准，且数据公开。** 不发布无法复现的性能声明。
-7. **回落是脚手架不是架构。** 它的成功标志是被删除。
+1. **一個處理程序，一份設定，一套觀測。** 這是產品的全部理由；任何讓使用者"再裝一個東西"的設計都要被質疑。
+2. **吸收長處，不繼承短處。** 每採納一個三家已有的設計，必須能說清它避開了對應的哪個坑。
+3. **期望狀態是唯一權威，例外必須可見。** 臨時覆蓋不持久化，但永遠顯示在 stats 與 API 裡。
+4. **先驗證，再發布；失敗即回復。** 設定變更是交易，不是檔案寫入。
+5. **預設即安全。** 管理面預設不出機器；危險能力（On-Demand TLS）預設要求顯式存取資格設定。
+6. **效能以端到端實測為準，且資料公開。** 不發佈無法重現的效能宣告。
+7. **回落是腳手架不是架構。** 它的成功標誌是被刪除。
 
-## 5. 技术底盘
+## 5. 技術底盤
 
-| 项 | 选择 | 依据 |
+| 項 | 選擇 | 依據 |
 |---|---|---|
-| 语言 | **Rust** | 性能可与 nginx/haproxy 同级（Go 做不到，而那正是 Caddy 的短处）；内存安全避开 nginx/haproxy CVE 史上的缓冲区类问题 |
-| 数据面底座 | **Pingora 0.8.1**（Apache-2.0，可被 GPL-3.0 吸收）。★ 实际走 [`vendor/pingora/`](vendor/pingora/FORK.md) 的 fork（G30） | 用到的是**零停机优雅升级**与**上游连接池**（外加 h1/h2 那套协议实现）。⚠ LoadBalancer、健康检查与缓存框架**都是自研的**，不要以为底座送了 |
-| HTTP/3 | **`quiche`**（G103），以自建 Service 挂 QUIC 入口 | Pingora 0.8 不带 HTTP/3。取 quiche 的三条：**传输层与 HTTP/3 语义层在同一个 crate 里**（`quiche::h3`，无 feature 门控）· **sans-IO + 公开的 `Header::from_slice`** ⇒ 按 DCID 分流写在我们自己代码里 · ⚠ 而 `quinn` 对认不出的 DCID **回 stateless reset**（会杀掉升级窗口里的在飞连接）。事实表见 [`docs/platform/http3-libraries.md`](docs/platform/http3-libraries.md) |
-| TLS | **统一 BoringSSL**（G104） | quiche 用 BoringSSL；继续锁 rustls 就必然两套并存。两个入口共用同一个 `select_certificate_callback`。详见 §5.1 第 1 条 |
-| 配置 | **自研 DSL（Caddyfile 式）编译到结构化配置** | 人写 DSL、机器写结构化格式；结构化那份是唯一内部事实 |
-| 分发 | **Linux x86_64 + aarch64 单静态二进制（musl）+ systemd 单元 + deb/rpm** | Rust 优势直接兑现：一个文件、零依赖 |
+| 語言 | **Rust** | 效能可與 nginx/haproxy 同級（Go 做不到，而那正是 Caddy 的短處）；記憶體安全避開 nginx/haproxy CVE 史上的緩衝區類問題 |
+| 資料面底座 | **Pingora 0.8.1**（Apache-2.0，可被 GPL-3.0 吸收）。★ 實際走 [`vendor/pingora/`](vendor/pingora/FORK.md) 的 fork（G30） | 用到的是**零停機優雅升級**與**上游連接池**（外加 h1/h2 那套協定實作）。⚠ LoadBalancer、健康檢查與快取框架**都是自研的**，不要以為底座送了 |
+| HTTP/3 | **`quiche`**（G103），以自建 Service 掛 QUIC 入口 | Pingora 0.8 不帶 HTTP/3。取 quiche 的三條：**傳輸層與 HTTP/3 語義層在同一個 crate 裡**（`quiche::h3`，無 feature 門控）· **sans-IO + 公開的 `Header::from_slice`** ⇒ 按 DCID 分流寫在我們自己程式碼裡 · ⚠ 而 `quinn` 對認不出的 DCID **回 stateless reset**（會殺掉升級視窗裡的在飛連接）。事實表見 [`docs/platform/http3-libraries.md`](docs/platform/http3-libraries.md) |
+| TLS | **統一 BoringSSL**（G104） | quiche 用 BoringSSL；繼續鎖 rustls 就必然兩套並存。兩個入口共用同一個 `select_certificate_callback`。詳見 §5.1 第 1 條 |
+| 設定 | **自研 DSL（Caddyfile 式）編譯到結構化設定** | 人寫 DSL、機器寫結構化格式；結構化那份是唯一內部事實 |
+| 散布 | **Linux x86_64 + aarch64 單靜態二進位（musl）+ systemd 單元 + deb/rpm** | Rust 優勢直接兌現：一個檔案、零依賴 |
 
-### 5.1 G6 附带的三条硬约束
+### 5.1 G6 附帶的三條硬約束
 
-1. **TLS 后端统一 BoringSSL。** 两个入口（h1/h2 与 h3/QUIC）共用**同一个**
+1. **TLS 後端統一 BoringSSL。** 兩個入口（h1/h2 與 h3/QUIC）共用**同一個**
    `boring::ssl::SslContextBuilder::set_select_certificate_callback`，
-   动态证书选择走它而不是 `ResolvesServerCert`。
+   動態證書選擇走它而不是 `ResolvesServerCert`。
 
-   ★ 取「统一到 BoringSSL」而不是「两套并存」，理由与 G66 同源：
-   **让分家在结构上做不到，比让两份互相钉着更可靠。**
+   ★ 取「統一到 BoringSSL」而不是「兩套並存」，理由與 G66 同源：
+   **讓分家在結構上做不到，比讓兩份互相釘著更可靠。**
 
-   **范围是三处，全部换完**：① 监听器侧（挑证书 / ALPN）· ② L4 的 ClientHello 预读
-   （一台真的握手状态机 + 一条内存传输，早回调抄完就掐掉握手，只看不终止）·
+   **範圍是三處，全部換完**：① 監聽器側（挑證書 / ALPN）· ② L4 的 ClientHello 預讀
+   （一臺真的握手狀態機 + 一條記憶體傳輸，早回呼抄完就掐掉握手，只看不終止）·
    ③ 出站 HTTPS（[`crates/fulcrum-acme/src/https.rs`](crates/fulcrum-acme/src/https.rs)
-   自写 `tower_service::Service<Uri>` 连接器喂 `instant_acme::HttpClient`，**新增 0 个包**）。
+   自寫 `tower_service::Service<Uri>` 連接器喂 `instant_acme::HttpClient`，**新增 0 個包**）。
 
-   ⇒ **依赖图里只有一套 TLS**：`cargo tree -e all --workspace --target all -i rustls`
+   ⇒ **依賴圖裡只有一套 TLS**：`cargo tree -e all --workspace --target all -i rustls`
    → nothing to print。
 
-   ⚠ ⚠ **`Cargo.lock` 是依赖图的超集** —— `hyper-rustls` / `rustls` / `tokio-rustls` /
-   `schannel` 仍然写在锁里（`instant-acme` 的 `ring` feature 里那句 `"hyper-rustls?/ring"`
-   把它留在了包级解析中）。隔离实验：一个只依赖 `instant-acme` 的空 crate，
-   锁里 **129** 个包而 `cargo tree` 只有 **72** 个。
-   ⇒ 门 4 的口径是「**锁里写着哪些**」，答「依赖图里真有哪些」的是**门 5**（读 `cargo tree`）。
-   ✅ **「产物里真的链接了哪几套」由 `G138` 补上了判据**（结案 **D23**）：`tests/ci/tls-linkage.sh`
-   只取数、`tests/musl/product.sh` 判定，挂在**真正要分发的那个 musl 静态产物**上。
-   ★ 判的是**符号表**而不是 `strings`：`rustls` 在字符串里出现 4 次却**全部**来自纯类型 crate
-   `rustls_pki_types`，用 Rust v0 名字修饰的长度前缀（`_6rustls` ≠ `_16rustls_pki_types`）才分得开。
+   ⚠ ⚠ **`Cargo.lock` 是依賴圖的超集** —— `hyper-rustls` / `rustls` / `tokio-rustls` /
+   `schannel` 仍然寫在鎖裡（`instant-acme` 的 `ring` feature 裡那句 `"hyper-rustls?/ring"`
+   把它留在了包級解析中）。隔離實驗：一個只依賴 `instant-acme` 的空 crate，
+   鎖裡 **129** 個包而 `cargo tree` 只有 **72** 個。
+   ⇒ 門 4 的口徑是「**鎖裡寫著哪些**」，答「依賴圖裡真有哪些」的是**門 5**（讀 `cargo tree`）。
+   ✅ **「產物裡真的連結了哪幾套」由 `G138` 補上了判據**（結案 **D23**）：`tests/ci/tls-linkage.sh`
+   只取數、`tests/musl/product.sh` 判定，掛在**真正要散布的那個 musl 靜態產物**上。
+   ★ 判的是**符號表**而不是 `strings`：`rustls` 在字串裡出現 4 次卻**全部**來自純類型 crate
+   `rustls_pki_types`，用 Rust v0 名字修飾的長度前綴（`_6rustls` ≠ `_16rustls_pki_types`）才分得開。
 
-   > ★ ★ 一条方法论：**「不可回头」约束的是我们自己不要反复，不是约束事实不许变。**
-   > 本条原本锁的是 rustls，理由是「rustls 没有 `certificate_callback`」——
-   > 那句话今天依然为真，只是**我们不再站在 rustls 那一侧了**。
-   > ⚠ **一条理由仍然成立、而结论已经不适用的约束，比一条明显过时的约束更难发现。**
+   > ★ ★ 一條方法論：**「不可回頭」約束的是我們自己不要反覆，不是約束事實不許變。**
+   > 本條原本鎖的是 rustls，理由是「rustls 沒有 `certificate_callback`」——
+   > 那句話今天依然為真，只是**我們不再站在 rustls 那一側了**。
+   > ⚠ **一條理由仍然成立、而結論已經不適用的約束，比一條明顯過時的約束更難發現。**
 
-2. ⚠ **tower 中间件生态用不上。** Pingora 有自己的 `ProxyHttp` 阶段/过滤器模型，
-   tower 的 `Service`/`Layer` 插不进去（同名不同物）。
+2. ⚠ **tower 中介軟體生態用不上。** Pingora 有自己的 `ProxyHttp` 階段/過濾器模型，
+   tower 的 `Service`/`Layer` 插不進去（同名不同物）。
 
-   ⚠ ⚠ ★ **但第一句要连着一条附注读，否则它会误导下一个人**：
-   「Pingora 有自己的 `ProxyHttp` 模型」这句**关于上游为真、关于我们为假** ——
-   **我们从来没有用过 `ProxyHttp`**，`pingora-proxy` 连依赖都不是。
-   真正的执行链挂在 `HttpServerApp` / `ServerSession` 上。
-   ★ **一句关于上游为真、而关于我们为假的描述，比一句明显过时的描述更难发现。**
+   ⚠ ⚠ ★ **但第一句要連著一條附註讀，否則它會誤導下一個人**：
+   「Pingora 有自己的 `ProxyHttp` 模型」這句**關於上游為真、關於我們為假** ——
+   **我們從來沒有用過 `ProxyHttp`**，`pingora-proxy` 連依賴都不是。
+   真正的執行鏈掛在 `HttpServerApp` / `ServerSession` 上。
+   ★ **一句關於上游為真、而關於我們為假的描述，比一句明顯過時的描述更難發現。**
 
-   ★ 唯一真的用上 tower 的地方与本条**不是一回事**：第 1 条 ③ 那个出站连接器
-   **是给别人的接口实现一个 trait，不是把 tower 中间件栈拼进数据面**。
+   ★ 唯一真的用上 tower 的地方與本條**不是一回事**：第 1 條 ③ 那個出站連接器
+   **是給別人的介面實作一個 trait，不是把 tower 中介軟體棧拼進資料面**。
 
-3. ⚠ **自建 QUIC(UDP) 与 L4 监听器必须接入 Pingora 的 socket 移交**，
-   否则优雅升级时这两条会断连。这是整个方案里唯一需要真花力气验证的接缝，
-   已列为 M0 的退出条件（✅ 通过）。
+3. ⚠ **自建 QUIC(UDP) 與 L4 監聽器必須接入 Pingora 的 socket 移交**，
+   否則優雅升級時這兩條會斷連。這是整個方案裡唯一需要真花力氣驗證的接縫，
+   已列為 M0 的退出條件（✅ 通過）。
 
-## 6. 首版范围
+## 6. 首版範圍
 
-### 6.1 自研（四块全部）
+### 6.1 自研（四塊全部）
 
-- **L7 反代核心**（产品本体）：HTTP/1.1、HTTP/2、TLS 终止、WebSocket、gRPC —— 后三者 Pingora 已覆盖
-- **L4 面**：TCP/UDP 透传、SNI/ALPN 分流、PROXY protocol
-- **静态文件服务**：range、ETag、压缩与预压缩、目录索引
-- **HTTP 缓存**：**整层自研**（G82），`pingora-cache` 不进 fork
-- **HTTP/3 / QUIC**：**`quiche`**（G103）独立入口，在枢衡自己的路由层与 h1/h2 汇合。
-  ★ **「自研」在这一条里指的是哪一半，由 G105 说死**：入口、连接归属、
-  路由汇合与那条中间件链是自研；**协议栈本体（QUIC 状态机 + HTTP/3 帧层 + QPACK）不是** ——
-  用 `quiche::h3`。⚠ 手写 QPACK 会直接违反[安全基线](docs/platform/security-baseline.md)第 5 条
-  （QPACK 就是 HPACK 在 HTTP/3 里的对应物），而那一条是整个安全论证的支点。
-  > ★ 此前这两件事一直靠「HTTP/3 是自研的一块」同一个词指代，读起来像是连协议栈也自己写。
+- **L7 反代核心**（產品本體）：HTTP/1.1、HTTP/2、TLS 終止、WebSocket、gRPC —— 後三者 Pingora 已覆蓋
+- **L4 面**：TCP/UDP 透傳、SNI/ALPN 分流、PROXY protocol
+- **靜態檔案服務**：range、ETag、壓縮與預壓縮、目錄索引
+- **HTTP 快取**：**整層自研**（G82），`pingora-cache` 不進 fork
+- **HTTP/3 / QUIC**：**`quiche`**（G103）獨立入口，在樞衡自己的路由層與 h1/h2 匯合。
+  ★ **「自研」在這一條裡指的是哪一半，由 G105 說死**：入口、連接歸屬、
+  路由匯合與那條中介軟體鏈是自研；**協定棧本體（QUIC 狀態機 + HTTP/3 影格層 + QPACK）不是** ——
+  用 `quiche::h3`。⚠ 手寫 QPACK 會直接違反[安全基線](docs/platform/security-baseline.md)第 5 條
+  （QPACK 就是 HPACK 在 HTTP/3 裡的對應物），而那一條是整個安全論證的支點。
+  > ★ 此前這兩件事一直靠「HTTP/3 是自研的一塊」同一個詞指代，讀起來像是連協定棧也自己寫。
 
-### 6.2 首版明确不做
+### 6.2 首版明確不做
 
 - Web UI（G23）；管理面只有 DSL + CLI + HTTP API
-- 服务发现集成（Consul / etcd / Docker labels）
-- Kubernetes Endpoint 监听与 Gateway API 实现
+- 服務發現整合（Consul / etcd / Docker labels）
+- Kubernetes Endpoint 監聽與 Gateway API 實作
 - OpenTelemetry tracing
-- Windows / macOS 支持
-- 多节点控制平面、RBAC、审批流
-- 官方容器镜像（文档给现成 `FROM scratch` Dockerfile 代替）
+- Windows / macOS 支援
+- 多節點控制平面、RBAC、審批流
+- 官方容器鏡像（文件給現成 `FROM scratch` Dockerfile 代替）
 
-### 6.3 回落层 ⛔ **已整块删除**（G98）
+### 6.3 回落層 ⛔ **已整塊刪除**（G98）
 
-原本的设计是：自研某块能力尚未完成时，该类流量回落给 Nginx（静态与缓存）或 Caddy（其余），
-1.0 时归零。**它的三个用户（`l4` / `file_server` / `cache`）在 M2 批 B/F/G 里全部自研完成**，
-于是整层比原计划提前删掉。
+原本的設計是：自研某塊能力尚未完成時，該類流量回落給 Nginx（靜態與快取）或 Caddy（其餘），
+1.0 時歸零。**它的三個使用者（`l4` / `file_server` / `cache`）在 M2 批 B/F/G 裡全部自研完成**，
+於是整層比原計畫提前刪掉。
 
-⚠ 写了 `fallback_nginx` / `fallback_caddy` 的配置现在**编译不过**，报的是一条专门的诊断
-（`FUL-DSL-0034`），不是「未知的全局选项」。留下的三条结论见
+⚠ 寫了 `fallback_nginx` / `fallback_caddy` 的設定現在**編譯不過**，報的是一條專門的診斷
+（`FUL-DSL-0034`），不是「未知的全域選項」。留下的三條結論見
 [`docs/architecture/fallback.md`](docs/architecture/fallback.md)。
 
 ## 7. 里程碑（按「能自用」切分）
 
-> ★ 「某一整块做完了」与「这个里程碑做完了」是两件事。**退出条件是唯一能把两者分开的东西**，
-> 所以每个里程碑都写清楚它，并且**不因为功能清单看起来做完了就提前打勾**。
+> ★ 「某一整塊做完了」與「這個里程碑做完了」是兩件事。**退出條件是唯一能把兩者分開的東西**，
+> 所以每個里程碑都寫清楚它，並且**不因為功能清單看起來做完了就提前打勾**。
 
-### M0 · 接缝验证（范围按 G27 收窄）✅ **通过**
+### M0 · 接縫驗證（範圍按 G27 收窄）✅ **通過**
 
-**范围** —— 一个 Pingora `Server` 同时挂三类服务：内建 HTTP 代理（h1/h2）、自建裸 TCP 服务、
-自建裸 UDP 服务；两个自建服务的监听 fd 接入 Pingora 的 socket 移交。
+**範圍** —— 一個 Pingora `Server` 同時掛三類服務：內建 HTTP 代理（h1/h2）、自建裸 TCP 服務、
+自建裸 UDP 服務；兩個自建服務的監聽 fd 接入 Pingora 的 socket 移交。
 
-**退出条件** —— 一次 `SIGQUIT` + `-u` 优雅升级过程中，三类连接**零中断**。
+**退出條件** —— 一次 `SIGQUIT` + `-u` 優雅升級過程中，三類連接**零中斷**。
 
-> ★ QUIC **有意**不在 M0 内（G27/G28）。风险本体是「非 Pingora 托管的监听器能否参与 fd 移交」，
-> 与监听器上面跑什么协议无关。把 QUIC 排除在外，失败时才能立刻分清是接缝的问题还是 QUIC 库的问题。
+> ★ QUIC **有意**不在 M0 內（G27/G28）。風險本體是「非 Pingora 託管的監聽器能否參與 fd 移交」，
+> 與監聽器上面跑什麼協定無關。把 QUIC 排除在外，失敗時才能立刻分清是接縫的問題還是 QUIC 庫的問題。
 
-✅ 已达成：第二代进程继承了两个自建监听器的 fd（fd 编号在两代间不同，正说明是经 `SCM_RIGHTS` 传过来的）；
-七次独立运行全绿。⇒ §5.1 第 3 条的风险就此解除。
+✅ 已達成：第二代處理程序繼承了兩個自建監聽器的 fd（fd 編號在兩代間不同，正說明是經 `SCM_RIGHTS` 傳過來的）；
+七次獨立執行全綠。⇒ §5.1 第 3 條的風險就此解除。
 
-### M1 · 接管一台机 ✅ **通过**
+### M1 · 接管一臺機 ✅ **通過**
 
-**范围** —— DSL → 结构化配置 → 运行时全链路 · 反向代理 + 基础负载均衡 · 自动 HTTPS ·
-DNS 定期重解析 · 主动健康检查 · 全量原子 load · 未实现能力回落 · 产品二进制由 systemd 托管。
+**範圍** —— DSL → 結構化設定 → 執行環境全連線路徑 · 反向代理 + 基礎負載均衡 · 自動 HTTPS ·
+DNS 定期重解析 · 主動健康檢查 · 全量原子 load · 未實作能力回落 · 產品二進位由 systemd 託管。
 
-**退出条件**（G73）—— 一台真实服务器由枢衡承载，上线跑压力冒烟开测。
+**退出條件**（G73）—— 一臺真實伺服器由樞衡承載，上線跑壓力冒煙開測。
 
-✅ 全部满足。★ 附带推翻了 G31 的一半：撑住 systemd unit 的是 `ExitType=cgroup`，
-而「抢过 MainPID」会悄悄弄丢优雅停机（口径已由 **G37** 修订）。证据见
+✅ 全部滿足。★ 附帶推翻了 G31 的一半：撐住 systemd unit 的是 `ExitType=cgroup`，
+而「搶過 MainPID」會悄悄弄丟優雅停機（口徑已由 **G37** 修訂）。證據見
 [`docs/verification/m1-systemd.md`](docs/verification/m1-systemd.md)。
 
-~~⚠ **`passive_fail`（被动熔断）不在 M1 清单上，至今没做。**~~ ✅ **M2 接线，见 §10 的 G136。**
-⛔ **有意不删原话**：它当时是真心话，而**它给出的那个理由正是 G136 的立身依据** ——
-主动健康检查**不是**它：一个「`/health` 回 200 而真实业务在 500」的上游，主动检查看不出来。
+~~⚠ **`passive_fail`（被動熔斷）不在 M1 清單上，至今沒做。**~~ ✅ **M2 串接，見 §10 的 G136。**
+⛔ **有意不刪原話**：它當時是真心話，而**它給出的那個理由正是 G136 的立身依據** ——
+主動健康檢查**不是**它：一個「`/health` 回 200 而真實業務在 500」的上游，主動檢查看不出來。
 
-### M2 · 接管两台（★ 由 owner 从「全部五台」改为两台，**G81**）⏳ **进行中**
+### M2 · 接管兩臺（★ 由 owner 從「全部五臺」改為兩臺，**G81**）⏳ **進行中**
 
-**范围** —— L4 面、静态文件、磁盘缓存、HTTP/3 依次自研上线并逐块拆除回落 ·
-Runtime 增量通道 + 临时覆盖层 · 观测三件套（Prometheus 指标、结构化访问日志、Runtime 实时 stats）。
+**範圍** —— L4 面、靜態檔案、磁碟快取、HTTP/3 依次自研上線並逐塊拆除回落 ·
+Runtime 增量通道 + 臨時覆蓋層 · 觀測三件套（Prometheus 指標、結構化訪問紀錄、Runtime 即時 stats）。
 
-**退出条件**（G81）—— **两台**服务器全部由枢衡承载；回落层已无常态使用。
+**退出條件**（G81）—— **兩臺**伺服器全部由樞衡承載；回落層已無常態使用。
 
 ✅ **自研批次全部做完**
 
-| 批 | 内容 |
+| 批 | 內容 |
 |---|---|
-| A / B / C | L4 的 TCP 透传 · UDP 透传（按客户端地址维护会话）· SNI/ALPN 分流 |
-| D | PROXY protocol 的 **L4 那半边**（`tcp` 块里「收」与「发」两条独立指令） |
-| F | 静态文件：`file_server` 从「回落 nginx」变成自研 |
-| G / H | HTTP 缓存：语义层 + 内存后端 + 防惊群 + `POST /purge`（G）· 磁盘后端（H）。⇒ **回落层在批 G 里整块归零**，比 §6.3 原本写的「1.0 时」提前 |
-| I | 响应压缩（G99–G102） |
-| J | HTTP/3 入口本体：quiche + Retry 地址验证 + `quiche::h3` 事件循环 + QUIC 监听器 `Service` 与 socket 移交。★ **SCID 从第一天就带 `gen_id` 前缀** —— CID 的形状是对外可见的，等批 K 再改会让批 J 发出去的连接在换代时全部认不出来 |
-| K | 换代时的 **QUIC 跨进程转交**（G109）。⇒ **换代零中断从此对 h3 也成立** |
-| L | 观测 ①：**结构化访问日志**（JSON，G113/G114）+ PROXY protocol 的 **HTTP 半边（只做「收」）** + 白名单头 + TLS 信息 |
-| M | ✅ 观测 ②：**Prometheus 指标**。站点块里的终结指令 `metrics`（G116）· 文本格式自研零依赖（G117）· `no_site_match` 计数器结掉 D26（G118）· 站点标签取「实际匹配到的那条地址字面量」（G121）。取数点只有 `Record::finish` 一处，门在 [`tests/metrics/run.sh`](tests/metrics/run.sh) |
-| N | ✅ 观测 ③ + G8/G18 的另一半：**增量通道 → 临时覆盖层 → 只读 stats**，按这个顺序（G119）。`POST /load` 的 `overrides` 是必填参数（G120）· `reverse_proxy` 的选填 `id` 与同键共享格子（G125）· 指标族 `fulcrum_overrides_active`（G126）。门在 [`tests/stats/run.sh`](tests/stats/run.sh) 与 `tests/serve/` `tests/metrics/` 三处 |
-| M′ | ✅ **批 M 的收尾**（G122 的 TLS 那半 · G123 拆 `purge` · G124 的 `none` 判据 · 基数表那道门扩到读全行）。★ 三件都落在**已有的取数点**上，不动 fork、不新增监听器钩子 —— 它们结掉的是批 M 自己留下的口径问题。⚠ **新族与 `observability.md` 那张基数表必须同一笔改**：那道把表钉在 `FAMILIES` 上的门会把「表里有、代码里没有」判红，而它现在**逐字读到类型/来处/标签**（不只是族名）。★ G124 那一格顺带量出一条与直觉相反的机制，写在 [`observability.md`](docs/architecture/observability.md) 的 `status_class` 一节。 |
-| O | ✅ **连接指标**（G122 的连接那半，D32 就此两半都落地）：`fulcrum_connections_total` / `_active{listen,entrypoint}`。**fork 第 15 处**（`ConnectionCounter` 接缝 + `ConnGuard`）覆盖 h1/h2 **与 admin**，L4 TCP / L4 UDP / QUIC 各自那条循环再接三处 —— 四处记进**同一个**族，抓取时问活体。★ 减一只有 `ConnGuard` 的 `Drop` 一个调用点；⚠ `l4_udp` 那一格数的是**会话**，从 `sessions.len()` 派生而**不是** `+1/-1`。★ 有意排在批 N 之后：批 N 挡在 M2 打勾的路上，而这一格不挡。 |
+| A / B / C | L4 的 TCP 透傳 · UDP 透傳（按用戶端位址維護工作階段）· SNI/ALPN 分流 |
+| D | PROXY protocol 的 **L4 那半邊**（`tcp` 塊裡「收」與「發」兩條獨立指令） |
+| F | 靜態檔案：`file_server` 從「回落 nginx」變成自研 |
+| G / H | HTTP 快取：語義層 + 記憶體後端 + 防驚群 + `POST /purge`（G）· 磁碟後端（H）。⇒ **回落層在批 G 裡整塊歸零**，比 §6.3 原本寫的「1.0 時」提前 |
+| I | 回應壓縮（G99–G102） |
+| J | HTTP/3 入口本體：quiche + Retry 位址驗證 + `quiche::h3` 事件循環 + QUIC 監聽器 `Service` 與 socket 移交。★ **SCID 從第一天就帶 `gen_id` 前綴** —— CID 的形狀是對外可見的，等批 K 再改會讓批 J 發出去的連接在換代時全部認不出來 |
+| K | 換代時的 **QUIC 跨處理程序轉交**（G109）。⇒ **換代零中斷從此對 h3 也成立** |
+| L | 觀測 ①：**結構化訪問紀錄**（JSON，G113/G114）+ PROXY protocol 的 **HTTP 半邊（只做「收」）** + 白名單頭 + TLS 資訊 |
+| M | ✅ 觀測 ②：**Prometheus 指標**。站台塊裡的終結指令 `metrics`（G116）· 文字格式自研零依賴（G117）· `no_site_match` 計數器結掉 D26（G118）· 站台標籤取「實際匹配到的那條位址字面值」（G121）。取數點只有 `Record::finish` 一處，門在 [`tests/metrics/run.sh`](tests/metrics/run.sh) |
+| N | ✅ 觀測 ③ + G8/G18 的另一半：**增量通道 → 臨時覆蓋層 → 唯讀 stats**，按這個順序（G119）。`POST /load` 的 `overrides` 是必填參數（G120）· `reverse_proxy` 的選填 `id` 與同鍵共享格子（G125）· 指標族 `fulcrum_overrides_active`（G126）。門在 [`tests/stats/run.sh`](tests/stats/run.sh) 與 `tests/serve/` `tests/metrics/` 三處 |
+| M′ | ✅ **批 M 的收尾**（G122 的 TLS 那半 · G123 拆 `purge` · G124 的 `none` 判據 · 基數表那道門擴到讀全行）。★ 三件都落在**已有的取數點**上，不動 fork、不新增監聽器鉤子 —— 它們結掉的是批 M 自己留下的口徑問題。⚠ **新族與 `observability.md` 那張基數表必須同一筆改**：那道把表釘在 `FAMILIES` 上的門會把「表裡有、程式碼裡沒有」判紅，而它現在**逐字讀到類型/來處/標籤**（不只是族名）。★ G124 那一格順帶量出一條與直覺相反的機制，寫在 [`observability.md`](docs/architecture/observability.md) 的 `status_class` 一節。 |
+| O | ✅ **連接指標**（G122 的連接那半，D32 就此兩半都完成實作）：`fulcrum_connections_total` / `_active{listen,entrypoint}`。**fork 第 15 處**（`ConnectionCounter` 接縫 + `ConnGuard`）覆蓋 h1/h2 **與 admin**，L4 TCP / L4 UDP / QUIC 各自那條循環再接三處 —— 四處記進**同一個**族，抓取時問活體。★ 減一隻有 `ConnGuard` 的 `Drop` 一個呼叫點；⚠ `l4_udp` 那一格數的是**工作階段**，從 `sessions.len()` 派生而**不是** `+1/-1`。★ 有意排在批 N 之後：批 N 擋在 M2 打勾的路上，而這一格不擋。 |
 
-> ⚠ **批的字母不代表顺序**：批 K 的号早于批 L 写定，而 owner 后来拍 **G112** 把观测插到了
-> 批 K 之前。**不改号** —— 改号会让已有引用一起变成错的。
+> ⚠ **批的字母不代表順序**：批 K 的號早於批 L 寫定，而 owner 後來拍 **G112** 把觀測插到了
+> 批 K 之前。**不改號** —— 改號會讓已有引用一起變成錯的。
 
-✅ **批 M（Prometheus 指标）已落地** —— `metrics` 终结指令、text exposition 自研零依赖，
-门在 [`tests/metrics/run.sh`](tests/metrics/run.sh)。
-✅ **批 N（Runtime 增量通道 → 临时覆盖层 → 只读 stats）已落地**（方案见
-[观测](docs/architecture/observability.md) 与 [管理面](docs/architecture/control-plane.md)，
-决定见 §10 的 G119/G120/G125/G126），门在 [`tests/stats/run.sh`](tests/stats/run.sh)
-与 [`tests/serve/run.sh`](tests/serve/run.sh)、[`tests/metrics/run.sh`](tests/metrics/run.sh)。
-⚠ **一格里装三件事，最容易被读成一件**；观测这一格今天是 **3/3**。
-⛔ **但 M2 仍然不能打勾** —— 剩的那半句是**运维动作**（两台机器由枢衡承载），不是工程任务。
+✅ **批 M（Prometheus 指標）已完成實作** —— `metrics` 終結指令、text exposition 自研零依賴，
+門在 [`tests/metrics/run.sh`](tests/metrics/run.sh)。
+✅ **批 N（Runtime 增量通道 → 臨時覆蓋層 → 唯讀 stats）已完成實作**（方案見
+[觀測](docs/architecture/observability.md) 與 [管理面](docs/architecture/control-plane.md)，
+決定見 §10 的 G119/G120/G125/G126），門在 [`tests/stats/run.sh`](tests/stats/run.sh)
+與 [`tests/serve/run.sh`](tests/serve/run.sh)、[`tests/metrics/run.sh`](tests/metrics/run.sh)。
+⚠ **一格里裝三件事，最容易被讀成一件**；觀測這一格今天是 **3/3**。
+⛔ **但 M2 仍然不能打勾** —— 剩的那半句是**維運動作**（兩臺機器由樞衡承載），不是工程任務。
 
-⏳ **退出条件本身要拆成两半数**，因为它们的性质完全不同：
+⏳ **退出條件本身要拆成兩半數**，因為它們的性質完全不同：
 
-| 半句 | 状态 |
+| 半句 | 狀態 |
 |---|---|
-| 「回落层已无常态使用」 | ✅ **G98 把整层删掉的那天就恒真了** —— 层不存在，就不可能有常态使用。⚠ 它此前一直被连着前半句读成「还欠着」|
-| 「**两台**服务器全部由枢衡承载」 | ⏳ **这是运维动作，不是工程任务**。它没挡住批 M，也不该挡住批 N，但它是 M2 打勾的**唯一**硬条件 |
+| 「回落層已無常態使用」 | ✅ **G98 把整層刪掉的那天就恆真了** —— 層不存在，就不可能有常態使用。⚠ 它此前一直被連著前半句讀成「還欠著」|
+| 「**兩臺**伺服器全部由樞衡承載」 | ⏳ **這是維運動作，不是工程任務**。它沒擋住批 M，也不該擋住批 N，但它是 M2 打勾的**唯一**硬條件 |
 
-⏳ 另外欠着：PROXY protocol 的「发」那半边（至今没有任何 DSL 面）。
-★ **Runtime 增量通道 + 临时覆盖层**不再单列 —— 它们就是批 N 的前两步。
+⏳ 另外欠著：PROXY protocol 的「發」那半邊（至今沒有任何 DSL 面）。
+★ **Runtime 增量通道 + 臨時覆蓋層**不再單列 —— 它們就是批 N 的前兩步。
 
-### M3 · 对拍达标 ⏳ 进行中（第一刀已落地；**读数与结论只看 §1 那一行**）
+### M3 · 對拍達標 ⏳ 進行中（第一刀已完成實作；**讀數與結論只看 §1 那一行**）
 
-**范围** —— 与 Caddy、HAProxy、Nginx 三家同机同用例对拍。
+**範圍** —— 與 Caddy、HAProxy、Nginx 三家同機同用例對拍。
 
-**退出条件** —— 每类用例不劣于该类最强者 10%；基准脚本与原始数据可被第三方复现。
+**退出條件** —— 每類用例不劣於該類最強者 10%；基準指令碼與原始資料可被第三方重現。
 
-✅ **第一刀（G132 / G139）** —— 交付物是**脚本、环境快照与判定口径**，落在
-[`bench/`](bench/README.md)，常设门禁里一格（`BENCH_ONLY`，跑在第三张镜像里）。
-四家 + oha 同处一室，全部按 digest / sha256 钉死；「静态吞吐」一类跑通全流程。
+✅ **第一刀（G132 / G139）** —— 交付物是**指令碼、環境快照與判定口徑**，落在
+[`bench/`](bench/README.md)，常設門禁裡一格（`BENCH_ONLY`，跑在第三張鏡像裡）。
+四家 + oha 同處一室，全部按 digest / sha256 釘死；「靜態吞吐」一類跑通全流程。
 
-★ ★ ★ **不出数字是结构性的，⛔ 不是纪律性的**：`bench/env-snapshot.sh` 先判宿主
-合格性，不合格时 `bench/verdict.sh` 不取最强者、不算门槛、不打 PASS / FAIL。
-⇒ **`tests/bench/run.sh` 全绿 ≠ M3 达标**，它判的是那条流水线还活着、判据还判得动。
+★ ★ ★ **不出數字是結構性的，⛔ 不是紀律性的**：`bench/env-snapshot.sh` 先判宿主
+合格性，不合格時 `bench/verdict.sh` 不取最強者、不算門檻、不打 PASS / FAIL。
+⇒ **`tests/bench/run.sh` 全綠 ≠ M3 達標**，它判的是那條流水線還活著、判據還判得動。
 
-★ ★ **2026-09-06：G132「本轮不出任何性能数字」的前提到期了。** 那句话的前提是
-「合格的对拍宿主还不存在」，而那天有了一台（六条判据一条不合格理由都打不出来）。
-⛔ **别把它读成 G132 被违反** —— G132 要的从来不是那句话本身，而是让它由判据的形状
-守着，而那套形状原样起作用：数字只在真的过了那六条判据的机器上才出得来，开发机上
-今天照样一个都出不来。**第一组读数（静态吞吐，结论 `FAIL`）在
+★ ★ **2026-09-06：G132「本輪不出任何效能數字」的前提到期了。** 那句話的前提是
+「合格的對拍宿主還不存在」，而那天有了一臺（六條判據一條不合格理由都打不出來）。
+⛔ **別把它讀成 G132 被違反** —— G132 要的從來不是那句話本身，而是讓它由判據的形狀
+守著，而那套形狀原樣起作用：數字只在真的過了那六條判據的機器上才出得來，開發機上
+今天照樣一個都出不來。**第一組讀數（靜態吞吐，結論 `FAIL`）在
 [`bench/results/2026-09-06-static-throughput/`](bench/results/2026-09-06-static-throughput/README.md)**。
-★ **2026-09-10 压测窗口二**按 `G147` ⑤ 重跑了一组口径完整的静态吞吐、把那组整组替掉
-（旧组降为历史），并出了反代吞吐的第一组读数 —— 两类都是 `FAIL`，在
+★ **2026-09-10 壓測視窗二**按 `G147` ⑤ 重跑了一組口徑完整的靜態吞吐、把那組整組替掉
+（舊組降為歷史），並出了反代吞吐的第一組讀數 —— 兩類都是 `FAIL`，在
 [`bench/results/2026-09-10-window-2/`](bench/results/2026-09-10-window-2/README.md)。
-★ **2026-10-05 压测窗口三**跑了三类（静态吞吐 · 反代吞吐第二组 · 高并发短连接第一组），三类都是 `FAIL`，
-另在同一窗口里跑了只翻 `work_stealing` 的诊断二进制，在
+★ **2026-10-05 壓測視窗三**跑了三類（靜態吞吐 · 反代吞吐第二組 · 高並行短連接第一組），三類都是 `FAIL`，
+另在同一視窗裡跑了只翻 `work_stealing` 的診斷二進位，在
 [`bench/results/2026-10-05-window-3/`](bench/results/2026-10-05-window-3/README.md)。
-★ **2026-10-05 下午压测窗口四**（owner 当场授权整趟）被测换成 `39cfb7d`、同样三类，三类仍是 `FAIL`，在
+★ **2026-10-05 下午壓測視窗四**（owner 當場授權整趟）被測換成 `39cfb7d`、同樣三類，三類仍是 `FAIL`，在
 [`bench/results/2026-10-05-window-4/`](bench/results/2026-10-05-window-4/README.md)。
-各组读数与「它说不了什么」逐条写在各自目录里。
+各組讀數與「它說不了什麼」逐條寫在各自目錄裡。
 
-⏳ **出数之前欠着的两件里，第一件结掉了**：~~合格的对拍宿主~~ ✅（2026-09-06）·
-⏳ 其余五类用例（反代吞吐 2026-09-10 出了第一组读数，2026-10-05 第二组上游复用对齐了；**高并发短连接** 2026-09-23 脚本与判据就绪，2026-10-05 窗口三出了第一组读数；**TLS 握手** 2026-09-24 owner 拍了口径、脚本还没写，口径在 [`bench/README.md`](bench/README.md)「§8 的类」）。⚠ G132 记的「开发机与生产机都
-不合格」仍然成立 —— 那台合格宿主是第三台。
-✅ 线程数旋钮已落地（**G140**，结案 D33）⇒ 对拍不再被迫把四家全钉成 1 个 worker。
-⚠ ⏳ 但那三个角色初值**仍然不是结论** —— 定它们的判据正是这条线要产出的对拍数据。
-⚠ `D20` 已由 `G150` 结案；它要的那格读数 2026-09-10 量出来了（磁盘命中 p99 − 内存命中
-p99 = **9.22 ms**）。✅ 阈值 2026-09-24 由 **`G151`** 定为「不定毫秒阈值」：那格是在闭环
-饱和负载下量的，差值主要是吞吐差换算出的排队时间，⛔ 不是尾延迟；`D20` 何时重开改由
-「缓存命中」那一类的判定决定。那格照旧量、照旧落原始数据，⛔ 不据它判任何事。
-⚠ **G36**（对拍期间冻结构建镜像升级）**已生效** —— 按本句原来的判据（出了数才算在对拍），
-2026-09-06 合格宿主出第一组读数那天起就在对拍期间 ⇒ 冻结到 M3 结束。
-`docker/Dockerfile.build` 自 2026-08-27 起没改过 ⇒ 三次窗口的枢衡由同一个编译器构建，此前没有违反过。
-★ 2026-09-24 起（**`G152`**）冻结范围扩到对拍镜像 `docker/Dockerfile.bench`：M3 期间四家、oha
-不增不减不升 ⇒ L4 转发与缓存命中两类只能缺 Caddy，那两类定义时要同时拍「缺一家竞品怎么判」。
-⏳ **2026-09-24 HTTP 层上界诊断（开发机，⛔ 不是性能声明）之后的顺序**，owner 2026-09-26 拍：
-发现 1 写缓冲（**`G155`**）→ 发现 2 枢衡自己那一层三项（字面量正文、请求头整份克隆、指标的全局锁；
-最后一项碰 `G116` / `G118` 的契约，先写 spec）✅ 三项都已落地（指标那项 = **`G156`**）→ 发现 1 与发现 2 前两项落地、完整门禁绿之后开一次窗口，
-重量 `respond` / `file_server`，同一窗口里用一个只翻 `work_stealing` 的诊断二进制（不入库）量发现 4
-（到那时为止维持 **`G35`**）→ 再定静态文件缓存（方案 ③）。
-✅ 那次窗口 2026-10-05 开过（窗口三，读数见上）；诊断二进制那一趟在它的 `ws-off/` 下。
-✅ owner 2026-10-05 看了那份读数拍：**维持 `G35`**（弹窗，选的是推荐项）。理由是读数本身：关掉窃取后静态吞吐 /
-`file_server` / 缓存命中枢衡自己 +10–13%，而高并发短连接 −13%、反代吞吐不变而 p99 变差，且关了之后静态吞吐
-仍只到门槛的 0.434。⏳ 收益与退步各自的机制**没查**，只登记。
-✅ owner 2026-10-05 接着拍（弹窗，选的是推荐项）：**静态文件缓存（方案 ③）挂起，下一步先查 HTTP 层** ——
-即枢衡 `respond` 自己为什么只到 nginx 静态的那一截，以及合格宿主上这一截为什么比开发机诊断台更大。
-三条理由都是可核的事实，⛔ 不是性能读数：① 那一组 `respond` 上界只到静态吞吐门槛的 0.730 ⇒ 方案 ③ 单独过不了门槛；
-② 对拍里的 nginx **没开 `open_file_cache`**（[`bench/conf/nginx.conf`](bench/conf/nginx.conf)）⇒ 它每请求同样付
-open / fstat / sendfile / close ⇒ 方案 ③ 省掉的是 nginx 在对拍里照付的那几次，⛔ 不是枢衡落后的那一截；
-③ 方案 ③ 的设计稿倾向缺省关闭，而对拍配置不加调优（[`bench/conf/fulcrum.Fulcrumfile`](bench/conf/fulcrum.Fulcrumfile)）
-⇒ 照现口径，方案 ③ 做完 M3 读数一格不动；要它动就得同时改对拍口径（枢衡开不开、nginx 配不配 `open_file_cache`），那是另一次拍板。
-HTTP 层同时压着本组三类 `FAIL`，方案 ③ 只惠及静态吞吐一类。设计稿的四处待拍板原样留着、⛔ 不作废。
-⏳ **HTTP 层这一步的进度**（owner 2026-10-05 拍的三项，都在开发机上做、⛔ 都不是性能声明）：
-✅ 文件那条路枢衡自己的用户态先修两项 —— 正文不另拷一份（`c8a89d0`）、构响应头不再每个头分配（`5824b3f`），
-发出去的字节一个不变（改前改后 19 种请求逐字节对照；头名大小写由 `tests/files/run.sh` 新断言钉死）·
-✅ `env.json` 起记 CPU 拓扑（`host.cpu_topology`，`3e2cd2b`；诊断字段、不判合格性）·
-✅ 枢衡每请求公共那一层的字符串分配（`resolve_site` 不再为大小写与查表分配 `3f63836`；`serve_one` 借请求头、访问日志四格只在配了 `log` 时填 `aad9c19`），
-响应、访问日志、指标三样改前改后逐字节相同 ⇒ 这一层在开发机上已贴近裸 pingora，剩下的差距在 pingora / tokio 底座 ·
-✅ 窗口四带上了 HTTP 层分账诊断那一趟（不是 M3 读数、读数不入库；合格宿主不给硬件 PMU ⇒ 按 utime / stime 分账），
-回答「同一份二进制，合格宿主上 `respond` ÷ nginx 静态为什么比开发机低一截」·
-✅ owner 2026-10-06 看了那份分账拍（弹窗，选的都是推荐项）：分账只以一句定性结论入库、读数不入库 ——
-同一份二进制在合格宿主上比开发机低的那一截**掉在底座**（裸 pingora 对 nginx 静态），枢衡自己那一层相对裸 pingora 两台机器上差不多
-（诊断、⛔ 不是 M3 读数、⛔ 不是性能声明）。
-✅ 底座量了：开发机裸 pingora 诊断台上对 fork 里三项（保留大小写的表 · 计时器 · 解析请求时的分配）拆成六处各做单变量试验，
-计数口径（每请求指令数与分配次数），⛔ 不是性能声明、读数不入库。owner 2026-10-06 按推荐先拍其中语义不变的三处 ⇒ **`G157`**
-（fork 改动 16）。另三处（请求头 / 响应头保留大小写的表、keep-alive 等下一条请求时的计时器）各改一处行为、各要一处设计：
-✅ keep-alive 那处 owner 2026-10-08 先拍（设计给了落在枢衡 / 落在 fork 两种，选了推荐的前者）⇒ **`G160`**：计时器每条连接一个、跨请求带着走，
-fork 一行不动；空闲窗口的口径收紧为「从开始等下一条请求到它的请求头读完，合计 60 s」。
-✅ 改前改后的计数诊断 2026-10-14 在开发机诊断台上做了（产品二进制 `e4a5fe3` 对 `e911260`，`respond` 与 `file_server` 两个站点、
-1 条连接 / 200 条连接两种形状；计数口径，⛔ 不是性能声明、读数不入库）：每请求 malloc −2（四格都是）· 用户指令 −2% 到 −5% ·
-读钟 200 条连接时 −1、1 条连接时不变 —— 少掉的是 pingora 那套登记的两次，多出来的是「开始等」那一次与 tokio 带着计时器休眠前那一次。
-⚠ 代价落在轻载：1 条连接时工人线程每次空等都从不限时的 `epoll_wait` 变成限时的（计时器挂在 tokio 的时间驱动上），内核指令 +2% 到 +4%；
-200 条连接时几乎不休眠、量不出。`G161` 在这几项上量不出差别。
-两张保留大小写的表 owner 2026-10-14 一起拍了设计（弹窗，都是推荐项）：✅ 响应头那张（A2）⇒ **`G162`**（fork 改动 17）：枢衡自己构的响应不建表，
-压缩层的 `etag` / `vary` 头名随之变成 `ETag` / `Vary`（owner 当场认的）；每请求 malloc −2、用户指令 −5% 到 −6%（计数口径，⛔ 不是性能声明）。
-✅ 请求头那张（A1）拍的是「按端口开关」⇒ **`G163`**（fork 改动 18）：端口上没有任何反代站点就不建表，反代端口照旧；
-没有反代的端口上每请求 malloc 再 −2、用户指令 −2% 到 −5%（同一口径）。⇒ 底座单变量试验那六处（A1 · A2 · B1 · B2 · C1 · C2）都已落地或有了替代（B1 = `G160`）。
-✅ 文件那条路剩下的分配（2026-10-14；线上字节一个不变 ⇒ 没有 G 号）：路径解码归一在没有 `%`、没有 `..` 段时直接借 URL 里的段 ·
-拼到站点根下容量事先算够 · 探测按值收路径 · 扩展名在栈上转小写 · 响应头直接放进 `ResponseHeader` · 整段正文原样交出（⛔ 不 `slice`）。
-`file_server` 每请求 malloc 30 → 23、realloc 2 → 0、用户指令 −4% 到 −7%（开发机诊断台计数口径，⛔ 不是性能声明）；改前改后 28 种请求除 `Date` 外逐字节相同。
-比 `respond` 仍多的三次（交出会话前拷一份 URL 路径 · `ETag` 与 `Last-Modified` 各一个头值）有意留着：前者 301 的 `Location` 要原样用它，后两者每个 `HeaderValue` 都自带一块内存。
-✅ `respond` 剩的分配（2026-10-15；线上字节一个不变 ⇒ 没有 G 号）：带正文时补的 `Content-Type` 改用静态头值 ·
-`Content-Length` 的值在栈上转十进制、恰好分配一次（`file_server` 原来经 `HeaderValue::from(u64)` 要两次）·
-h1 入口直接调 `FulcrumApp` 的固有方法、⛔ 不再经 `HttpServerApp` 转一手（`#[async_trait]` 每过一层装一次箱）。
-每请求 malloc `respond` 20 → 18、`file_server` 23 → 21（1 / 200 条连接都是）；用户指令 1 条连接时 −2.2% / −1.3%，200 条连接时在三轮区间内分不出
-（开发机诊断台计数口径，⛔ 不是性能声明）；改前改后 28 种请求加四条续连接的除 `Date` 外逐字节相同。
-`respond` 剩下的 18 次里枢衡自己的五次有意留着：头表两次 · `Content-Length` 一个值 · 交给 pingora 的 `Box<ResponseHeader>` ·
-字面量正文的 `from_owner`（理由见 `respond_body`）；另外十三次都在 pingora 里（写响应头里三次，其余十次的调用栈上没有枢衡的帧），要动只能改 fork。
-⛔ 每请求 `SharedRuntime::current()` 的读锁 ⇒ **`G164`**（2026-10-15）做了又撤回：四个热路径改走每线程快照缓存，合格宿主 A/B 哪一格都看不出收益，
-而历次钉法的反代确认低约 7%（两种顺序都是，机制未查清）⇒ 按 owner 事先说定的规则撤回，产品代码回到 `35a9c5f`（诊断，⛔ 不是性能声明）。
-✅ 写响应头里那三次的两次 ⇒ **`G165`**（2026-10-16，fork 改动 19；线上字节一个不变）：`Connection` 的值改用静态头值 · 序列化缓冲不再 `freeze`。
-每请求 malloc `respond` 18 → 16、`file_server` 21 → 19（1 / 200 条连接都是）；用户指令 1 条连接时 −1.9% / −2.5%，200 条连接时在三轮区间内分不出（开发机诊断台计数口径，⛔ 不是性能声明）。
-第三次是那块序列化缓冲本身，留着（见 `G165` ①）。
-⏳ 登记着的：每请求 `SharedRuntime::current()` 的读锁（再做之前先把那 8 µs 归因清楚，见 `G164` ⑤）。
+⏳ **出數之前欠著的兩件裡，第一件結掉了**：~~合格的對拍宿主~~ ✅（2026-09-06）·
+⏳ 其餘五類用例（反代吞吐 2026-09-10 出了第一組讀數，2026-10-05 第二組上游重複使用對齊了；**高並行短連接** 2026-09-23 指令碼與判據就緒，2026-10-05 視窗三出了第一組讀數；**TLS 握手** 2026-09-24 owner 拍了口徑、指令碼還沒寫，口徑在 [`bench/README.md`](bench/README.md)「§8 的類」）。⚠ G132 記的「開發機與生產機都
+不合格」仍然成立 —— 那臺合格宿主是第三臺。
+✅ 執行緒數旋鈕已完成實作（**G140**，結案 D33）⇒ 對拍不再被迫把四家全釘成 1 個 worker。
+⚠ ⏳ 但那三個角色初值**仍然不是結論** —— 定它們的判據正是這條線要產出的對拍資料。
+⚠ `D20` 已由 `G150` 結案；它要的那格讀數 2026-09-10 量出來了（磁碟命中 p99 − 記憶體命中
+p99 = **9.22 ms**）。✅ 閾值 2026-09-24 由 **`G151`** 定為「不定毫秒閾值」：那格是在閉環
+飽和負載下量的，差值主要是吞吐差換算出的排隊時間，⛔ 不是尾延遲；`D20` 何時重開改由
+「快取命中」那一類的判定決定。那格照舊量、照舊落原始資料，⛔ 不據它判任何事。
+⚠ **G36**（對拍期間凍結建置鏡像升級）**已生效** —— 按本句原來的判據（出了數才算在對拍），
+2026-09-06 合格宿主出第一組讀數那天起就在對拍期間 ⇒ 凍結到 M3 結束。
+`docker/Dockerfile.build` 自 2026-08-27 起沒改過 ⇒ 三次視窗的樞衡由同一個編譯器建置，此前沒有違反過。
+★ 2026-09-24 起（**`G152`**）凍結範圍擴到對拍鏡像 `docker/Dockerfile.bench`：M3 期間四家、oha
+不增不減不升 ⇒ L4 轉發與快取命中兩類只能缺 Caddy，那兩類定義時要同時拍「缺一家競品怎麼判」。
+⏳ **2026-09-24 HTTP 層上界診斷（開發機，⛔ 不是效能宣告）之後的順序**，owner 2026-09-26 拍：
+發現 1 寫緩衝（**`G155`**）→ 發現 2 樞衡自己那一層三項（字面值正文、請求頭整份克隆、指標的全域鎖；
+最後一項碰 `G116` / `G118` 的契約，先寫 spec）✅ 三項都已完成實作（指標那項 = **`G156`**）→ 發現 1 與發現 2 前兩項完成實作、完整門禁綠之後開一次視窗，
+重量 `respond` / `file_server`，同一視窗裡用一個只翻 `work_stealing` 的診斷二進位（不入庫）量發現 4
+（到那時為止維持 **`G35`**）→ 再定靜態檔案快取（方案 ③）。
+✅ 那次視窗 2026-10-05 開過（視窗三，讀數見上）；診斷二進位那一趟在它的 `ws-off/` 下。
+✅ owner 2026-10-05 看了那份讀數拍：**維持 `G35`**（彈出視窗，選的是推薦項）。理由是讀數本身：關掉竊取後靜態吞吐 /
+`file_server` / 快取命中樞衡自己 +10–13%，而高並行短連接 −13%、反代吞吐不變而 p99 變差，且關了之後靜態吞吐
+仍只到門檻的 0.434。⏳ 收益與退步各自的機制**沒查**，只登記。
+✅ owner 2026-10-05 接著拍（彈出視窗，選的是推薦項）：**靜態檔案快取（方案 ③）掛起，下一步先查 HTTP 層** ——
+即樞衡 `respond` 自己為什麼只到 nginx 靜態的那一截，以及合格宿主上這一截為什麼比開發機診斷臺更大。
+三條理由都是可核的事實，⛔ 不是效能讀數：① 那一組 `respond` 上界只到靜態吞吐門檻的 0.730 ⇒ 方案 ③ 單獨過不了門檻；
+② 對拍裡的 nginx **沒開 `open_file_cache`**（[`bench/conf/nginx.conf`](bench/conf/nginx.conf)）⇒ 它每請求同樣付
+open / fstat / sendfile / close ⇒ 方案 ③ 省掉的是 nginx 在對拍裡照付的那幾次，⛔ 不是樞衡落後的那一截；
+③ 方案 ③ 的設計稿傾向預設關閉，而對拍設定不加調優（[`bench/conf/fulcrum.Fulcrumfile`](bench/conf/fulcrum.Fulcrumfile)）
+⇒ 照現口徑，方案 ③ 做完 M3 讀數一格不動；要它動就得同時改對拍口徑（樞衡開不開、nginx 配不配 `open_file_cache`），那是另一次拍板。
+HTTP 層同時壓著本組三類 `FAIL`，方案 ③ 只惠及靜態吞吐一類。設計稿的四處待拍板原樣留著、⛔ 不作廢。
+⏳ **HTTP 層這一步的進度**（owner 2026-10-05 拍的三項，都在開發機上做、⛔ 都不是效能宣告）：
+✅ 檔案那條路樞衡自己的使用者態先修兩項 —— 正文不另拷一份（`c8a89d0`）、構回應頭不再每個頭分配（`5824b3f`），
+發出去的位元組一個不變（改前改後 19 種請求逐位元組對照；頭名大小寫由 `tests/files/run.sh` 新斷言釘死）·
+✅ `env.json` 起記 CPU 拓撲（`host.cpu_topology`，`3e2cd2b`；診斷欄位、不判合格性）·
+✅ 樞衡每請求公共那一層的字串分配（`resolve_site` 不再為大小寫與查表分配 `3f63836`；`serve_one` 借請求頭、訪問紀錄四格只在配了 `log` 時填 `aad9c19`），
+回應、訪問紀錄、指標三樣改前改後逐位元組相同 ⇒ 這一層在開發機上已貼近裸 pingora，剩下的差距在 pingora / tokio 底座 ·
+✅ 視窗四帶上了 HTTP 層分賬診斷那一趟（不是 M3 讀數、讀數不入庫；合格宿主不給硬體 PMU ⇒ 按 utime / stime 分賬），
+回答「同一份二進位，合格宿主上 `respond` ÷ nginx 靜態為什麼比開發機低一截」·
+✅ owner 2026-10-06 看了那份分賬拍（彈出視窗，選的都是推薦項）：分賬只以一句定性結論入庫、讀數不入庫 ——
+同一份二進位在合格宿主上比開發機低的那一截**掉在底座**（裸 pingora 對 nginx 靜態），樞衡自己那一層相對裸 pingora 兩臺機器上差不多
+（診斷、⛔ 不是 M3 讀數、⛔ 不是效能宣告）。
+✅ 底座量了：開發機裸 pingora 診斷臺上對 fork 裡三項（保留大小寫的表 · 計時器 · 解析請求時的分配）拆成六處各做單變數試驗，
+計數口徑（每請求指令數與分配次數），⛔ 不是效能宣告、讀數不入庫。owner 2026-10-06 按推薦先拍其中語義不變的三處 ⇒ **`G157`**
+（fork 改動 16）。另三處（請求頭 / 回應頭保留大小寫的表、keep-alive 等下一條請求時的計時器）各改一處行為、各要一處設計：
+✅ keep-alive 那處 owner 2026-10-08 先拍（設計給了落在樞衡 / 落在 fork 兩種，選了推薦的前者）⇒ **`G160`**：計時器每條連接一個、跨請求帶著走，
+fork 一行不動；空閒視窗的口徑收緊為「從開始等下一條請求到它的請求頭讀完，合計 60 s」。
+✅ 改前改後的計數診斷 2026-10-14 在開發機診斷臺上做了（產品二進位 `e4a5fe3` 對 `e911260`，`respond` 與 `file_server` 兩個站台、
+1 條連接 / 200 條連接兩種形狀；計數口徑，⛔ 不是效能宣告、讀數不入庫）：每請求 malloc −2（四格都是）· 使用者指令 −2% 到 −5% ·
+讀鍾 200 條連接時 −1、1 條連接時不變 —— 少掉的是 pingora 那套登記的兩次，多出來的是「開始等」那一次與 tokio 帶著計時器休眠前那一次。
+⚠ 代價落在輕載：1 條連接時工人執行緒每次空等都從不限時的 `epoll_wait` 變成限時的（計時器掛在 tokio 的時間驅動上），核心指令 +2% 到 +4%；
+200 條連接時幾乎不休眠、量不出。`G161` 在這幾項上量不出差別。
+兩張保留大小寫的表 owner 2026-10-14 一起拍了設計（彈出視窗，都是推薦項）：✅ 回應頭那張（A2）⇒ **`G162`**（fork 改動 17）：樞衡自己構的回應不建表，
+壓縮層的 `etag` / `vary` 頭名隨之變成 `ETag` / `Vary`（owner 當場認的）；每請求 malloc −2、使用者指令 −5% 到 −6%（計數口徑，⛔ 不是效能宣告）。
+✅ 請求頭那張（A1）拍的是「按連接埠開關」⇒ **`G163`**（fork 改動 18）：連接埠上沒有任何反代站台就不建表，反代連接埠照舊；
+沒有反代的連接埠上每請求 malloc 再 −2、使用者指令 −2% 到 −5%（同一口徑）。⇒ 底座單變數試驗那六處（A1 · A2 · B1 · B2 · C1 · C2）都已完成實作或有了替代（B1 = `G160`）。
+✅ 檔案那條路剩下的分配（2026-10-14；線上位元組一個不變 ⇒ 沒有 G 號）：路徑解碼歸一在沒有 `%`、沒有 `..` 段時直接借 URL 裡的段 ·
+拼到站台根下容量事先算夠 · 探測按值收路徑 · 副檔名在棧上轉小寫 · 回應頭直接放進 `ResponseHeader` · 整段正文原樣交出（⛔ 不 `slice`）。
+`file_server` 每請求 malloc 30 → 23、realloc 2 → 0、使用者指令 −4% 到 −7%（開發機診斷臺計數口徑，⛔ 不是效能宣告）；改前改後 28 種請求除 `Date` 外逐位元組相同。
+比 `respond` 仍多的三次（交出工作階段前拷一份 URL 路徑 · `ETag` 與 `Last-Modified` 各一個頭值）有意留著：前者 301 的 `Location` 要原樣用它，後兩者每個 `HeaderValue` 都自帶一塊記憶體。
+✅ `respond` 剩的分配（2026-10-15；線上位元組一個不變 ⇒ 沒有 G 號）：帶正文時補的 `Content-Type` 改用靜態頭值 ·
+`Content-Length` 的值在棧上轉十進位、恰好分配一次（`file_server` 原來經 `HeaderValue::from(u64)` 要兩次）·
+h1 入口直接調 `FulcrumApp` 的固有方法、⛔ 不再經 `HttpServerApp` 轉一手（`#[async_trait]` 每過一層裝一次箱）。
+每請求 malloc `respond` 20 → 18、`file_server` 23 → 21（1 / 200 條連接都是）；使用者指令 1 條連接時 −2.2% / −1.3%，200 條連接時在三輪區間內分不出
+（開發機診斷臺計數口徑，⛔ 不是效能宣告）；改前改後 28 種請求加四條續連接的除 `Date` 外逐位元組相同。
+`respond` 剩下的 18 次裡樞衡自己的五次有意留著：頭表兩次 · `Content-Length` 一個值 · 交給 pingora 的 `Box<ResponseHeader>` ·
+字面值正文的 `from_owner`（理由見 `respond_body`）；另外十三次都在 pingora 裡（寫回應頭裡三次，其餘十次的呼叫棧上沒有樞衡的影格），要動只能改 fork。
+⛔ 每請求 `SharedRuntime::current()` 的讀鎖 ⇒ **`G164`**（2026-10-15）做了又撤回：四個熱路徑改走每執行緒快照快取，合格宿主 A/B 哪一格都看不出收益，
+而歷次釘法的反代確認低約 7%（兩種順序都是，機制未查清）⇒ 按 owner 事先說定的規則撤回，產品程式碼回到 `35a9c5f`（診斷，⛔ 不是效能宣告）。
+✅ 寫回應頭裡那三次的兩次 ⇒ **`G165`**（2026-10-16，fork 改動 19；線上位元組一個不變）：`Connection` 的值改用靜態頭值 · 序列化緩衝不再 `freeze`。
+每請求 malloc `respond` 18 → 16、`file_server` 21 → 19（1 / 200 條連接都是）；使用者指令 1 條連接時 −1.9% / −2.5%，200 條連接時在三輪區間內分不出（開發機診斷臺計數口徑，⛔ 不是效能宣告）。
+第三次是那塊序列化緩衝本身，留著（見 `G165` ①）。
+⏳ 登記著的：每請求 `SharedRuntime::current()` 的讀鎖（再做之前先把那 8 µs 歸因清楚，見 `G164` ⑤）。
 
-### M4 · 发布 ⏳ 未开工
+### M4 · 發佈 ⏳ 未開工
 
-**范围** —— 文档、`deb`/`rpm` 包、DSL 参考、`nginx.conf` 与 `Caddyfile` 迁移指南、安全披露流程。
+**範圍** —— 文件、`deb`/`rpm` 包、DSL 參考、`nginx.conf` 與 `Caddyfile` 遷移指南、安全披露流程。
 
-**退出条件** —— 已在生产连续承载 ≥ 90 天，且 M3 达标。
+**退出條件** —— 已在生產連續承載 ≥ 90 天，且 M3 達標。
 
-> ⚠ **仓库已经公开了（G115），而这个里程碑没有因此提前。** 「源码看得见」与「可以拿去用」
-> 是两件事：现在没有版本号、没有包、没有兼容性承诺。
+> ⚠ **儲存庫已經公開了（G115），而這個里程碑沒有因此提前。** 「原始碼看得見」與「可以拿去用」
+> 是兩件事：現在沒有版本號、沒有包、沒有相容性承諾。
 
-## 8. 性能验收标准（G19）
+## 8. 效能驗收標準（G19）
 
-- **对象**：Caddy、HAProxy、Nginx 三家全部对拍，不挑软柿子
-- **方法**：同一台机、同一组用例、同一负载生成器；用例按类划分（静态吞吐、反代吞吐、TLS 握手、L4 转发、缓存命中、长连接、高并发短连接）
-- **门槛**：每类用例，枢衡不劣于**该类最强者** 10%
-- **公开**：基准脚本与**原始数据**全部公开。不发布无法复现的性能声明，不使用"快 N 倍"式表述
+- **物件**：Caddy、HAProxy、Nginx 三家全部對拍，不挑軟柿子
+- **方法**：同一臺機、同一組用例、同一負載生成器；用例按類劃分（靜態吞吐、反代吞吐、TLS 握手、L4 轉發、快取命中、長連接、高並行短連接）
+- **門檻**：每類用例，樞衡不劣於**該類最強者** 10%
+- **公開**：基準指令碼與**原始資料**全部公開。不發佈無法重現的效能宣告，不使用"快 N 倍"式表述
 
-## 9. 主要风险
+## 9. 主要風險
 
-| 风险 | 缓解 |
+| 風險 | 緩解 |
 |---|---|
-| ~~升级窗口内两代进程共享同一个 UDP socket，数据报会被分流~~ | ✅ **已解除**（M2 批 K）：按 DCID 判归属，不属于本代的数据报经一条 unix datagram 通道转交给它那一代（G109） |
-| ~~★ **仓库现有的构建镜像编不出 musl 产物**（实测：Debian trixie 没有 `musl-g++`，也没有任何 musl 交叉包）~~ | ✅ **已解除**：**G131 结案 D21**，口径 = （a）**Alpine 原生 + qemu 跑 aarch64**，即那张**已经钉死的第二张基础镜像**，⇒ 构建宿主口径维持现状并**转正**。⛔ 候选（b）（glibc 宿主 + zig / musl-cross-make 交叉工具链）**已被否**：两个架构都快，但给供应链新增一整套 C/C++ 交叉编译器。★ **不挡 HTTP/3 开工**——产品的发布流水线本身还不存在（打包是 M4）|
-| ~~回落层代码 1.0 时全删，G25 使其工程量翻倍~~ | ✅ **已解除**：三个用户全部自研完成，整层于 M2 批 G 删除（G98）|
-| ~~门禁在 GitHub Actions 上间歇性红（ACME 场景「起不来」）~~ | ✅ **已定位并修掉**（2026-08-28）。根因**两层**：① `tests/quic-relay/run.sh` 写成 `GEN2=$(start_gen …)`，`$(…)` 是子 shell ⇒ `PIDS+=` 改的是副本、`cleanup` 一个进程都没收到，**而该场景照常 PASSED**；泄漏的第二代攥着**合成出来的 `:80`**（见 AGENTS.md 端口表）活到下一个场景。② pingora 的 `ListenerEndpoint::listen` **攥着全局 `ListenFds` 锁**去做 `bind()`，而 `bind_tcp` 要重试 30 次 × 1 秒 ⇒ **一个被占的端口把整把锁停住 30 秒，所有还没拿到锁的监听器一起起不来** —— 于是现场报的是 `:8083` 起不来，日志里却只有 `:80` 的错。⇒ **报出来的端口不是出事的端口**，而这正是它三个月读不出来的原因。★ 处置：源头修好（pid 登记 + `cleanup` 里加一条「用过的端口要还回去」的自证，两个方向都实测过），取证留在两个 ACME 场景的失败路径上。★ ★ **③ 顺带查出来的第三层**：lint 那一格的 `shellcheck` 扫的是一张**手写目录清单**，而它漏掉的正好是 `tests/quic-relay/`（18 项 vs 仓库里 19 个含 `.sh` 的目录）⇒ **本仓库唯一起两代产品进程的那一格，从来没被静态检查看过**，底下压着 4 条真实告警。已改成**推导 + 每次自证**（[`tests/ci/shellcheck-all.sh`](tests/ci/shellcheck-all.sh)，三条反证都实测过）。⚠ **但不要把它记成「本来能拦住 ①」** —— 实测 shellcheck 0.10 的 SC2030/SC2031 只认**写在子 shell 那几行里**的赋值（`( B=1 )`、`X=$(D=9; …)`），对「函数体里 `PIDS+=`、调用方 `$(f)`」**一声不吭**。⚠ 由此作废两条旧结论：**「占着 `:80` 无害」**（那是一次落在良性锁序上的采样）与**「每个 Service 各有 runtime ⇒ 互不拖累」**（各有 runtime，但共用那把锁）。★★ ② **上游 `main` 已经修掉了，不必投**：提交 `1d9371191`（2026-03-25）把 `ListenFds` 换成 `parking_lot::Mutex`，因为同步锁不能跨 `bind().await` 持有，顺势引入**按地址**的异步锁 —— 我们那行 `// consider make this mutex std::sync::Mutex or OnceCell` 正是被它删掉的。⚠ **但它只在 `main` 上**：上游最新 release 仍是 **0.8.1**（＝我们 vendor 的那个），`0.8.1 → main` 相差 190 个提交 ⇒ **本仓要等下一次 rebase 才拿得到**，已登记在 [尚未验证的接缝](docs/verification/open-seams.md)。⚠ 上游的修法**新增了 `flurry` 依赖**，所以「现在就 backport 进 fork」不是顺手的事（供应链门要过），而触发者已经修掉 ⇒ 放大器目前是休眠的。✅ **2026-09-24 已拿到**：上游 0.9.0 含这个提交，本仓已 rebase 到 0.9.0（flurry 随之进了依赖图、过了供应链门）；产品与 spike 里对 `ListenFds` 的取用改成了短持锁。 |
-| 单人 + AI 承担网络关键路径软件的安全责任 | 内存安全交给 Rust；协议栈交给成熟库；不自己实现 TLS、HTTP/2 状态机、HPACK、QUIC |
-| 磁盘缓存的崩溃恢复是经典难题 | 先做内存层与只读缓存，磁盘后端最后做；原子写 + 启动时校验 + 校验失败即丢弃该条目 |
-| On-Demand TLS 即使有准入控制仍可能被内部误用刷爆 | 准入配置强制（G15）+ 速率上限 + 签发失败进入退避 + 指标告警 |
-| 性能对拍环境不可复现，数字失去意义 | 基准环境用脚本固化，含内核参数与 CPU 亲和；每次对拍记录完整环境快照 |
-| Pingora 上游演进与枢衡定制的合并成本 | ★ **这已经不是「风险」而是「进行中的成本」**：枢衡确实 fork 了 `pingora-core`（`vendor/pingora/`）。缓解是——改动**意图上限定为版本上界 + 随之而来的调用点适配**（此后 owner 逐条拍进来的加能力、缺陷修复与 `G157` / `G165` 的语义不变的性能改动，各记在 FORK.md 的对应条目）；`tools/dep-check.py` **自动盯上游的发版与 main 分支**（patch 过去的 crate 脱离了 `cargo update` 的视野）；每次 rebase 后跑**回归网 + M0**，M3 之后跑全量对拍。<br>★ ★ 「不引入行为变更」这条当初是**断言**而不是**判据**，而它已经失败过一次（详见 `vendor/pingora/FORK.md`）。现在由 [`tests/vendor/run.sh`](tests/vendor/run.sh)（上游自带的 340 条单元测试）看着 |
-| 三家的许可证义务与打包方式 | 产物不链接三家中的任何一家（回落层已删除，见 §6.3）。发布前需正式审查 |
+| ~~升級視窗內兩代處理程序共享同一個 UDP socket，資料報會被分流~~ | ✅ **已解除**（M2 批 K）：按 DCID 判歸屬，不屬於本代的資料報經一條 unix datagram 通道轉交給它那一代（G109） |
+| ~~★ **儲存庫現有的建置鏡像編不出 musl 產物**（實測：Debian trixie 沒有 `musl-g++`，也沒有任何 musl 交叉包）~~ | ✅ **已解除**：**G131 結案 D21**，口徑 = （a）**Alpine 原生 + qemu 跑 aarch64**，即那張**已經釘死的第二張基礎鏡像**，⇒ 建置宿主口徑維持現狀並**轉正**。⛔ 候選（b）（glibc 宿主 + zig / musl-cross-make 交叉工具鏈）**已被否**：兩個架構都快，但給供應鏈新增一整套 C/C++ 交叉編譯器。★ **不擋 HTTP/3 開工**——產品的發佈流水線本身還不存在（打包是 M4）|
+| ~~回落層程式碼 1.0 時全刪，G25 使其工程量翻倍~~ | ✅ **已解除**：三個使用者全部自研完成，整層於 M2 批 G 刪除（G98）|
+| ~~門禁在 GitHub Actions 上間歇性紅（ACME 場景「起不來」）~~ | ✅ **已定位並修掉**（2026-08-28）。根因**兩層**：① `tests/quic-relay/run.sh` 寫成 `GEN2=$(start_gen …)`，`$(…)` 是子 shell ⇒ `PIDS+=` 改的是副本、`cleanup` 一個處理程序都沒收到，**而該場景照常 PASSED**；洩漏的第二代攥著**合成出來的 `:80`**（見 AGENTS.md 連接埠表）活到下一個場景。② pingora 的 `ListenerEndpoint::listen` **攥著全域 `ListenFds` 鎖**去做 `bind()`，而 `bind_tcp` 要重試 30 次 × 1 秒 ⇒ **一個被佔的連接埠把整把鎖停住 30 秒，所有還沒拿到鎖的監聽器一起起不來** —— 於是現場報的是 `:8083` 起不來，紀錄裡卻只有 `:80` 的錯。⇒ **報出來的連接埠不是出事的連接埠**，而這正是它三個月讀不出來的原因。★ 處置：源頭修好（pid 登記 + `cleanup` 里加一條「用過的連接埠要還回去」的自證，兩個方向都實測過），取證留在兩個 ACME 場景的失敗路徑上。★ ★ **③ 順帶查出來的第三層**：lint 那一格的 `shellcheck` 掃的是一張**手寫目錄清單**，而它漏掉的正好是 `tests/quic-relay/`（18 項 vs 儲存庫裡 19 個含 `.sh` 的目錄）⇒ **本儲存庫唯一起兩代產品處理程序的那一格，從來沒被靜態檢查看過**，底下壓著 4 條真實告警。已改成**推導 + 每次自證**（[`tests/ci/shellcheck-all.sh`](tests/ci/shellcheck-all.sh)，三條反證都實測過）。⚠ **但不要把它記成「本來能攔住 ①」** —— 實測 shellcheck 0.10 的 SC2030/SC2031 只認**寫在子 shell 那幾行裡**的賦值（`( B=1 )`、`X=$(D=9; …)`），對「函式體裡 `PIDS+=`、呼叫方 `$(f)`」**一聲不吭**。⚠ 由此作廢兩條舊結論：**「佔著 `:80` 無害」**（那是一次落在良性鎖序上的取樣）與**「每個 Service 各有 runtime ⇒ 互不拖累」**（各有 runtime，但共用那把鎖）。★★ ② **上游 `main` 已經修掉了，不必投**：提交 `1d9371191`（2026-03-25）把 `ListenFds` 換成 `parking_lot::Mutex`，因為同步鎖不能跨 `bind().await` 持有，順勢引入**按位址**的非同步鎖 —— 我們那行 `// consider make this mutex std::sync::Mutex or OnceCell` 正是被它刪掉的。⚠ **但它只在 `main` 上**：上游最新 release 仍是 **0.8.1**（＝我們 vendor 的那個），`0.8.1 → main` 相差 190 個提交 ⇒ **本儲存庫要等下一次 rebase 才拿得到**，已登記在 [尚未驗證的接縫](docs/verification/open-seams.md)。⚠ 上游的修法**新增了 `flurry` 依賴**，所以「現在就 backport 進 fork」不是順手的事（供應鏈門要過），而觸發者已經修掉 ⇒ 放大器目前是休眠的。✅ **2026-09-24 已拿到**：上游 0.9.0 含這個提交，本儲存庫已 rebase 到 0.9.0（flurry 隨之進了依賴圖、過了供應鏈門）；產品與 spike 裡對 `ListenFds` 的取用改成了短持鎖。 |
+| 單人 + AI 承擔網路關鍵路徑軟體的安全責任 | 記憶體安全交給 Rust；協定棧交給成熟庫；不自己實作 TLS、HTTP/2 狀態機、HPACK、QUIC |
+| 磁碟快取的崩潰恢復是經典難題 | 先做記憶體層與唯讀快取，磁碟後端最後做；原子寫 + 啟動時檢核 + 檢核失敗即丟棄該條目 |
+| On-Demand TLS 即使有準入控制仍可能被內部誤用刷爆 | 存取資格設定強制（G15）+ 速率上限 + 簽發失敗進入退避 + 指標告警 |
+| 效能對拍環境不可重現，數字失去意義 | 基準環境用指令碼固化，含核心參數與 CPU 親和；每次對拍記錄完整環境快照 |
+| Pingora 上游演進與樞衡定製的合併成本 | ★ **這已經不是「風險」而是「進行中的成本」**：樞衡確實 fork 了 `pingora-core`（`vendor/pingora/`）。緩解是——改動**意圖上限定為版本上界 + 隨之而來的呼叫點適配**（此後 owner 逐條拍進來的加能力、缺陷修復與 `G157` / `G165` 的語義不變的效能改動，各記在 FORK.md 的對應條目）；`tools/dep-check.py` **自動盯上游的發版與 main 分支**（patch 過去的 crate 脫離了 `cargo update` 的視野）；每次 rebase 後跑**迴歸網 + M0**，M3 之後跑全量對拍。<br>★ ★ 「不引入行為變更」這條當初是**斷言**而不是**判據**，而它已經失敗過一次（詳見 `vendor/pingora/FORK.md`）。現在由 [`tests/vendor/run.sh`](tests/vendor/run.sh)（上游自帶的 340 條單元測試）看著 |
+| 三家的授權條款義務與打包方式 | 產物不連結三家中的任何一家（回落層已刪除，見 §6.3）。發佈前需正式審查 |
 
-## 10. 决策清单
+## 10. 決策清單
 
-> 本节是**结论表**：每一行是一条**仍然生效**的决定。★ 标的是 owner 推翻了 AI 推荐项。
-> ⚠ **编号只增不减** —— 代码注释、文档与判据里有上千处按号引用。
-> ⛔ 被撤销的条目保留原号并标注，因为「当初为什么那样定」本身仍是有效信息。
+> 本節是**結論表**：每一行是一條**仍然生效**的決定。★ 標的是 owner 推翻了 AI 推薦項。
+> ⚠ **編號只增不減** —— 程式碼註解、文件與判據裡有上千處按號引用。
+> ⛔ 被撤銷的條目保留原號並標註，因為「當初為什麼那樣定」本身仍是有效資訊。
 >
-> ⚠ ⚠ **`G134`–`G165` 与 `D34` 的编号与措辞由 agent 拟**（`G133` 那条先例）。
-> **每一条决策本身都是 owner 拍的。文字过没过目，⛔ 按下面各段分开读，别读成一句：**
+> ⚠ ⚠ **`G134`–`G165` 與 `D34` 的編號與措辭由 agent 擬**（`G133` 那條先例）。
+> **每一條決策本身都是 owner 拍的。文字過沒過目，⛔ 按下面各段分開讀，別讀成一句：**
 >
-> - **`G134`–`G146`（十三条）—— owner 仍未逐条过目。** 2026-09-06 他委派过一次
->   系统审核，做了三层，⛔ **那是审核不是追认**，这句话不因它而改变。
-> - **`G147`–`G150`（四条）—— 2026-09-07 owner 逐条过目了**（弹窗逐条拍）。
->   ★ 结果不是全部照准：**`G147` ⑤ 改了去向**（从「永远留着那处不一致」改成
->   「等压测窗口重跑一组替掉」）、**`G149` ② 推翻了 agent 拟的 minor 数、改按时间算**；
->   `G148` 维持接受；`G150` 确认了 agent 那处主动收窄。
->   ⚠ 那次过目的**边界**：`G149` 里「`spikes/` 三个 crate 留在 `0.0.0`」这个取舍
->   是 agent 判的，owner 过目时**未提异议** —— ⛔ 记成「未提异议」，不是「明确批准」。
-> - **`G151`–`G154`（四条，2026-09-24）—— 决策是 owner 在弹窗里逐条拍的，措辞还没过目。**
->   每条弹窗都附了选项与 agent 的推荐：`G151`、`G154` 选的是推荐项，`G152`、`G153` **推翻了推荐项**（照例标 ★）。
->   ⏳ 措辞留到与 `G134`–`G146` 同一次过目。
-> - **`G155`（2026-09-26）—— 决策是 owner 在弹窗里拍的（三项都选了推荐项），措辞还没过目。**
->   2026-10-04 评审补准了 ③ 代价（反代慢上游时头被扣住、没有时间上限），owner 按补准的代价重新确认了决定（弹窗，选推荐项）；措辞仍没过目。
->   ⏳ 与上面那几段同一次过目。
-> - **`G156`（2026-10-04）—— 决策是 owner 在弹窗里拍的（范围只做指标、做法 A、设计可以写成 spec，三项都选了推荐项），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G157`（2026-10-06）—— 决策是 owner 在对话里拍的（原话「按建议，先做 B2+C1+C2 那一笔 fork 改动」，即 agent 推荐项），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G158`（2026-10-06）—— 决策是 owner 在对话里拍的（从 agent 列的提速方向里点了两条，原话「只有被推送的提交改了 .sh 才跑 shellcheck」「在 pre-push 这条路径上跳过宿主机自测和遗留卷报告，这些留给完整门禁」），措辞还没过目。**
->   ⚠ 触发集里 `*shellcheckrc` 与 `docker/Dockerfile.build` 两项、以及「判不出来一律照跑」，是 agent 按「能改变 shellcheck 结论的东西」补的，owner 没逐项拍。
->   ⏳ 与上面那几段同一次过目。
-> - **`G159`（2026-10-06）—— 决策是 owner 在对话里拍的（agent 给了三个方案并推荐 A，原话「按方案 A 实现」），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G160`（2026-10-08）—— 决策是 owner 在弹窗里拍的（先写 B1 的 spec、落点选方案 P、计数回开发机做，三项都选了推荐项），措辞还没过目。**
->   ⚠ 「从开始等到请求头读完合计 d」这处收紧写在方案 P 的选项与预览里，owner 是连同它选的；⛔ 没有单独为它弹一问。
->   ⏳ 与上面那几段同一次过目。
-> - **`G161`（2026-10-08）—— 决策是 owner 在弹窗里拍的（语义「听 pingora 的判定、枢衡只管时长」· 判据做单测 + `tests/serve` 端到端，两项都选了推荐项），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G162`（2026-10-14）—— 决策是 owner 在弹窗里拍的（A2 选「补表＋自建响应不建表」，推荐项；动手前报了一处与「逐字节不变」不符的副作用，owner 再弹窗选「接受，补 ETag/Vary」），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G163`（2026-10-14）—— 决策是 owner 在弹窗里拍的（A1 选「按端口开关」，推荐项），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G164`（2026-10-15，⛔ 已撤回）—— 决策是 owner 拍的（两次弹窗 + 设计批准，都选了推荐项）；撤回走的是 owner 弹窗选项里事先说定的「确认是真的变差就撤回」（见该行 ⑤）。措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> - **`G165`（2026-10-16）—— 决策是 owner 在对话里拍的（原话「fork 改動 19 照 brief-fork-19.md 的推薦做成 G165：兩處都改，判據併進現有的計數測試二進制，投稿材料先備不發」，即 agent 推荐项），措辞还没过目。**
->   ⏳ 与上面那几段同一次过目。
-> ① **引用**：那十三条里点名的每一处仓库内路径逐个核在不在 —— **44 处，43 处核到**，
-> 剩下那一处是 `G142` 里的 `ceiling.json`，⚠ 而那一条**原文正是在说这个文件不许叫这个名字**
-> ⇒ 它本来就该不存在。⚠ ⚠ ★ 筛子第一版报了 **24 处**「核不到」，其中 **23 处是筛子自己的错**
-> （裸后缀 `.sh` · URL 路径 `/stats` · 内核路径 `/proc/sys` · 只写文件名没写目录 · 带占位符的路径，
-> 五族）⇒ 它现在**带自证**，那五族逐条钉成合成输入、两个方向都要响；
-> ⛔ 而 `ceiling.json` 那一处是**筛子原理上分不开**的（「该在的」与「不许在的」长得一样），
-> 只能靠人读；
-> ② **数字**：`bench/lib.sh --self-check` = **55** · `tests/bench/gate.sh` 当时有 **C1–C15**
-> （⚠ 现在是 **C1–C16** —— `C16` 是 `G147` 那次加的，⛔ 不在这次审核的范围里）·
-> `arm64-trigger.sh --self-check` = **25** · shellcheck 普查 **49** 个脚本 ·
-> `COMPILE_ONLY` 的 `CMD` 与 `G134` 抄的那一行逐字相同 · `effective_capacity` 一处定义两处调用 ·
-> `passive_fail` 确实已从 `UNWIRED` 销号 · `PASSIVE_WITHOUT_THRESHOLD = DiagCode(45)` 确实存在
-> —— 全部对上；
-> ③ **陈旧断言**：找到并就地改掉**四处**（§7 M3 的标题、`G140` 的「那些数今天还不存在」、
-> `G139` 的「已登记」缺指针、`G142` 的「要回头核这两个数」缺结果）。
-> ⛔ 三层都**没有改动任何一条决策**，只改了描述与指针。
+> - **`G134`–`G146`（十三條）—— owner 仍未逐條過目。** 2026-09-06 他委派過一次
+>   系統審核，做了三層，⛔ **那是審核不是追認**，這句話不因它而改變。
+> - **`G147`–`G150`（四條）—— 2026-09-07 owner 逐條過目了**（彈出視窗逐條拍）。
+>   ★ 結果不是全部照準：**`G147` ⑤ 改了去向**（從「永遠留著那處不一致」改成
+>   「等壓測視窗重跑一組替掉」）、**`G149` ② 推翻了 agent 擬的 minor 數、改按時間算**；
+>   `G148` 維持接受；`G150` 確認了 agent 那處主動收窄。
+>   ⚠ 那次過目的**邊界**：`G149` 裡「`spikes/` 三個 crate 留在 `0.0.0`」這個取捨
+>   是 agent 判的，owner 過目時**未提異議** —— ⛔ 記成「未提異議」，不是「明確批准」。
+> - **`G151`–`G154`（四條，2026-09-24）—— 決策是 owner 在彈出視窗裡逐條拍的，措辭還沒過目。**
+>   每條彈出視窗都附了選項與 agent 的推薦：`G151`、`G154` 選的是推薦項，`G152`、`G153` **推翻了推薦項**（照例標 ★）。
+>   ⏳ 措辭留到與 `G134`–`G146` 同一次過目。
+> - **`G155`（2026-09-26）—— 決策是 owner 在彈出視窗裡拍的（三項都選了推薦項），措辭還沒過目。**
+>   2026-10-04 評審補準了 ③ 代價（反代慢上游時頭被扣住、沒有時間上限），owner 按補準的代價重新確認了決定（彈出視窗，選推薦項）；措辭仍沒過目。
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G156`（2026-10-04）—— 決策是 owner 在彈出視窗裡拍的（範圍只做指標、做法 A、設計可以寫成 spec，三項都選了推薦項），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G157`（2026-10-06）—— 決策是 owner 在對話裡拍的（原話「按建議，先做 B2+C1+C2 那一筆 fork 改動」，即 agent 推薦項），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G158`（2026-10-06）—— 決策是 owner 在對話裡拍的（從 agent 列的提速方向裡點了兩條，原話「只有被推送的提交改了 .sh 才跑 shellcheck」「在 pre-push 這條路徑上跳過宿主機自測和遺留卷報告，這些留給完整門禁」），措辭還沒過目。**
+>   ⚠ 觸發集裡 `*shellcheckrc` 與 `docker/Dockerfile.build` 兩項、以及「判不出來一律照跑」，是 agent 按「能改變 shellcheck 結論的東西」補的，owner 沒逐項拍。
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G159`（2026-10-06）—— 決策是 owner 在對話裡拍的（agent 給了三個方案並推薦 A，原話「按方案 A 實作」），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G160`（2026-10-08）—— 決策是 owner 在彈出視窗裡拍的（先寫 B1 的 spec、落點選方案 P、計數回開發機做，三項都選了推薦項），措辭還沒過目。**
+>   ⚠ 「從開始等到請求頭讀完合計 d」這處收緊寫在方案 P 的選項與預覽裡，owner 是連同它選的；⛔ 沒有單獨為它彈一問。
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G161`（2026-10-08）—— 決策是 owner 在彈出視窗裡拍的（語義「聽 pingora 的判定、樞衡只管時長」· 判據做單測 + `tests/serve` 端到端，兩項都選了推薦項），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G162`（2026-10-14）—— 決策是 owner 在彈出視窗裡拍的（A2 選「補表＋自建回應不建表」，推薦項；動手前報了一處與「逐位元組不變」不符的副作用，owner 再彈出視窗選「接受，補 ETag/Vary」），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G163`（2026-10-14）—— 決策是 owner 在彈出視窗裡拍的（A1 選「按連接埠開關」，推薦項），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G164`（2026-10-15，⛔ 已撤回）—— 決策是 owner 拍的（兩次彈出視窗 + 設計批准，都選了推薦項）；撤回走的是 owner 彈出視窗選項裡事先說定的「確認是真的變差就撤回」（見該行 ⑤）。措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> - **`G165`（2026-10-16）—— 決策是 owner 在對話裡拍的（原話「fork 改動 19 照 brief-fork-19.md 的推薦做成 G165：兩處都改，判據併進現有的計數測試二進位，投稿材料先備不發」，即 agent 推薦項），措辭還沒過目。**
+>   ⏳ 與上面那幾段同一次過目。
+> ① **引用**：那十三條裡點名的每一處儲存庫內路徑逐個核在不在 —— **44 處，43 處核到**，
+> 剩下那一處是 `G142` 裡的 `ceiling.json`，⚠ 而那一條**原文正是在說這個檔案不許叫這個名字**
+> ⇒ 它本來就該不存在。⚠ ⚠ ★ 篩子第一版報了 **24 處**「核不到」，其中 **23 處是篩子自己的錯**
+> （裸後綴 `.sh` · URL 路徑 `/stats` · 核心路徑 `/proc/sys` · 只寫檔案名沒寫目錄 · 帶佔位符的路徑，
+> 五族）⇒ 它現在**帶自證**，那五族逐條釘成合成輸入、兩個方向都要響；
+> ⛔ 而 `ceiling.json` 那一處是**篩子原理上分不開**的（「該在的」與「不許在的」長得一樣），
+> 只能靠人讀；
+> ② **數字**：`bench/lib.sh --self-check` = **55** · `tests/bench/gate.sh` 當時有 **C1–C15**
+> （⚠ 現在是 **C1–C16** —— `C16` 是 `G147` 那次加的，⛔ 不在這次審核的範圍裡）·
+> `arm64-trigger.sh --self-check` = **25** · shellcheck 普查 **49** 個指令碼 ·
+> `COMPILE_ONLY` 的 `CMD` 與 `G134` 抄的那一行逐字相同 · `effective_capacity` 一處定義兩處呼叫 ·
+> `passive_fail` 確實已從 `UNWIRED` 銷號 · `PASSIVE_WITHOUT_THRESHOLD = DiagCode(45)` 確實存在
+> —— 全部對上；
+> ③ **陳舊斷言**：找到並就地改掉**四處**（§7 M3 的標題、`G140` 的「那些數今天還不存在」、
+> `G139` 的「已登記」缺指針、`G142` 的「要回頭核這兩個數」缺結果）。
+> ⛔ 三層都**沒有改動任何一條決策**，只改了描述與指針。
 
-| 编号 | 决策 |
+| 編號 | 決策 |
 |---|---|
-| **G1** | **实现语言 = Rust。** 性能可与 nginx/haproxy 同级（Go 做不到，而那正是 Caddy 的短处）；内存安全避开 nginx/haproxy CVE 史上的缓冲区类问题；`tokio` / `hyper` / `rustls` / `quinn` / `instant-acme` 生态齐全。 |
-| **G2** | **三家产品的角色 = 混合数据面。** 枢衡自研进程做入口，未实现的能力回落给成熟引擎，实现一块接管一块。第一天就是完整可用产品，回落路径天然是灰度开关与 A/B 对拍台。 |
-| **G3** | **首版切片 = 三合一全量首版。**（AI 曾评 3.0 分并建议只做「反代 + 自动 HTTPS + 基础 LB」。）配合 G2 与 G5 后成立——"全量"指对外能力面，不是自研代码面。 |
-| **G4** | **配置形态 = 自研 DSL（Caddyfile 式）。** |
-| **G5** | **「三合一全量」口径 = 对外能力面全量，自研逐块吞并。** 用户看到完整三合一，内部自研哪块算哪块，其余回落。 |
-| **G6** | **数据面底座 = Pingora 0.8 打底 + 独立 QUIC 入口。** ⚠ 2026-09-24 更正（随 rebase 计划获批，原文不动）：底座已 rebase 到 **Pingora 0.9.0**，见 `vendor/pingora/FORK.md`。附带三条硬约束见 §5.1。★ 原文写的是 `quinn`/`h3` + rustls，已由 **G103 / G104** 改成 `quiche` + BoringSSL。 |
-| **G7** | **首版自研范围 = L4 面 + 静态文件 + 磁盘缓存后端 + HTTP/3，四块全自研。** |
-| **G8** | **热重载模型 = 全量原子 load + 增量 Runtime 双通道。** 直取两家长处：全量 load 保证"整份配置即唯一事实"与原子回退（Caddy），增量 runtime 用于改权重、摘节点、清缓存且零 reload（HAProxy）。 |
-| **G9** | **回落定位 = 时间轴上的临时顶班。** 某块自研未完成时回落，完成即拆除，**1.0 时回落代码归零**。 |
-| **G10** | **发布模式 = GPL-3.0 开源**，判据在 M4 退出条件中写死。★ 「私有开发到首个能跑生产的版本」那一半已由 **G115** 改写：仓库提前公开，而**发布**仍按 M4 的退出条件走。 |
-| **G11** | **配置分层 = DSL 编译到结构化配置，二者都是合法入口；结构化那份是唯一内部事实。** diff、版本化、原子回滚全建在它上面；DSL 可随时演进而不动内核。 |
-| **G12** | **自动 HTTPS = 默认全自动 + 支持 On-Demand TLS。** |
-| **G13** | **平台分发 = Linux x86_64 + aarch64 单静态二进制（musl）+ systemd 单元 + 官方 deb/rpm；不做官方容器镜像。**（AI 建议先做容器镜像后做包。）因是单静态二进制，文档给一份 `FROM scratch` Dockerfile 即可替代官方镜像。 |
-| **G14** | **管理面安全 = 默认只绑 Unix socket（文件权限控制）；远程管理需显式开 mTLS。** 直接堵掉 Caddy「Admin API 默认绑回环且无认证、同机任意进程可改配置」这个短处。 |
-| **G15** | **On-Demand TLS 准入 = 强制。** 未配 ask 端点或域名白名单则**拒绝启用**——错误在启动时暴露，而不是在被刷爆时才发现。 |
-| **G16** | **观测基线 = Prometheus 指标 + 结构化访问日志 + Runtime 实时 stats。** Runtime 通道 G8 反正要做，在其上加只读 stats 是边际成本最低的高价值功能。 |
-| **G17** | **上游发现 = 静态列表 + DNS 定期重解析 + 主动健康检查 + 被动熔断。** DNS 重解析直接消灭 nginx OSS「上游域名只在启动时解析一次」这个经典事故源。⚠ 2026-09-24 更正（owner 当场拍，原文不动）：1.27.3 起 nginx 开源版可以在 `upstream` 的 `server` 上显式写 `resolve` 做动态重解析 ⇒ 这句该读作「上游域名**默认**只在启动时解析一次」，差别在默认行为与配置门槛（见 §3）。 |
-| **G18** | **Runtime 改动归宿 = 显式临时覆盖层。** 不持久化，但 stats 与 API 永远显示「当前有 N 项临时覆盖生效中」。 |
-| **G19** | **性能验收 = 三家全对拍，逐类设门（不劣于该类最强者 10%），脚本与原始数据全公开。** 详见 §8。 |
-| **G20** | **DSL 风格 = Caddyfile 式（站点地址起头 + 大括号块）。** |
-| **G21** | **产品名 = 枢衡 / Fulcrum。** |
-| **G22** | **用户分层。** 第一类：**自己的机队 + 自托管/homelab 站长**（并列主打）。 |
-| **G23** | **首版不做 Web UI**，只有 DSL + CLI + API。G16 的 Prometheus 指标接 Grafana 已覆盖可视化需求；nginx、HAProxy、Caddy 三家都没有官方 UI。 |
-| **G24** | **里程碑按「能自用」切分。** 见 §7。 |
-| **G25** | **回落范围 = Caddy + Nginx 两家**（静态与缓存交给 Nginx，其余交给 Caddy）。 |
-| **G26** | **M0 构建与验证环境 = Docker Desktop（官方 rust 镜像）。** |
-| **G27** | **M0 验证范围收窄 = 裸 UDP + 裸 TCP 服务验 fd 移交接缝，QUIC 推后。** 理由见 §7 M0 下方引文。 |
-| **G28** | **HTTP/3 库选型推迟到 M2**（登记为 D11）。★ 已由 **G103** 结案。 |
-| **G29** | **（D1 结案）依赖版本策略 = 追新 + 24 小时安全怀疑期。** |
-| **G30** | **依赖天花板的处置 = fork `pingora-core` 放宽版本上界。** |
-| **G31** | **进程模型 = systemd `Type=notify` 前台运行；`daemonize` 依赖删除。★ 但先做 spike 验证。** |
-| **G32** | **fork 长期维护 = 把有公告支撑的上界推 PR 给上游，其余常年 rebase。** |
-| **G33** | **（D5 结案）路径约定 = systemd 托管为主，但每一项都可被配置覆盖。** |
-| **G34** | **（D6 结案）回落层进程管理 = 复用既有 systemd 单元 + 在枢衡的 unit 里声明依赖。** |
-| **G35** | **并发与线程模型 = 保持 `work_stealing = true`；线程数按 service 角色定默认、配置可覆盖；QUIC 那部分随 D11 推到 M2。** |
-| **G36** | **构建镜像的升级口径 = 并入 `dep-check.py` 的每周检查；只在 rustc 版本变了时判红；只报告、拒绝自动应用；M3 对拍期间冻结。** |
-| **G37** | **（D14 结案）进程模型 = `Type=notify` + 前台 + `ExitType=cgroup`，★ 不交接 MainPID。** |
-| **G38** | **`get_fds_from()` 的两处 fd 泄漏 = 先在 fork 里修，并备好上游 PR 材料由 owner 提交。** |
-| **G39** | **systemd 测试宿主镜像的升级口径 = 并入 `dep-check.py` 的每周检查，判 systemd 大版本。** |
-| **G40** | **上游投稿改为「owner 授权后可代发」，身份与复核要求不变。** |
-| **G41** | **`pingora-rustls` 的两处清单缺陷在 fork 里修掉，并备上游投稿三。** |
-| **G42** | **回归网覆盖 rustls，且把测试环境修对而不是把已知失败名单加长。** |
-| **G43** | **`FORK.md` 的核对命令覆盖面补齐（顺手逮到的第三条）。** |
-| **G44** | **拼出来的门禁命令要加分组。** `lint && build --locked || build && …` 的运算符优先级让 lint 的退出码被吞掉，门红着而退出码一直是 0。 |
-| **G45** | **（承 G41）`rustls-pemfile` 迁到 `rustls-pki-types` 的 `PemObject`。** |
-| **G46** | **（修订 G32／G40 的发前检查）「查过上游做没做」必须包含未合并的 issue 与 PR。** |
-| **G47** | **（D3 第一刀）DSL 里遇到本版尚未自研的能力 = 隐式回落，不写 `fallback` 指令。** |
-| **G48** | **（D3 第二刀，补一处规格真空）结构化配置的落地格式 = JSON。** |
-| **G49** | **站点块内的执行顺序 = 内建顺序表（照 Caddy），不是书写顺序。** |
-| **G50** | **matcher = 命名 matcher（`@name`）+ 仅路径的行内简写。** |
-| **G51** | **报错策略 = 一次报全 + 稳定错误码。** |
-| **G52** | **隐式回落的可见性 = 启动/装载日志逐条列出。** |
-| **G53** | **ACME 客户端 = `instant-acme`，上层自己搭。** |
-| **G54** | **挑战类型 = TLS-ALPN-01 主 + HTTP-01 备 + DNS-01。** |
-| **G55** | **证书存储 = 每域一目录的 PEM 文件。** |
-| **G56** | **续期 = ARI 优先，回退到「剩余寿命 1/3」；失败走指数退避。** |
-| **G57** | **DNS-01 = 原生 Cloudflare + DNSPod，其余走 exec hook 兜底。** |
-| **G58** | **通配符证书是 M1 的交付内容，不推到 M2。** ★ 附带一条硬约束：DNS-01 必须轮询权威 NS 确认 TXT 已可见，**不许固定 sleep**。 |
-| **G59** | **DNS 凭据 = 只从文件或环境变量读；能程序化校验权限范围的，在启动时校验并拒绝启动。** 校验不了的供应商，强制在配置里声明该凭据覆盖哪些 zone。 |
-| **G60** | **M1 的指令集边界 = 首版对外能力面全覆盖。** |
-| **G61** | **占位符 = 小而固定的一组，无表达式、无函数、无条件。** |
-| **G62** | **M1 只认一份配置文件，不做 `import` / `conf.d`。** |
-| **G63** | **默认错误响应 = 内置默认 + `handle_errors` 可覆盖。** |
-| **G64** | **门禁里跑 pebble 当本地 ACME CA。** |
-| **G65** | **续期状态与证书本身解耦：没有证书的域名也要记得自己失败过几次。** |
-| **G66** | **站点索引的通配符收紧到「只吃一层」，与证书侧一致；且两侧共用同一份实现。** |
-| **G67** | **投稿四（`test_connect_uds` 的短读）已发出。** |
-| **G68** | **投稿五（`with_cert_resolver`）撤销，不发。** |
-| **G69** | **DNS 客户端自己写，不拉 crate —— 而这个决定是量出来的。** |
-| **G70** | **续期单独立一个验证场景**（[`tests/acme/renew.sh`](tests/acme/renew.sh)）。 |
-| **G71** | **TLS-ALPN-01 接线（G54 的「主」，RFC 8737）。** |
-| **G72** | **原生两家接线，而 HTTP 客户端新增 0 个包。** |
-| **G73** | **M1 退出条件去掉「连续运行 7 天无事故」，改为「上线跑压力冒烟开测」。** |
-| **G74** | **加一个强制续期的口子**（`POST /renew`）。★ 它不越过退避，只越过「还不到时候」这条判定。 |
-| **G75** | **管理面落地**：`admin unix/<路径>`，权限 0600，两条命令 —— `POST /load`（G8 的全量原子 load）与 `POST /renew`（G74）。没配 `admin` 就一个 socket 都不建；写成端口形态直接拒绝启动。 |
-| **G76** | **`dns_refresh` 落地**：上游域名的解析结果存进 `Upstream` 的槽里并定期重解析。 |
-| **G77** | **`health_uri` 落地**（主动健康检查）。 |
-| **G78** | **产品二进制由 systemd 托管落地**（G31/G33/G37 的产品侧）。 |
-| **G79** | **回落层的转发侧接线**：`file_server` / `cache` 真的转发给 nginx（此前一律回 501）。⛔ 整层已由 **G98** 删除。 |
-| **G80** | **M1 退出条件的真域名改为生产主域名**（含 `www`）。★ 后续被 G85 / G86 两次改写。 |
-| **G81** | **M2 的退出条件从「五台服务器全部由枢衡承载」改为「两台」。** |
-| **G82** | **HTTP 缓存整层自研**，`pingora-cache` 不进 fork（用现成要把 8707 行 + 7 个新包吃进 fork）。 |
-| **G83** | **磁盘缓存布局：两级分片目录 + 每条目 meta/body 两文件 + 写 `tmp` 后 `rename` 落地。** ★ meta 是一族（一个主键）一个，body 是一条一个。 |
-| **G84** | **磁盘缓存崩溃恢复：启动不扫盘 —— 读时校验 + 后台渐进重建；`purge` 走管理面。** ⚠ 代价写在明处：刚重启时少算占用、淘汰偏晚 —— **只影响淘汰**。 |
-| **G85** | **生产域名第一次更换**（owner 拍板）。⛔ 已被 **G86** 取代。 |
-| **G86** | **生产域名第二次更换**（owner 拍板，同日）。 |
-| **G87** | **静态文件 · 符号链接：默认跟随，另加一条可关的子指令。**（★ **推翻 AI 推荐项**「只跟随、不给开关」） |
-| **G88** | **隐藏文件不按 `.` 一刀切**，改成一张可配置的默认 404 清单。 |
-| **G89** | **静态文件这一批做到哪：全做。** 发文件 · 目录索引（`index`，缺省 `index.html`）· 目录不带尾斜杠 **301** 到带斜杠 · 范围请求 · 条件请求 · 预压缩旁文件。 |
-| **G90** | **静态文件 · Content-Type：自带一张小表，新增 0 个包。** 约 60 条常见扩展名 + 缺省 `application/octet-stream`。 |
-| **G91** | **`root` 必填，且必须是绝对路径。** |
-| **G92** | **`Owner` 加一档 `SelfBuiltM2`**（印「M2 自研」），文档列头 `M1 归属` 改为 `归属`。 |
-| **G93** | **`If-Modified-Since` 三种格式都解析**，RFC 850 的两位年按 RFC 9110 附录规则处理，并由单测钉住。★ 推荐项只到「三种都做」。 |
-| **G94** | **CI workflow 里的 shell 搬进脚本**：`dumpcache` 那段搬成 [`tests/ci/dump-cache.sh`](tests/ci/dump-cache.sh)，与本批一起做。 |
-| **G95** | **缓存切成两批**：语义层 + 内存后端 + `purge` + 防惊群，然后磁盘后端。 |
-| **G96** | **`ttl` 是兜底不是覆盖**：只有上游没给新鲜度时才用它。 |
-| **G97** | **缓存的 RFC 覆盖面 = 最小集 + 上游响应头里的全套 `Cache-Control` 指令。** ★ 推荐项只到「最小集」。 |
-| **G98** | **回落层这一批整块删掉。** ★ 推荐项是「保留指令、1.0 时才删」。 |
-| **G99** | **下一批 = `encode` 压缩 + 预压缩旁文件。** |
-| **G100** | **压缩用现成的**（fork 里已有那份），自研换不来更小的依赖图，新增 0 个包。 |
-| **G101** | **压缩与缓存的先后 = 压完再存 + 次级键归一化。** |
-| **G102** | **压缩后的 ETag 弱化成 `W/"…"`**（照 nginx gzip filter）。 |
-| **G103** | **D11 结案：HTTP/3 取 `quiche`。** ★ AI 推荐的是 `quinn` + `h3`。 |
-| **G104** | **TLS 栈统一到 BoringSSL**：把 fork 当初删掉的 `pingora-boringssl` 加回来，h1/h2 与 h3 共用同一套。★ AI 摆的两条里，「两套并存」才是改动面更小的那条。⇒ 推翻 §5.1 第 1 条原来的 rustls 口径。 |
-| **G105** | **HTTP/3 语义层用 `quiche::h3`，不自研。** |
-| **G106** | ~~owner 在宿主机装 Rust。~~ ⛔ **已被 G107 整条撤销**。 |
-| **G107** | **Rust 一律在 Docker 里跑。** ⛔ 整条撤销 G106；本机跑 Rust 的决定、指引与全部构建产物一并清除。判据不变：`bash tests/m0/docker-run.sh`。 |
-| **G108** | **D22 的判据换成产品自证**：新增场景 [`tests/musl/product.sh`](tests/musl/product.sh)，用产品本体编 musl 静态产物并在 `FROM scratch` 里跑一次 `validate`；`tests/musl/probe.sh` 留在门外当历史记录。 |
-| **G109** | **升级窗口内 QUIC 连接归属：按 DCID 跨进程转交**（★ **推翻 AI 推荐项**「停收 + GOAWAY」）。理由与 §7 「换代时长连接不断」一致 —— TCP 那侧做得到，h3 就不该做不到。★ 形状：`<run_dir>/quic-relay-<gen_id_hex>.sock`（`SOCK_DGRAM`）· 报文 `[from][to][原始数据报]` · 单向 · 对方已退出即丢弃 · **只走一跳**。 |
-| **G110** | **HTTP/3 跟着 `tls` 自动开，并发 `Alt-Svc`**（D25）：有 TLS 的站点自动在同端口听 UDP，h1/h2 响应加 `Alt-Svc: h3=":443"`。★ 推翻 AI 推荐项。 |
-| **G111** | **HMAC / AEAD 由 `fulcrum-server` 直接依赖 `boring`**，破例于「BoringSSL 类型只经 `pingora-boringssl` 拿」那条纪律。★ 推翻 AI 推荐项。 |
-| **G112** | **观测先于换代转交**：批 L（访问日志 + PROXY protocol 的 HTTP 半边）排在批 K 之前。 |
-| **G113** | 访问日志格式：**JSON 单一格式，字段扁平**（不取 logfmt，也不取「两种可选」）。 |
-| **G114** | **访问日志的字段清单**（★ **推翻 AI 推荐项**）。 |
-| **G115** | **仓库提前转为公开**，并把当前树作为**第一个提交**（此前的提交历史移除）。⚠ **「源码公开」不是「发布」** —— M4 的范围与退出条件不变（还没有版本号、没有包、没有兼容性承诺）。★ 连带：`handoff/` 进 `.gitignore` 不再入库；文档与注释只留当前结论，不留过程记录。 |
-| **G116** | **Prometheus 端点 = 站点块里的终结指令 `metrics`**（执行顺序表 Terminal，序号 75）。⇒ 访问控制（`remote_ip` 匹配器）、TLS、访问日志全部复用现有机制，**不新增监听器、不新增认证体系，G14「管理面只绑 Unix socket」的口径一个字不动** —— 指标面根本不属于管理面。⛔ 不挂 admin socket 当唯一出口：Prometheus 抓不了 Unix socket，那样用户必须再装一个 exporter，直接撞设计原则 1。⚠ 代价：指标与业务共用监听器，**matcher 写错就会把指标暴露出去**，只能靠文档与诊断兜。 |
-| **G117** | **指标的 text exposition 格式自研，零新依赖。** 它是行式纯文本、**不是安全敏感协议栈**，不撞安全基线第 5 条（那条管 TLS/HPACK/QUIC）。⇒ 供应链门不用动，musl 静态产物不受影响。⚠ 代价：直方图分桶、标签值转义、`_total` 后缀要自己钉住，由单测守。 |
-| **G118** | **D26 结案 = 给 `no_site_match` 一个计数器**，而不是回答「全局 `log` 与站点 `log` 是覆盖还是合并」。`host` 标签**只有出现在配置里的才带真值**，其余归 `host="<other>"` ⇒ 上界由配置定、不由访问者定。⚠ 代价写在明处：**只知道有多少、来自哪个已知 host，不知道具体是哪个未知 host** —— 有意如此，不让外人往我们的时序库里写任意字符串。 |
-| **G119** | **批 N 的顺序 = G8 增量通道 → G18 临时覆盖层 → 只读 stats。** ★ owner 拍的是这个顺序（AI 推荐的是「先只读 stats、写通道留后」）⇒ stats **从第一天就带 `overrides` 一节**，不存在「先发一个没有覆盖层的 stats」这种中间形态。 |
-| **G120** | **`POST /load` 的 `overrides` 是必填参数**（`keep` / `clear`），**缺了就拒绝**。★ 不给默认值是这条的全部内容：发布流水线要 `clear`（发布＝回到期望状态），事故处理中的人要 `keep`（一次无关的发布不该把刚摘掉的坏节点放回去）—— 两种现实都正确且互相冲突，**任何默认值都会在另一种场景里悄悄做错事**。与「改了监听端口就显式拒绝」同一条纪律：判据在拒绝上，不在尽力而为上。⚠ `clear` 那一档必须在回话里**逐项列出**被清掉的覆盖 —— §3 点名要避开 HAProxy 那个「runtime 改动 reload 后无声消失」。 |
-| **G121** | **`fulcrum_requests_total` 的站点标签 = 请求实际匹配到的那条地址字面量**（`a.example` / `*.wild.example`，通配符折叠成自己的字面量）。⚠ **不能用 `host`**：通配符站点下 host 由请求方决定，一个 `*.example` 就能让 series 无限增长 —— ★「已命中站点的请求 host 总是有界的」是错的，而它错得很像对的。⚠ 也不取「站点块的第一个地址」：那会把同一块里的 `a.example` 与 `b.example` 混成一格，且**改地址书写顺序会让时序断裂**。★ 代价：通配符站点下各子域名合并成一格，「哪个租户在打我」留给访问日志答（它有真 host）。 |
-| **G122** | **D32 结案 = 两半分别落地，且分别命名。** ① **TLS 那半**：新增 `fulcrum_tls_requests_total{version,cipher}`，取数点仍是 `Record::finish` **那一处**（`Record` 已经带着 `TlsFields`）。★ 两个标签都由**服务端协商**产生 ⇒ 上界由我们编进去的套件表定、不由访问者定，正好过 G118/G121 那条纪律；⛔ `sni` / `alpn` **不当标签**（访问者给的，与 G121 挡的是同一件事）。⚠ 名字里是 `requests` 不是 `handshakes` —— keep-alive 下一次握手对应多条请求，叫 `handshakes` 会是一句读起来完全成立的假话。② **连接那半**：`fulcrum_connections_total`（counter）+ `fulcrum_connections_active`（gauge），标签 `listen`（监听地址，上界由配置定）。⚠ ⚠ **它是四处，不是一处**：fork 第 15 处改动（`Service::run_endpoint`）覆盖 h1/h2 与 admin，而 L4 TCP · L4 UDP · QUIC **各有各的 accept 循环**，pingora 那个一次都不经过。★★★ gauge 的减一**必须用 `Drop` 守卫** —— 那个连接任务有三条退出路径（握手超时 / 握手失败 / 正常结束），手写三处 `fetch_sub` 正是 D18/G66 那个分家形状。★ 四处只负责 `+1/-1` 到**同一个** `ConnStats`，而它与标签定义只有一份。⚠ fork 够不到我们的 `metrics` 模块 ⇒ 只能由 fork 暴露计数、我们**抓取时问活体**（`upstream_inflight` 那条路子）。★ 顺序：**现在就在 fork 里做，不等 rebase**（改动是孤立新增，冲突面小；而投递或等待都不改变我们什么时候用得上 —— `ListenFds` 那条已证）；**投不投上游等 rebase 读过 `main` 之后再判** —— ~~上游 `main` 已把 `prometheus` 整条删掉，口味未知。~~ ⚠ ⚠ **划掉的那半句是假的（2026-09-04）；⛔ 有意不删原话 —— 那是 owner 当初写下的，留着才看得出错在哪。** 实测那是**一次重构被读成了删除**：`pingora-prometheus` 这条路径上**只有一个提交**（`842ddd9`，2026-04-01「Split out pingora-prometheus into a separate crate」），它删掉 `pingora-core/src/apps/prometheus_http_app.rs`、从 core 的 `Cargo.toml` 抽掉依赖，**同时新建了那个独立 crate**；`pingora` 与 `pingora-proxy` 今天都依赖它，而 `pingora-core` 对它零引用。⇒ ★ **只看 `pingora-core` 的话确实「整条消失」，那正是这句话的来源。** ★★★ 换来的口径比原来那句有用得多：那次拆分是**回应社区的 #560 / #822**（「把 `prometheus` 在 core 里变成可选」）⇒ 上游**刻意不让指标实现留在 core 里、只在 core 暴露接缝** —— 这不是「口味未知」，是一条画得很清楚的线，而枢衡要的东西（**要钩子、不要指标**）站在它的**正确一侧**。⚠ 另有三条不依赖 prometheus 的口味证据：`ConnectionFilter`（#671）本身是**外部贡献者**加进 core 的监听器级接缝 · `upstreams::peer::Tracing { on_connected, on_disconnected }` **已经在 core 里** · `listeners/` 2026 年一直在加接缝与按监听器配置；★★★ 最硬的一条是**枢衡自己的投稿一已经落进上游 `main`**（`6463ad6`，2026-08-14，committer 是维护者）。⚠ ⚠ **真正的风险不是口味，是评审带宽**（#941 open 六周 0 评论；CONTRIBUTING 不承诺及时评审）—— 那是时间成本，不是方向问题。⛔ 全部证据与**两侧读法**（含「那次拆分是在让 core 变小，而我们要往 core 加东西」这条反向读法）见 [`upstream-pr/issue-6-connection-counter.md`](upstream-pr/issue-6-connection-counter.md) §0①a。 |
-| **G123** | **D31 结案 = 把 `purge` 拆成自己的族。** 新增 `fulcrum_cache_purged_entries_total`（单位「条目」），`fulcrum_cache_events_total{event}` 只剩 `hit` / `miss` / `stale` **三个同一分母的值** ⇒ `sum(cache_events_total)` 恢复成「查过缓存的请求数」，命中率直接可写。★ 这是**把一个靠用户记住的陷阱，换成一个结构上不存在的陷阱**。⚠ 「是哪一种命中」（`HIT` / `HIT-DISK`）**不进指标**：`CacheHandle` 全仓只建一次，`Backend` 是每进程一个、由配置定死的 ⇒ 那个区分在一个运行中的进程里**是常量**，做成标签携带的信息量恰好为零，只剩基数成本；要知道后端是哪个，装载日志那一行就说了。⚠ 另一半边界**保持现状并写在明处**：`miss` 记在**回源**那一处（有意不记在「查缓存没命中」那一处 —— 那里还会拐弯：`only-if-cached` 回 504 根本没回源、防惊群的 follower 等完重查会**命中**）⇒ 上游连不上的请求三格都不在，故障期间 `hit/(hit+miss)` 会偏高；★ 那时 `upstream_healthy` 与 `requests_total{outcome="error"}` 是两个更直接的信号。 |
-| **G124** | **D30 结案 = `status_class` 保持六个值，第六个是 `none`，并补一条判据。** `status == 0`（一个响应头都没写出去 —— 那不是「未知」，是**什么都没发生**）与 1–99 / 600+ 一起归 `none`。★★ 它**可达**这件事现在有实据 —— ⚠ ⚠ **而本行原来那半句论证不够，已按 2026-09-03 的实测修订**（决定本身一个字没变）：「`response_written` 只在 `write_all` **成功之后**才被置上（`v1/server.rs`）」这句为真，**却推不出「下游断开 ⇒ `status` 是 0」**。实测三种构型：带 `Content-Length` 的响应头**根本不产生 syscall**（`write_all` 写进的是**带缓冲的流**，flush 只在「1xx 或**没有** `Content-Length`」时发生）⇒ 那次 `write_all` 返回 `Ok`、`response_written` 照样被置上、`status` 是 **200**，哪怕对端早就 RST 了。★★★ **真正走得到 `status = 0` 的是「上游响应不带 `Content-Length`」那一支** —— 只有它会 flush、会碰 socket、会在被 RST 的连接上失败。走到了那一支时，站点已命中、`outcome` 是 `reverse_proxy` 之类，而 `status` 是 0，**且 `LogLevel::All.records(0)` 为真 ⇒ 这一行照样会被写进访问日志**。（机制全文与那张三行对照表在 [`docs/architecture/observability.md`](docs/architecture/observability.md) 的 `status_class` 一节。）★★★ 同族换装：**任何「A 返回成功 ⇒ 对端一定收到了」的推断**都要先问缓冲、批量与异步刷盘。⛔ 因此「这类请求不计进 `requests_total`」当场破掉一致性门（日志有那一行、指标没那一笔）；⛔ 也不取 `0xx` —— HTTP 里没有这个类，它会被当成真的状态类去查规范。⚠ 而这条路**当时没有任何判据走过** ⇒ 本条同时要求在 `tests/metrics/run.sh` 里造一次走得到它的请求，两边一起断言：访问日志真的多了一行 `status=0`，且指标里 `status_class="none"` 正好 +1。⚠ **造法不能只是「发完请求立刻关连接」**（照上面那段，那样拿到的是 200）—— 判据用的是「立刻 RST + 慢上游且**响应不带 `Content-Length`**」，并配一个「同一条路、客户端正常收完拿到 200」的对照组证明这把尺子量得了两边。★ 否则这一格只存在于代码与文档里。 |
-| **G125** | **`reverse_proxy` 的选填 `id`，与覆盖层的三格键 `(站点名, id, 上游地址)`。**★ owner **两轮**拍板：先拍「发明 `id` + 同站点歧义就拒绝」，实测后**重拍为「保留 `id`，但撞键不拒绝 ——同键共享同一个覆盖格子」**。⇒ 一次 `disable` 把共享那一格的几条 `reverse_proxy` 一起摘掉，⛔ **不是错误、也不给告警**：「一个后端挂在几组 `handle` 路由后面」是反代最常见的写法，**现有配置一个字节都不用改**；而「一起摘掉」多半正是要的语义（那台机器坏了，它不该从任何路由收流量）。**想分开就给其中一条写一行 `id`**。⚠ ⚠ **键里的上游地址是归一化之后的那个串**（`backend` ⇒ `backend:80`）⇒ 两条写法不同、归一化后相同的 `reverse_proxy` **共享同一格** —— 这不是缺陷而是边界：管理面对着的是运行时。⚠ 「这一格管着几条」由 `GET /stats` 显示（G18），那是「以为 `disable` 只影响一条」唯一的提醒。⛔ **不自动派生 `id`**：内容哈希会让「发布时加一台机器」把刚摘掉的坏节点顶悬空，站点内序号会让「换一下书写顺序」静默改掉寻址 —— 与 `weight` 拒绝位置式是同一条理由。|
-| **G126** | **新增指标族 `fulcrum_overrides_active`（无标签单值 gauge，基数恒为 1）。**★ owner **推翻**了 AI 的建议（AI 选的是「不加，只从 `/stats` 出」）。值是**当前生效中的临时覆盖总数**，⚠ ⚠ **悬空的照样计入** —— 它确实还在登记处占着一格，且 `/load` 已经逐条点过名。⛔ **不按 `(站点, 上游)` 打标签**：那等于把 `/stats` 的 `overrides` 一节整个搬进指标（两份实现同一件事），而「是哪几项」本来就该去 `/stats` 看。★ 取数与 `/stats` **同源**（同一个 `OverrideLayer::entries()`），⛔ 不新增第二处计数；抓取路径上只许用**已持快照**的那一版（`override_entries_of`），因为 `override_counts()` 内部会再取一次快照，而一次抓取取两份快照会让两个族落在两份不同的配置上。⚠ **新族与 `observability.md` 那张基数表必须同一笔改**：把表钉在 `FAMILIES` 上的那道门会判红 ——★ 但它**只比族名**，`gauge / 活体 / 无标签 / 恒为 1` 那四格今天没有任何门守着。|
-| **G127** | **指标的标签值取不到时记 `<unknown>`，⛔ 不记空串。** ★ 判据落在「**取到的值为空**」上，⛔ **不落在「是不是 h3」上** —— 后者把一个今天成立的巧合钉进代码：哪天别的传输也读不出套件，它会走到分支外面记一个空串，**而那时不会有任何东西红**。`fulcrum_tls_requests_total` 的 `version` 与 `cipher` 两格**同一条规则**，⛔ 不给 `cipher` 开特例。**决定性依据在 Prometheus 数据模型**：空标签值与「这个标签不存在」被视为等价 ⇒ ⚠ ⚠ 「今天记 `cipher=""`」与「明天把 `cipher` 这个标签整个删掉」在抓取端**分不开**；且 `cipher=""` 正是 PromQL 里「该标签不存在」的惯用写法，运维照着写出来的过滤器会命中一批他没打算命中的 series。★ 记号形状随 G118 的 `<other>`（尖括号在真实套件名 `TLS_AES_256_GCM_SHA384` 里不可能出现，撞不上）。⚠ **但两者动机不同，别当成同一条**：`<other>` 挡的是**访问者可控的无界基数**，`<unknown>` 标的是**我们问不出来**；共用的只是那个防撞记号。⚠ 它把「这条传输问不出套件」与「我们没读到」并成一格 —— 今天两者恰好是同一个集合（h3 走 quiche，`Handshake::cipher()` 锁在私有 `mod tls` 里），**而判据有意不依赖这个巧合**。基数代价：h3 恒为 `TLSv1.3` × `<unknown>` ⇒ 多一条 series。|
-| **G128** | **D27 + D28 一起结案 = fork 改动 14**：`SslDigest` 直接多两格 `pub sni` / `pub alpn`，由 `from_ssl()` 在握手结束后填 —— 那里本来就握着 `&SslRef`，**一分额外开销都没有**。摆在桌上的另外三条是「只把 `SslDigestExtension::set` 放开成 `pub`」「零 fork，h3 走我们自己的 trait 传参」「维持现状只写进契约」；**决定性理由是它是唯一同时收掉两条 D 的** —— 放开 `set` 花掉一次 fork 的代价却只买到 D27 那一半，而 D28 的落点**就在同一个文件里**。⚠ **D28 那趟开销不是「这次握手需要挂起」才有的**：走回调那条路（`TlsSettings::with_callbacks`）时上游 `start_accept()` **无条件**装一个恒回 `-1` 的 `cert_cb`，于是每条 TLS 连接都多走一趟「挂起 → `certificate_callback` → `resume_accept`」。⇒ 监听器换回 `TlsSettings::from(builder)`，那趟开销**归零**，⛔ 数据面此后不许再挂 `TlsAccept` 回调。★ **顺带的结构收益才是这条最贵的**：`SslDigest` 有了那两格之后 h3 也能自己造一份同类型的 `Digest`（`quic_digest`：`version` 恒 `TLSv1.3` 由 RFC 9001 §4.2 定死，`sni` / `alpn` 取自 `quiche::Connection` 的公开 API）⇒ h1/h2 与 h3 在访问日志那一层**走同一段代码**，「同一格数据两个填法」在结构上做不到。⚠ **代价写在明处**：`tls_cipher` 在 h3 上**仍然拿不到**（quiche 的 `Handshake::cipher()` 锁在私有 `mod tls` 里，且它一个 TLS 出口都没 re-export）—— 按契约留空 ⇒ **那一格不出现**，⛔ **不许编一个值**：一个编出来的套件名读起来与真的一模一样。⚠ **指标那一侧的处置不同，而且必须不同**：`fulcrum_tls_requests_total` 记 `<unknown>`（G127）—— 指标里没有「那一格不出现」这回事。守它的是 [`crates/fulcrum/tests/tls_digest_gate.rs`](crates/fulcrum/tests/tls_digest_gate.rs) 三道文本门（那两格还在不在 · `from_ssl()` 还填不填 · 数据面有没有又去挂回调）加 [`tests/log/run.sh`](tests/log/run.sh) 在真握手上量。⚠ ⚠ **本行是补记**：这条决定作出于 §10 第 79 轮（`FORK.md` 改动 14 引的就是那一轮），当时**没有落成 §10 的行**，而 `docs/` 与代码注释多处按「已结案」引用它 —— 号按「只增不减」取 128，⛔ **不表示它比 G119–G127 晚**。|
-| **G129** | **裁决 R6 留下的三条小项（M2 批 P）。**★ owner 逐条拍板，三条彼此独立。**① 每项覆盖带设置时间，语义取「最后一次改动」，⛔ 不是「首次被覆盖」** —— 运维问的那句话是「这台机器摘掉多久了」，问的是**当前形态**的年龄而不是这一格的年龄：先改 `weight` 再 `disable` 时，取「首次」的读数会让人以为它两天前就摘了，而其实两分钟前才摘。★ 连着调 `set_weight` 会让它一直往前走 —— 那**正确**，形态确实一直在变；⚠ 「设成同一个值」也算一次改动（管理面分不出「设成 X」与「又设了一次 X」）。字段是 `/stats` 上的 `set_at_unix`，**绝对 Unix 秒**，⛔ 不写「已过多少秒」——与 `not_after_unix` 同一条理由：相对秒读起来完全正常，而它在两次抓取之间的含义会变。⚠ ⚠ 内部存 `SystemTime` 而**不是**秒级整数：秒级粒度会让「改动会推进它」这条判据在跑得快的时候落在同一秒上而**偶发抖动**。⚠ 时钟取**墙钟**而不是 `Instant`（这个值要能与日志对时间），代价写在明处：墙钟会跳（NTP 校正）⇒ 极端情况下两项覆盖的先后与时间戳顺序可以不一致；⛔ **不**为此引入第二个单调时钟，那会让 `/stats` 出现两种时间，而「这两个为什么不一样」没人答得出来。⚠ 它**不进指标**（G126 已经拍过：「是哪几项」本来就该去 `/stats` 看）。守它的是 [`crates/fulcrum-runtime/tests/overrides.rs`](crates/fulcrum-runtime/tests/overrides.rs) 四条加 `admin.rs` 两条（★ 后者的判据打在**最终 JSON 文本**上，不是取数函数的返回值上）。**② `self_loop_warnings` 的第一条端到端判据挂进已有的 `tests/serve/`，⛔ 不新起场景** —— 那个字段在建图那一刻就算好了，而**全仓一个消费者都没有**，`log_load_summary` 一个字都不说 ⇒ ★ 又是本仓那条老形状：**一个用来「出了事你能知道」的东西，自己不说话时没人知道**。⚠ 打印只能落在数据面这一侧（`fulcrum-runtime` 有意不依赖 `log`，返回话、不自己打印），且**是 warn 不是 error**：指回自己可能是有意的（自己终止 TLS 再回自己的明文口）。⛔ 不挂 `tests/stats/`：那边的端口集刚被钉成逐字等于一个字面量，往里加站点会撞那道编译期门。★ 夹具**有意嵌在 `handle` arm 里**：单测那条用的是**扁平**站点，于是「容器要下钻才找得到」这一半在任何一层都没有判据 —— 而 `self_loop_warnings` 那个 `_` 曾经就是漏在容器上。⛔ 这条路径不许打真流量：真打进去就是一个无限转发循环。守它的是 [`tests/serve/run.sh`](tests/serve/run.sh) `[4/4]` 四条（说出来了 · 点名了那个上游 · **不自环的上游不许被说进去** · **恰好一条**）。**③ `id` 的取值域收紧成 `[A-Za-z0-9_.-]`、长度 1–64**（桌上另两条是「维持现状只写文档」与「只禁尖括号」）。★ ★ **决定性理由只有一条半，⛔ 别把它记成「基数风险」**：硬的那条是**与兜底记号撞车** —— 本仓用 `<other>` / `<none>` / `<unknown>` / `<undeclared>` 表示「取不到 / 兜底」，靠的是**尖括号在真值里不可能出现**，而在这一条之前 `id <none>` 是**合法**的；另半条是可读性（`id` 里的换行会让 `/stats` 与日志上那一行在人眼里断成两行）。`id` 一个字都不进指标（G126）⇒ ★ 一个假理由会让下一个人理直气壮地把限制放宽回去。⚠ **这是一次收紧，代价认下**：在此之前装得上的某些配置以后装不上 —— **D9（版本与兼容性策略）还没结案、M4 之前没有任何兼容性承诺**（§7）⇒ **要收就现在收最便宜**。⚠ ⚠ **两条路各拦一次**：DSL 那条给 `FUL-DSL-0043`，而**结构化配置**那条（`POST /load`，G11 的公开入口，不经过 `fulcrum compile`）由运行时图建图时再拦一遍回 **400** —— ★ 两处调的是**同一个**判据函数（`model::is_valid_proxy_id`）与**同一句**「合法的长什么样」（`model::proxy_id_shape`），⛔ 不是两份手写的平行逻辑，与 `weight` 的值域常量同一条纪律。⚠ 空串**仍然**走 `FUL-DSL-0042`：「`id ""` 与根本没写是同一个键」那段解释是那条诊断的全部价值，⛔ 不许被这条泛泛的「不合法」顶掉。⚠ **真换行在 DSL 里表达不出来** —— 引号串不能跨行，词法层先回 `FUL-DSL-0003` ⇒ 那一格**只有手搓的 JSON 递得进来**，判据也只能挂在运行时那一层。⛔ **有意不留逐行豁免记号**：一个能被随手贴上去的记号会把门变成建议。守它的是 [`crates/fulcrum-config/tests/compile_behaviour.rs`](crates/fulcrum-config/tests/compile_behaviour.rs) 四条（DSL 那条路）加 [`crates/fulcrum-runtime/tests/routing.rs`](crates/fulcrum-runtime/tests/routing.rs) 四条（结构化层，★ 与 `weight` 值域那条并列在「构建期校验」一节里，**同一类检查不分家**）。⚠ ⚠ **本行是补记**：三条都由 owner 在 §10 之外拍板，落点是 `7b66c68`（①）、`68844d7`（②）与 `9c0634f` 起的那一串（③）；当时**没有落成 §10 的行**，而代码注释与 [`docs/architecture/dsl-reference.md`](docs/architecture/dsl-reference.md) 多处按「owner 拍板、裁决 R6 三之三」引用它 —— 号按「只增不减」取 129，⛔ **不表示它比 G128 晚**。|
-| **G130** | **`outcome` 闭集改由「类型 + 宏 + 返回值」三件共同守，三种分家各自变成编译错误。** ★ owner 推翻了 AI 推荐项：AI 建议先走便宜的 `assert!` 兜底，owner 拍板**升级范围做结构性那条**。⇒ ① **宏 [`outcomes!`]** 一行 `<常量名> <字面量>`，常量与 `OUTCOMES` 吃**同一个** `$lit` token（与 `chain_directives!` 的序号同一手法）⇒「声明了取值却没进闭集」在语法上表达不出来；② **`OutcomeName` 元组字段私有**，`outcome_name` 的返回类型收紧到它 ⇒ `=> "foo"` 这种绕过常量表的裸字面量编不过；③ **`outcome` 不再是 `Record` 上的字段，而是 `serve_one` 的返回值**（`write_error` 同样返回它，⛔ 不再写副作用）⇒「某条返回路径忘了写 outcome」编不过。★ ③ 那条不是新规矩：`Downstream::serve` 的文档早就为 `status` / `resp_size` 写着「不在 `Record` 里另存一份，两份迟早不一致」——`outcome` 此前是**唯一的例外**。⚠ ⚠ **②那一格的边界必须恰好画在类型周围，这是判据本身而不是文件组织偏好**：Rust 的私有是**模块级**的 ⇒ 把 `OutcomeName` 和 `outcome_name` 放在同一个模块里，屋里照样构造得出来，于是这条路只对**别的**模块关上，偏偏对最需要关上的那一处敞着。⛔ 这不是推理：实测过一次，同模块内 `OutcomeName("x_smuggled")` 整棵树 `RC=0`；搬进 [`crates/fulcrum-server/src/outcome.rs`](crates/fulcrum-server/src/outcome.rs) 之后同一注入回 `E0603`。⇒ **改动这一块时不许把那个类型搬回 `lib.rs`。** ★ 三条反证各有实测：删宏表一行 → `E0425`；六条臂**全换**裸字面量 → `E0308`（顶着**返回类型**，⚠ 只换一条臂时报的是「臂之间不一致」，那证不到点上）；一条早退不产出值 → `E0069`。⚠ **代价认下**：`Record` 上那个 `outcome: "aborted"` 默认值删除 ⇒ 访问日志契约里**不再有「未设置」这一档**（那个状态在类型上表达不出来了）。⚠ 宏挡不住的只剩「两行写了同一个字面量」，那由 `metrics.rs` 基数表判据里的去重断言守着。★ 顺带修掉两处假话：`lib.rs` 与 `access_log.rs` 都写着那个 `aborted` 默认值会在「读不到请求头那一类」被写出来 —— 而那一类在 `process_new_http` 里是在 `Downstream` 造出来**之前** `return None`，**根本不产生 `Record`**，既无日志行也无指标；[`docs/architecture/observability.md`](docs/architecture/observability.md) 那句从「人工核对过每一条返回路径」升级为「类型系统要求每条路径都产出一个值」。★ 老单测钉的是已不存在的 `aborted`，⛔ **不删**，换成钉新契约的 `日志里的_outcome_就是收尾时传进来的那个值`，旧契约与换的理由留在注释里。 |
-| **G131** | **D21 结案 = （a）Alpine 原生 + qemu 跑 aarch64。** ⇒ 构建宿主口径维持现状并**转正**：musl 产物由那张**已经钉死的第二张基础镜像**（Alpine，原生 musl）编，aarch64 那一趟走 qemu。★ **决定性理由只有一条，⛔ 别把它记成「Alpine 更方便」**：候选（b）（glibc 宿主 + musl 交叉工具链，zig / musl-cross-make）的全部代价落在**供应链**上 —— 它给依赖面新增一整套 C/C++ 交叉编译器，而供应链是本仓的硬约束（见 [`docs/platform/supply-chain.md`](docs/platform/supply-chain.md)）；（a）则**一个字都不改供应链面**。⚠ **代价认下**：aarch64 那一趟在 qemu 上慢一个量级 —— ⛔ **而那个耗时今天还没量过**。⇒ **本条不替 D24 拍板**：D24 问的是「aarch64 那一格挂不挂进每次门禁」，答案完全取决于那个还没量到的耗时，⛔ 不许把两条合并成一次决定。⚠ 与选哪条无关、两条都要面对的那一半仍然成立：`boring-sys` 的 bindgen 走 `dlopen`，而静态 build script 不能 dlopen ⇒ 最终产物那一步必须用 `cargo rustc -- -C target-feature=+crt-static` 这种 per-crate 的口子。 |
-| **G132** | **M3 第一刀 = 先立方法学、⛔ 本轮不出任何性能数字；用「静态吞吐」一类对三家跑通全流程。** ★ owner 两问一起拍。**① 本轮不产生数字**，理由是退出条件自己那半句「基准脚本与原始数据**可被第三方复现**」：合格的对拍宿主今天还不存在 —— 开发机是 Windows + Docker Desktop，且这台机器上那个 TUN 代理**已实测会干扰网络**（容器出不去 UDP/443）；生产机在承载真业务，且它会与被测**共享 CPU**。⇒ 在这两台上量出来的数**先天不可复现**，⛔ 「先用一台不合格的宿主量一遍」等于给自己造一批将来必须撤回的数字，而 §8 明令不发布无法复现的性能声明。**② 第一刀取「一类 × 三家」而不是「七类 × 一家」**：G19 的门槛是「不劣于**该类最强者** 10%」，而**谁是最强者逐类不同** ⇒ 只对一家跑七类，等于在「最强者」这个概念还没被检验过的时候先铺开覆盖面。★ ⇒ **本轮的交付物是脚本、环境快照与判定口径，验收标准是「拿到合格宿主那天，跑一遍脚本就能出数」，⛔ 不是「出了几个数」。** ⚠ 连带两条：**G36** 说 M3 对拍期间冻结构建镜像升级 —— **本轮还没进入那个窗口**（没出数就不算在对拍），⛔ 别现在就冻；D20（磁盘缓存的同步 I/O）写着「M3 对拍时一起量」⇒ 它跟着这一刀一起往后，仍然开着。 |
-| **G133** | **回收提示的判据不再只在扫描集内说话：无 filter 列全机卷，减掉说得出归属的，剩下的只报名字与体积、⛔ 不给删除命令。** ★ owner 拍板，AI 给的四个候选里选了「加第三个桶」这条。**决定性理由只有一条，⛔ 别把它记成「筛子调宽一点」**：原扫描集是 `docker volume ls -q --filter name=fulcrum-target` —— 一个**子串**筛子，而它要找的东西是「本仓的活造出来的卷」，⇒ **名字只是属主的代理，不是属主本身**。2026-09-04/05 两天里逃出这个筛子的有三族，⚠ ⚠ **三族全部是人工发现的，门禁一次都没帮上忙**：`fulcrum-upstream-target`（投稿六那棵上游克隆）· `fulcrum-musl-{probe,alpine}-{target,cargo}` ×4（musl 探针）· `pingora-up994-target` **10.51GB**。⛔ **2026-09-04 摆出来的那条候选「放宽到 `name=fulcrum-` 再按后缀分流」在本条里被证伪**（⚠ 它当时**没有 G 号也没被勾中**，作为一条 ⏳ 登记项开着）：第三族**连 `fulcrum` 都不含**，任何以 `fulcrum` 为词根的名字模式都够不着它。★ ⇒ 本条同时**结掉那条登记项**。⇒ 判据换个问法：**属主判不了，能判的只有「报得多宽」。** ⇒ ① 扫描集换成无 filter 的 `docker volume ls -q`（全机）；② 减掉本门管辖内的（本树活卷 + `fulcrum-cargo` + 原扫描集全部）、前缀白名单 `FULCRUM_FOREIGN_VOL_PREFIXES` 认领的（逐条注明属主）、以及 docker 自己建的匿名卷（**恰好 64 位十六进制**，⚠ 长度写死是有意的：放宽成「一串十六进制」会静默吞掉人起的名字）；③ 剩下的**只报名字与体积**，⛔ **一律不给删除命令** —— 本门对它们的属主一无所知，给命令等于拿一句「我不知道这是谁的」去劝人删，**那比不报更坏**。★ ★ ★ **选它的全部理由是它的失效方向**：白名单过期 ⇒ 多报一行（**噪音**），⛔ 不是漏报一个卷（**沉默**）。⚠ ⚠ **代价认下，两条**：① 那份前缀白名单是**某台开发机上的读数**，天生会过期，且它**本身就是一个新筛子** ⇒ 有变成消音手段的风险；三条纪律写在清单头上（只放别的项目的卷·前缀锚在开头⛔不是子串·自测钉住它不许吞 `fulcrum*`），★ ★ 但**诚实说出它守不住什么：它拦不住有人把一个真正属于本仓、名字里却没有 `fulcrum` 的卷写进白名单** —— 那一格没有门，只有纪律。② 稳态下这个桶是空的（⚠ 逐机而异，**读数只留在 [`docs/platform/build-and-test.md`](docs/platform/build-and-test.md) 一处**，⛔ 别在别处抄一份）⇒ 它**平时一行都不打**，于是「桶是空的」与「这段代码根本没跑」长得一模一样。★ ⇒ **九条自测全部用合成输入**（⛔ 不依赖宿主上此刻恰好有什么卷）：七条钉判据（别人家 ⇒ `foreign` · 匿名 ⇒ `anonymous` · ★★★ **承重**：真的逃逸过的那个名字 ⇒ `unattributed` · 白名单不许吞 `fulcrum*` 两条 · 63 位十六进制不算匿名 · 白名单是前缀不是子串），两条钉**集合层**（⚠ 判据函数对了、而循环里一个 `continue` 放错位置，症状同样是「一行都不打」）。★ 外加**真数据自证**：造三个探针卷让三个桶各打一次（实测 1/1/1），删掉后再跑一趟三个桶**各 0 行**。★ 顺带修掉一处同源缺陷：`vol_size_of` 原来的 `grep -F "$want|"` 是**子串**匹配 ⇒ `x-fulcrum-cargo|…` 那一行会被 `fulcrum-cargo` 认领，**一个卷报上另一个卷的体积**；实现搬进 `fulcrum_vol_size_of` 并改成逐字段全等，第二、三桶共用同一份推导。 |
-| **G134** | **`shellcheck` 挂进 `COMPILE_ONLY` 那一格 ⇒ `pre-push` 门从「编译不过的树不许走」升级为「静态上就站不住的树不许走」。** ★ owner 拍板。**起因是一次实测，不是推理**：2026-09-05 改了 `tests/lib/vol-lock.sh` 与 `tests/m0/docker-run.sh` 两个 `.sh`，跑了**四趟** `COMPILE_ONLY` 全绿 —— 而那一格当时是 `CMD='cargo test …'` **直接替换**、⛔ 不是 `CMD="$CMD && …"` 追加 ⇒ **它不含 `LINT_CMD`**。★★★ 于是**一次纯 shell 的改动可以完整地穿过 `pre-push` 门**，而那四个绿对那次改动**零判别力**（直到单独补跑一次 shellcheck 才知道）。⚠ 这不是 bug：那道门的文件头只承诺「编译不过的树不许离开这台机器」⇒ 它是一条**没被说出来的覆盖边界**，本条把边界挪了并把话说全。⇒ `CMD='{ bash tests/ci/shellcheck-all.sh && cargo test --no-run --workspace --all-targets; }'`，`shellcheck` **放在前面**（几秒出结果，编译要十几秒起 ⇒ shell 写错时立刻说）。⚠ ⚠ 那对花括号不是风格：见 `docker-run.sh` 里「`&&` 与 `||` 同优先级左结合」那段实测假绿，本格今天没有 `||` 但纪律照守。⛔ **只挂 `shellcheck`，不挂 `fmt` / `clippy`** —— 这是权衡不是遗漏：`clippy` 要先把依赖（含 BoringSSL）编出来，会把这道门从秒级拖成分钟级，而 ★★ **门变慢正是它被 `--no-verify` 绕过的起点**（那道门自己的文件头就是这么论证「不跑测试」的）；`shellcheck` 只读源码、在本已起着的同一个容器里跑，单跑实测 **7.8s**（含容器冷启），⇒ 边际成本是这一格里最便宜的一档。⚠ **代价认下，两条**：① 这一格**仍然不拦** `fmt` 差异、clippy 告警与所有测试 —— 那三格归完整门禁，⛔ 本门不冒充它们；② `COMPILE_ONLY` 从此**不再是纯编译**，直接跑这个 flag 的人会被 shell lint 拦下 —— 有意如此，因为这一格的身份是「`pre-push` 门用的那一格」而不是「一个纯编译开关」。★ **反证两个方向都跑过，且注入挑的是「只有 `shellcheck` 抓得到、`bash -n` 抓不到」的缺陷**（`SC2086` 未加引号的变量）—— 否则红的来源说不清；⇒ 注入后 `git push --dry-run` 须 `RC=1` 且报文点名那个文件，撤掉后须 `RC=0`。★ 同时更新了**五处**描述这道门承诺的文字（`AGENTS.md` · `docs/platform/build-and-test.md` · `docs/platform/host-and-gate-traps.md` · `docker-run.sh` 用法头 · `pre-push.sh` 文件头与三条报文）—— ⛔ 不改它们就是留下一份自洽的谎，而本仓刚在同一天栽过一次抄件不同步。 ⇒ **此后 `pre-push` 门按被推的提交决定跑不跑 shellcheck，见 `G158`**（上面那个「单跑 7.8s」到 2026-10-06 实测已是 15–33s，成了这道门里最慢的一项）。 |
-| **G135** | **`cache { capacity … }` 改了之后 `POST /load` **真的生效**，并在回话里报出生效值；调小是**惰性**的。** ★ owner 拍板，三条候选里选了「① 在线改容量 + ③ 在回话里说出来」，⛔ 没选「② 与 `disk` 一样回 409」。**缺陷的准确形状**：`ttl` / `max_size` 每请求现读 `CacheRt`、改了立刻生效，而 `capacity` 在**启动时**被抄进了后端的一个 `u64` 字段 ⇒ 一次 `POST /load` 回 200、`plan` 显示新值，**实际仍是旧容量，而没有任何东西会说** —— ⚠ 两条子指令写在同一个 `cache { … }` 块里，配置文件上看不出任何区别。⇒ ① 两个后端的 `capacity` 改成 `AtomicU64` + `set_capacity()`（实测每个后端**只有 3 个读点**：getter · 大条目守卫 · 淘汰循环，两个后端形状逐字相同 ⇒ ⚠ **必须一起改**，只改一个的症状是「换成磁盘后端就不生效」）；`POST /load` 在 `swap` 之后按**新**运行时重算并 set。② 选 ③ 而不是只做 ① 的理由是一条**实测**：`capacity` 此前**完全没有运行时出口** —— 启动日志说一次「生效容量」，之后 metrics 里没有（缓存只有 `fulcrum_cache_events_total` / `_purged_entries_total`）、API 里也没有 ⇒ 光改成在线生效，运维仍然无从核对它到底生效了没。★ 回话报的是**问后端要回来的那个数**，⛔ 不是刚写进去的那个 —— 回显自己刚写进去的值，对「写进去了没有」零判别力。★ ★ ★ **调小容量有意是惰性的**：`set_capacity` ⛔ 不扫 LRU —— `POST /load` 是接管流量时的关键路径，在那里拿缓存锁扫一遍 LRU 会把一个 O(1) 的动作变成随缓存大小线性增长（磁盘那边还要删文件），与 **G84**「启动不扫盘」同一条纪律。⚠ **代价写在明处**：调小之后到下一次写入之前，占用仍可能高于新上限；下一次 `put` 的淘汰循环收紧它。★ 「各块取最大值」那条推导提成了 `cache::effective_capacity`，**只有一处** —— 它现在有两个调用点（`serve()` 建后端、`POST /load`），⚠ 抄一遍的失效形态是「启动时算出来的容量与 load 之后算出来的不是同一个数」而两处各自都自洽；本仓 2026-09-05 当天刚栽过一次同形状的（G134 提交信息里那个分解式抄了三处）。★ **七条测试 + 三条撤掉即红的反证**（各在不同函数、各瞄准一条，实测恰好 3 条红）：注入「load 之后不改后端容量」⇒ `load_改了_capacity…` 红（那正是 D19 本身）· 注入「`set_capacity` 当场淘汰」⇒ `调小容量是惰性的…` 红 · 注入「取最小值」⇒ `生效容量取各块最大值…` 红。⚠ ⛔ 编译期的红不算反证：它只证明 API 不存在，不证明测试判得动行为。⇒ **结案 D19。** |
-| **G136** | **被动熔断 `passive_fail` 接线（M2）：五条取舍一起拍。** ★ owner 逐条拍板，起因是 M1 那句登记「`passive_fail` 不在 M1 清单上，至今没做；主动健康检查也**不是**它 —— 一个 `/health` 回 200 而真实业务在 500 的上游，主动检查看不出来」。**① 什么算失败 = 连不上/超时 + 上游真的回了 5xx。** ⛔ 枢衡**自己合成**的 5xx（`all_upstreams_down` 那条 502）一律不落账 —— 否则一次全站故障会把每个上游轮流再熔一遍，**自我强化**。⚠ 只数传输层的话，它与主动健康检查高度重叠，上面那句立身理由就不成立了。**② 状态与 `healthy` 各占一格、互不覆盖**，筛子从三条变**四条**。⛔ 不共用 `healthy`：那样下一次主动探测成功会把熔断**静默解除**，而那恰恰是它唯一存在理由的那个场景。**③ 恢复走真半开：冷却期满后恰好放一个探针。** ★ ★ 决定性理由是一条**算得出来的账**：枢衡**不换上游重试**（`lib.rs` 明确划过界：「请求发出去之后再换上游那是重试语义」）⇒ 每个打到坏上游的请求都是**用户可见的 5xx**。上游一直不好时，「到期全量放回」（nginx `max_fails` 那套）每个冷却周期赔 `threshold` 个，半开赔 **1** 个，且是**结构上**的 1、与并发无关 —— 符合本仓「在结构上做不到」胜过「实践中通常不会」的一贯口径。⚠ 实现上它让 `pick_index_by` **不再是纯函数**（冷却期满时抢一次探针资格），这一条写进了那两处文档。★ 半开的执行者是**对 `open_until` 本身 CAS**，⛔ 不是一个独立的 `probe_taken` 布尔 —— 后者会**死锁**：令牌在**筛选**时抢走，而被筛进来的上游未必被 `lb_policy` 选中，那个令牌就再也没人还，该上游从此永久出局且无症状。**④ 新增第三个子指令 `passive_cooldown`**（G17 只定了阈值与窗口）。⛔ 不走 nginx `fail_timeout` 那种一格两用：窗口问「失败要多密才算一个模式」，冷却问「给上游多久缓过来」，而一个真坏了的上游很少在 10s 内自愈。⚠ 代价：DSL 面比 G17 定的宽了一格。缺省 `passive_window` **10s** / `passive_cooldown` **30s**，且**在配置层就落实成具体数字**，⛔ 不留 `Option` 让运行时 `unwrap_or`（那会让缺省值住两处）。**⑤ 不写 `passive_fail` = 完全关闭。** ★ 与 `health_uri`「不写它就完全不探测」同一条先例，决定性理由是**既有配置行为一个字不变** —— 一个悄悄改变所有人行为的默认值，症状是「升级之后偶尔 502」而没人会想到熔断。⛔ `passive_fail 0` 不是关闭的写法而是 `FUL-DSL-0044`（与 `weight 0` 同源：关闭只有一种表达）；⚠ ⚠ 那条诊断真正的价值在「**不是数字**」那一半：在它之前是 `first.parse().ok()`，`passive_fail 五` 会**静默**变成 `None`，而 `None` 的语义恰好是整个特性关掉。只写旋钮不写阈值 ⇒ `FUL-DSL-0045` **警告**（⛔ 从来不是 error：那会把「先调好参数、待会儿再开」挡掉）。★ **观测面一开始就给**（D19 刚教过「没有运行时出口」的代价）：`/stats` 加 `passive_open` / `passive_fails` 两格、新指标 `fulcrum_upstream_passive_open`（归并取**析取**，与 `healthy` 的合取方向相反而纪律相同：都往「说得出故障」那一侧倒）、熔断与恢复**各打一行**（⛔ 不是每次失败一行 —— 故障时会把现场淹掉）。★ `passive_fail` 同时从 `fulcrum_runtime::UNWIRED` **销号**（第五次翻方向，前四次是 `dns_refresh` / `encode` / `health_uri` / `weight`）。⚠ 端到端判据是**两条路的差值**：`/pf` 与 `/nopf` 指着同一对上游、只差一行 `passive_fail`，10 个请求分别拿到 **2** 个与 **5** 个 500 —— ⛔ 单测证明不了「服务层真的会去落账」，那三处只有真流量走得到。 |
-| **G137** | **自动 HTTPS 的重定向端口**维持写死 `:80`，把理由与代价写进文档（**结案 D29**）。★ owner 在两条候选里选了②（维持写死）而不是①（全局加 `auto_http_redirect_port`）。**决定性理由是一条外部约束，不是口味**：HTTP-01（RFC 8555 §8.3）规定 CA **只连 80 端口** ——⇒ 「让它可配」与「HTTP-01 还能用」天生对立，而 G54 把 HTTP-01 定为备用签发路。加一个旋钮等于造一个陷阱：**调了它就静默地废掉备用签发路**，而那件事要到证书到期那天才被发现。⚠ ⚠ **代价认下**：上游已有一层代理占着 `:80` 的那类非标准部署，**用不了自动跳转** ——它们要么把 `:80` 让出来，要么自己在前面那层做跳转。⛔ 这不是「以后再说」，是**明确不做**。★ 顺带的后果早已处理：门禁里好几个场景因此隐式共用 `127.0.0.1:80`，**是哪几个由 [`docs/platform/host-and-gate-traps.md`](docs/platform/host-and-gate-traps.md) 那张端口表说**，⛔ 这里有意不抄那个个数（它一道门都没有，2026-09-03 实测抓到过一次名单漏项）。 |
-| **G138** | **「产物里真的链接了哪几套 TLS」有判据了（结案 D23）：判符号表，⛔ 不判字符串。** ★ 三个问题至此各有各的门：锁里写着哪些（供应链门 4）· 依赖图里真有哪些（门 5）· **产物里真的链接了哪些**（本条，`tests/ci/tls-linkage.sh` + `tests/musl/product.sh`）。⚠ 「图 ≠ 产物」那一半是门 5 **原理上**看不见的。⇒ 判据挂在**真正要分发的那个产物**上（G13 的 musl 静态二进制），⛔ 不是开发用的 glibc 产物。**三条，各守一个方向**：① 正向 —— BoringSSL **独有**的 3 个符号必须都在，其中 `SSL_CTX_set_select_certificate_cb` **正是 G6 第 1 条「两个入口共用同一个回调」的执行者** ⇒ 判据与那条锁死的架构约束是同一件事；② 反向 —— OpenSSL **独有**的符号一个都不许有（`OPENSSL_init_ssl` 一类，BoringSSL 里不存在，⛔ `SSL_CTX_new` 那种共有符号分不开两者）；③ 反向 —— rustls **本体**一个符号都不许有。⚠ ⚠ ★ ③ 的区分器是**判据本身**：`strings` 里 `rustls` 出现 4 次，**全部**来自 `rustls_pki_types` —— 一个 `instant_acme` 拉进来的**纯类型 crate**（`CertificateDer` 一类，没有协议实现、没有密码学）。⇒ 一条 `grep rustls` 的门会**永远误报**，随之而来的豁免早晚会盖住一次真的。用 Rust v0 名字修饰的**长度前缀**精确分开：`_6rustls` 是 crate 名恰好为 `rustls`，而 `_16rustls_pki_types` 里 `_` 与 `6` 之间隔着 `1` ⇒ 它不是子串。★ 每次跑都带**扫描器自证**（`_14fulcrum_server` 必须 > 0）：三条「必须为 0」的判据，失效形态是**模式写错**，而写错的 grep 与「真的一个都没有」给出完全相同的 0。⚠ 读不到符号表时打 `TLS_NM=stripped/missing` 并由调用方**判红**——「没能检查」不算「检查通过」。⛔ **不要用 `BORINGSSL_self_test` 当正向判据**：它只在 FIPS 构建里存在，非 FIPS 下恒为 0（写这条时当场量到）。★ 反证：四条判据各注入一次，读数分别 3→2 / 0→1 / **0→2** / 4987→0；外加一次端到端注入，`MUSL_ONLY` 当场 `RC=1` 且**只有** rustls 那一条变红。⚠ 代价写在明处：它**只在 musl 那一格跑**，⛔ 不覆盖开发用的 glibc 产物。 |
-| **G139** | **M3 第一刀落地：三条取舍一起拍，而「本轮不出数字」改由判据的形状守着。** ★ owner 在三个问题上各选了推荐项。**① 「不出数字」是结构性的，⛔ 不是纪律性的。** G132 已经拍了「本轮不产生任何性能数字」，而落法有两条路：在脚本头上写一句「本轮数字只作现场记录，不许引用」（`tests/stress/run.sh` 的先例），或者立一套**宿主合格性判据**。选后者，决定性理由是前者守不住的那个场景：**它拦不住有人把开发机上量到的数抄进文档**，而 §8 明令不发布无法复现的性能声明。⇒ `bench/env-snapshot.sh` 先判宿主，不合格时 `bench/verdict.sh` **结构上**就不取最强者、不算门槛、不打 PASS / FAIL，只写 `VERDICT: UNQUALIFIED` 并逐条说出为什么；原始数据仍然完整落盘，⚠ 它证明的是流水线跑得通，⛔ 不是性能读数。★ ★ 判据五条，**分成性质完全不同的两半**：四条容器自己看得见（内核串带 `microsoft`/`wsl` · 核数 · 空载 · **CPU 亲和两组核都给了没有**），一条容器原理上看不见（专机 / 无 TUN 代理 / 内核参数已固化 —— 只能由人写下 `BENCH_HOST_ATTEST`）★ ★ **第三件「内核参数已固化」已由 G145 从这句声明里拆出来变成门**（实测：宿主上设的那四个键 per-netns，传不进对拍容器 ⇒ 那句声明可以完全诚实同时零影响）⇒ 本条此后读作「五条里那一条声明只剩两件」。⚠ **声明不是证明**：那一格能做到的只有「谁都没声明过就一定不算合格」，⛔ 它拦不住一句不实的声明，那一格没有门只有纪律。★ 判据写成**纯函数**（读数由调用方传进来），⇒ 十八条自测全部用**合成输入** —— 这一条是承重的：本轮唯一跑得到的宿主是不合格的那一台，**「合格」那条分支在真实数据上一次都执行不到**，而一个恒返回不合格的判据与一个坏掉的判据给出完全相同的输出。**② 落点 = 顶层 `bench/`（交付物）+ `tests/bench/`（一格门）。** ⛔ 不全塞进 `tests/`：G19 要求「基准脚本与原始数据可被第三方复现」，而第三方不该被迫连整套 `tests/` 惯例一起搬。⛔ 也不是「只放 `bench/`、本轮不挂门」：那会留下一条**从未被执行过的路径**，而「它跑得通」就成了一句没有判据的断言。**③ 三家竞品走单独的 `docker/Dockerfile.bench`，全部按 digest 钉死。** ⛔ 不挂进 `Dockerfile.build`：那会给每趟门禁背上三个 web server，且 **G36**「M3 对拍期间冻结构建镜像」会连带管住竞品版本——而竞品恰恰是要跟着上游走的。⛔ 也不用「三家各起一个容器」：§9 要固化的正是内核参数与 CPU 亲和，而那两件跨容器既难设又难自证。⇒ 四家 + 负载生成器同处一室，只隔一个 loopback。★ 两道抄件门：`Dockerfile.bench` 里的 digest 必须逐条出现在 `bench/README.md` 那张表里；两张镜像里的 `oha`（版本 + 两个 sha256）必须逐字相同（§8 的「同一个负载生成器」）。★ 反证：改一个 digest 字符 ⇒ 当场红且点名；改 `OHA_VERSION` ⇒ 当场红且并排打出两个值。⚠ ⚠ **四件代价与新事实写在明处**：**(a)** ★★★ **枢衡的数据面今天没有线程数旋钮** —— 它走 pingora `ServerConf::default()`（`threads: 1`），而 DSL 与 CLI 里一处都没有（实测）。⇒ 四家今天**唯一可对齐的 worker 数就是 1**，把另外三家调到 N>1 会把一条与实现无关的变量混进读数。⛔ 别读成「枢衡只能单线程」，读作「今天没有旋钮」——**它是在合格宿主上出数之前必须先解决的一件事**，已登记为 `D33`（⇒ **已由 `G140` 结案**：`threads_l7` / `threads_l4` / `threads_admin` 三个键落地，2026-09-06 第一组读数四家 worker 数一律取 2）。**(b)** HAProxy 在「静态吞吐」这一类里靠 `http-request return … file` 回一个固定 body，**它不是文件服务器**（不做目录、条件请求、range）⇒ 若它在这一类领先，那个领先里有一部分来自它没做的那几件；这句话写在 `bench/README.md` 里，⛔ 引用数字时不许丢掉。**(c)** oha 的 `-z` 到点会把在飞请求记成 `aborted due to deadline`，条数**恰好等于并发数**（实测 `-c 10`→10、`-c 50`→50，占成功数 0.018%/0.092%）⇒ 有效性判据**收窄**成「只放行这一个 key 且它不超过成功数的 1%」，⛔ **不是**「不看 errorDistribution」——连接被拒、被重置、读超时全落在那个字段里。⚠ **一次收窄与一次删除，在「真实数据全绿」这件事上长得一模一样** ⇒ 门里专门有一条喂 `connection refused` 的反证，外加一条量超标的、一条量正常必须放行的。**(d)** 第一刀只跑一类用例，`tests/bench/run.sh` 全绿 **≠ M3 达标**。★ 顺带修掉两处同族缺陷：`tests/ci/shellcheck-all.sh` 的「推导」只在**它被给定的那几棵根**之内成立 ⇒ 新建的顶层 `bench/` 带着五个从没被静态检查看过的 `.sh` 进了仓库（与它当初取代的那张手写目录清单是同一形状，只是抬高了一层）—— 现在门扫 `$ROOTS`，另有一道**更宽**的普查判「有没有 `.sh` 落在根之外」，⇒ 从静默漏扫变成当场红。★ ★ 普查问的是 `git ls-files --cached --others --exclude-standard`（手工排除只剩 `vendor/` 一项），**三个 flag 都承重**：光 `--cached` 只看已跟踪的 ⇒ 一个刚写出来还没 `git add` 的脚本整个溜过去，**而那正是那五个文件当时的状态** —— 判据会在最该说话的那一刻沉默；而 `find` 扫工作树则相反，会把 `handoff/`（gitignored，G115）里的草稿判红，且它给出的修法（「把那个顶层目录加进 ROOTS」）对 `handoff/` 恰恰是错的建议。⇒ 要问的集合是「**已经在仓库里、或正在进仓库的**」。★ 反证两个方向：`tools/` 下放一个未跟踪 `.sh` ⇒ 点名，删掉回绿；`handoff/` 下放一个 ⇒ **不报**。⚠ 外加一条自证：**一个被跟踪的 `.sh` 都没数到时判红**（恒返回空的普查对每棵树都说「没问题」）；以及初稿把对拍端口写成 `9700–9703` 而 `tests/h3/` 早已占着那一段 —— **「那是空段」这句话来自一条自己拼的 grep，它的字符类 `[A-Z_]+` 匹配不到 `${H3_PORT:-9700}` 里的数字 `3`**，于是安静地少列一整格而输出看起来完整（⇒ 改用 9940–9943 并登记进端口表）。⏳ **G139 的编号与措辞是 AI 拟的**（G134 那条先例），决策本身是 owner 的，但文字未经逐条过目。 |
-| **G140** | **线程数旋钮落地（结案 D33）：DSL 全局块三个键 · G35 的角色缺省这次真的生效 · h3 与 h1/h2 同一个角色。** ★ owner 三问一起拍。⚠ ⚠ **先纠一处**：D33 登记时写成「三条候选」，而那是不准确的 —— `docs/architecture/process-model.md` 早有一节标着「✅ 线程模型（G35，**结案**）」，连初值都写好了（L7 = CPU 核数 · L4 = 2 · 管理面/后台 = 1）。⇒ **D33 从来不是设计题，是「已结案的决定至今没有实现」**；同一节还有一条机制事实**直接否掉了那三条候选里的第一条**（见下）。**① 覆盖面 = DSL 全局块三个键**（`threads_l7` / `threads_l4` / `threads_admin`），照 `grace_period` 的既有形状（directive 表一行 → compile.rs 一格 → `Global` 一个字段）。⛔ **有意没有一个笼统的全局 `threads`，而这是机制决定的不是口味**：pingora 的线程**不跨 service 共享**（`ServerConf` 原话 "The threads are not shared across services"，每个 service 各起一套 runtime）⇒ **总线程数 ≈ Σ(各 service)**，一个全局值设成核数会直接超订（4 核 × 4 service = 16 个 worker）。⛔ 也不走 `serve` 的命令行选项：那会让线程数变成一个 `fulcrum plan` 看不见、`/stats` 也看不见的东西，与「期望状态是唯一权威」冲突，而 D19/G135 刚教过「没有运行时出口」的代价。★ 值域 `[1, 1024]`，`0`/负数/带单位/不是数字都是装载期错误（**`FUL-DSL-0046`**）；⚠ ⚠ **`0` 尤其不能放过 —— pingora 拿它建 tokio runtime 会在启动时 panic，而那个报错一个字都不提配置**；而这条诊断真正的价值仍在「不是数字」那一半（同 G136）：写成 `.parse().ok()` 时 `threads_l7 八` 会**静默**变成 `None`，而 `None` 的语义恰好是「回落到角色缺省」⇒ 整条旋钮悄悄失效而处处看起来正常。**② G35 的角色缺省这次真的生效。** ★ ★ 决定性理由：**今天的「处处 1」不是谁做的决定，是这条决定没被实现** —— `ServerConf` 走 `..Default::default()`（`threads: 1`）⇒ **L7 热路径在线上一直只有 1 个线程**。⇒ 落地它是把活干完，不是「悄悄改变所有人的行为」。⚠ ⚠ **代价认下并写进文档：升级一次，L7 那一格从 1 变成 CPU 核数，资源占用与延迟分布都会变**（这是一次真实的行为变更，⛔ 不能静默）。⏳ **而这三个初值仍然不是结论** —— `process-model.md` 明写判据在 M3 的对拍数据里，而那些数**今天只出了七类里的一类**（2026-09-06 静态吞吐，结论 `FAIL`）⇒ 这三个值至今没有被任何一组对拍数据检验过。⚠ 原文写的是「那些数今天还不存在（G132）」，那句话在第一组读数出来之后就不再成立，已就地改掉。★ `threads_admin` 同时是 `ServerConf.threads` ⇒ 它是**「其余一切」那一格**（后台任务全靠它：`background_service()` 不设 threads，`Service::threads()` 返回 `None` 并回落到全局值），⛔ 不只是 admin socket 那一个 service。★ 缺省值**只住一处**（`process::default_threads`），⛔ 不在 `Global::default()` 里再写一份 —— 本仓 2026-09-05 当天刚栽过一次同形状的（G135 的分解式抄了三处）。**③ h3 与 h1/h2 同一个角色**（归 L7），⛔ 不单列 `threads_h3`：它就是数据面入口，与 h1/h2 服务同一批流量、走同一条执行链（`tests/h3/run.sh` 那条判据的原话），⇒ 「角色」保持三个而不是四个。★ ★ ★ **判据分两层，第二层是承重的**：① 纯函数层（`default_threads` / `threads_for` / `build_server_conf`，五条单测全喂**合成的** `cpus`，⛔ 不问这台机器有几个核 —— 一条读宿主状态的判据只能被观察到一种结果）；② **端到端层**（`tests/serve/run.sh` 的 [4/4]）—— 因为 `serve()` 里那三行 `s.threads = Some(...)` **单测原理上够不到**（`serve()` 返回 `!` 且要绑端口），而一条从未被执行过的路径，「它生效了」就是一句没有判据的断言。★ 判据挂在**进程真的有几个 OS 线程**（`/proc/<pid>/status`），⛔ 不挂在启动日志那一行：日志打的是刚算出来的数，对「有没有真的传给 pingora」零判别力（G135 那条「回显自己刚写进去的值」）。⚠ 2026-09-05 实测（12 核）：`Threads` = **4 + `threads_l7`**，严格线性（`1`→5 · `8`→12 · `16`→20 · 不写→16）。★ 反证五条各自实测：纯函数四条各注入一次、各只红在该红的那一格（L4 缺省塌成管理面 · 全局 `threads` 填成核数 · 拿掉 L7 上界 · `threads_for` 里 L4 那条臂读错格）；端到端一条 —— **撤掉 `svc.threads = Some(threads_l7)` 那一行，三个读数一起塌成 5，两条断言同时红**（⚠ 而「写 1 时只有 5 条」那条照旧绿 —— 这正是那条判据单独不够的证明）。⚠ 反证壳自己也栽了一次并被它自己的注入自证逮住：`sed` 替换串里的 `&` 是「整个匹配」的元字符，`&cfg.global` 被展开 ⇒ 注入根本没写进去，而若没有那条自证，它会给出一个「没红所以判据不成立」的假结论。⏳ **G140 的编号与措辞是 AI 拟的**，三条决策本身是 owner 的，但文字未经逐条过目。 |
-| **G141** | **D9 拆成两半：分类法今天生效，承诺仍从 M4 起 —— 并顺带把「构建身份」从 D9 里摘出来先做掉。** ★ owner 拍板。**① 分类法**（[`docs/governance/compatibility.md`](docs/governance/compatibility.md)）把「什么算 breaking」按**面**分开写：DSL（★ 「编得过但行为不同」比「编不过」贵得多，因为后者停在 `validate`、前者要到线上才发现）· 结构化配置（`POST /load`）· `/stats` JSON · 指标名与标签 · `FUL-DSL-NNNN`。⚠ **六个 crate 全是 `publish = false`** ⇒ **Rust 层面的 API 不是对外面**，跨 crate 改签名不进这张表。★ ★ **指标那一面单列为最贵**：改一个族名不会让任何东西报错，只会让别人的告警**静默失效**，而「告警没响」与「一切正常」在监控台上长得一样 —— 与本仓「一个『没有』既可能是真没有、也可能是量具够不着」是同一物种；而**加**族／**加**字段安全，这条不对称正是表按「删/改 vs 加」分界的理由。**② 承诺的起点不动**：§7 的「M4 之前没有任何兼容性承诺」原样保留 —— `G129` 收紧 `id` 靠的就是那句话（「要收就现在收最便宜」），提前上承诺等于把那个自由度收掉。⇒ **分类法用来估价，承诺用来约束，两者起效时间有意不同。** **③ 构建身份**：`fulcrum_build_info{version}` 此前六个 crate 全报 `0.0.0`、**区分不出任何两次构建**（D9 逐字点名过），现由 [`crates/fulcrum-server/build.rs`](crates/fulcrum-server/build.rs) 在编译期算出，取值链 `FULCRUM_BUILD_ID` → 读 `.git` → 显式 `unknown`。⛔ **取不到时是 `<包版本>+unknown` 而不是裸 `0.0.0`** —— 「读不到」与「读到了 0.0.0」必须区分得开，与「没能检查不算检查通过」同一条纪律。★ 用 semver 的**构建元数据**语法（`+` 之后那段按 semver 规矩不参与版本先后比较）⇒ **语法本身就在声明「这是身份，不是承诺」**。⚠ ★ 第 ② 档**有意不调 `git` 二进制而是直接读文件**，两条都是本仓的实测形状：容器里 `git` 对 bind-mount 的树常报 `dubious ownership` 而整条失败（那会让每次门禁都静默落到第 ③ 档），且 `.dockerignore` 排掉了 `.git/` ⇒ **`Dockerfile.musl-product` 那一趟根本没有 `.git` 可读**，只能靠第 ① 档喂。⚠ **不判工作树脏不脏**，代价写在明处：同一提交上带不同未提交改动的两次构建身份相同 ⇒ **发布物一律走第 ① 档**。⛔ **本条不结案 D9**：版本号怎么排（`0.x` 还是 `1.0`）与弃用过渡期仍然开着，挂 M4。⏳ **G141 的编号与措辞是 AI 拟的**，两条决策本身是 owner 的，但文字未经逐条过目。 |
-| **G142** | **对拍补第四条判据：压测端自己先饱和 ⇒ 这一类作废（M3）。** ★ owner 拍板取「**B 收敛承重 + A 绝对天花板预留接口**」。起因是 M3 第一刀留下的一条登记：现有五条判据判得动宿主，**判不动「oha 自己先到顶」** —— 那时四家读数会一起收敛到生成器的天花板，而判据 ③（`ours >= best × 0.9`）**照常打 PASS**，输出一组看起来完全正常、其实量的是 oha 的数。⚠ 宿主那五条一条都答不了它：它们判的是「这台机器合不合格」，而这里坏掉的是**量具本身到顶了**。**① B（承重）= 收敛**：全场读数的 `(最高−最低)/最高` 低于 `BENCH_MIN_SPREAD`（缺省 0.05）就作废该类。依据是 nginx（C）· HAProxy（C）· Caddy（Go）· 枢衡（Rust/pingora）是四套结构完全不同的实现，落进同一个百分点里，**「共享了某个外部上限」远比「它们真的一样快」更可能**。★ 决定性理由是**它不需要任何新测量** ⇒ 今天就能用合成输入把两个方向全反证掉，而这正是 G132 第一刀立的形状。⚠ 它说不出是哪一个上限（生成器 / 环回 / 亲和），⛔ 别把它的报文读成「一定是 oha 饱和了」。**② A（可选）= 绝对天花板**：给了 `raw/<类>/ceiling.txt` 时，最强者越过`上限 × BENCH_GEN_HEADROOM`（缺省 0.90）就作废。⛔ **今天有意不是承重件**：它的正确性整个压在「参照服务真的比四家都快」这一条上，而那条在合格宿主到位之前**验不了** ——参照选慢了就恒作废，选的是另一个真实服务器则量到的是 `min(oha, 那个服务器)`，天花板被低估。⚠ ⚠ ⛔ 那个文件**不许叫 `ceiling.json`**：`read-raw.py` 对该目录 `glob("*.json")`，一个 `.json` 会被当成**第五家被测**混进竞品集合，而那不会有任何东西说。**③ 误判方向有意不对称**：一次误作废只是**扣下一个结论**，一次漏判是**给出一个错结论** ⇒ 两条都往「作废」那侧倒，且**「判不了」（有效读数不足两条 / 上限不是正数）一律作废、⛔ 不算通过**。判定报 `VOID`，且排在 `bench_verdict_one` **之前** —— 排在后面等于先打出一个会被人引用的 PASS。⚠ ⚠ ★ **`0.05` 与 `0.90` 今天没有实测支撑，它们是判断不是读数**：「四套不同实现之间正常该差多少」本仓一次都没量过 ⇒ **第一次在合格宿主上跑完之后要回头核这两个数**。★ **2026-09-06 跑完并回核了，两个数的结论不一样**：`0.05` 那一趟**没有误报**（全场极差 0.8599），⚠ **但同一组数暴露出 B 的一个结构缺陷** —— 它取的是**全场**极差，被最慢那一家整个撑开 ⇒ 最快两家只差 0.0071 而 B 一声没吭；由 **`G146`** 补第三条判据（最强者 vs 第二强，只作用于 PASS）结案 `D34`。⚠ ⚠ ⛔ `0.90` **至今一次都没有被执行过**（判据 A 没打开）⇒ 它仍然验不了，**这一条不因上面那次回核而结掉**。判据：`bench/lib.sh` 自测由 19 条加到 **31 条**（全合成输入），其中一条是**承重的对照** —— 同一组饱和数据喂给判据 ③ 它照常打 PASS，⇒ 证明 ④ 抓的正是 ③ **结构上**抓不到的那件事；五条注入反证各只红在该红的那一格；端到端 `tests/bench/gate.sh` 加 C8–C11（含 C10「上限远高于最强者时照常出结论」防 A 变成恒作废、C11「ceiling.txt 没被当成第五家」）。 |
-| **G143** | **`PLAN.md` §1「未落地」那一行由 `unwired_contract.rs` 钉住。** ★ owner 拍板「加一道门守住这次这类腐烂」。起因是 2026-09-06 实测：`passive_fail` 由 `G136` 接线并从 `fulcrum_runtime::UNWIRED` 销号之后，§1 那一行**仍然把它列在「未落地」里**多挂了一天，而它躲过了本仓当时**每一道**门 ——`unwired_contract.rs` 原本只钉 `dsl-reference.md`；`tools/plan-refs.py` 判据 ② 只认**同一行里带 `§11` 字样**的句子（那道门的文件头自己把这一类列为第 1 条漏网）；`docs-check.py` 只判可达性不读句意。⇒ **一句自洽的假话，本仓内原理上没有任何东西看得见。****判据只判一个方向**（这一行里的**反引号键名**必须还在 `UNWIRED` 里），⛔ 不判反向：这一行是**摘要不是全集**（`tls_internal` / `on_demand` / `tracing` 都在`UNWIRED` 里而不在这一行），而 PROXY protocol「发」那半边**根本进不了 `UNWIRED`** ——它连 DSL 面都没有，而 `UNWIRED` 记的是「DSL 认得、运行时不做」⇒ 反向判据会把一句正确的话判红。★ 判据只截到那一行的**第一个句号**为止，⇒ 句号之后的注解（它必然会提到那些键名）不在范围内 —— 一个把正确写法判红的门，最后会被人绕过去而不是被人满足。⚠ ⚠ ★ **判别力靠合成输入**：今天那一段里一个反引号词都没有 ⇒ 拿真数据跑只能得到一个空集，而**一个恒返回空集的判据与一个坏掉的判据输出完全相同** ⇒ 抽成纯函数后由四条合成用例两个方向都钉住。真数据反证也做了：把 `passive_fail` 注回那一行 ⇒ `RC=1`、**恰好一条**测试红、报文逐字点名 `["passive_fail"]`；还原走**字节副本 + sha256 对账**，⛔ 不是 `git checkout`。 |
-| **G144** | **`D24` 结案 = 候选 ②：aarch64 那一格只在 `Cargo.lock` 或那三张钉 rustc 的 Dockerfile 变化时才跑。** ★ owner 2026-09-06 拍板。**① 为什么不是 ①（每次门禁都跑）**：决定性理由不是慢，是**两台机器会不一致** —— binfmt 是机器本地状态，没装的机器上这一格要么把所有活儿全挡死、要么**静默跳过**，而「静默跳过的套件掩盖整个运行时起不来」正是本仓栽过的那一条；且完整门禁已 11–14 分钟，而**门变慢正是它被 `--no-verify` 绕过的起点**（G134）。**② 为什么不是 ③（留给 M4）**：③ 写在 §11 里的理由「缺的不是回归而是首次验证」**已经过期** ——首次验证 2026-09-05 在 `ShanireHomePC` 上做完了 ⇒ 今天剩下的**只有回归**，而 ③ 恰恰是唯一不提供回归保护的那条。**③ 触发集是推导的，⛔ 不是手写清单**：取「`docker/` 下 `^FROM rust:` 的那几张」—— `Dockerfile.musl-product` 第 23 行逐字写着 rustc 版本必须与 `Dockerfile.build`、`Dockerfile.musl-probe` **三者一致**，那就是「三张 Dockerfile」。写死的清单在出现第四张时会静静漏掉它而**漏掉的那一刻不红**（`shellcheck-all.sh` 为同一条教训改过一次）。⚠ `Dockerfile.bench` / `Dockerfile.systemd` **有意排除**（不参与 musl 产物构建，算进去会让一次bench 镜像调整白白触发一趟几十分钟的冷建），**而这条排除本身由自测钉着**。⚠ ⚠ **源码改动有意不触发**，这是一条判断不是读数：`Dockerfile.musl-product` 确实是 `COPY . .`，但我们自己那几个 crate 是架构中立的、amd64 那一格每趟都编；aarch64 会坏在依赖 / 工具链 / 基础镜像上 ⇒ 真出现一次源码引起的 arm64 回归时，要改的是**这个集合**而不是给它加豁免。**④ 验证记录是生成的，⛔ 不是手写的**：`tests/musl/arm64-verified.txt` 由 `arm64-trigger.sh --record` 在一次**真的成功的** aarch64 验证之后写入 ——一份生成器复现不出来的记录，与一份编造的记录无法区分。**⑤ 跑不了就判红，⛔ 不静默跳过**（「没能检查」不算「检查通过」），报文给出两条出路。★ 那条红路径在装了 binfmt 的机器上**平时一次都执行不到** ⇒ 决定被抽成纯函数`fulcrum_arm64_decide`，三条分支各有合成输入钉着。判据：`arm64-trigger.sh --self-check` **25 条**；**7 条注入反证**各只红在该红的那一格（含「验不了那条退化成照常跑」）；2026-09-06 在 `ShanirePCX` 上装 binfmt 后真跑了一趟 `ARCHES=arm64`：`RC=0`、**34m05s** 冷建、`ELF Machine = AArch64`、`INTERP=0 NEEDED=0`、BoringSSL 独有符号 3/3、OpenSSL 0、rustls 本体 0、`FROM scratch` 里 `validate` 退 0。⚠ ⚠ **34m05s 是这台机器的数**，`ShanireHomePC` 同样一趟 18m07s —— 近两倍，⛔ 别互相照抄。 |
-| **G145** | **对拍的内核参数从「一句声明」改成「三处门」（M3）。** ★ owner 2026-09-06 拍板取方案 A（容器侧 `--sysctl` + 加门，宿主只动一条）。**起因是一次实测推翻了 `bench/sysctl.conf` 的前提**：该文件 2026-09-06 上午刚落地，写着六个键、要求在宿主上 `sysctl --system`，而 `BENCH_HOST_ATTEST` 的第三件就是「内核参数已固化」。当天下午在本机两个方向都量过 —— 宿主 `net.ipv4.ip_local_port_range` 改成 `20000 60000`，**新开的默认网络容器仍读到 `32768 60999`**；宿主 `net.core.somaxconn` 改成 12345，**容器仍读到 4096**。⇒ 那四个键是 **per-netns** 的，而对拍整个跑在自己 netns 的容器里，**在宿主上固化它们对被测行为零影响**。⚠ ⚠ ★ 于是一句**完全诚实**的「已固化」声明可以什么都没做 —— 这正是本仓最在意的那一族：**一道恒绿的门与一道不存在的门，输出完全一样**。**① 六个键按「设得进哪里」重分三处，每一处都有门**：容器侧四个（`somaxconn` / `tcp_max_syn_backlog` / `ip_local_port_range` / `tcp_tw_reuse`）由 `docker run --sysctl` 设、由 `bench/env-snapshot.sh` 在容器内逐条断言「实测==声明」；宿主侧一个（`netdev_max_backlog`）由 `bench/sysctl.conf` 设、由新增的宿主机侧启动器 `bench/docker-run.sh` 直读 `/proc/sys` 硬判，**不符拒绝启动**；`nofile` 由 `--ulimit` 设、由快照核 `ulimit -n`。**② 为什么 `netdev_max_backlog` 单独留在宿主**：实测 `--sysctl` 它会被 runc 当场拒绝（`open sysctl …: no such file or directory`），容器里 `cat /proc/sys/net/core/netdev_max_backlog` 也是 `No such file or directory` —— 它**非 netns 化**。★ 而它是六个里**唯一**既设得进又真的相关的：环回包也走 per-CPU `input_pkt_queue`，正归它管，候选宿主的出厂值实测是 **1000**。**③ `fs.file-max` 移除**：实测那台机器上它是 `9223372036854775807`，而原文件写的 `2097152` 是把它**往下压**；真正会咬的是每进程 `RLIMIT_NOFILE` —— ★ **实测容器缺省只有 1024**。⇒ 原文件末尾那句「file-max 管不到 RLIMIT_NOFILE」的提醒是对的，G145 做的就是照那句提醒去设真正会咬的那个。**④ `tcp_tw_reuse` 由 1 改 2**：`2` 的语义是「仅对环回启用」，而四家与 oha 同处一个容器只走环回 ⇒ 2 恰好覆盖本场景，1（全局）更宽却不更贴切；2 也正是 Linux 4.12 起的内核缺省 ⇒ 这条声明的是「缺省没有被改坏」。**⑤ 声明只有一份**：`bench_container_sysctls` / `bench_host_sysctls` 同时供给 `--sysctl` 旗标与断言的期望值 —— 旗标与清单一旦分家，容器会按 A 跑而快照按 B 判、**两边都不红**。⚠ 旗标**一行一个 token**，因为 `10240 65535` 自己带空格，拼成一行再分词会被劈成两个参数而 docker 只报一句语焉不详的用法错。判据：`bench/lib.sh` 自测由 31 条加到 **46 条**（全合成输入，含「空声明 ⇒ 判红」两条 —— 一份空声明会让比较函数**恒返回空集**，与「全部相符」输出一模一样）；**5 条注入反证**各只红在该红的那一格（去掉空白归一化 / 键读不到时返回空串 / 空声明守卫永不触发 / 第六个参数被忽略 / 声明少一条），且反证壳自己带「基线必须先绿」与「sed 必须真的改到了东西」两条守卫；端到端 `tests/bench/gate.sh` 加 **C12 / C13**，二者是一对 —— 门禁**有意不设** `BENCH_HOST_SYSCTLS`，⇒ 每一趟门禁里容器侧四个键因旗标真的生效而**相符**（C13 正向）、宿主侧那一条因缺凭证而**判红**（C12 反向），**两个方向都被走到**。⚠ ⚠ **G145 没有让 `attest` 变得可验证**：剩下的两件（专机 · 无 TUN 代理）仍然只有纪律；⛔ 也证不了 16384 就够用 —— 够不够可以量（`/proc/net/softnet_stat` 第 2 列，实测是全局的），而本套东西今天还没有自动读它。 |
-| **G146** | **判据 ④ 补第三条：最强者附近的收敛，且它只作用于 PASS（结案 `D34`）。** ★ owner 2026-09-06 拍板。**起因是第一组真实数据推翻了 B 的一个前提**：那一趟全场极差 **0.8599**（远高于 `BENCH_MIN_SPREAD=0.05`）⇒ B 一声没吭；而**最快两家 haproxy=54531.2 与 nginx=54144.1 只差 0.0071** —— 两套架构差异极大的实现落进 0.71% 以内，**那正是 B 声称要怀疑的形状**。⇒ B 取的是**全场极差**，被最慢那一家（枢衡 7638.6）整个撑开了 ⇒ **一个慢的被测会掩盖掉快的那几家之间的收敛**。**① 为什么不是原先登记的那三条候选**（最快 k 家 / 每一对 / 极差外加一条独立判据）：它们**都漏了同一件事** —— 顶部收敛只威胁 **PASS**，永远不威胁 **FAIL**。门槛 = `max(竞品) × 0.9`，那个 max 被外部上限压住时**门槛是被低估的**；结论是 PASS 时枢衡可能只是压过了一个被低估的门槛（不可信），而结论是 FAIL 时真实门槛只会**更高** ⇒ FAIL **更成立**。⇒ 三条原候选任一条都会把 2026-09-06 那个结实的 FAIL 扣掉，⚠ ⚠ ★ **而这不是推理，是量出来的**：反证里把判据改成「作用于所有结论」（就是那三条的形状），C15 那个 FAIL 当场变成 VOID。★ `G142` 那条「两边都往作废侧倒」的初衷是**不给出错结论**，而天花板之下的 FAIL 不可能是错的 ⇒ 本条不是放松那条纪律，是把它贯彻到底。**② 位置与 B 恰好相反**：B 排在 `bench_verdict_one` **之前**（G142：先打出来的 PASS 已经会被人引用），而 C 必须排在它**之后** —— 它要先知道结论。⚠ ⚠ ⛔ **「排在后面」绝不等于「可以先把 PASS 打出来」**：`bench_verdict_one` 那一步**只算不打**，到 C 之后才决定 `verdict.txt` 与标准输出上写 PASS 还是 VOID；一个会被作废的 PASS **一个字都不许落盘**，而这一条由门禁 C14 的第三个方向钉着（「整份判定里一个 `VERDICT: PASS` 都不许有」）。**③ 比的是最强者与第二强**（k=2，⛔ 没有自由参数 —— 原候选 ① 的「k 取几」本身又是一个没有实测支撑的数），且喂的是**全场**读数含枢衡：枢衡自己与最强者一起顶在天花板上时，那个 PASS 同样不可信。**④ 「判不了」一律作废**（有效读数不足两条 / 最强者不是正数），⛔ 不算「分得开」。边界与其余判据同一个约定：**恰好压在阈值上算分得开**。判据：`bench/lib.sh` 自测由 46 条加到 **55 条**，其中**承重的是那条对照** —— 2026-09-06 那组**真实数据**喂给 B 时它一声没吭、喂给 C 时它响，⇒ 证明 C 抓的正是 B **结构上**抓不到的那件事（⛔ 少了它，「C 判得动」与「C 在重复 B 已经会做的事」分不开）；端到端 `tests/bench/gate.sh` 加 **C14 / C15**，二者是一对而 **C15 才是分水岭**（同样顶部收敛但结论是 FAIL ⇒ 必须照常打 FAIL）；**两条注入反证方向相反**：判据整个不生效 ⇒ C14 由 VOID 变 PASS；判据作用于所有结论 ⇒ C15 由 FAIL 变 VOID。⚠ ⚠ ⛔ **`0.05` 这个数本身仍然没有实测支撑** —— 本条改的是「拿它去比什么」，**不是「它该取多少」**；同样 `BENCH_GEN_HEADROOM=0.90` 至今**一次都没被执行过**（判据 A 没打开）。 |
-| **G147** | **对拍的负载参数缺省只在 `bench/lib.sh` 定义一次；新增门禁 `C16` 判「原始数据说得出自己是在什么口径下量的」。** owner 2026-09-06 拍板。**起因是一个真实缺陷，而它比登记时以为的宽**：`bench/env-snapshot.sh` 记的是**声明值** `${BENCH_PAYLOAD_BYTES:-}`，而 `bench/case/static-throughput.sh` 跑的是**声明值或缺省** `${BENCH_PAYLOAD_BYTES:-4096}` ⇒ **没人显式设的参数，用例真的用了缺省，而快照写 `null`**。2026-09-06 那组真实读数就带着它（`payload_bytes: null`，而那一趟真的用了 4096）。⚠ ⚠ **它不止 payload 一格** —— 四个负载参数（`BENCH_DURATION` / `BENCH_CONNECTIONS` / `BENCH_WORKERS` / `BENCH_PAYLOAD_BYTES`）用的是同一个写法，只是那一趟恰好显式设了另外三个 ⇒ 只有 payload 露了头；**`C16` 第一次跑就当场露出第二格 `workers`**。⛔ 别把它记成「payload 的毛病」。**① 为什么这不是「少了一格元数据」**：`G19` 要的是**原始数据可被第三方复现**，而一份说不出自己用了多大 payload、几个 worker 的静态吞吐读数**复现不出来** ⇒ 它是**口径本身**。**② 修法是「一处定义」，⛔ 不是「两边各写一份」**：把缺省顺手也写进 `env-snapshot.sh` 一份是**更坏**的形态 —— 两处一旦飘掉，快照会**理直气壮地报一个错的数**，而 `null` 至少不骗人。⇒ 四行搬进 `bench/lib.sh`（与 `BENCH_MIN_SPREAD` 那几个同一个写法），用例脚本 `source` 它，两边都**不再带 `:-`** ⇒ 「两处缺省飘掉」这一族缺陷**结构性地不存在**，而不是被修好一次。★ 四个值一个都没变（`10s` / `50` / `1` / `4096`），改的只是它们住在哪。**③ 结构反证**：删掉 `lib.sh` 里那一行 ⇒ `env-snapshot.sh` 与用例脚本**双双 `unbound variable` 当场死、快照根本没写出来**（`set -u`），⛔ 不是安静回落到一个只有某一个文件知道的数。**④ `C16` 判的是 A 那一趟真跑出来的 `env.json`**，⛔ 不是合成夹具 —— 这一条问的正是「那份快照诚不诚实」，拿合成的去问等于问了个假问题；它带自证（`load_params` 整个为空时当场判红，⛔ 不让它恒绿）；红→绿两个方向都实测过（修前逐字点名 `payload_bytes, workers`，修后四格全有）。⛔ **本条不判那四个值取得对不对** —— 那是口径本身，归 `bench/README.md`。**⑤ 那份 2026-09-06 的 `env.json` 一个字节都没动**：它是一次真实运行的**原始数据**，事后回填一个「我们知道它当时是多少」的值就把原始数据变成了转述，比留着那处不一致坏得多 ⇒ 只在同目录 `README.md` 里写明它为什么是 `null`、真值是多少。⚠ ⚠ ★ **2026-09-07 owner 逐条过目时改了这一条的去向**：⛔ 不是「永远留着那处不一致」，而是 **⏳ 等压测窗口在合格宿主上重跑一组口径完整的新读数，把它整组替掉**，旧那组降为历史。★ 在那之前**仍然一个字节都不改** —— 回填真值这条路**依旧否决**（理由同上：原始数据一改就成了转述，且开了口子之后读者分不出哪些被改过）。⇒ 这条挂在 M3 的压测窗口上，与 `G150` 那格读数同一趟做。 |
-| **G148** | **`probe_file` 那条回落「只花 1 次跨线程」的那一半，明确接受它今天只由诊断台的读数守着，⛔ 常设门禁不判它。** owner 2026-09-06 拍板；★ **2026-09-07 owner 逐条过目，维持接受**（那次同时看了 `G147`–`G150` 四条）。**起因**：`crates/fulcrum-server/src/files/probe.rs` 那条快路径落地时做过一次注入反证 —— 把 `probe_file` 里那次 `spawn_blocking(open_blocking)` 回落**整个删掉**，**整趟门禁 RC=0、一格都没红**，据此把它整个记成「**性能**承重、⛔ 不是**正确性**承重」，于是它没有任何门。**① 已经补上的那一半**：在 `probe_file` **自己**这一层它是**正确性**承重 —— 它的契约是「小文件带回全部字节」，而在一个**不认 `RWF_NOWAIT`** 的文件系统上（overlayfs / tmpfs 实测如此）唯一做得到这件事的就是那条回落。⇒ 由单测 `文件系统不认_nowait_时_probe_file_仍然必须带回全部字节` 守着，**删掉即红**。⚠ 那是量出来的：同一个注入下 `UNIT_ONLY` **RC=1 而 365 条里唯一红的就是它**，同一棵树 `FILES_ONLY` **RC=0 全绿** ⇒ 一次实验同时证明了**新门判得动**、且**其余 364 条单测与整个端到端场景全都瞎**。**② 本条明确接受的是剩下那一半**：把回落重写成**正确但要三次跨线程**的实现，那条测试**照常绿** ⇒ 「它只花 1 次跨线程」今天没有门，⛔ 别把 ① 读成「那条回落全都有门守着了」。**③ 为什么不给对拍加一条判据**（原先登记的候选）：⚠ ★ 那条登记写的是「每请求**系统调用数**」，而**量纲挑错了** —— 这个缺陷动的主要是**跨线程次数**（1 → 3），判别力最强的是「自愿切换/请求」（诊断台实测 0.006 对 1.66–1.73）；而「量纲选错了、**而选错的那个量纲看上去完全像个正经判据**」正是这条线上**已经栽过一次**的地方（上一轮据切换**次数**判断，砍掉三分之二只换来 +18%）。⛔ 更根本的是**结构冲突**：那会是一条**性能**阈值，而常设门禁跑在**不合格**的开发机上，`G132` 的形状是「数字只在合格宿主上才出得来」⇒ 把性能阈值挂进日常门禁与那个形状相抵。**④ 重开条件**：等合格宿主上的压测窗口拿到 `respond` 的真实读数之后，**连同静态文件缓存那一步一起定** —— ⛔ 在那之前不给它定阈值，因为今天没有任何实测支撑。 |
-| **G149** | **`D9` 结案：版本号 `0.x` 排到 M4、M4 起 `1.0`；弃用过渡期按已定的五个面分档。** owner 2026-09-07 拍板（两半在同一次弹窗里分别拍）。**① 版本号**：把 `1.0` 与「兼容性承诺开始生效」**绑成同一件事** —— [`docs/governance/compatibility.md`](docs/governance/compatibility.md) §一 已定「分类法今天生效、承诺 M4 起生效」，而 `1.0` 就是那句话在版本位上的写法。⇒ `0.x` 期间任意 breaking（`G129` 收紧 `id` 取值域时逐字用的就是这条自由度：「要收就现在收最便宜」），`1.0` 起按五面分类法约束。★ 2026-09-07 已落地（`ad5ca53`）：**六个产品 crate 动到 `0.1.0`**。⚠ 全仓其实有**九个** `Cargo.toml` 写着 `0.0.0` —— 多出的三个是 `spikes/m0-seam`、`spikes/m1-systemd`、`spikes/musl-boringssl`，**有意留在 `0.0.0`**（它们不是发布制品，`0.0.0` 恰好表达这一点）。★ 这个取舍是 agent 判的，owner 过目时**未提异议**，⛔ 记成「未提异议」而不是「明确批准」。⚠ ⚠ **crate 版本不是发布版本** —— 六个 crate `publish = false`、没有 crates.io 下游（compatibility.md §二 已写明「Rust 层面的 API 不是对外面」）⇒ **本条排的是发布制品的号**，⛔ 别读成给 crate 定版本策略。⛔ **不选 CalVer 的理由**：它表达不了 breaking ⇒ 那五个面的分类法失去承载它的版本位，运维得去读 changelog 才知道能不能升。⛔ **不选「一直 0.x」的理由**：承诺 M4 起生效了却没有任何版本位能表达它，与 §一 直接矛盾。**② 弃用过渡期按面分档**，与五面分类法**共用同一套分法**（单一真相源，⛔ 不新增第二套要记的东西）：`FUL-DSL-NNNN` **永不弃用**（compatibility.md 已定「一旦发出就不能改含义」）；**指标名与标签、`/stats` JSON** 给最长过渡期（§三 自己就说指标那面最贵，理由与别处不同 —— 告警与看板在别人手里，改起来慢）；**DSL 与结构化配置**可以短，因为它们在**编译期／装载期当场就能报错**，配一条明确的弃用警告即可。⚠ ⚠ ★ **过渡期按「时间」算，⛔ 不按 minor 数算**（owner 2026-09-07 逐条过目时拍的，推翻了 agent 原先拟的「两个 minor / 一个 minor」）：**指标与 `/stats` ≥ 6 个月且 ≥ 1 个 minor；DSL 与结构化配置 ≥ 1 个 minor**。★ 理由是这个产品的形状：**自托管制品的运维不跟着我们的发布节奏升级** ⇒ 「两个 minor」可能是两周也可能是两年，对告警与看板那一面等于没承诺；而 DSL 与结构化配置**装载期当场报错**，发现得快，用版本位计就够。⚠ 那三个数字出自 agent 的建议，owner 在弹窗中连同形状一并选中；⛔ M4 前若实际发布节奏与预期不同，回来重定。**③ 本条不重开 `G141` 已定的两件**：五面分类法本身、`fulcrum_build_info{version}` 的三档取值链。 |
-| **G150** | **`D20` 结案：磁盘缓存的请求路径维持同步，一行不改；把「先量再定」从一句话落成 M3 对拍里的一格读数。** owner 2026-09-07 拍板。**① 为什么不现在改**：今天**没有任何实测支撑** —— `D20` 自己写的就是「先量再定，M3 对拍时的命中率与 p99 会给出这个数有多大」，而那组读数**至今不存在**（压测窗口没开）。⇒ 现在改 async 等于在零读数下**把「七个操作的签名与 `MemStore` 逐字相同」这一点碎掉**，让数据面为「内存还是磁盘」分出两条路。⛔ **也不选「请求路径包 `block_in_place`」**：请求路径上只读 meta 与 body **两个小文件**（管理面那两条走遍整棵目录树的**已经**包了），而 `block_in_place` 会把当前线程从 runtime 借走、可能触发另起线程 ⇒ 对这个规模**很可能是净负优化**，而今天没有读数分辨得开。**② 本条真正定下的是判据**：M3 对拍**必须记录**「磁盘命中的 p99 − 内存命中的 p99」这一格，落进原始数据（与 `G147` / `C16` 同一条口径 —— 一份说不出自己在什么条件下量的读数复现不出来）。⚠ ⚠ **本条有意不定阈值**：定一个没有实测支撑的数字正是 `G148` ③ 点名的那种错（量纲挑错了，**而挑错的那个看上去完全像个正经判据**）⇒ **先把这个数量出来，阈值等有数之后再定**，届时连同静态文件缓存那一步一起。★ ★ **这一步比 owner 当时选的那条收窄了**：那条原话是「并写明超过多少就重开 `D20`」，而落地时 agent 主动改成「先量、后定阈值」—— **2026-09-07 owner 逐条过目时确认了这个收窄**，⛔ 不是悄悄改的。**③ 重开条件**：那格读数出来后，若差值大到影响 M3 的 p99 目标，`D20` 重开并按 ① 的两条路重新估价。⚠ ⏳ **那一格的实现还没落地** —— 它要在压测窗口才验得了实效，⛔ 别把本条读成「那一格已经在量了」。 |
-| **G151** | **（修订 `G150` ② ③）「磁盘命中 p99 − 内存命中 p99」那一格不定毫秒阈值；`D20` 何时重开，改由 §8「缓存命中」那一类的判定决定。** owner 2026-09-24 拍板（弹窗，选的是 agent 推荐项）。**起因是一条量纲事实，⛔ 不是偏好**：那格读数（2026-09-10 窗口二：内存命中 28461.0 rps · p50 7.03 ms · p99 11.06 ms；磁盘命中 13544.9 rps · p50 14.80 ms · p99 20.27 ms；差值 **9.22 ms**）是在 200 并发的**闭环**负载下、两臂都压到吞吐上限时量的 ⇒ 按 Little 定律 p50 ≈ 并发 ÷ rps，两臂实测都吻合到 0.3% 以内（200 ÷ 28461.0 = 7.03 ms · 200 ÷ 13544.9 = 14.77 ms）⇒ 9.22 ms 里有 **7.77 ms（约 84%）是中位数整体右移**，也就是吞吐差换算出来的排队时间，⛔ 不是尾延迟。给它定一个毫秒阈值，正是 `G148` ③ 点名的那种错：量纲挑错了，而挑错的那个看上去完全像个正经判据。**① 不变的**：`G150` ② 的**记录**要求照旧 —— [`bench/diag/cache-hit-p99.sh`](bench/diag/cache-hit-p99.sh) 继续量、继续落原始数据；它仍是一份诚实的读数，只是 ⛔ 不据它下任何判断。**② 作废的**：`G150` ③ 的「差值大到影响 M3 的 p99 目标就重开 `D20`」—— 本文件里本来就没有一个单独的 p99 目标（§8 的门槛由 [`bench/verdict.sh`](bench/verdict.sh) 按 `requestsPerSec` 判）。**③ 换成的**：§8「缓存命中」那一类定义并出数之后，由那一类的判定决定 `D20` 要不要重开；具体判法在定义那一类时一并拍 —— ⚠ 那一类在 `G152` 下缺 Caddy，「缺一家竞品怎么判」也要同时拍。⛔ 在那之前 `D20` 保持结案。⚠ `G150` 行末那句「那一格的实现还没落地」早已过期（2026-09-10 窗口二已量出数）；G 行原文 agent 不改，以本行为准。 |
-| **G152** | ★ **（修订 `G36`）「M3 对拍期间冻结」扩到对拍镜像 `docker/Dockerfile.bench`：M3 期间整张冻结。** owner 2026-09-24 拍板（弹窗）。★ **推翻了 agent 推荐项** —— 推荐的是「`G36` 只管构建镜像；对拍镜像另立一条：已钉的四家与 oha 不动，但允许追加同样按 sha256 钉死的定制构建（caddy-l4 / cache-handler），由门禁核对既有四家的二进制没变」。**① 起因**：`G36` 行字面管的是**构建镜像的 rustc**（[`build-and-test.md`](docs/platform/build-and-test.md) 与 `docker/Dockerfile.systemd` 也都写着「`G36` 只管构建镜像的 rustc」），而 [`bench/README.md`](bench/README.md) 与反代用例脚本一直把「往对拍镜像里加东西」说成「撞 `G36`」—— 两处口径对不上。本条把后者**立成决定**。**② 后果（owner 知情拍的）**：M3 期间对拍镜像里的四家、oha、python3 **不增、不减、不升** ⇒ **L4 转发与缓存命中两类只能缺 Caddy**（它的官方二进制既没有 L4 也没有 HTTP 缓存，定制构建进不了镜像）⇒ 那两类定义时必须同时拍「缺一家竞品怎么判」；反代类「源站只能从四家与 python3 里挑」同理成立。**③ 被取代的一句**：`docker/Dockerfile.bench` 头注释写着，当初不把竞品挂进构建镜像的理由之一是「竞品版本恰恰是对拍**要**跟着上游走的东西」—— 本条之后，M3 期间竞品版本**不**跟上游走。⚠ 那句注释与 `docker/Dockerfile.systemd` 里「`G36` 只管构建镜像的 rustc」那句**有意不改**：两张镜像都在 Dockerfile 的 sha256 变了时重建（`tests/bench/run.sh` 与 `tests/m1/systemd-run.sh` 的标签比对），改一个字的注释就触发一次重建 —— 前者正是本条禁止的；后者的 `apt-get install systemd` 没钉版本，重建有机会换到更新的补丁版本。**④ 不管的**：systemd 测试宿主镜像（`G39`）不在本条内；本条也不改 `G36` 对构建镜像 rustc 的口径（2026-09-24 `tools/dep-check.py` 报 rustc 1.98.1 可用，照 `G36` 冻结不升）。 |
-| **G153** | ★ **（`G29` 破例一次）2026-09-24 那次依赖追新一次收齐 39 项，其中 `thiserror` / `thiserror-impl` 2.0.21 在 24 小时怀疑期内被采纳**（发布于 2026-09-23 20:24 UTC，采纳时约 8 小时）。owner 2026-09-24 拍板（弹窗）。★ **推翻了 agent 推荐项** —— 推荐的是「守 `G29`，等它过期再一次收 39 项」（代价是 RUSTSEC-2026-0285 晚修约 15 小时 —— 要等它发布满 24 小时，即 2026-09-24 20:24 UTC；实际 05:17 UTC 就采纳了）。**① 做法**：`tools/dep-check.py --apply --hours 7`。⚠ 放宽的窗口**只许多放进这两个**，前后各核一次：采纳前，`--hours 7` 与默认 24 小时两份报告的可采纳清单逐项比，差集恰好是这两个版本；采纳后，两把锁各与采纳前逐包比，按 24 小时口径只有这两个落在怀疑期内（两次核对的输出都没留存，记录只有本行）。**② 边界**：⛔ 只对这两个版本成立，不是把 `G29` 的窗口改成 7 小时；下一次 `--apply` 照旧 24 小时。**③ 代价写在明处**：这正是 `G29` 要挡的那一类风险（投毒版本发布后数小时内被发现并撤回）。 |
-| **G154** | **vendor 回归网 [2/5] 的「两把锁对得上」改成由 cargo 推导：根侧有、vendor 侧缺的版本，再问一句 `cargo tree -i` —— 有 `pingora-*` 在路上 ⇒ 红；没有 ⇒ 记一行信息；问不出来 ⇒ 红。`tools/dep-check.py --apply` 的对齐判定改成同一口径（判定规则相同；范围不同 —— `dep-check` 只判它这次更新的那几个名字，[2/5] 判两把锁共有的全部名字）。** owner 2026-09-24 拍板（弹窗，两项都选了推荐项）。**① 起因**：同一次追新里 rcgen 0.14.10 → pem 4 把 `base64` 0.23.1 带进了根锁，而 pingora 用的仍是 0.22.1（两把锁都有）；[2/5] 按包名比，分不出「只有根侧独有的包在用」与「pingora 自己用着一个 vendor 没解析出来的版本」，当场红。⛔ **没选手写名单**：将来若 pingora 自己也升到那个版本而 vendor 滞后，名单会把真问题盖住。**② dep-check 那一半**：它原先判「两边版本集合逐字相等」，比它声称镜像的 [2/5]（根侧版本都在 vendor 侧即可）更严，那次 `--apply` 因此把 rand / thiserror / thiserror-impl 误报成对不上、退出码 1；判定抽成纯函数 `lock_alignment`，`--self-check` 用合成输入钉住五种情况，挂进门禁 lint 那一格。**③ 判据（都在字节副本上做、还原后核 sha256）**：[2/5] 先红（base64）后绿；只在根锁里把 pingora 用的 lru 退一个补丁版本 ⇒ 红、点名 pingora-core / pingora-pool；把 `cargo tree` 改成坏参数 ⇒ 红（问不出来）；`--self-check` 在旧判定下红在 rand / base64 两条，另两个变异各红在 zstd（问不出来）/ lru（pingora 在用）；lint 里挂上它之后，变异副本让 `LINT_ONLY` 红在它自己那一行。⚠ bash（[2/5]）与 Python（`lock_alignment`）两份实现之间没有一致性判据：`--self-check` 只钉 Python 那份对期望值。 |
-| **G155** | **L7 数据面的监听（明文与 TLS）把 pingora 给接入连接的写缓冲从缺省 1460 字节设成 16 KiB（HTTP 层诊断发现 1 的方案 A）；在 fork 里把头与第一块正文合成一次发送（方案 B）只登记、不排期；「一个约 4 KiB 的响应只许一个数据段」挂成常设判据。** owner 2026-09-26 拍板（弹窗，三项都选了推荐项）。**① 起因**：2026-09-24 的 HTTP 层上界诊断（开发机上、owner 批准的探查，产出是答案不是代码）发现：h1 写响应是先把头写进缓冲、再写正文，而缓冲只有 1460 字节 ⇒ 头 + 约 4 KiB 正文的响应是两次 send、两个 TCP 段（nginx / haproxy 是一次）。⛔ 诊断的读数是开发机的、不是性能声明（`G139`），达没达标只看 M3 窗口。**② 为什么 B 不排期**：B 比 A 多出的好处只在两类响应上 —— 正文超过 16 KiB 的（那时多出的一次 send 已被正文自己的多次 send 摊薄），与没有 `Content-Length` 的（chunked、`encode` 压缩后、读到关闭：写完头就 flush，缓冲多大都还是 ≥ 2 次 send；这一类 2026-10-04 评审才补上）；0.9.0 rebase 刚把 fork 缩成形状 B，不为这一段再加一处改动（⇒ 此后 `G157` / `G162` / `G163` / `G165` 为每请求开销各加了一处 fork 改动，即改动 16–19，这条前提已不成立；B 仍只登记，决定没有重估）；上游 `main`（2026-09-11）的缺省仍是 1460。**③ 代价**（逐条写在 [`data-path.md`](docs/architecture/data-path.md)）：每条连接多约 15 KiB；分几段写的 `Content-Length` 正文攒满约 16 KiB 或写完才发，**响应头也一起等** ⇒ 反代一个先发头和不到 16 KiB 正文、然后停住的上游时，客户端在停顿结束前连状态行都收不到，**没有时间上限**（改前的门槛约 1.4 KiB；只影响反代分支，含缓存未命中回源；chunked 与读到关闭的正文每写必 flush，不受影响）。★ 这一条是 2026-10-04 评审（I1）补上的，原文只写了「最多多攒 16 KiB」；owner 同日按补准的代价**重新确认**了本决定（弹窗，选推荐项）。缓解要动 fork（h1 会话暴露 `flush`，或反代分支在首块之后 flush），与方案 B 一并**只登记、不排期**。**④ 判据**：[`tests/serve/run.sh`](tests/serve/run.sh) 第 10 节 —— 客户端读自己 socket 的 `TCP_INFO`（`tcpi_data_segs_in`），明文与 TLS 各一条「4 KiB 只许 1 个带数据的段」；32 KiB 那条是内置反证（仍须 ≥ 2）；⚠ 三条都只量了 h1 上 `respond` 的 `Content-Length` 响应，h2 走同一层缓冲、没单独量（与 `data-path.md` 同口径）；明文两条另用 `tcpi_bytes_received` 自证 struct 布局（只证了 128 那个偏移；152 写错时主要靠 32 KiB 那条反证兜）。旧代码上两条 4 KiB 实测红在 2、反证那条绿；改后三条全绿（`Compiling fulcrum-server` 为证）。 |
-| **G156** | **指标注册表按线程分片：事件点那一类分成写死的 64 片（每片按 128 字节对齐），每个写线程只写自己那一片；gauge 单独一张全局表、不分片；标签值的键改成能拿 `&[&str]` 借用查找的类型；族类型与标签个数的 `assert!` 先在拿锁之前判一次（锁里的方法照旧再判）；抓取时逐片合并，输出格式与族序、series 排序都不变（`G116` / `G118` 的对外契约不变）。** owner 2026-10-04 拍板（弹窗：范围只做指标、做法 A、设计可以写成 spec，都选了推荐项）。**① 起因**：HTTP 层诊断发现 2 的第三项 —— 每条请求收尾往进程级 `Mutex<Registry>` 写两笔（TLS 三笔），每笔拿一次全进程共用的锁、先分配一份 `Vec<String>` 键。2026-10-04 count 口径 + 调用栈归因（开发机，⛔ 不是性能声明）：respond 每请求 malloc 46.03，其中指标恰好 8 次。**② 为什么不选另两种**：「装载时给每条地址字面量预解析一组原子计数格」单线程最快，但同一站点的格子被所有核共写（争用从锁换成缓存行），且要跨访问日志 / 路由 / 装载钩子 / `outcome` 下标 / 缓存 / TLS 与 `fulcrum-runtime`；「只去分配、保留全局锁」争用原样，线程越多越挤。**③ 代价与语义差别**（逐条写在 [`observability.md`](docs/architecture/observability.md)「注册表按线程分片」）：一次抓取不再是全进程的原子快照（对外可见的一致性没有变差）；直方图 `_sum` 末位可能有差（单线程写入逐字节相同）；每条 series 最多存 64 份副本（基数不变；最坏量级约 20 MB，现实里是 KB 级）；写线程多于 64 个时几个线程共用一片（仍然正确，那几片回到有人争）。**④ 判据**：[`crates/fulcrum-server/tests/metrics_alloc.rs`](crates/fulcrum-server/tests/metrics_alloc.rs) 稳态 1000 轮写入零分配（旧代码上红在 8000 次；只钉了明文那两笔，TLS 那一笔走同一条路、没单独钉）；`metrics.rs` 单测 —— 借用键的序与 `Vec<String>` 一致（注入「先比宽度」只红它）· 握住别的 63 片与 gauge 表时照样写得进（注入「写路径多锁一把共用锁」只红它）· 80 个线程边写边抓合计精确（注入「合并到第一片就停」红它）· 分两片合并与一片直写渲染逐字节相同 · 断言失败不毒化任何片 · 线程拆 TLS 时写指标照样记上。 |
-| **G157** | **fork 里收进第一批「只为性能、语义不变」的改动（`vendor/pingora/FORK.md` 改动 16）：l4 流每次读写不再记等待计时 · 解析请求时 256 个头槽位不先填 · 头偏移不再每条请求分配一个 `Vec`。请求头 / 响应头保留大小写的表、keep-alive 等下一条请求时登记的计时器三项改了行为，⛔ 不在本条。** owner 2026-10-06 拍板（对话原话「按建议，先做 B2+C1+C2 那一笔 fork 改动」，即 agent 推荐项）。**① 起因**：合格宿主分账表明 M3 静态那一截的差距有一块在 pingora / tokio 底座（§7 M3）；开发机裸 pingora 诊断台对底座候选逐个做了单变量试验（每个变体一份 fork 副本、只差一处补丁、计数口径，⛔ 不是性能声明，`G139`），这三处合计约省每请求用户指令的 5%、malloc 1 次。**② 为什么是这三处**：只有它们对枢衡看得见的行为一个不变 —— 等待计时的两个 getter 在枢衡与 fork 的 8 个 crate 里没有读者；头槽位走的是同一个解析器、同一份缺省配置（httparse 1.10.1 源码核过）；偏移只是换了放的地方。另三项省得更多，但各改了一处行为（反代往上游转发的头名大小写、`file_server` 的 `ETag` 等头会以小写发出、去掉空闲超时），各要一处设计。**③ 代价**：fork 多一个类别、多 3 个文件（相对 0.9.0 从 14 到 17）、每次 rebase 要重放；`get_read_pending_time` / `get_write_pending_time` 恒为零。是不是给上游提 PR 另拍（对外动作）。**④ 判据**（都在 fork 自己的测试里，vendor 回归网照跑；每条都在 vendor 副本上注入过、证明会红）：一次真的挂起过的读之后读等待时间仍为零 · 头数恰好 256 时每个头的名与值逐个对得上、多一个照上游拒 · `read_request` 解析一条普通请求的分配次数（单独一个测试二进制，上游原样多一次）。 |
-| **G158** | **`pre-push` 门提速：shellcheck 只在被推的提交碰到它判得到的东西时才跑；宿主机侧自测与遗留卷报告只归完整门禁。** owner 拍板（对话里点了两条）。**起因是一次实测，不是推理**：2026-10-06 热缓存、干净工作树、零改动，三趟 33–61s，而跳过钩子的 `git push --dry-run` 只要 1.7s ⇒ 慢在门里不在网络。门里最慢的一项正是 `G134` 加进来的 shellcheck（54 个脚本一次全扫，15–33s；`G134` 记的单跑 7.8s 已不成立），且它**每一趟都跑**、不管被推的提交碰没碰 `.sh`；容器外的宿主机自测与遗留卷报告再占 13–20s（约 2000 条命令，Git Bash 每次 fork 几十毫秒；`docker system df -v` 一条 1.8s）。⇒ **① shellcheck 的触发**：被推那一段两端的树（`git diff <远端> <本地>`，⛔ 不是逐笔看提交）在 `*.sh` · `*shellcheckrc` · `docker/Dockerfile.build`（钉着 shellcheck 版本）上有净改动才跑；★ 判不出来一律照跑 —— 远端还没有这个引用、远端那一端本地没有、`git diff` 失败，「没能判断」不算「不需要」。**② 宿主机侧**：`docker-run.sh` 新增 `HOST_SELFTESTS=0`（九条宿主机自测）、`VOL_REPORT=0`（遗留卷三个桶）、`COMPILE_SHELLCHECK=0`（只作用于 COMPILE 那一格）；三个都只由 `tests/ci/pre-push.sh` **显式赋值**后传下去，环境里带进来的同名变量盖不过它们（⛔ 本门仍不提供调用方的绕过开关）；默认值照旧，完整门禁不带它们。「新建的卷当场自证 label」有意留在报告之外：它只在卷是本趟新建时花一次 inspect，错过那一趟就再没人验。⚠ **代价认下，两条**：① shellcheck 扫的仍是工作树、跳不跳由被推的提交决定 ⇒ 被推的提交没碰 `.sh` 而工作树里躺着一个未提交的坏 `.sh` 时本门放行（它不在这次推送里）；② 门自己的机器坏了（卷名推导、锁、字节探针）时 pre-push 不再当场发现，要等下一趟完整门禁（⇒ **已由 `G159` 收窄**：宿主机自测改为按指纹跑）。★ **判据**：`tests/ci/pre-push.sh --self-check`，一棵合成 git 仓库上 11 条，「要跑」「不必跑」两个方向都有，挂在完整门禁 lint 那一格（⛔ 不在 pre-push 路径上跑）；五个注入各只红在该红的那几条（恒答要跑 · 恒答不必跑 · 触发集只剩 `*.sh` · 触发集放宽成 `*sh*` · 改成逐笔看提交）。端到端：不碰 `.sh` 的范围 10.2s 放行且没跑 shellcheck；碰 `.sh` 的范围 43.8s、跑了 shellcheck；未跟踪的 SC2086 探针在「新分支 + 环境里带 `COMPILE_SHELLCHECK=0`」下 `RC=1` 并点名那个文件，在不碰 `.sh` 的范围下 `RC=0`（即代价 ①）；不带开关直接跑 `COMPILE_ONLY` 时九条自测、遗留卷报告与 shellcheck 照旧都在。 |
-| **G159** | **`pre-push` 门的宿主机自测从「无条件跳过」（G158 ②）改成「按指纹跑」：门的脚本或宿主工具变了才跑，否则凭本工作树上一份同指纹的通过记录跳过。** owner 拍板（agent 给了三个方案，选了推荐的 A）。**起因**：`G158` 的代价 ② 正好落在最该当场证的那一刻 —— 改 `vol-lock.sh`、换 Git for Windows 之后的第一次推送，自测被无条件跳过。而这十条自测喂的都是**合成输入**，结论只取决于门自己的脚本与宿主 shell 工具 ⇒ 两样都没变时上一次的结论仍然成立。⇒ **① 指纹** = `tests/m0/docker-run.sh` 与 `tests/lib/` 下全部 `.sh` 的内容（目录而不是点名，多一个 lib 时不会安静地漏掉；多算进来只会多跑，方向安全）+ 宿主工具身份（`BASH_VERSION` · `uname -sr` 即 MSYS 运行时 · `git --version` 即 Git for Windows 版本，tr / sha256sum / cygpath / mkdir 随它分发）；不调 docker，自测本来就不碰它。**② 记录**放在 `git rev-parse --git-path fulcrum-host-selftest.ok`：只属于本机、本工作树，不进仓库也不进工作树；★ 只由一次真跑通过的自测写下（与 `G144` 同一条：生成器复现不出来的记录与编造的无法区分），★ **要跑就先撤掉旧记录** ⇒ 指纹没变而环境坏了的那一趟一红，下一趟就没有记录可用。**③ 开关**：`HOST_SELFTESTS=auto` 只由 `tests/ci/pre-push.sh` 显式传；★ **没有「无条件跳过」这一档**，除 `auto` 以外的任何值都照跑；默认模式（完整门禁）不问记录、每趟照跑并刷新记录。⚠ **剩下的盲区，两条**：① 指纹没覆盖到的环境变化（同一 Git for Windows 版本下单独换了某个工具）；② 判「对不对得上」的那两个函数自己坏成「恒答对得上」时 pre-push 会一直跳过 —— 那一种只有完整门禁看得见（它不问记录，并跑下面那条自测）。★ **判据**：新增第十条宿主机自测 `selftest_host_selftest_stamp`（同一输入同一指纹 · 改一个字节指纹变 · 工具身份变指纹变 · 读不到文件不给指纹 · 没有记录 / 指纹不同 / 空指纹都答对不上 · 写下的读回来对得上）；在副本上注入五种缺陷（指纹恒定 · 指纹不看内容 · 指纹不看工具 · 读不到也给指纹 · 恒答对得上），各只红在该红的那几条，副本里放了假 `docker`，一次都没走到。端到端：没有记录 ⇒ 照跑并写下（28.8s）· 同指纹 ⇒ 跳过（7.9s）· 记录里的指纹改一位 ⇒ 照跑并重写 · 默认模式下让 `mktemp` 失败 ⇒ `RC=1` 且记录被撤掉，下一次 pre-push 照跑 · 记录有效时直接跑 `COMPILE_ONLY` ⇒ 十条自测全部执行并刷新记录。 |
-| **G160** | **keep-alive 的空闲计时改由枢衡自己做：每条连接一个计时器、跨请求带着走，到点才复核这一次空闲了多久；空闲窗口的口径由「每一次读各给 60 s」收紧为「从开始等下一条请求到它的请求头读完，合计 60 s」。fork 一行不动。** owner 2026-10-08 拍板（弹窗：先写 B1 的 spec · 落点选方案 P · 计数回开发机做，三项都是推荐项；那处收紧写在方案 P 的选项与预览里）。**① 起因**：§7 M3 底座单变量试验里 keep-alive 那一项（B1）的上界最大 —— 裸 pingora 每请求用户指令约 −9%、malloc −2、`clock_gettime` −2（计数口径，⛔ 不是性能声明，`G139`）。pingora 在「限时」下给每一次读请求头各包一个快计时器，每条请求一整套登记与注销（两次装箱、两次读钟、`Notify` 链表挂上又摘下），而 60 秒的计时器在请求不断的连接上从不到期。**② 做法**（`crates/fulcrum-server/src/keepalive.rs`）：`process_new_http` 读请求头前，pingora 若是「限时 d」就切成不限时，用一个 `tokio::time::Sleep` 包住 `read_request()`；读一次就好了就不碰计时器（与 pingora 原本的惰性相同）；第一次挂起时读一次钟记下「这一次开始等」，带过来的到点若晚于它 + d 就重设；到点时空闲满 d 才关（与 pingora 自己的超时同一个返回），否则重设到「开始等 + d」⇒ 登记每连接每 d 至多一次。计时器经 pingora 0.9 的连接级 `user_context` 带到下一条请求，⚠ 那一格从此归它用。不续 / 不限时 / h2 / h3 不接管、照旧。`keepalive.rs` 只经一个小 trait `Conn`（读请求头 · keep-alive 状态 · 取上一条带来的东西，实现在 `lib.rs`）碰连接，⛔ 不含写响应 —— `G110` 的结构门不许漏斗之外拿到裸 `ServerSession`；⛔ 也没改用 `Downstream`：它一构造就新建访问日志记录、读一次钟，提前到读请求头之前会把空闲等待算进日志耗时。**③ 为什么落在枢衡**：设计给了两种落点 —— 落在 fork（方案 F）能保住「每次读各给 d」，代价是 fork 改动 17、`pingora-core` 四处随 rebase 重放；落在枢衡 fork 与 `Cargo.lock` 都不动，测试能用暂停的 tokio 时间做成确定性的，唯一的语义差是下面那处收紧。**④ 代价**：正常客户端没有区别；空闲很久才慢慢发头、或逐段慢发头的客户端会被更早关掉（后者在旧口径下能无限拖住一条连接）。`tokio` 的 `test-util` 进了 `fulcrum-server` 的 dev 依赖（新增 0 个包；发布构建不带 dev 依赖）。省多少只在开发机诊断台上按计数口径量，⏳ 还没量。**⑤ 判据**（`keepalive.rs` 单测，暂停的 tokio 时间 + `tokio::io::duplex` 当连接，多条请求之间照 pingora `apps/mod.rs` 的循环与 `process_new_http` 的收尾交接）：只在「限时」时接管、接管后 pingora 侧是不限时 · 新连接空闲正好 d 关 · 带过来的计时器先到点（空闲不够 d）不提前关、按「开始等 + d」关 · 同一连接几条请求用同一个计时器且没重设过 · 带过来的到点太晚（d 变短）就按新的 d 关 · 请求头分段、合计在 d 内照常读完 · 空闲 54 s 后才发前一段、后一段在 61 s 到 ⇒ 60 s 关（新口径钉成断言）· 到点判定的纯逻辑；外层 10 个 d 的上限让「永远在续」红而不是挂住。七个注入各让针对它的判据变红、每次都有新鲜 `Compiling fulcrum-server`：到点即超时 · 不重设太晚的到点 · 每条请求新建计时器 · 不切成不限时 · `lib.rs` 里 `Conn` 的 `set_keepalive` 不生效 这五个只红针对的那一两条；每次 poll 重记开始等 · 计时器到点不在 d 这两个打坏的是主路径，各红三四条（前者靠那道 10 个 d 的上限红，没有挂住）。发出去的字节：改前（`e4a5fe3`）改后两个二进制，同一连接 keep-alive 三条 · `Connection: close` · HTTP/1.0 三组去掉 `Date` 后逐字节相同（含「回完之后连接关没关」），负对照（一个头名改小写）当场不等。 |
-| **G161** | **读完请求头之后续不续听 pingora 的判定，枢衡只管时长：pingora 判「不续」（HTTP/1.0 没要求 keep-alive · `Connection: close` · `Transfer-Encoding` 与 `Content-Length` 同在）就不续，判「续」才设 `KEEPALIVE_SECS`；停机窗口内一律不续。** owner 2026-10-08 拍板（弹窗，语义与判据范围两项都选了推荐项）。**① 起因**：做 `G160` 的字节对照时发现，`process_new_http` 读完请求头后无条件设「续 60 s」，盖掉了 pingora 在 `read_request` 里判出的「不续」（`respect_keepalive` 与 TE+CL 那一段）。实测两处后果（`e4a5fe3` 与 `e911260` 一样，与 `G160` 无关）：HTTP/1.0 没要求 keep-alive 也回 `Connection: keep-alive`、回完不关（RFC 9112 §9.3 要求关）；TE 与 CL 同在的请求在把请求体读完的站点（反代）上回完不关（§6.1 要求**必须**关，防请求走私）。`Connection: close` 没受影响 —— pingora 的 `set_server_keepalive` 自己认它；`respond` 站点上 TE+CL 也看不出来 —— 它不读请求体，被 pingora「请求体没读完就先回 ⇒ 关」那条另行关掉。**② 做法**：那段收尾挪成 `keepalive::settle_after_read`（经 `G160` 的 `Conn`），条件从「停机」改成「停机或 pingora 判不续」。⇒ 以后 pingora 再加的「不续」判定也自动生效。**③ 代价**：没要求 keep-alive 的 HTTP/1.0 客户端每条请求一条连接（这正是协议要的）。**④ 判据**：单测（真 pingora 解析、`duplex` 当连接）三类「不续」各一条 · 「续」的两类拿到 `KEEPALIVE_SECS` · 停机一律不续；接线测试真跑一次 `process_new_http`，HTTP/1.1 交给下一条的是 `KEEPALIVE_SECS`（⛔ 不是不限时的 0）、HTTP/1.0 无头不交 —— 端到端判不出「那一行被删掉」（关与续照样全对，丢的是时长）；`tests/serve` 第 12 节五类原始报文走反代，判响应的 `Connection` 头与回完后关没关，两个方向都有。先在旧语义上跑出红：单测红在 HTTP/1.0 与 TE+CL 两条、端到端整节只红这两条；四个注入（旧语义 · 什么都关 · 停机不判 · `process_new_http` 不调它）各红在该红的那几条。 |
-| **G162** | **枢衡自己构的 h1 响应不建保留大小写的表（底座 A2）：fork 往 pingora 的标题化表里补七个名（`vendor/pingora/FORK.md` 改动 17：`Allow` `Alt-Svc` `Content-Range` `ETag` `Last-Modified` `Location` `Vary`）并公开它；`file_server` 一律 `build_no_case`，`respond` / 跳转 / 错误页在要插的名都照原样写得出时才不建表，否则照旧建。** owner 2026-10-14 拍板（弹窗：A2 选「补表＋自建响应不建表」、A1 选「按端口开关」，都是推荐项；动手前报了一处与「逐字节不变」不符的副作用，owner 再弹窗选「接受，补 ETag/Vary」）。**① 起因**：`G157` 那一轮的底座单变量试验里，响应头那张表（第二个 `HeaderMap`）每个响应两次分配，裸 pingora 上界约 −6% 用户指令；pingora 没表时按标题化表写名、表外写小写，而表里原本只有 12 个名、没有 `file_server` 发的 `ETag` 等 ⇒ 不补表就换不了。**② 做法**：`h1_name_as_is` 用公开出来的 `titled_header_name_str` 判一个名在没表时会不会照原样写出；`self_built_header` 看用户 `header` 指令展开出来的名（`-名` 只删不碍事），一个不照原样就整条照旧建表 ⇒ 用户写的 `X-Frame-Options`、`content-type` 照他写的发。缓存命中（存的是小写名）、admin、h3 不动；反代转发的上游响应不在本条。**③ 代价**：⚠ 补的表也决定用 `http::header` 常量插入的名怎么写（有没有表都一样）⇒ 压缩层改写的 `ETag`（弱化）与追加的 `Vary` 从 `etag:` / `vary:` 变成 `ETag:` / `Vary:`；开了 `encode` 的站点上 `Vary` 压没压都追加 ⇒ 那类站点大部分响应的这个头名都变了（与不压时、旁文件、nginx 一致；RFC 9110 §5.1 不分大小写）。fork 多两个文件（相对 0.9.0 从 17 到 19 个）、那七行要随 rebase 重放；表那一半是上游 TODO 本身，提 PR 另拍。**④ 判据**：字节 —— 开发机诊断台改前改后 28 种请求（19 种 `file_server` 含压缩 / 旁文件 / 条件 / 区间 / 目录，加 `respond` / 跳转 / 错误页 / 指标与带用户头名的三种）除 `Date` 外逐字节相同，只有 9 条差在允许的 `etag` / `vary` → `ETag` / `Vary`；单测 —— fork 的七个名照写、枢衡的 `h1_name_as_is` 两个方向、`self_built_header` 何时建表、`file_server` 从本文件源码抠出的每个头名都照原样（扫描器自带「十个一个不少」的自证与两个方向的自测）；端到端 —— `tests/files/run.sh` 逐行钉 200 / 206 / 416 / 301 / 405 的头名、`tests/encode/run.sh` 钉压缩响应的 `ETag` / `Vary` 大小写、`tests/serve/run.sh` 钉用户写的 `X-Fulcrum`。四个注入（在临时 worktree 里）各只红在该红的那几条：表里删掉 `ETag` 与 `Vary` · 恒不建表 · `file_server` 加一个表外大写名 · 扫描器坏成什么都扫不到。计数（⛔ 不是性能声明）：每请求 malloc / free 各 −2（`respond` 与 `file_server`、1 条与 200 条连接四格），用户指令 −5% 到 −6%。 |
-| **G163** | **读 h1 请求头时保留头名原样大小写的那张表按端口建：端口上没有任何反代站点就不建，有就照旧（底座 A1）。fork 加一个缺省「建」的开关（`vendor/pingora/FORK.md` 改动 18），枢衡每条请求读请求头之前按端口设。** owner 2026-10-14 拍板（弹窗，选的是推荐项「按端口开关」；另一个选项「一律不建」会让反代时 h1 客户端的头名到上游变成标题化表的写法或小写 —— 与 h2 / h3 客户端今天的样子相同，但那是一处对上游看得见的变化）。**① 起因**：`G157` 那一轮的底座单变量试验里，请求头那张表（第二个 `HeaderMap`）每条请求两次分配，裸 pingora 上界约 −4.5% 用户指令；它只在把请求头原样转发给 h1 上游时有用（反代克隆下游请求头时连表一起带走），`respond` / `file_server` / 跳转从不读头名的大小写。**② 做法**：读请求头之前还不知道 Host ⇒ 只能按端口。`Runtime::proxy_ports` 从路由用的同三张表（精确 · 通配 · 端口兜底）推出「哪些端口上的站点在执行链或错误处理器里（含嵌套的 `handle` / `route`）有 `reverse_proxy`」，走图的 match 不写 `_`、新增容器变体时编译期逼着来改；`SharedRuntime` 在 `new` 与 `swap` 时把它写进一张 65536 位的位图，每条请求只是一次原子读，⛔ 不为它再拿一次运行时的读锁。开关放进 `keepalive::read_request` 的参数（经 `Conn` 设到会话上）：漏设一行线上看不出任何差别，只多两次分配 ⇒ 让编译器逼着调用方表态。**③ 代价**：fork 多一个「加能力」（一格、一个 setter、一处 `if`，相对 0.9.0 从 19 到 20 个文件），要随 rebase 重放；位图与运行时的替换不是原子的 —— 正落在换代那一瞬、而新配置刚在这个端口上加了反代的那一条请求，转发到上游时头名会是标题化表的写法或小写（与 h2 客户端相同），反过来那一条只是多建一张表。反代端口一个字节不省。**④ 判据**：单测 —— 三张表与嵌套里的反代都算、只有 `respond` 的端口不算；位图两端（端口 0、65535）与 `swap` 之后照新配置答；`keepalive` 真的在读之前把开关设到真 pingora 会话上（关掉时没有那张表、名与值照查）；fork 的开 / 关 / 缺省三种与「关掉时恰好少 2 次分配」。端到端 —— `tests/serve` 第 13 节：反代端口上 h1 客户端发的 `X-Mixed-Case` · `x-lower-case` · `X-ALL-UPPER` 原样到上游（上游是一个把头名回成正文的 python 小服务，端口 9110）。五个注入（临时 worktree）各只红在该红处：调用处恒传「不建」⇒ 第 13 节；走图忽略 `handle` ⇒ 两条 `proxy_ports` 单测 + 第 13 节；位图取位掩码写错 ⇒ 只红端口 65535 那一格；fork 忽略开关 ⇒ fork 两条 + `keepalive` 那条（改动 16 的分配判据照绿）；`keepalive` 不设开关 ⇒ 只红 `keepalive` 那条，端到端照绿（正是「线上看不出」那一半要单测守的理由）。计数（开发机诊断台，⛔ 不是性能声明）：相对 `G162`，没有反代的端口上 `respond` 与 `file_server`、1 / 200 条连接四格每请求 malloc 各 −2，用户指令 −2% 到 −5%。 |
-| **G164** | ⛔ **已撤回（2026-10-15，见 ⑤）** —— 下面是做过、量过的那一版，留作记录。**热路径取运行时快照改走每线程缓存：命中时不拿读锁、不写全进程共用的那一个引用计数；`G8`「一请求一快照、`swap()` 返回之后才开始的请求看到新配置」一字不变。** owner 2026-10-15 拍板（两次弹窗 + 设计批准，都是推荐项）：用 std 做「世代计数 + 线程局部 `Arc`」· 只改四个热路径 · 接受闲置线程留着旧图 · 「不写共用计数」当方向 · A/B 在合格宿主上跑、两种钉法 × 四类。**① 起因**：§7 M3 登记的「每请求 `SharedRuntime::current()` 的读锁」—— 读锁一进一出加 `Arc` 一增一减，四次原子读改写落在所有工人共写的两条缓存行上；不分配、指令只有几十条 ⇒ 开发机诊断台的计数口径量不出它。**② 做法**（`crates/fulcrum-runtime/src/snapshot.rs`）：`SharedRuntime` 多一个独占缓存行的世代字，`swap()` 写完 `inner` **之后**才 `Release` 加一；`snapshot()` 先 `Acquire` 读世代，本线程那一格（实例身份 · 世代 · 快照）都对得上就克隆本线程那一格的外层 `Arc`（那块对齐到 128 字节、计数独占缓存行 —— 不垫时开发机上两个线程的外层计数实测相距 0x20、挤在同一行，发布用的 musl 分配器还没有每线程缓存），对不上才拿一次读锁、换上新的一格（标的是拿锁**之前**读到的世代）；线程正在拆 TLS 时不缓存。四处热路径改调它：`serve_one`（h1 / h2 / h3）· L4 TCP（快照挪到 accept 之后取、随连接交进任务，顺带省掉每条连接一次 `Arc<SharedRuntime>` 克隆）· L4 UDP 新会话 · PROXY protocol 的信任判定。`current()` 与冷路径（管理面 · DNS · 健康检查 · 指标抓取 · `Debug`）不动。不加依赖；⛔ 不用 `arc-swap`（+1 个包，且 `load_full` 照样共写那一份计数）。**③ 代价**：闲着的线程留着它最后见到的那份旧图，直到再取快照或线程结束；上界「HTTP 监听 service 数（含 h3）× `threads_l7` + L4 service 数 × `threads_l4`」份，只是内存 —— 没有任何东西靠旧图何时释放，新请求总是先刷新再用。工作窃取下快照在别的工人上丢掉时仍写回原工人那一行 ⇒ 争用是分散到每个工人，不是没了；要硬性的「零共写」只能动线程模型（碰 `G35` / `G140`），不在本条。**④ 判据**：`snapshot` 单测十二条 —— 命中不碰锁（写锁握着时暖线程照样拿到、冷线程拿不到，自带反证）· 命中不动内层计数 · 换代后本线程与别的暖线程都拿到新图 · 换代前的快照跨三次换代照旧指着旧图 · 两个实例不串 · 4 个读线程对 50 次换代「返回之后取到的不旧、各线程单调」· 旧图在暖线程刷新或退出之后放掉 · 缓存那一格已经拆掉之后（线程析构里）取快照不 panic、走不缓存的那条路（测试核了走的是哪条） · 读锁中毒后照样取得到 · 快照在别的线程丢掉、原线程照旧命中 · 两个线程同时换代后取到的就是锁里那一份（本线程先暖着旧图，100 轮）· 外层那块对齐到 128 字节（8 个线程各握一份）。不缓存的朴素版上恰好红四条（守缓存的那四条）；三个注入各红在预计处（命中不看世代 ⇒ 四条；缓存键不看实例 ⇒ 只红「两个实例」；`swap()` 先加世代后写 `inner` ⇒ 5 趟 5 趟都只红「并发换代」，报的正是「第 1 次换代已返回，却取到第 0 份」）。终审（另一个上下文的审稿人）指出「同时换代」与「析构里取快照」两条原先判不出它们点名的错，加强之后各补一个注入：命中不看世代 ⇒ 「同时换代」也红；缓存那一格拆掉后不退回 ⇒ 测试进程 abort；对齐那条在不垫的旧代码上先红。「拿锁之后再读一次世代来标」那种错序：不加宽 5 趟 0 趟红、中间加一次 `yield` 3 趟 1 趟红（报「第 14 次换代已返回，却取到第 13 份」）⇒ 这一处与「先加世代后写」一样，靠顺序论证，测试只能概率地抓。接线：`snapshot()` 一进来就 panic ⇒ `SERVE` / `L4` 的 TCP 各节 / `PP` 全红；UDP 那处单独在调用处 panic ⇒ L4 只红 UDP 两节。线上字节：改前改后 32 种请求（含四条续连接）除 `Date` 外逐字节相同。计数（开发机诊断台，⛔ 不是性能声明）：每请求 malloc 四格不变（`respond` 18 · `file_server` 21）；用户指令 1 条连接 `respond` +12 条、`file_server` −40 条（即不变）；200 条连接 `respond` 三轮 +1.4%（三轮区间不重叠，没达到计划写的「落在区间内或更低」，按裁决接受）、五轮补跑 +2.0%（区间重叠）、`file_server` −0.3% —— 在 200 条连接那档已知的调度噪声带内、方向不一，开发机上分不出。**⑤ 合格宿主 A/B 与撤回**（诊断，⛔ 不是 M3 读数、⛔ 不是性能声明；owner 当场授权，同日两个窗口，停服约 54 分钟 + 16 分钟，恢复后服务、端口、PM2、三个域名的外部状态码都与开窗前逐个相同）：两种钉法（历次的 `0-1` / `2-3`、跨物理核的 `0,2` / `1,3`）× `respond` · 静态 · 高并发短连接 · 反代，改前（`35a9c5f`）改后（`e8adcd8`）各 3 轮 —— **哪一格都看不出收益**；跨核钉法四类与历次钉法的前三类都在三轮区间内或只差一两个百分点。唯独历次钉法的反代，改后三轮都低约 8%，而那一格每轮都是「改前先、改后后」⇒ 第二个短窗口只跑它、两种顺序各 3 轮：改前 → 改后与改后 → 改前**都**是改后低（合并 6 轮中位 7496 对 6970，−7.0%，区间一次都不重叠）⇒ 不是顺序造成的。按 owner 弹窗选项里事先说定的「确认是真的变差就撤回」⇒ 三笔（`bd27794` · `86887bd` · `e8adcd8`）一并撤回，产品代码回到 `35a9c5f` 那一份。⚠ 机制**没查清**：本改动每请求只差几次原子操作（纳秒级），解释不了每请求多出的约 8 µs 用户态时间；只在「被测与源站挤在同一个物理核的两个超线程上」时出现，跨核钉法没有 —— 更像代码布局 / 同核超线程争 L1i 一类的副作用，⛔ 未证实。开发机上两种顺序重跑噪声约 ±13%，判不出。⇒ 读锁这一项回到 §7 M3 的登记状态；要再做，先在核数够、能给硬件 PMU 的机器上把这 8 µs 归因清楚。 |
-| **G165** | **写 h1 响应头时少两次分配（`vendor/pingora/FORK.md` 改动 19，与改动 16 同一类「只为性能、语义不变」）：`Connection` 的值改用 `HeaderValue::from_static`（上游那条 `TODO: make these lazy static` 本身）· `prepare_response_header` 回传 `BytesMut`，只在要 `Bytes` 的 proxy task 那条路 `freeze`。线上字节一个不变。** owner 2026-10-16 拍板（对话原话「fork 改動 19 照 brief-fork-19.md 的推薦做成 G165：兩處都改，判據併進現有的計數測試二進制，投稿材料先備不發」，即 agent 推荐项）。**① 起因**：§7 M3 记着 `respond` 每请求 18 次 malloc 里有三次在 pingora 写响应头那一步；开发机诊断台的归因把其中两次落在 `prepare_response_header` —— `&str` 经 `HeaderValue::from_str` 每次拷一份；序列化缓冲按 4 KiB 开、长度 ≠ 容量 ⇒ `freeze` 另分配一块共享头，而直写那条路只借用它、用完就丢。第三次是那块缓冲本身，⛔ 不在本条（要么跨请求复用、要么直接写进流的写缓冲，后者与 `G155` 方案 B 是同一处）。**② 为什么语义不变**：`from_static` 与 `from_str` 得到相等的值（都不是 sensitive）；不冻结的是同一份字节；枢衡的 h1 不走 proxy task，那条路照旧 `freeze` 一次，漏了就编不过。**③ 代价**：fork 多两处要随 rebase 重放，都在改动 16 已计入的 `v1/server.rs`（相对 0.9.0 仍是 20 个文件，实测）；类别不新开。两处在上游也语义不变 ⇒ 做成投稿八（`upstream-pr/`，⏳ 材料已备、未发；发不发是对外动作，另拍）。**④ 判据**（都在 fork 的 `tests/fulcrum_read_request_alloc.rs`，vendor 回归网照跑）：读完一条请求后 `write_response_header` 一共分配 1 次（上游原样 3 次；`keep-alive` / `close` 两种都数；`Date` 每秒换一次 ⇒ 热身后取三次里最少的）· 续与不续各写一次，除 `Date` 的值外逐字节对上（fork 那 8 个 crate 里写响应头的测试几乎都关了 `update_resp_headers`，没有一条钉这两行；上游只在没进 fork 的 `pingora-proxy` 集成测试里经 OpenResty 查 `Connection` 的值）。先在改前的代码上跑出红（3 次）；四个注入（临时 worktree，每次都有新鲜 `Compiling pingora-core`）各只红在该红处：① 换回 `&str` ⇒ 只红分配那条（2 次）· ② 换回 `freeze` ⇒ 只红分配那条（2 次）· 值写成 `Keep-Alive` ⇒ 只红字节那条（回归网里上游自己的测试一条都没跟着红）· proxy task 漏了 `freeze` ⇒ 编不过。端到端：开发机诊断台改前（`9b43f01`）改后 32 种请求（含四条续连接）除 `Date` 外逐字节相同（指标端点的正文是活计数，只比头），比较器负对照（`G162` 之前的二进制）当场红 9 条。计数（开发机诊断台，⛔ 不是性能声明、读数不入库）：每请求 malloc / free 各 −2（`respond` 18 → 16、`file_server` 21 → 19，1 / 200 条连接四格）；用户指令 1 条连接 `respond` −1.9%、`file_server` −2.5%，200 条连接时在三轮区间内分不出。 |
-| **G166** | **带 ARI `replaces` 下单被 CA 拒了（CA 回了 problem 文档），就去掉 `replaces` 再下一次；`tests/acme/renew.sh` 在续期之前换掉序列号带 DER 符号字节的第一代。ARI 标识照 RFC 9773 §4.1 带符号字节，⛔ 不剥。** owner 2026-10-16 拍板（弹窗三项：门禁选「B：重簽第一代」、产品选「做：被拒就去掉 replaces 重試」、单测选「搬進去」；追问两者怎么配时选「照原選擇：B＋D」）。**① 起因**：renew.sh 的偶发红（pebble 原话 `could not find order resulting in the given certificate serial number`）是 pebble v2.10.1 的缺陷：存订单的键是 `hex(big.Int.Bytes())`，查 `replaces` 的键是标识里的原始字节；序列号首字节 ≥ 0x80 时，后者带着规范要求的那个 `00` ⇒ 查不到，回 `serverInternal`（`GET renewalInfo` 按数值比较，不受影响 ⇒ ARI 窗口照常拿到）。pebble 序列号 < 2^63 ⇒ 约 1/255（实测 6000 张里 25 张）。上游 issue #550，修在 main `1fcb30c`（2026-09-28），⏳ 未发版。枢衡与 `instant-acme` 都照规范。**② 产品**（`crates/fulcrum-acme/src/issue.rs` `new_order_with_fallback`）：只认 `Error::Api`，打 warn 后不带 `replaces` 再下一次；连接类错误不回退，交给退避。不回退的话，这个域名一直到过期都续不上（失败 → 退避 → 下一轮算出同一个 `replaces` → 再拒）。⚠ 比 acmez（Caddy）宽：它只认 `alreadyReplaced`，覆盖不到本例。⛔ 不剥符号字节：剥了就是对规范 CA 发错标识。**③ 门禁**：renew.sh 第一代序列号带符号字节就重签一张（由一个确定的字节决定，发生在被测的续期之前，⛔ 不是重试）；pebble 不是 v2.10.1 就红，升级的人确认新版本含 `1fcb30c` 后删掉那段。授权计数判据改为与第一代最后签完时相减；新增「pebble 说旧订单已标成被替换」与「续期没走回退」两条（16 → 21 条，含版本与 `needs_sign_byte` 自证）。**④ 判据**：单测五条（RFC 原例 · 固定证书 `b36f9903f33bc7` 的标识以 `.ALNvmQPzO8c` 结尾、低位对照没有 `00` · 回退三条：被拒就不带再下一次、没带就不重下、连接错误不回退）。注入（临时 worktree，每次都有新鲜 `Compiling fulcrum-acme`）各只红在该红处：去掉回退 · 剥掉符号字节 · 任何错误都回退 ⇒ 各红一条单测（952 / 1）；renew.sh 里发一个 CA 必拒的 `replaces` ⇒ 只红新加那两条，其余 19 条绿（⇒ 回退在真 pebble 上把续期救回来了）；硬让第一代重签一次 ⇒ 21 条全绿；版本断言改成别的版本 ⇒ 当场红。 |
+| **G1** | **實作語言 = Rust。** 效能可與 nginx/haproxy 同級（Go 做不到，而那正是 Caddy 的短處）；記憶體安全避開 nginx/haproxy CVE 史上的緩衝區類問題；`tokio` / `hyper` / `rustls` / `quinn` / `instant-acme` 生態齊全。 |
+| **G2** | **三家產品的角色 = 混合資料面。** 樞衡自研處理程序做入口，未實作的能力回落給成熟引擎，實作一塊接管一塊。第一天就是完整可用產品，回落路徑天然是灰度開關與 A/B 對拍臺。 |
+| **G3** | **首版切片 = 三合一全量首版。**（AI 曾評 3.0 分並建議只做「反代 + 自動 HTTPS + 基礎 LB」。）配合 G2 與 G5 後成立——"全量"指對外能力面，不是自研程式碼面。 |
+| **G4** | **設定形態 = 自研 DSL（Caddyfile 式）。** |
+| **G5** | **「三合一全量」口徑 = 對外能力面全量，自研逐塊吞併。** 使用者看到完整三合一，內部自研哪塊算哪塊，其餘回落。 |
+| **G6** | **資料面底座 = Pingora 0.8 打底 + 獨立 QUIC 入口。** ⚠ 2026-09-24 更正（隨 rebase 計畫獲批，原文不動）：底座已 rebase 到 **Pingora 0.9.0**，見 `vendor/pingora/FORK.md`。附帶三條硬約束見 §5.1。★ 原文寫的是 `quinn`/`h3` + rustls，已由 **G103 / G104** 改成 `quiche` + BoringSSL。 |
+| **G7** | **首版自研範圍 = L4 面 + 靜態檔案 + 磁碟快取後端 + HTTP/3，四塊全自研。** |
+| **G8** | **熱重載模型 = 全量原子 load + 增量 Runtime 雙通道。** 直取兩家長處：全量 load 保證"整份設定即唯一事實"與原子退回（Caddy），增量 runtime 用於改權重、摘節點、清快取且零 reload（HAProxy）。 |
+| **G9** | **回落定位 = 時間軸上的臨時頂班。** 某塊自研未完成時回落，完成即拆除，**1.0 時回落程式碼歸零**。 |
+| **G10** | **發佈模式 = GPL-3.0 開放原始碼**，判據在 M4 退出條件中寫死。★ 「私有開發到首個能跑生產的版本」那一半已由 **G115** 改寫：儲存庫提前公開，而**發佈**仍按 M4 的退出條件走。 |
+| **G11** | **設定分層 = DSL 編譯到結構化設定，二者都是合法入口；結構化那份是唯一內部事實。** diff、版本化、原子回復全建在它上面；DSL 可隨時演進而不動核心。 |
+| **G12** | **自動 HTTPS = 預設全自動 + 支援 On-Demand TLS。** |
+| **G13** | **平台散布 = Linux x86_64 + aarch64 單靜態二進位（musl）+ systemd 單元 + 官方 deb/rpm；不做官方容器鏡像。**（AI 建議先做容器鏡像後做包。）因是單靜態二進位，文件給一份 `FROM scratch` Dockerfile 即可替代官方鏡像。 |
+| **G14** | **管理面安全 = 預設只綁 Unix socket（檔案權限控制）；遠程管理需顯式開 mTLS。** 直接堵掉 Caddy「Admin API 預設綁回環且無認證、同機任意處理程序可改設定」這個短處。 |
+| **G15** | **On-Demand TLS 存取資格 = 強制。** 未配 ask 端點或網域白名單則**拒絕啟用**——錯誤在啟動時暴露，而不是在被刷爆時才發現。 |
+| **G16** | **觀測基線 = Prometheus 指標 + 結構化訪問紀錄 + Runtime 即時 stats。** Runtime 通道 G8 反正要做，在其上加唯讀 stats 是邊際成本最低的高價值功能。 |
+| **G17** | **上游發現 = 靜態列表 + DNS 定期重解析 + 主動健康檢查 + 被動熔斷。** DNS 重解析直接消滅 nginx OSS「上游網域只在啟動時解析一次」這個經典事故源。⚠ 2026-09-24 更正（owner 當場拍，原文不動）：1.27.3 起 nginx 開放原始碼版可以在 `upstream` 的 `server` 上顯式寫 `resolve` 做動態重解析 ⇒ 這句該讀作「上游網域**預設**只在啟動時解析一次」，差別在預設行為與設定門檻（見 §3）。 |
+| **G18** | **Runtime 改動歸宿 = 顯式臨時覆蓋層。** 不持久化，但 stats 與 API 永遠顯示「當前有 N 項臨時覆蓋生效中」。 |
+| **G19** | **效能驗收 = 三家全對拍，逐類設門（不劣於該類最強者 10%），指令碼與原始資料全公開。** 詳見 §8。 |
+| **G20** | **DSL 風格 = Caddyfile 式（站台位址起頭 + 大括號塊）。** |
+| **G21** | **產品名 = 樞衡 / Fulcrum。** |
+| **G22** | **使用者分層。** 第一類：**自己的機隊 + 自託管/homelab 站長**（並列主打）。 |
+| **G23** | **首版不做 Web UI**，只有 DSL + CLI + API。G16 的 Prometheus 指標接 Grafana 已覆蓋視覺化需求；nginx、HAProxy、Caddy 三家都沒有官方 UI。 |
+| **G24** | **里程碑按「能自用」切分。** 見 §7。 |
+| **G25** | **回落範圍 = Caddy + Nginx 兩家**（靜態與快取交給 Nginx，其餘交給 Caddy）。 |
+| **G26** | **M0 建置與驗證環境 = Docker Desktop（官方 rust 鏡像）。** |
+| **G27** | **M0 驗證範圍收窄 = 裸 UDP + 裸 TCP 服務驗 fd 移交接縫，QUIC 推後。** 理由見 §7 M0 下方引文。 |
+| **G28** | **HTTP/3 庫選型推遲到 M2**（登記為 D11）。★ 已由 **G103** 結案。 |
+| **G29** | **（D1 結案）依賴版本策略 = 追新 + 24 小時安全懷疑期。** |
+| **G30** | **依賴天花板的處置 = fork `pingora-core` 放寬版本上界。** |
+| **G31** | **處理程序模型 = systemd `Type=notify` 前台執行；`daemonize` 依賴刪除。★ 但先做 spike 驗證。** |
+| **G32** | **fork 長期維護 = 把有公告支撐的上界推 PR 給上游，其餘常年 rebase。** |
+| **G33** | **（D5 結案）路徑約定 = systemd 託管為主，但每一項都可被設定覆蓋。** |
+| **G34** | **（D6 結案）回落層處理程序管理 = 重複使用既有 systemd 單元 + 在樞衡的 unit 裡宣告依賴。** |
+| **G35** | **並行與執行緒模型 = 保持 `work_stealing = true`；執行緒數按 service 角色定預設、設定可覆蓋；QUIC 那部分隨 D11 推到 M2。** |
+| **G36** | **建置鏡像的升級口徑 = 併入 `dep-check.py` 的每週檢查；只在 rustc 版本變了時判紅；只報告、拒絕自動應用；M3 對拍期間凍結。** |
+| **G37** | **（D14 結案）處理程序模型 = `Type=notify` + 前台 + `ExitType=cgroup`，★ 不交接 MainPID。** |
+| **G38** | **`get_fds_from()` 的兩處 fd 洩漏 = 先在 fork 裡修，並備好上游 PR 材料由 owner 提交。** |
+| **G39** | **systemd 測試宿主鏡像的升級口徑 = 併入 `dep-check.py` 的每週檢查，判 systemd 大版本。** |
+| **G40** | **上游投稿改為「owner 授權後可代發」，身分與複核要求不變。** |
+| **G41** | **`pingora-rustls` 的兩處清單缺陷在 fork 裡修掉，並備上游投稿三。** |
+| **G42** | **迴歸網覆蓋 rustls，且把測試環境修對而不是把已知失敗名單加長。** |
+| **G43** | **`FORK.md` 的核對命令覆蓋面補齊（順手逮到的第三條）。** |
+| **G44** | **拼出來的門禁命令要加分組。** `lint && build --locked || build && …` 的運算符優先級讓 lint 的結束代碼被吞掉，門紅著而結束代碼一直是 0。 |
+| **G45** | **（承 G41）`rustls-pemfile` 遷到 `rustls-pki-types` 的 `PemObject`。** |
+| **G46** | **（修訂 G32／G40 的發前檢查）「查過上游做沒做」必須包含未合併的 issue 與 PR。** |
+| **G47** | **（D3 第一刀）DSL 裡遇到本版尚未自研的能力 = 隱式回落，不寫 `fallback` 指令。** |
+| **G48** | **（D3 第二刀，補一處規格真空）結構化設定的完成實作格式 = JSON。** |
+| **G49** | **站台塊內的執行順序 = 內建順序表（照 Caddy），不是書寫順序。** |
+| **G50** | **matcher = 命名 matcher（`@name`）+ 僅路徑的行內簡寫。** |
+| **G51** | **回報錯誤策略 = 一次報全 + 穩定錯誤碼。** |
+| **G52** | **隱式回落的可見性 = 啟動/裝載紀錄逐條列出。** |
+| **G53** | **ACME 用戶端 = `instant-acme`，上層自己搭。** |
+| **G54** | **挑戰類型 = TLS-ALPN-01 主 + HTTP-01 備 + DNS-01。** |
+| **G55** | **證書儲存 = 每域一目錄的 PEM 檔案。** |
+| **G56** | **續期 = ARI 優先，退回到「剩餘壽命 1/3」；失敗走指數退避。** |
+| **G57** | **DNS-01 = 原生 Cloudflare + DNSPod，其餘走 exec hook 備援。** |
+| **G58** | **通配符證書是 M1 的交付內容，不推到 M2。** ★ 附帶一條硬約束：DNS-01 必須輪詢權威 NS 確認 TXT 已可見，**不許固定 sleep**。 |
+| **G59** | **DNS 憑證 = 只從檔案或環境變數讀；能處理程序化檢核權限範圍的，在啟動時檢核並拒絕啟動。** 檢核不了的供應商，強制在設定裡宣告該憑證覆蓋哪些 zone。 |
+| **G60** | **M1 的指令集邊界 = 首版對外能力面全覆蓋。** |
+| **G61** | **佔位符 = 小而固定的一組，無表達式、無函式、無條件。** |
+| **G62** | **M1 只認一份設定檔案，不做 `import` / `conf.d`。** |
+| **G63** | **預設錯誤回應 = 內置預設 + `handle_errors` 可覆蓋。** |
+| **G64** | **門禁裡跑 pebble 當本機 ACME CA。** |
+| **G65** | **續期狀態與證書本身解耦：沒有證書的網域也要記得自己失敗過幾次。** |
+| **G66** | **站台索引的通配符收緊到「只吃一層」，與證書側一致；且兩側共用同一份實作。** |
+| **G67** | **投稿四（`test_connect_uds` 的短讀）已發出。** |
+| **G68** | **投稿五（`with_cert_resolver`）撤銷，不發。** |
+| **G69** | **DNS 用戶端自己寫，不拉 crate —— 而這個決定是量出來的。** |
+| **G70** | **續期單獨立一個驗證場景**（[`tests/acme/renew.sh`](tests/acme/renew.sh)）。 |
+| **G71** | **TLS-ALPN-01 串接（G54 的「主」，RFC 8737）。** |
+| **G72** | **原生兩家串接，而 HTTP 用戶端新增 0 個包。** |
+| **G73** | **M1 退出條件去掉「連續執行 7 天無事故」，改為「上線跑壓力冒煙開測」。** |
+| **G74** | **加一個強制續期的口子**（`POST /renew`）。★ 它不越過退避，只越過「還不到時候」這條判定。 |
+| **G75** | **管理面完成實作**：`admin unix/<路径>`，權限 0600，兩條命令 —— `POST /load`（G8 的全量原子 load）與 `POST /renew`（G74）。沒配 `admin` 就一個 socket 都不建；寫成連接埠形態直接拒絕啟動。 |
+| **G76** | **`dns_refresh` 完成實作**：上游網域的解析結果存進 `Upstream` 的槽裡並定期重解析。 |
+| **G77** | **`health_uri` 完成實作**（主動健康檢查）。 |
+| **G78** | **產品二進位由 systemd 託管完成實作**（G31/G33/G37 的產品側）。 |
+| **G79** | **回落層的轉發側串接**：`file_server` / `cache` 真的轉發給 nginx（此前一律回 501）。⛔ 整層已由 **G98** 刪除。 |
+| **G80** | **M1 退出條件的真網域改為生產主網域**（含 `www`）。★ 後續被 G85 / G86 兩次改寫。 |
+| **G81** | **M2 的退出條件從「五臺伺服器全部由樞衡承載」改為「兩臺」。** |
+| **G82** | **HTTP 快取整層自研**，`pingora-cache` 不進 fork（用現成要把 8707 行 + 7 個新包吃進 fork）。 |
+| **G83** | **磁碟快取佈局：兩級分片目錄 + 每條目 meta/body 兩檔案 + 寫 `tmp` 後 `rename` 完成實作。** ★ meta 是一族（一個主鍵）一個，body 是一條一個。 |
+| **G84** | **磁碟快取崩潰恢復：啟動不掃盤 —— 讀時檢核 + 後台漸進重建；`purge` 走管理面。** ⚠ 代價寫在明處：剛重新啟動時少算佔用、淘汰偏晚 —— **隻影響淘汰**。 |
+| **G85** | **生產網域第一次更換**（owner 拍板）。⛔ 已被 **G86** 取代。 |
+| **G86** | **生產網域第二次更換**（owner 拍板，同日）。 |
+| **G87** | **靜態檔案 · 符號連結：預設跟隨，另加一條可關的子指令。**（★ **推翻 AI 推薦項**「只跟隨、不給開關」） |
+| **G88** | **隱藏檔案不按 `.` 一刀切**，改成一張可設定的預設 404 清單。 |
+| **G89** | **靜態檔案這一批做到哪：全做。** 發檔案 · 目錄索引（`index`，預設 `index.html`）· 目錄不帶尾斜槓 **301** 到帶斜槓 · 範圍請求 · 條件請求 · 預壓縮旁檔案。 |
+| **G90** | **靜態檔案 · Content-Type：自帶一張小表，新增 0 個包。** 約 60 條常見副檔名 + 預設 `application/octet-stream`。 |
+| **G91** | **`root` 必填，且必須是絕對路徑。** |
+| **G92** | **`Owner` 加一檔 `SelfBuiltM2`**（印「M2 自研」），文件列頭 `M1 归属` 改為 `归属`。 |
+| **G93** | **`If-Modified-Since` 三種格式都解析**，RFC 850 的兩位年按 RFC 9110 附錄規則處理，並由單測釘住。★ 推薦項只到「三種都做」。 |
+| **G94** | **CI workflow 裡的 shell 搬進指令碼**：`dumpcache` 那段搬成 [`tests/ci/dump-cache.sh`](tests/ci/dump-cache.sh)，與本批一起做。 |
+| **G95** | **快取切成兩批**：語義層 + 記憶體後端 + `purge` + 防驚群，然後磁碟後端。 |
+| **G96** | **`ttl` 是備援不是覆蓋**：只有上游沒給新鮮度時才用它。 |
+| **G97** | **快取的 RFC 覆蓋面 = 最小集 + 上游回應頭裡的全套 `Cache-Control` 指令。** ★ 推薦項只到「最小集」。 |
+| **G98** | **回落層這一批整塊刪掉。** ★ 推薦項是「保留指令、1.0 時才刪」。 |
+| **G99** | **下一批 = `encode` 壓縮 + 預壓縮旁檔案。** |
+| **G100** | **壓縮用現成的**（fork 裡已有那份），自研換不來更小的依賴圖，新增 0 個包。 |
+| **G101** | **壓縮與快取的先後 = 壓完再存 + 次級鍵歸一化。** |
+| **G102** | **壓縮後的 ETag 弱化成 `W/"…"`**（照 nginx gzip filter）。 |
+| **G103** | **D11 結案：HTTP/3 取 `quiche`。** ★ AI 推薦的是 `quinn` + `h3`。 |
+| **G104** | **TLS 棧統一到 BoringSSL**：把 fork 當初刪掉的 `pingora-boringssl` 加回來，h1/h2 與 h3 共用同一套。★ AI 擺的兩條裡，「兩套並存」才是改動面更小的那條。⇒ 推翻 §5.1 第 1 條原來的 rustls 口徑。 |
+| **G105** | **HTTP/3 語義層用 `quiche::h3`，不自研。** |
+| **G106** | ~~owner 在宿主機裝 Rust。~~ ⛔ **已被 G107 整條撤銷**。 |
+| **G107** | **Rust 一律在 Docker 裡跑。** ⛔ 整條撤銷 G106；本機跑 Rust 的決定、指引與全部建置產物一併清除。判據不變：`bash tests/m0/docker-run.sh`。 |
+| **G108** | **D22 的判據換成產品自證**：新增場景 [`tests/musl/product.sh`](tests/musl/product.sh)，用產品本體編 musl 靜態產物並在 `FROM scratch` 裡跑一次 `validate`；`tests/musl/probe.sh` 留在門外當歷史記錄。 |
+| **G109** | **升級視窗內 QUIC 連接歸屬：按 DCID 跨處理程序轉交**（★ **推翻 AI 推薦項**「停收 + GOAWAY」）。理由與 §7 「換代時長連接不斷」一致 —— TCP 那側做得到，h3 就不該做不到。★ 形狀：`<run_dir>/quic-relay-<gen_id_hex>.sock`（`SOCK_DGRAM`）· 訊息 `[from][to][原始数据报]` · 單向 · 對方已退出即丟棄 · **只走一跳**。 |
+| **G110** | **HTTP/3 跟著 `tls` 自動開，並行 `Alt-Svc`**（D25）：有 TLS 的站台自動在同連接埠聽 UDP，h1/h2 回應加 `Alt-Svc: h3=":443"`。★ 推翻 AI 推薦項。 |
+| **G111** | **HMAC / AEAD 由 `fulcrum-server` 直接依賴 `boring`**，破例於「BoringSSL 類型只經 `pingora-boringssl` 拿」那條紀律。★ 推翻 AI 推薦項。 |
+| **G112** | **觀測先於換代轉交**：批 L（訪問紀錄 + PROXY protocol 的 HTTP 半邊）排在批 K 之前。 |
+| **G113** | 訪問紀錄格式：**JSON 單一格式，欄位扁平**（不取 logfmt，也不取「兩種可選」）。 |
+| **G114** | **訪問紀錄的欄位清單**（★ **推翻 AI 推薦項**）。 |
+| **G115** | **儲存庫提前轉為公開**，並把當前樹作為**第一個提交**（此前的提交歷史移除）。⚠ **「原始碼公開」不是「發佈」** —— M4 的範圍與退出條件不變（還沒有版本號、沒有包、沒有相容性承諾）。★ 連帶：`handoff/` 進 `.gitignore` 不再入庫；文件與註解只留當前結論，不留過程記錄。 |
+| **G116** | **Prometheus 端點 = 站台塊裡的終結指令 `metrics`**（執行順序表 Terminal，序號 75）。⇒ 訪問控制（`remote_ip` 匹配器）、TLS、訪問紀錄全部重複使用現有機制，**不新增監聽器、不新增認證體系，G14「管理面只綁 Unix socket」的口徑一個字不動** —— 指標面根本不屬於管理面。⛔ 不掛 admin socket 當唯一出口：Prometheus 抓不了 Unix socket，那樣使用者必須再裝一個 exporter，直接撞設計原則 1。⚠ 代價：指標與業務共用監聽器，**matcher 寫錯就會把指標暴露出去**，只能靠文件與診斷兜。 |
+| **G117** | **指標的 text exposition 格式自研，零新依賴。** 它是行式純文字、**不是安全敏感協定棧**，不撞安全基線第 5 條（那條管 TLS/HPACK/QUIC）。⇒ 供應鏈門不用動，musl 靜態產物不受影響。⚠ 代價：直方圖分桶、標籤值轉義、`_total` 後綴要自己釘住，由單測守。 |
+| **G118** | **D26 結案 = 給 `no_site_match` 一個計數器**，而不是回答「全域 `log` 與站台 `log` 是覆蓋還是合併」。`host` 標籤**只有出現在設定裡的才帶真值**，其餘歸 `host="<other>"` ⇒ 上界由設定定、不由訪問者定。⚠ 代價寫在明處：**只知道有多少、來自哪個已知 host，不知道具體是哪個未知 host** —— 有意如此，不讓外人往我們的時序庫裡寫任意字串。 |
+| **G119** | **批 N 的順序 = G8 增量通道 → G18 臨時覆蓋層 → 唯讀 stats。** ★ owner 拍的是這個順序（AI 推薦的是「先唯讀 stats、寫通道留後」）⇒ stats **從第一天就帶 `overrides` 一節**，不存在「先發一個沒有覆蓋層的 stats」這種中間形態。 |
+| **G120** | **`POST /load` 的 `overrides` 是必填參數**（`keep` / `clear`），**缺了就拒絕**。★ 不給預設值是這條的全部內容：發佈流水線要 `clear`（發佈＝回到期望狀態），事故處理中的人要 `keep`（一次無關的發佈不該把剛摘掉的壞節點放回去）—— 兩種現實都正確且互相沖突，**任何預設值都會在另一種場景裡悄悄做錯事**。與「改了監聽連接埠就顯式拒絕」同一條紀律：判據在拒絕上，不在盡力而為上。⚠ `clear` 那一檔必須在回話裡**逐項列出**被清掉的覆蓋 —— §3 點名要避開 HAProxy 那個「runtime 改動 reload 後無聲消失」。 |
+| **G121** | **`fulcrum_requests_total` 的站台標籤 = 請求實際匹配到的那條位址字面值**（`a.example` / `*.wild.example`，通配符摺疊成自己的字面值）。⚠ **不能用 `host`**：通配符站台下 host 由請求方決定，一個 `*.example` 就能讓 series 無限增長 —— ★「已命中站台的請求 host 總是有界的」是錯的，而它錯得很像對的。⚠ 也不取「站台塊的第一個位址」：那會把同一塊裡的 `a.example` 與 `b.example` 混成一格，且**改位址書寫順序會讓時序斷裂**。★ 代價：通配符站台下各子網域合併成一格，「哪個租戶在打我」留給訪問紀錄答（它有真 host）。 |
+| **G122** | **D32 結案 = 兩半分別完成實作，且分別命名。** ① **TLS 那半**：新增 `fulcrum_tls_requests_total{version,cipher}`，取數點仍是 `Record::finish` **那一處**（`Record` 已經帶著 `TlsFields`）。★ 兩個標籤都由**伺服器端協商**產生 ⇒ 上界由我們編進去的套件表定、不由訪問者定，正好過 G118/G121 那條紀律；⛔ `sni` / `alpn` **不當標籤**（訪問者給的，與 G121 擋的是同一件事）。⚠ 名字裡是 `requests` 不是 `handshakes` —— keep-alive 下一次握手對應多條請求，叫 `handshakes` 會是一句讀起來完全成立的假話。② **連接那半**：`fulcrum_connections_total`（counter）+ `fulcrum_connections_active`（gauge），標籤 `listen`（監聽位址，上界由設定定）。⚠ ⚠ **它是四處，不是一處**：fork 第 15 處改動（`Service::run_endpoint`）覆蓋 h1/h2 與 admin，而 L4 TCP · L4 UDP · QUIC **各有各的 accept 循環**，pingora 那個一次都不經過。★★★ gauge 的減一**必須用 `Drop` 守衛** —— 那個連接任務有三條退出路徑（握手超時 / 握手失敗 / 正常結束），手寫三處 `fetch_sub` 正是 D18/G66 那個分家形狀。★ 四處只負責 `+1/-1` 到**同一個** `ConnStats`，而它與標籤定義只有一份。⚠ fork 夠不到我們的 `metrics` 模組 ⇒ 只能由 fork 暴露計數、我們**抓取時問活體**（`upstream_inflight` 那條路子）。★ 順序：**現在就在 fork 裡做，不等 rebase**（改動是孤立新增，衝突面小；而投遞或等待都不改變我們什麼時候用得上 —— `ListenFds` 那條已證）；**投不投上游等 rebase 讀過 `main` 之後再判** —— ~~上游 `main` 已把 `prometheus` 整條刪掉，口味未知。~~ ⚠ ⚠ **劃掉的那半句是假的（2026-09-04）；⛔ 有意不刪原話 —— 那是 owner 當初寫下的，留著才看得出錯在哪。** 實測那是**一次重構被讀成了刪除**：`pingora-prometheus` 這條路徑上**只有一個提交**（`842ddd9`，2026-04-01「Split out pingora-prometheus into a separate crate」），它刪掉 `pingora-core/src/apps/prometheus_http_app.rs`、從 core 的 `Cargo.toml` 抽掉依賴，**同時新建了那個獨立 crate**；`pingora` 與 `pingora-proxy` 今天都依賴它，而 `pingora-core` 對它零引用。⇒ ★ **只看 `pingora-core` 的話確實「整條消失」，那正是這句話的來源。** ★★★ 換來的口徑比原來那句有用得多：那次拆分是**回應社群的 #560 / #822**（「把 `prometheus` 在 core 裡變成可選」）⇒ 上游**刻意不讓指標實作留在 core 裡、只在 core 暴露接縫** —— 這不是「口味未知」，是一條畫得很清楚的線，而樞衡要的東西（**要鉤子、不要指標**）站在它的**正確一側**。⚠ 另有三條不依賴 prometheus 的口味證據：`ConnectionFilter`（#671）本身是**外部貢獻者**加進 core 的監聽器級接縫 · `upstreams::peer::Tracing { on_connected, on_disconnected }` **已經在 core 裡** · `listeners/` 2026 年一直在加接縫與按監聽器設定；★★★ 最硬的一條是**樞衡自己的投稿一已經落進上游 `main`**（`6463ad6`，2026-08-14，committer 是維護者）。⚠ ⚠ **真正的風險不是口味，是評審頻寬**（#941 open 六週 0 評論；CONTRIBUTING 不承諾及時評審）—— 那是時間成本，不是方向問題。⛔ 全部證據與**兩側讀法**（含「那次拆分是在讓 core 變小，而我們要往 core 加東西」這條反向讀法）見 [`upstream-pr/issue-6-connection-counter.md`](upstream-pr/issue-6-connection-counter.md) §0①a。 |
+| **G123** | **D31 結案 = 把 `purge` 拆成自己的族。** 新增 `fulcrum_cache_purged_entries_total`（單位「條目」），`fulcrum_cache_events_total{event}` 只剩 `hit` / `miss` / `stale` **三個同一分母的值** ⇒ `sum(cache_events_total)` 恢復成「查過快取的請求數」，命中率直接可寫。★ 這是**把一個靠使用者記住的陷阱，換成一個結構上不存在的陷阱**。⚠ 「是哪一種命中」（`HIT` / `HIT-DISK`）**不進指標**：`CacheHandle` 全倉只建一次，`Backend` 是每處理程序一個、由設定定死的 ⇒ 那個區分在一個執行中的處理程序裡**是常數**，做成標籤攜帶的資訊量恰好為零，只剩基數成本；要知道後端是哪個，裝載紀錄那一行就說了。⚠ 另一半邊界**保持現狀並寫在明處**：`miss` 記在**回源**那一處（有意不記在「查快取沒命中」那一處 —— 那裡還會拐彎：`only-if-cached` 回 504 根本沒回源、防驚群的 follower 等完重查會**命中**）⇒ 上游連不上的請求三格都不在，故障期間 `hit/(hit+miss)` 會偏高；★ 那時 `upstream_healthy` 與 `requests_total{outcome="error"}` 是兩個更直接的信號。 |
+| **G124** | **D30 結案 = `status_class` 保持六個值，第六個是 `none`，並補一條判據。** `status == 0`（一個回應頭都沒寫出去 —— 那不是「未知」，是**什麼都沒發生**）與 1–99 / 600+ 一起歸 `none`。★★ 它**可達**這件事現在有實據 —— ⚠ ⚠ **而本行原來那半句論證不夠，已按 2026-09-03 的實測修訂**（決定本身一個字沒變）：「`response_written` 只在 `write_all` **成功之後**才被置上（`v1/server.rs`）」這句為真，**卻推不出「下游斷開 ⇒ `status` 是 0」**。實測三種構型：帶 `Content-Length` 的回應頭**根本不產生 syscall**（`write_all` 寫進的是**帶緩衝的流**，flush 只在「1xx 或**沒有** `Content-Length`」時發生）⇒ 那次 `write_all` 回傳 `Ok`、`response_written` 照樣被置上、`status` 是 **200**，哪怕對端早就 RST 了。★★★ **真正走得到 `status = 0` 的是「上游回應不帶 `Content-Length`」那一支** —— 只有它會 flush、會碰 socket、會在被 RST 的連接上失敗。走到了那一支時，站台已命中、`outcome` 是 `reverse_proxy` 之類，而 `status` 是 0，**且 `LogLevel::All.records(0)` 為真 ⇒ 這一行照樣會被寫進訪問紀錄**。（機制全文與那張三行對照表在 [`docs/architecture/observability.md`](docs/architecture/observability.md) 的 `status_class` 一節。）★★★ 同族換裝：**任何「A 回傳成功 ⇒ 對端一定收到了」的推斷**都要先問緩衝、批量與非同步刷盤。⛔ 因此「這類請求不計進 `requests_total`」當場破掉一致性門（紀錄有那一行、指標沒那一筆）；⛔ 也不取 `0xx` —— HTTP 裡沒有這個類，它會被當成真的狀態類去查規範。⚠ 而這條路**當時沒有任何判據走過** ⇒ 本條同時要求在 `tests/metrics/run.sh` 裡造一次走得到它的請求，兩邊一起斷言：訪問紀錄真的多了一行 `status=0`，且指標裡 `status_class="none"` 正好 +1。⚠ **造法不能只是「發完請求立刻關連接」**（照上面那段，那樣拿到的是 200）—— 判據用的是「立刻 RST + 慢上游且**回應不帶 `Content-Length`**」，並配一個「同一條路、用戶端正常收完拿到 200」的對照組證明這把尺子量得了兩邊。★ 否則這一格只存在於程式碼與文件裡。 |
+| **G125** | **`reverse_proxy` 的選填 `id`，與覆蓋層的三格鍵 `(站点名, id, 上游地址)`。**★ owner **兩輪**拍板：先拍「發明 `id` + 同站台歧義就拒絕」，實測後**重拍為「保留 `id`，但撞鍵不拒絕 ——同鍵共享同一個覆蓋格子」**。⇒ 一次 `disable` 把共享那一格的幾條 `reverse_proxy` 一起摘掉，⛔ **不是錯誤、也不給告警**：「一個後端掛在幾組 `handle` 路由後面」是反代最常見的寫法，**現有設定一個位元組都不用改**；而「一起摘掉」多半正是要的語義（那臺機器壞了，它不該從任何路由收流量）。**想分開就給其中一條寫一行 `id`**。⚠ ⚠ **鍵裡的上游位址是歸一化之後的那個串**（`backend` ⇒ `backend:80`）⇒ 兩條寫法不同、歸一化後相同的 `reverse_proxy` **共享同一格** —— 這不是缺陷而是邊界：管理面對著的是執行環境。⚠ 「這一格管著幾條」由 `GET /stats` 顯示（G18），那是「以為 `disable` 隻影響一條」唯一的提醒。⛔ **不自動派生 `id`**：內容雜湊會讓「發佈時加一臺機器」把剛摘掉的壞節點頂懸空，站台內序號會讓「換一下書寫順序」靜默改掉尋址 —— 與 `weight` 拒絕位置式是同一條理由。|
+| **G126** | **新增指標族 `fulcrum_overrides_active`（無標籤單值 gauge，基數恆為 1）。**★ owner **推翻**了 AI 的建議（AI 選的是「不加，只從 `/stats` 出」）。值是**當前生效中的臨時覆蓋總數**，⚠ ⚠ **懸空的照樣計入** —— 它確實還在登記處佔著一格，且 `/load` 已經逐條點過名。⛔ **不按 `(站点, 上游)` 打標籤**：那等於把 `/stats` 的 `overrides` 一節整個搬進指標（兩份實作同一件事），而「是哪幾項」本來就該去 `/stats` 看。★ 取數與 `/stats` **同源**（同一個 `OverrideLayer::entries()`），⛔ 不新增第二處計數；抓取路徑上只許用**已持快照**的那一版（`override_entries_of`），因為 `override_counts()` 內部會再取一次快照，而一次抓取取兩份快照會讓兩個族落在兩份不同的設定上。⚠ **新族與 `observability.md` 那張基數表必須同一筆改**：把表釘在 `FAMILIES` 上的那道門會判紅 ——★ 但它**只比族名**，`gauge / 活体 / 无标签 / 恒为 1` 那四格今天沒有任何門守著。|
+| **G127** | **指標的標籤值取不到時記 `<unknown>`，⛔ 不記空串。** ★ 判據落在「**取到的值為空**」上，⛔ **不落在「是不是 h3」上** —— 後者把一個今天成立的巧合釘進程式碼：哪天別的傳輸也讀不出套件，它會走到分支外面記一個空串，**而那時不會有任何東西紅**。`fulcrum_tls_requests_total` 的 `version` 與 `cipher` 兩格**同一條規則**，⛔ 不給 `cipher` 開特例。**決定性依據在 Prometheus 資料模型**：空標籤值與「這個標籤不存在」被視為等價 ⇒ ⚠ ⚠ 「今天記 `cipher=""`」與「明天把 `cipher` 這個標籤整個刪掉」在抓取端**分不開**；且 `cipher=""` 正是 PromQL 裡「該標籤不存在」的慣用寫法，維運照著寫出來的過濾器會命中一批他沒打算命中的 series。★ 記號形狀隨 G118 的 `<other>`（尖括號在真實套件名 `TLS_AES_256_GCM_SHA384` 裡不可能出現，撞不上）。⚠ **但兩者動機不同，別當成同一條**：`<other>` 擋的是**訪問者可控的無界基數**，`<unknown>` 標的是**我們問不出來**；共用的只是那個防撞記號。⚠ 它把「這條傳輸問不出套件」與「我們沒讀到」併成一格 —— 今天兩者恰好是同一個集合（h3 走 quiche，`Handshake::cipher()` 鎖在私有 `mod tls` 裡），**而判據有意不依賴這個巧合**。基數代價：h3 恆為 `TLSv1.3` × `<unknown>` ⇒ 多一條 series。|
+| **G128** | **D27 + D28 一起結案 = fork 改動 14**：`SslDigest` 直接多兩格 `pub sni` / `pub alpn`，由 `from_ssl()` 在握手結束後填 —— 那裡本來就握著 `&SslRef`，**一分額外開銷都沒有**。擺在桌上的另外三條是「只把 `SslDigestExtension::set` 放開成 `pub`」「零 fork，h3 走我們自己的 trait 傳參」「維持現狀只寫進契約」；**決定性理由是它是唯一同時收掉兩條 D 的** —— 放開 `set` 花掉一次 fork 的代價卻只買到 D27 那一半，而 D28 的落點**就在同一個檔案裡**。⚠ **D28 那趟開銷不是「這次握手需要掛起」才有的**：走回呼那條路（`TlsSettings::with_callbacks`）時上游 `start_accept()` **無條件**裝一個恆回 `-1` 的 `cert_cb`，於是每條 TLS 連接都多走一趟「掛起 → `certificate_callback` → `resume_accept`」。⇒ 監聽器換回 `TlsSettings::from(builder)`，那趟開銷**歸零**，⛔ 資料面此後不許再掛 `TlsAccept` 回呼。★ **順帶的結構收益才是這條最貴的**：`SslDigest` 有了那兩格之後 h3 也能自己造一份同類型的 `Digest`（`quic_digest`：`version` 恆 `TLSv1.3` 由 RFC 9001 §4.2 定死，`sni` / `alpn` 取自 `quiche::Connection` 的公開 API）⇒ h1/h2 與 h3 在訪問紀錄那一層**走同一段程式碼**，「同一格資料兩個填法」在結構上做不到。⚠ **代價寫在明處**：`tls_cipher` 在 h3 上**仍然拿不到**（quiche 的 `Handshake::cipher()` 鎖在私有 `mod tls` 裡，且它一個 TLS 出口都沒 re-export）—— 按契約留空 ⇒ **那一格不出現**，⛔ **不許編一個值**：一個編出來的套件名讀起來與真的一模一樣。⚠ **指標那一側的處置不同，而且必須不同**：`fulcrum_tls_requests_total` 記 `<unknown>`（G127）—— 指標裡沒有「那一格不出現」這回事。守它的是 [`crates/fulcrum/tests/tls_digest_gate.rs`](crates/fulcrum/tests/tls_digest_gate.rs) 三道文字門（那兩格還在不在 · `from_ssl()` 還填不填 · 資料面有沒有又去掛回呼）加 [`tests/log/run.sh`](tests/log/run.sh) 在真握手上量。⚠ ⚠ **本行是補記**：這條決定作出於 §10 第 79 輪（`FORK.md` 改動 14 引的就是那一輪），當時**沒有落成 §10 的行**，而 `docs/` 與程式碼註解多處按「已結案」引用它 —— 號按「只增不減」取 128，⛔ **不表示它比 G119–G127 晚**。|
+| **G129** | **裁決 R6 留下的三條小項（M2 批 P）。**★ owner 逐條拍板，三條彼此獨立。**① 每項覆蓋帶設定時間，語義取「最後一次改動」，⛔ 不是「首次被覆蓋」** —— 維運問的那句話是「這臺機器摘掉多久了」，問的是**當前形態**的年齡而不是這一格的年齡：先改 `weight` 再 `disable` 時，取「首次」的讀數會讓人以為它兩天前就摘了，而其實兩分鐘前才摘。★ 連著調 `set_weight` 會讓它一直往前走 —— 那**正確**，形態確實一直在變；⚠ 「設成同一個值」也算一次改動（管理面分不出「設成 X」與「又設了一次 X」）。欄位是 `/stats` 上的 `set_at_unix`，**絕對 Unix 秒**，⛔ 不寫「已過多少秒」——與 `not_after_unix` 同一條理由：相對秒讀起來完全正常，而它在兩次抓取之間的含義會變。⚠ ⚠ 內部存 `SystemTime` 而**不是**秒級整數：秒級粒度會讓「改動會推進它」這條判據在跑得快的時候落在同一秒上而**偶發抖動**。⚠ 時鐘取**牆鍾**而不是 `Instant`（這個值要能與紀錄對時間），代價寫在明處：牆鍾會跳（NTP 校正）⇒ 極端情況下兩項覆蓋的先後與時間戳順序可以不一致；⛔ **不**為此引入第二個單調時鐘，那會讓 `/stats` 出現兩種時間，而「這兩個為什麼不一樣」沒人答得出來。⚠ 它**不進指標**（G126 已經拍過：「是哪幾項」本來就該去 `/stats` 看）。守它的是 [`crates/fulcrum-runtime/tests/overrides.rs`](crates/fulcrum-runtime/tests/overrides.rs) 四條加 `admin.rs` 兩條（★ 後者的判據打在**最終 JSON 文字**上，不是取數函式的回傳值上）。**② `self_loop_warnings` 的第一條端到端判據掛進已有的 `tests/serve/`，⛔ 不新起場景** —— 那個欄位在建圖那一刻就算好了，而**全倉一個消費者都沒有**，`log_load_summary` 一個字都不說 ⇒ ★ 又是本儲存庫那條老形狀：**一個用來「出了事你能知道」的東西，自己不說話時沒人知道**。⚠ 列印只能落在資料面這一側（`fulcrum-runtime` 有意不依賴 `log`，回傳話、不自己列印），且**是 warn 不是 error**：指回自己可能是有意的（自己終止 TLS 再回自己的明文口）。⛔ 不掛 `tests/stats/`：那邊的連接埠集剛被釘成逐字等於一個字面值，往裡加站台會撞那道編譯期門。★ 夾具**有意嵌在 `handle` arm 裡**：單測那條用的是**扁平**站台，於是「容器要下鑽才找得到」這一半在任何一層都沒有判據 —— 而 `self_loop_warnings` 那個 `_` 曾經就是漏在容器上。⛔ 這條路徑不許打真流量：真打進去就是一個無限轉發循環。守它的是 [`tests/serve/run.sh`](tests/serve/run.sh) `[4/4]` 四條（說出來了 · 點名了那個上游 · **不自環的上游不許被說進去** · **恰好一條**）。**③ `id` 的取值域收緊成 `[A-Za-z0-9_.-]`、長度 1–64**（桌上另兩條是「維持現狀只寫文件」與「只禁尖括號」）。★ ★ **決定性理由只有一條半，⛔ 別把它記成「基數風險」**：硬的那條是**與備援記號撞車** —— 本儲存庫用 `<other>` / `<none>` / `<unknown>` / `<undeclared>` 表示「取不到 / 備援」，靠的是**尖括號在真值裡不可能出現**，而在這一條之前 `id <none>` 是**合法**的；另半條是可讀性（`id` 裡的換行會讓 `/stats` 與紀錄上那一行在人眼裡斷成兩行）。`id` 一個字都不進指標（G126）⇒ ★ 一個假理由會讓下一個人理直氣壯地把限制放寬回去。⚠ **這是一次收緊，代價認下**：在此之前裝得上的某些設定以後裝不上 —— **D9（版本與相容性策略）還沒結案、M4 之前沒有任何相容性承諾**（§7）⇒ **要收就現在收最便宜**。⚠ ⚠ **兩條路各攔一次**：DSL 那條給 `FUL-DSL-0043`，而**結構化設定**那條（`POST /load`，G11 的公開入口，不經過 `fulcrum compile`）由執行環境圖建圖時再攔一遍回 **400** —— ★ 兩處調的是**同一個**判據函式（`model::is_valid_proxy_id`）與**同一句**「合法的長什麼樣」（`model::proxy_id_shape`），⛔ 不是兩份手寫的平行邏輯，與 `weight` 的值域常數同一條紀律。⚠ 空串**仍然**走 `FUL-DSL-0042`：「`id ""` 與根本沒寫是同一個鍵」那段解釋是那條診斷的全部價值，⛔ 不許被這條泛泛的「不合法」頂掉。⚠ **真換行在 DSL 裡表達不出來** —— 引號串不能跨行，詞法層先回 `FUL-DSL-0003` ⇒ 那一格**只有手搓的 JSON 遞得進來**，判據也只能掛在執行環境那一層。⛔ **有意不留逐行豁免記號**：一個能被隨手貼上去的記號會把門變成建議。守它的是 [`crates/fulcrum-config/tests/compile_behaviour.rs`](crates/fulcrum-config/tests/compile_behaviour.rs) 四條（DSL 那條路）加 [`crates/fulcrum-runtime/tests/routing.rs`](crates/fulcrum-runtime/tests/routing.rs) 四條（結構化層，★ 與 `weight` 值域那條並列在「建置期檢核」一節裡，**同一類檢查不分家**）。⚠ ⚠ **本行是補記**：三條都由 owner 在 §10 之外拍板，落點是 `7b66c68`（①）、`68844d7`（②）與 `9c0634f` 起的那一串（③）；當時**沒有落成 §10 的行**，而程式碼註解與 [`docs/architecture/dsl-reference.md`](docs/architecture/dsl-reference.md) 多處按「owner 拍板、裁決 R6 三之三」引用它 —— 號按「只增不減」取 129，⛔ **不表示它比 G128 晚**。|
+| **G130** | **`outcome` 閉集改由「類型 + 宏 + 回傳值」三件共同守，三種分家各自變成編譯錯誤。** ★ owner 推翻了 AI 推薦項：AI 建議先走便宜的 `assert!` 備援，owner 拍板**升級範圍做結構性那條**。⇒ ① **宏 [`outcomes!`]** 一行 `<常量名> <字面量>`，常數與 `OUTCOMES` 吃**同一個** `$lit` token（與 `chain_directives!` 的序號同一手法）⇒「宣告了取值卻沒進閉集」在語法上表達不出來；② **`OutcomeName` 元組欄位私有**，`outcome_name` 的回傳類型收緊到它 ⇒ `=> "foo"` 這種繞過常數表的裸字面值編不過；③ **`outcome` 不再是 `Record` 上的欄位，而是 `serve_one` 的回傳值**（`write_error` 同樣回傳它，⛔ 不再寫副作用）⇒「某條回傳路徑忘了寫 outcome」編不過。★ ③ 那條不是新規矩：`Downstream::serve` 的文件早就為 `status` / `resp_size` 寫著「不在 `Record` 裡另存一份，兩份遲早不一致」——`outcome` 此前是**唯一的例外**。⚠ ⚠ **②那一格的邊界必須恰好畫在類型周圍，這是判據本身而不是檔案組織偏好**：Rust 的私有是**模組級**的 ⇒ 把 `OutcomeName` 和 `outcome_name` 放在同一個模組裡，屋裡照樣建構得出來，於是這條路只對**別的**模組關上，偏偏對最需要關上的那一處敞著。⛔ 這不是推理：實測過一次，同模組內 `OutcomeName("x_smuggled")` 整棵樹 `RC=0`；搬進 [`crates/fulcrum-server/src/outcome.rs`](crates/fulcrum-server/src/outcome.rs) 之後同一注入回 `E0603`。⇒ **改動這一塊時不許把那個類型搬回 `lib.rs`。** ★ 三條反證各有實測：刪宏表一行 → `E0425`；六條臂**全換**裸字面值 → `E0308`（頂著**回傳類型**，⚠ 只換一條臂時報的是「臂之間不一致」，那證不到點上）；一條早退不產出值 → `E0069`。⚠ **代價認下**：`Record` 上那個 `outcome: "aborted"` 預設值刪除 ⇒ 訪問紀錄契約裡**不再有「未設定」這一檔**（那個狀態在類型上表達不出來了）。⚠ 宏擋不住的只剩「兩行寫了同一個字面值」，那由 `metrics.rs` 基數表判據裡的去重斷言守著。★ 順帶修掉兩處假話：`lib.rs` 與 `access_log.rs` 都寫著那個 `aborted` 預設值會在「讀不到請求頭那一類」被寫出來 —— 而那一類在 `process_new_http` 裡是在 `Downstream` 造出來**之前** `return None`，**根本不產生 `Record`**，既無紀錄行也無指標；[`docs/architecture/observability.md`](docs/architecture/observability.md) 那句從「人工核對過每一條回傳路徑」升級為「類型系統要求每條路徑都產出一個值」。★ 老單測釘的是已不存在的 `aborted`，⛔ **不刪**，換成釘新契約的 `日志里的_outcome_就是收尾时传进来的那个值`，舊契約與換的理由留在註解裡。 |
+| **G131** | **D21 結案 = （a）Alpine 原生 + qemu 跑 aarch64。** ⇒ 建置宿主口徑維持現狀並**轉正**：musl 產物由那張**已經釘死的第二張基礎鏡像**（Alpine，原生 musl）編，aarch64 那一趟走 qemu。★ **決定性理由只有一條，⛔ 別把它記成「Alpine 更方便」**：候選（b）（glibc 宿主 + musl 交叉工具鏈，zig / musl-cross-make）的全部代價落在**供應鏈**上 —— 它給依賴面新增一整套 C/C++ 交叉編譯器，而供應鏈是本儲存庫的硬約束（見 [`docs/platform/supply-chain.md`](docs/platform/supply-chain.md)）；（a）則**一個字都不改供應鏈面**。⚠ **代價認下**：aarch64 那一趟在 qemu 上慢一個量級 —— ⛔ **而那個耗時今天還沒量過**。⇒ **本條不替 D24 拍板**：D24 問的是「aarch64 那一格掛不掛進每次門禁」，答案完全取決於那個還沒量到的耗時，⛔ 不許把兩條合併成一次決定。⚠ 與選哪條無關、兩條都要面對的那一半仍然成立：`boring-sys` 的 bindgen 走 `dlopen`，而靜態 build script 不能 dlopen ⇒ 最終產物那一步必須用 `cargo rustc -- -C target-feature=+crt-static` 這種 per-crate 的口子。 |
+| **G132** | **M3 第一刀 = 先立方法學、⛔ 本輪不出任何效能數字；用「靜態吞吐」一類對三家跑通全流程。** ★ owner 兩問一起拍。**① 本輪不產生數字**，理由是退出條件自己那半句「基準指令碼與原始資料**可被第三方重現**」：合格的對拍宿主今天還不存在 —— 開發機是 Windows + Docker Desktop，且這臺機器上那個 TUN 代理**已實測會干擾網路**（容器出不去 UDP/443）；生產機在承載真業務，且它會與被測**共享 CPU**。⇒ 在這兩臺上量出來的數**先天不可重現**，⛔ 「先用一臺不合格的宿主量一遍」等於給自己造一批將來必須撤回的數字，而 §8 明令不發佈無法重現的效能宣告。**② 第一刀取「一類 × 三家」而不是「七類 × 一家」**：G19 的門檻是「不劣於**該類最強者** 10%」，而**誰是最強者逐類不同** ⇒ 只對一家跑七類，等於在「最強者」這個概念還沒被檢驗過的時候先鋪開覆蓋面。★ ⇒ **本輪的交付物是指令碼、環境快照與判定口徑，驗收標準是「拿到合格宿主那天，跑一遍指令碼就能出數」，⛔ 不是「出了幾個數」。** ⚠ 連帶兩條：**G36** 說 M3 對拍期間凍結建置鏡像升級 —— **本輪還沒進入那個視窗**（沒出數就不算在對拍），⛔ 別現在就凍；D20（磁碟快取的同步 I/O）寫著「M3 對拍時一起量」⇒ 它跟著這一刀一起往後，仍然開著。 |
+| **G133** | **回收提示的判據不再只在掃描集內說話：無 filter 列全機卷，減掉說得出歸屬的，剩下的只報名字與體積、⛔ 不給刪除命令。** ★ owner 拍板，AI 給的四個候選裡選了「加第三個桶」這條。**決定性理由只有一條，⛔ 別把它記成「篩子調寬一點」**：原掃描集是 `docker volume ls -q --filter name=fulcrum-target` —— 一個**子串**篩子，而它要找的東西是「本儲存庫的活造出來的卷」，⇒ **名字只是屬主的代理，不是屬主本身**。2026-09-04/05 兩天裡逃出這個篩子的有三族，⚠ ⚠ **三族全部是人工發現的，門禁一次都沒幫上忙**：`fulcrum-upstream-target`（投稿六那棵上游克隆）· `fulcrum-musl-{probe,alpine}-{target,cargo}` ×4（musl 探針）· `pingora-up994-target` **10.51GB**。⛔ **2026-09-04 擺出來的那條候選「放寬到 `name=fulcrum-` 再按後綴分流」在本條裡被證偽**（⚠ 它當時**沒有 G 號也沒被勾中**，作為一條 ⏳ 登記項開著）：第三族**連 `fulcrum` 都不含**，任何以 `fulcrum` 為詞根的名字模式都夠不著它。★ ⇒ 本條同時**結掉那條登記項**。⇒ 判據換個問法：**屬主判不了，能判的只有「報得多寬」。** ⇒ ① 掃描集換成無 filter 的 `docker volume ls -q`（全機）；② 減掉本門管轄內的（本樹活卷 + `fulcrum-cargo` + 原掃描集全部）、前綴白名單 `FULCRUM_FOREIGN_VOL_PREFIXES` 認領的（逐條註明屬主）、以及 docker 自己建的匿名卷（**恰好 64 位十六進制**，⚠ 長度寫死是有意的：放寬成「一串十六進制」會靜默吞掉人起的名字）；③ 剩下的**只報名字與體積**，⛔ **一律不給刪除命令** —— 本門對它們的屬主一無所知，給命令等於拿一句「我不知道這是誰的」去勸人刪，**那比不報更壞**。★ ★ ★ **選它的全部理由是它的失效方向**：白名單過期 ⇒ 多報一行（**噪音**），⛔ 不是漏報一個卷（**沉默**）。⚠ ⚠ **代價認下，兩條**：① 那份前綴白名單是**某臺開發機上的讀數**，天生會過期，且它**本身就是一個新篩子** ⇒ 有變成消音手段的風險；三條紀律寫在清單頭上（只放別的專案的卷·前綴錨在開頭⛔不是子串·自測釘住它不許吞 `fulcrum*`），★ ★ 但**誠實說出它守不住什麼：它攔不住有人把一個真正屬於本儲存庫、名字裡卻沒有 `fulcrum` 的卷寫進白名單** —— 那一格沒有門，只有紀律。② 穩態下這個桶是空的（⚠ 逐機而異，**讀數只留在 [`docs/platform/build-and-test.md`](docs/platform/build-and-test.md) 一處**，⛔ 別在別處抄一份）⇒ 它**平時一行都不打**，於是「桶是空的」與「這段程式碼根本沒跑」長得一模一樣。★ ⇒ **九條自測全部用合成輸入**（⛔ 不依賴宿主上此刻恰好有什麼卷）：七條釘判據（別人家 ⇒ `foreign` · 匿名 ⇒ `anonymous` · ★★★ **承重**：真的逃逸過的那個名字 ⇒ `unattributed` · 白名單不許吞 `fulcrum*` 兩條 · 63 位十六進制不算匿名 · 白名單是前綴不是子串），兩條釘**集合層**（⚠ 判據函式對了、而循環裡一個 `continue` 放錯位置，症狀同樣是「一行都不打」）。★ 外加**真資料自證**：造三個探針卷讓三個桶各打一次（實測 1/1/1），刪掉後再跑一趟三個桶**各 0 行**。★ 順帶修掉一處同源缺陷：`vol_size_of` 原來的 `grep -F "$want|"` 是**子串**匹配 ⇒ `x-fulcrum-cargo|…` 那一行會被 `fulcrum-cargo` 認領，**一個卷報上另一個卷的體積**；實作搬進 `fulcrum_vol_size_of` 並改成逐欄位全等，第二、三桶共用同一份推導。 |
+| **G134** | **`shellcheck` 掛進 `COMPILE_ONLY` 那一格 ⇒ `pre-push` 門從「編譯不過的樹不許走」升級為「靜態上就站不住的樹不許走」。** ★ owner 拍板。**起因是一次實測，不是推理**：2026-09-05 改了 `tests/lib/vol-lock.sh` 與 `tests/m0/docker-run.sh` 兩個 `.sh`，跑了**四趟** `COMPILE_ONLY` 全綠 —— 而那一格當時是 `CMD='cargo test …'` **直接替換**、⛔ 不是 `CMD="$CMD && …"` 追加 ⇒ **它不含 `LINT_CMD`**。★★★ 於是**一次純 shell 的改動可以完整地穿過 `pre-push` 門**，而那四個綠對那次改動**零判別力**（直到單獨補跑一次 shellcheck 才知道）。⚠ 這不是 bug：那道門的檔案頭只承諾「編譯不過的樹不許離開這臺機器」⇒ 它是一條**沒被說出來的覆蓋邊界**，本條把邊界挪了並把話說全。⇒ `CMD='{ bash tests/ci/shellcheck-all.sh && cargo test --no-run --workspace --all-targets; }'`，`shellcheck` **放在前面**（幾秒出結果，編譯要十幾秒起 ⇒ shell 寫錯時立刻說）。⚠ ⚠ 那對花括號不是風格：見 `docker-run.sh` 裡「`&&` 與 `||` 同優先級左結合」那段實測假綠，本格今天沒有 `||` 但紀律照守。⛔ **只掛 `shellcheck`，不掛 `fmt` / `clippy`** —— 這是權衡不是遺漏：`clippy` 要先把依賴（含 BoringSSL）編出來，會把這道門從秒級拖成分鐘級，而 ★★ **門變慢正是它被 `--no-verify` 繞過的起點**（那道門自己的檔案頭就是這麼論證「不跑測試」的）；`shellcheck` 唯讀原始碼、在本已起著的同一個容器裡跑，單跑實測 **7.8s**（含容器冷啟），⇒ 邊際成本是這一格里最便宜的一檔。⚠ **代價認下，兩條**：① 這一格**仍然不攔** `fmt` 差異、clippy 告警與所有測試 —— 那三格歸完整門禁，⛔ 本門不冒充它們；② `COMPILE_ONLY` 從此**不再是純編譯**，直接跑這個 flag 的人會被 shell lint 攔下 —— 有意如此，因為這一格的身分是「`pre-push` 門用的那一格」而不是「一個純編譯開關」。★ **反證兩個方向都跑過，且注入挑的是「只有 `shellcheck` 抓得到、`bash -n` 抓不到」的缺陷**（`SC2086` 未加引號的變數）—— 否則紅的來源說不清；⇒ 注入後 `git push --dry-run` 須 `RC=1` 且訊息點名那個檔案，撤掉後須 `RC=0`。★ 同時更新了**五處**描述這道門承諾的文字（`AGENTS.md` · `docs/platform/build-and-test.md` · `docs/platform/host-and-gate-traps.md` · `docker-run.sh` 用法頭 · `pre-push.sh` 檔案頭與三條訊息）—— ⛔ 不改它們就是留下一份自洽的謊，而本儲存庫剛在同一天栽過一次抄件不同步。 ⇒ **此後 `pre-push` 門按被推的提交決定跑不跑 shellcheck，見 `G158`**（上面那個「單跑 7.8s」到 2026-10-06 實測已是 15–33s，成了這道門裡最慢的一項）。 |
+| **G135** | **`cache { capacity … }` 改了之後 `POST /load` **真的生效**，並在回話裡報出生效值；調小是**惰性**的。** ★ owner 拍板，三條候選裡選了「① 線上改容量 + ③ 在回話裡說出來」，⛔ 沒選「② 與 `disk` 一樣回 409」。**缺陷的準確形狀**：`ttl` / `max_size` 每請求現讀 `CacheRt`、改了立刻生效，而 `capacity` 在**啟動時**被抄進了後端的一個 `u64` 欄位 ⇒ 一次 `POST /load` 回 200、`plan` 顯示新值，**實際仍是舊容量，而沒有任何東西會說** —— ⚠ 兩條子指令寫在同一個 `cache { … }` 塊裡，設定檔案上看不出任何區別。⇒ ① 兩個後端的 `capacity` 改成 `AtomicU64` + `set_capacity()`（實測每個後端**只有 3 個讀點**：getter · 大條目守衛 · 淘汰循環，兩個後端形狀逐字相同 ⇒ ⚠ **必須一起改**，只改一個的症狀是「換成磁碟後端就不生效」）；`POST /load` 在 `swap` 之後按**新**執行環境重算並 set。② 選 ③ 而不是隻做 ① 的理由是一條**實測**：`capacity` 此前**完全沒有執行環境出口** —— 啟動紀錄說一次「生效容量」，之後 metrics 裡沒有（快取只有 `fulcrum_cache_events_total` / `_purged_entries_total`）、API 裡也沒有 ⇒ 光改成線上生效，維運仍然無從核對它到底生效了沒。★ 回話報的是**問後端要回來的那個數**，⛔ 不是剛寫進去的那個 —— 回顯自己剛寫進去的值，對「寫進去了沒有」零判別力。★ ★ ★ **調小容量有意是惰性的**：`set_capacity` ⛔ 不掃 LRU —— `POST /load` 是接管流量時的關鍵路徑，在那裡拿快取鎖掃一遍 LRU 會把一個 O(1) 的動作變成隨快取大小線性增長（磁碟那邊還要刪檔案），與 **G84**「啟動不掃盤」同一條紀律。⚠ **代價寫在明處**：調小之後到下一次寫入之前，佔用仍可能高於新上限；下一次 `put` 的淘汰循環收緊它。★ 「各塊取最大值」那條推導提成了 `cache::effective_capacity`，**只有一處** —— 它現在有兩個呼叫點（`serve()` 建後端、`POST /load`），⚠ 抄一遍的失效形態是「啟動時算出來的容量與 load 之後算出來的不是同一個數」而兩處各自都自洽；本儲存庫 2026-09-05 當天剛栽過一次同形狀的（G134 提交資訊裡那個分解式抄了三處）。★ **七條測試 + 三條撤掉即紅的反證**（各在不同函式、各瞄準一條，實測恰好 3 條紅）：注入「load 之後不改後端容量」⇒ `load_改了_capacity…` 紅（那正是 D19 本身）· 注入「`set_capacity` 當場淘汰」⇒ `调小容量是惰性的…` 紅 · 注入「取最小值」⇒ `生效容量取各块最大值…` 紅。⚠ ⛔ 編譯期的紅不算反證：它只證明 API 不存在，不證明測試判得動行為。⇒ **結案 D19。** |
+| **G136** | **被動熔斷 `passive_fail` 串接（M2）：五條取捨一起拍。** ★ owner 逐條拍板，起因是 M1 那句登記「`passive_fail` 不在 M1 清單上，至今沒做；主動健康檢查也**不是**它 —— 一個 `/health` 回 200 而真實業務在 500 的上游，主動檢查看不出來」。**① 什麼算失敗 = 連不上/超時 + 上游真的回了 5xx。** ⛔ 樞衡**自己合成**的 5xx（`all_upstreams_down` 那條 502）一律不落賬 —— 否則一次全站故障會把每個上游輪流再熔一遍，**自我強化**。⚠ 只數傳輸層的話，它與主動健康檢查高度重疊，上面那句立身理由就不成立了。**② 狀態與 `healthy` 各佔一格、互不覆蓋**，篩子從三條變**四條**。⛔ 不共用 `healthy`：那樣下一次主動探測成功會把熔斷**靜默解除**，而那恰恰是它唯一存在理由的那個場景。**③ 恢復走真半開：冷卻期滿後恰好放一個探針。** ★ ★ 決定性理由是一條**算得出來的賬**：樞衡**不換上游重試**（`lib.rs` 明確劃過界：「請求發出去之後再換上游那是重試語義」）⇒ 每個打到壞上游的請求都是**使用者可見的 5xx**。上游一直不好時，「到期全量放回」（nginx `max_fails` 那套）每個冷卻週期賠 `threshold` 個，半開賠 **1** 個，且是**結構上**的 1、與並行無關 —— 符合本儲存庫「在結構上做不到」勝過「實踐中通常不會」的一貫口徑。⚠ 實作上它讓 `pick_index_by` **不再是純函式**（冷卻期滿時搶一次探針資格），這一條寫進了那兩處文件。★ 半開的執行者是**對 `open_until` 本身 CAS**，⛔ 不是一個獨立的 `probe_taken` 布爾 —— 後者會**死鎖**：權杖在**篩選**時搶走，而被篩進來的上游未必被 `lb_policy` 選中，那個權杖就再也沒人還，該上游從此永久出局且無症狀。**④ 新增第三個子指令 `passive_cooldown`**（G17 只定了閾值與視窗）。⛔ 不走 nginx `fail_timeout` 那種一格兩用：視窗問「失敗要多密才算一個模式」，冷卻問「給上游多久緩過來」，而一個真壞了的上游很少在 10s 內自愈。⚠ 代價：DSL 面比 G17 定的寬了一格。預設 `passive_window` **10s** / `passive_cooldown` **30s**，且**在設定層就落實成具體數字**，⛔ 不留 `Option` 讓執行環境 `unwrap_or`（那會讓預設值住兩處）。**⑤ 不寫 `passive_fail` = 完全關閉。** ★ 與 `health_uri`「不寫它就完全不探測」同一條先例，決定性理由是**既有設定行為一個字不變** —— 一個悄悄改變所有人行為的預設值，症狀是「升級之後偶爾 502」而沒人會想到熔斷。⛔ `passive_fail 0` 不是關閉的寫法而是 `FUL-DSL-0044`（與 `weight 0` 同源：關閉只有一種表達）；⚠ ⚠ 那條診斷真正的價值在「**不是數字**」那一半：在它之前是 `first.parse().ok()`，`passive_fail 五` 會**靜默**變成 `None`，而 `None` 的語義恰好是整個特性關掉。只寫旋鈕不寫閾值 ⇒ `FUL-DSL-0045` **警告**（⛔ 從來不是 error：那會把「先調好參數、待會兒再開」擋掉）。★ **觀測面一開始就給**（D19 剛教過「沒有執行環境出口」的代價）：`/stats` 加 `passive_open` / `passive_fails` 兩格、新指標 `fulcrum_upstream_passive_open`（歸併取**析取**，與 `healthy` 的合取方向相反而紀律相同：都往「說得出故障」那一側倒）、熔斷與恢復**各打一行**（⛔ 不是每次失敗一行 —— 故障時會把現場淹掉）。★ `passive_fail` 同時從 `fulcrum_runtime::UNWIRED` **銷號**（第五次翻方向，前四次是 `dns_refresh` / `encode` / `health_uri` / `weight`）。⚠ 端到端判據是**兩條路的差值**：`/pf` 與 `/nopf` 指著同一對上游、只差一行 `passive_fail`，10 個請求分別拿到 **2** 個與 **5** 個 500 —— ⛔ 單測證明不了「服務層真的會去落賬」，那三處只有真流量走得到。 |
+| **G137** | **自動 HTTPS 的重定向連接埠**維持寫死 `:80`，把理由與代價寫進文件（**結案 D29**）。★ owner 在兩條候選裡選了②（維持寫死）而不是①（全域加 `auto_http_redirect_port`）。**決定性理由是一條外部約束，不是口味**：HTTP-01（RFC 8555 §8.3）規定 CA **只連 80 連接埠** ——⇒ 「讓它可配」與「HTTP-01 還能用」天生對立，而 G54 把 HTTP-01 定為備用簽發路。加一個旋鈕等於造一個陷阱：**調了它就靜默地廢掉備用簽發路**，而那件事要到證書到期那天才被發現。⚠ ⚠ **代價認下**：上游已有一層代理佔著 `:80` 的那類非標準部署，**用不了自動跳轉** ——它們要麼把 `:80` 讓出來，要麼自己在前面那層做跳轉。⛔ 這不是「以後再說」，是**明確不做**。★ 順帶的後果早已處理：門禁裡好幾個場景因此隱式共用 `127.0.0.1:80`，**是哪幾個由 [`docs/platform/host-and-gate-traps.md`](docs/platform/host-and-gate-traps.md) 那張連接埠表說**，⛔ 這裡有意不抄那個個數（它一道門都沒有，2026-09-03 實測抓到過一次名單漏項）。 |
+| **G138** | **「產物裡真的連結了哪幾套 TLS」有判據了（結案 D23）：判符號表，⛔ 不判字串。** ★ 三個問題至此各有各的門：鎖裡寫著哪些（供應鏈門 4）· 依賴圖裡真有哪些（門 5）· **產物裡真的連結了哪些**（本條，`tests/ci/tls-linkage.sh` + `tests/musl/product.sh`）。⚠ 「圖 ≠ 產物」那一半是門 5 **原理上**看不見的。⇒ 判據掛在**真正要散布的那個產物**上（G13 的 musl 靜態二進位），⛔ 不是開發用的 glibc 產物。**三條，各守一個方向**：① 正向 —— BoringSSL **獨有**的 3 個符號必須都在，其中 `SSL_CTX_set_select_certificate_cb` **正是 G6 第 1 條「兩個入口共用同一個回呼」的執行者** ⇒ 判據與那條鎖死的架構約束是同一件事；② 反向 —— OpenSSL **獨有**的符號一個都不許有（`OPENSSL_init_ssl` 一類，BoringSSL 裡不存在，⛔ `SSL_CTX_new` 那種共有符號分不開兩者）；③ 反向 —— rustls **本體**一個符號都不許有。⚠ ⚠ ★ ③ 的區分器是**判據本身**：`strings` 裡 `rustls` 出現 4 次，**全部**來自 `rustls_pki_types` —— 一個 `instant_acme` 拉進來的**純類型 crate**（`CertificateDer` 一類，沒有協定實作、沒有密碼學）。⇒ 一條 `grep rustls` 的門會**永遠誤報**，隨之而來的豁免早晚會蓋住一次真的。用 Rust v0 名字修飾的**長度前綴**精確分開：`_6rustls` 是 crate 名恰好為 `rustls`，而 `_16rustls_pki_types` 裡 `_` 與 `6` 之間隔著 `1` ⇒ 它不是子串。★ 每次跑都帶**掃描器自證**（`_14fulcrum_server` 必須 > 0）：三條「必須為 0」的判據，失效形態是**模式寫錯**，而寫錯的 grep 與「真的一個都沒有」給出完全相同的 0。⚠ 讀不到符號表時打 `TLS_NM=stripped/missing` 並由呼叫方**判紅**——「沒能檢查」不算「檢查通過」。⛔ **不要用 `BORINGSSL_self_test` 當正向判據**：它只在 FIPS 建置裡存在，非 FIPS 下恆為 0（寫這條時當場量到）。★ 反證：四條判據各注入一次，讀數分別 3→2 / 0→1 / **0→2** / 4987→0；外加一次端到端注入，`MUSL_ONLY` 當場 `RC=1` 且**只有** rustls 那一條變紅。⚠ 代價寫在明處：它**只在 musl 那一格跑**，⛔ 不覆蓋開發用的 glibc 產物。 |
+| **G139** | **M3 第一刀完成實作：三條取捨一起拍，而「本輪不出數字」改由判據的形狀守著。** ★ owner 在三個問題上各選了推薦項。**① 「不出數字」是結構性的，⛔ 不是紀律性的。** G132 已經拍了「本輪不產生任何效能數字」，而落法有兩條路：在指令碼頭上寫一句「本輪數字只作現場記錄，不許引用」（`tests/stress/run.sh` 的先例），或者立一套**宿主合格性判據**。選後者，決定性理由是前者守不住的那個場景：**它攔不住有人把開發機上量到的數抄進文件**，而 §8 明令不發佈無法重現的效能宣告。⇒ `bench/env-snapshot.sh` 先判宿主，不合格時 `bench/verdict.sh` **結構上**就不取最強者、不算門檻、不打 PASS / FAIL，只寫 `VERDICT: UNQUALIFIED` 並逐條說出為什麼；原始資料仍然完整寫入磁碟，⚠ 它證明的是流水線跑得通，⛔ 不是效能讀數。★ ★ 判據五條，**分成性質完全不同的兩半**：四條容器自己看得見（核心串帶 `microsoft`/`wsl` · 核數 · 空載 · **CPU 親和兩組核都給了沒有**），一條容器原理上看不見（專機 / 無 TUN 代理 / 核心參數已固化 —— 只能由人寫下 `BENCH_HOST_ATTEST`）★ ★ **第三件「核心參數已固化」已由 G145 從這句宣告裡拆出來變成門**（實測：宿主上設的那四個鍵 per-netns，傳不進對拍容器 ⇒ 那句宣告可以完全誠實同時零影響）⇒ 本條此後讀作「五條裡那一條宣告只剩兩件」。⚠ **宣告不是證明**：那一格能做到的只有「誰都沒宣告過就一定不算合格」，⛔ 它攔不住一句不實的宣告，那一格沒有門只有紀律。★ 判據寫成**純函式**（讀數由呼叫方傳進來），⇒ 十八條自測全部用**合成輸入** —— 這一條是承重的：本輪唯一跑得到的宿主是不合格的那一臺，**「合格」那條分支在真實資料上一次都執行不到**，而一個恆回傳不合格的判據與一個壞掉的判據給出完全相同的輸出。**② 落點 = 頂層 `bench/`（交付物）+ `tests/bench/`（一格門）。** ⛔ 不全塞進 `tests/`：G19 要求「基準指令碼與原始資料可被第三方重現」，而第三方不該被迫連整套 `tests/` 慣例一起搬。⛔ 也不是「只放 `bench/`、本輪不掛門」：那會留下一條**從未被執行過的路徑**，而「它跑得通」就成了一句沒有判據的斷言。**③ 三家競品走單獨的 `docker/Dockerfile.bench`，全部按 digest 釘死。** ⛔ 不掛進 `Dockerfile.build`：那會給每趟門禁背上三個 web server，且 **G36**「M3 對拍期間凍結建置鏡像」會連帶管住競品版本——而競品恰恰是要跟著上游走的。⛔ 也不用「三家各起一個容器」：§9 要固化的正是核心參數與 CPU 親和，而那兩件跨容器既難設又難自證。⇒ 四家 + 負載生成器同處一室，只隔一個 loopback。★ 兩道抄件門：`Dockerfile.bench` 裡的 digest 必須逐條出現在 `bench/README.md` 那張表裡；兩張鏡像裡的 `oha`（版本 + 兩個 sha256）必須逐字相同（§8 的「同一個負載生成器」）。★ 反證：改一個 digest 字元 ⇒ 當場紅且點名；改 `OHA_VERSION` ⇒ 當場紅且並排打出兩個值。⚠ ⚠ **四件代價與新事實寫在明處**：**(a)** ★★★ **樞衡的資料面今天沒有執行緒數旋鈕** —— 它走 pingora `ServerConf::default()`（`threads: 1`），而 DSL 與 CLI 裡一處都沒有（實測）。⇒ 四家今天**唯一可對齊的 worker 數就是 1**，把另外三家調到 N>1 會把一條與實作無關的變數混進讀數。⛔ 別讀成「樞衡只能單執行緒」，讀作「今天沒有旋鈕」——**它是在合格宿主上出數之前必須先解決的一件事**，已登記為 `D33`（⇒ **已由 `G140` 結案**：`threads_l7` / `threads_l4` / `threads_admin` 三個鍵完成實作，2026-09-06 第一組讀數四家 worker 數一律取 2）。**(b)** HAProxy 在「靜態吞吐」這一類裡靠 `http-request return … file` 回一個固定 body，**它不是檔案伺服器**（不做目錄、條件請求、range）⇒ 若它在這一類領先，那個領先裡有一部分來自它沒做的那幾件；這句話寫在 `bench/README.md` 裡，⛔ 引用數字時不許丟掉。**(c)** oha 的 `-z` 到點會把在飛請求記成 `aborted due to deadline`，條數**恰好等於並行數**（實測 `-c 10`→10、`-c 50`→50，佔成功數 0.018%/0.092%）⇒ 有效性判據**收窄**成「只放行這一個 key 且它不超過成功數的 1%」，⛔ **不是**「不看 errorDistribution」——連接被拒、被重置、讀超時全落在那個欄位裡。⚠ **一次收窄與一次刪除，在「真實資料全綠」這件事上長得一模一樣** ⇒ 門裡專門有一條喂 `connection refused` 的反證，外加一條量超標的、一條量正常必須放行的。**(d)** 第一刀只跑一類用例，`tests/bench/run.sh` 全綠 **≠ M3 達標**。★ 順帶修掉兩處同族缺陷：`tests/ci/shellcheck-all.sh` 的「推導」只在**它被給定的那幾棵根**之內成立 ⇒ 新建的頂層 `bench/` 帶著五個從沒被靜態檢查看過的 `.sh` 進了儲存庫（與它當初取代的那張手寫目錄清單是同一形狀，只是抬高了一層）—— 現在門掃 `$ROOTS`，另有一道**更寬**的普查判「有沒有 `.sh` 落在根之外」，⇒ 從靜默漏掃變成當場紅。★ ★ 普查問的是 `git ls-files --cached --others --exclude-standard`（手動排除只剩 `vendor/` 一項），**三個 flag 都承重**：光 `--cached` 只看已跟蹤的 ⇒ 一個剛寫出來還沒 `git add` 的指令碼整個溜過去，**而那正是那五個檔案當時的狀態** —— 判據會在最該說話的那一刻沉默；而 `find` 掃工作樹則相反，會把 `handoff/`（gitignored，G115）裡的草稿判紅，且它給出的修法（「把那個頂層目錄加進 ROOTS」）對 `handoff/` 恰恰是錯的建議。⇒ 要問的集合是「**已經在儲存庫裡、或正在進儲存庫的**」。★ 反證兩個方向：`tools/` 下放一個未跟蹤 `.sh` ⇒ 點名，刪掉回綠；`handoff/` 下放一個 ⇒ **不報**。⚠ 外加一條自證：**一個被跟蹤的 `.sh` 都沒數到時判紅**（恆回傳空的普查對每棵樹都說「沒問題」）；以及初稿把對拍連接埠寫成 `9700–9703` 而 `tests/h3/` 早已佔著那一段 —— **「那是空段」這句話來自一條自己拼的 grep，它的字元類 `[A-Z_]+` 匹配不到 `${H3_PORT:-9700}` 裡的數字 `3`**，於是安靜地少列一整格而輸出看起來完整（⇒ 改用 9940–9943 並登記進連接埠表）。⏳ **G139 的編號與措辭是 AI 擬的**（G134 那條先例），決策本身是 owner 的，但文字未經逐條過目。 |
+| **G140** | **執行緒數旋鈕完成實作（結案 D33）：DSL 全域塊三個鍵 · G35 的角色預設這次真的生效 · h3 與 h1/h2 同一個角色。** ★ owner 三問一起拍。⚠ ⚠ **先糾一處**：D33 登記時寫成「三條候選」，而那是不準確的 —— `docs/architecture/process-model.md` 早有一節標著「✅ 執行緒模型（G35，**結案**）」，連初值都寫好了（L7 = CPU 核數 · L4 = 2 · 管理面/後台 = 1）。⇒ **D33 從來不是設計題，是「已結案的決定至今沒有實作」**；同一節還有一條機制事實**直接否掉了那三條候選裡的第一條**（見下）。**① 覆蓋面 = DSL 全域塊三個鍵**（`threads_l7` / `threads_l4` / `threads_admin`），照 `grace_period` 的既有形狀（directive 表一行 → compile.rs 一格 → `Global` 一個欄位）。⛔ **有意沒有一個籠統的全域 `threads`，而這是機制決定的不是口味**：pingora 的執行緒**不跨 service 共享**（`ServerConf` 原話 "The threads are not shared across services"，每個 service 各起一套 runtime）⇒ **總執行緒數 ≈ Σ(各 service)**，一個全域值設成核數會直接超訂（4 核 × 4 service = 16 個 worker）。⛔ 也不走 `serve` 的命令行選項：那會讓執行緒數變成一個 `fulcrum plan` 看不見、`/stats` 也看不見的東西，與「期望狀態是唯一權威」衝突，而 D19/G135 剛教過「沒有執行環境出口」的代價。★ 值域 `[1, 1024]`，`0`/負數/帶單位/不是數字都是裝載期錯誤（**`FUL-DSL-0046`**）；⚠ ⚠ **`0` 尤其不能放過 —— pingora 拿它建 tokio runtime 會在啟動時 panic，而那個回報錯誤一個字都不提設定**；而這條診斷真正的價值仍在「不是數字」那一半（同 G136）：寫成 `.parse().ok()` 時 `threads_l7 八` 會**靜默**變成 `None`，而 `None` 的語義恰好是「回落到角色預設」⇒ 整條旋鈕悄悄失效而處處看起來正常。**② G35 的角色預設這次真的生效。** ★ ★ 決定性理由：**今天的「處處 1」不是誰做的決定，是這條決定沒被實作** —— `ServerConf` 走 `..Default::default()`（`threads: 1`）⇒ **L7 熱路徑線上上一直只有 1 個執行緒**。⇒ 完成實作它是把活幹完，不是「悄悄改變所有人的行為」。⚠ ⚠ **代價認下並寫進文件：升級一次，L7 那一格從 1 變成 CPU 核數，資源佔用與延遲分佈都會變**（這是一次真實的行為變更，⛔ 不能靜默）。⏳ **而這三個初值仍然不是結論** —— `process-model.md` 明寫判據在 M3 的對拍資料裡，而那些數**今天只出了七類裡的一類**（2026-09-06 靜態吞吐，結論 `FAIL`）⇒ 這三個值至今沒有被任何一組對拍資料檢驗過。⚠ 原文寫的是「那些數今天還不存在（G132）」，那句話在第一組讀數出來之後就不再成立，已就地改掉。★ `threads_admin` 同時是 `ServerConf.threads` ⇒ 它是**「其餘一切」那一格**（後台任務全靠它：`background_service()` 不設 threads，`Service::threads()` 回傳 `None` 並回落到全域值），⛔ 不只是 admin socket 那一個 service。★ 預設值**只住一處**（`process::default_threads`），⛔ 不在 `Global::default()` 裡再寫一份 —— 本儲存庫 2026-09-05 當天剛栽過一次同形狀的（G135 的分解式抄了三處）。**③ h3 與 h1/h2 同一個角色**（歸 L7），⛔ 不單列 `threads_h3`：它就是資料面入口，與 h1/h2 服務同一批流量、走同一條執行鏈（`tests/h3/run.sh` 那條判據的原話），⇒ 「角色」保持三個而不是四個。★ ★ ★ **判據分兩層，第二層是承重的**：① 純函式層（`default_threads` / `threads_for` / `build_server_conf`，五條單測全喂**合成的** `cpus`，⛔ 不問這臺機器有幾個核 —— 一條讀宿主狀態的判據只能被觀察到一種結果）；② **端到端層**（`tests/serve/run.sh` 的 [4/4]）—— 因為 `serve()` 裡那三行 `s.threads = Some(...)` **單測原理上夠不到**（`serve()` 回傳 `!` 且要綁連接埠），而一條從未被執行過的路徑，「它生效了」就是一句沒有判據的斷言。★ 判據掛在**處理程序真的有幾個 OS 執行緒**（`/proc/<pid>/status`），⛔ 不掛在啟動紀錄那一行：紀錄打的是剛算出來的數，對「有沒有真的傳給 pingora」零判別力（G135 那條「回顯自己剛寫進去的值」）。⚠ 2026-09-05 實測（12 核）：`Threads` = **4 + `threads_l7`**，嚴格線性（`1`→5 · `8`→12 · `16`→20 · 不寫→16）。★ 反證五條各自實測：純函式四條各注入一次、各只紅在該紅的那一格（L4 預設塌成管理面 · 全域 `threads` 填成核數 · 拿掉 L7 上界 · `threads_for` 裡 L4 那條臂讀錯格）；端到端一條 —— **撤掉 `svc.threads = Some(threads_l7)` 那一行，三個讀數一起塌成 5，兩條斷言同時紅**（⚠ 而「寫 1 時只有 5 條」那條照舊綠 —— 這正是那條判據單獨不夠的證明）。⚠ 反證殼自己也栽了一次並被它自己的注入自證逮住：`sed` 替換串裡的 `&` 是「整個匹配」的元字元，`&cfg.global` 被展開 ⇒ 注入根本沒寫進去，而若沒有那條自證，它會給出一個「沒紅所以判據不成立」的假結論。⏳ **G140 的編號與措辭是 AI 擬的**，三條決策本身是 owner 的，但文字未經逐條過目。 |
+| **G141** | **D9 拆成兩半：分類法今天生效，承諾仍從 M4 起 —— 並順帶把「建置身分」從 D9 裡摘出來先做掉。** ★ owner 拍板。**① 分類法**（[`docs/governance/compatibility.md`](docs/governance/compatibility.md)）把「什麼算 breaking」按**面**分開寫：DSL（★ 「編得過但行為不同」比「編不過」貴得多，因為後者停在 `validate`、前者要到線上才發現）· 結構化設定（`POST /load`）· `/stats` JSON · 指標名與標籤 · `FUL-DSL-NNNN`。⚠ **六個 crate 全是 `publish = false`** ⇒ **Rust 層面的 API 不是對外面**，跨 crate 改簽名不進這張表。★ ★ **指標那一面單列為最貴**：改一個族名不會讓任何東西回報錯誤，只會讓別人的告警**靜默失效**，而「告警沒響」與「一切正常」在監控臺上長得一樣 —— 與本儲存庫「一個『沒有』既可能是真沒有、也可能是量具夠不著」是同一物種；而**加**族／**加**欄位安全，這條不對稱正是表按「刪/改 vs 加」分界的理由。**② 承諾的起點不動**：§7 的「M4 之前沒有任何相容性承諾」原樣保留 —— `G129` 收緊 `id` 靠的就是那句話（「要收就現在收最便宜」），提前上承諾等於把那個自由度收掉。⇒ **分類法用來估價，承諾用來約束，兩者起效時間有意不同。** **③ 建置身分**：`fulcrum_build_info{version}` 此前六個 crate 全報 `0.0.0`、**區分不出任何兩次建置**（D9 逐字點名過），現由 [`crates/fulcrum-server/build.rs`](crates/fulcrum-server/build.rs) 在編譯期算出，取值鏈 `FULCRUM_BUILD_ID` → 讀 `.git` → 顯式 `unknown`。⛔ **取不到時是 `<包版本>+unknown` 而不是裸 `0.0.0`** —— 「讀不到」與「讀到了 0.0.0」必須區分得開，與「沒能檢查不算檢查通過」同一條紀律。★ 用 semver 的**建置中繼資料**語法（`+` 之後那段按 semver 規矩不參與版本先後比較）⇒ **語法本身就在宣告「這是身分，不是承諾」**。⚠ ★ 第 ② 檔**有意不調 `git` 二進位而是直接讀檔案**，兩條都是本儲存庫的實測形狀：容器裡 `git` 對 bind-mount 的樹常報 `dubious ownership` 而整條失敗（那會讓每次門禁都靜默落到第 ③ 檔），且 `.dockerignore` 排掉了 `.git/` ⇒ **`Dockerfile.musl-product` 那一趟根本沒有 `.git` 可讀**，只能靠第 ① 檔喂。⚠ **不判工作樹髒不髒**，代價寫在明處：同一提交上帶不同未提交改動的兩次建置身分相同 ⇒ **發佈物一律走第 ① 檔**。⛔ **本條不結案 D9**：版本號怎麼排（`0.x` 還是 `1.0`）與棄用過渡期仍然開著，掛 M4。⏳ **G141 的編號與措辭是 AI 擬的**，兩條決策本身是 owner 的，但文字未經逐條過目。 |
+| **G142** | **對拍補第四條判據：壓測端自己先飽和 ⇒ 這一類作廢（M3）。** ★ owner 拍板取「**B 收斂承重 + A 絕對天花板預留介面**」。起因是 M3 第一刀留下的一條登記：現有五條判據判得動宿主，**判不動「oha 自己先到頂」** —— 那時四家讀數會一起收斂到生成器的天花板，而判據 ③（`ours >= best × 0.9`）**照常打 PASS**，輸出一組看起來完全正常、其實量的是 oha 的數。⚠ 宿主那五條一條都答不了它：它們判的是「這臺機器合不合格」，而這裡壞掉的是**量具本身到頂了**。**① B（承重）= 收斂**：全場讀數的 `(最高−最低)/最高` 低於 `BENCH_MIN_SPREAD`（預設 0.05）就作廢該類。依據是 nginx（C）· HAProxy（C）· Caddy（Go）· 樞衡（Rust/pingora）是四套結構完全不同的實作，落進同一個百分點裡，**「共享了某個外部上限」遠比「它們真的一樣快」更可能**。★ 決定性理由是**它不需要任何新測量** ⇒ 今天就能用合成輸入把兩個方向全反證掉，而這正是 G132 第一刀立的形狀。⚠ 它說不出是哪一個上限（生成器 / 環回 / 親和），⛔ 別把它的訊息讀成「一定是 oha 飽和了」。**② A（可選）= 絕對天花板**：給了 `raw/<类>/ceiling.txt` 時，最強者越過`上限 × BENCH_GEN_HEADROOM`（預設 0.90）就作廢。⛔ **今天有意不是承重件**：它的正確性整個壓在「參照服務真的比四家都快」這一條上，而那條在合格宿主到位之前**驗不了** ——參照選慢了就恆作廢，選的是另一個真實伺服器則量到的是 `min(oha, 那个服务器)`，天花板被低估。⚠ ⚠ ⛔ 那個檔案**不許叫 `ceiling.json`**：`read-raw.py` 對該目錄 `glob("*.json")`，一個 `.json` 會被當成**第五家被測**混進競品集合，而那不會有任何東西說。**③ 誤判方向有意不對稱**：一次誤作廢只是**扣下一個結論**，一次漏判是**給出一個錯結論** ⇒ 兩條都往「作廢」那側倒，且**「判不了」（有效讀數不足兩條 / 上限不是正數）一律作廢、⛔ 不算通過**。判定報 `VOID`，且排在 `bench_verdict_one` **之前** —— 排在後面等於先打出一個會被人引用的 PASS。⚠ ⚠ ★ **`0.05` 與 `0.90` 今天沒有實測支撐，它們是判斷不是讀數**：「四套不同實作之間正常該差多少」本儲存庫一次都沒量過 ⇒ **第一次在合格宿主上跑完之後要回頭核這兩個數**。★ **2026-09-06 跑完並回核了，兩個數的結論不一樣**：`0.05` 那一趟**沒有誤報**（全場極差 0.8599），⚠ **但同一組數暴露出 B 的一個結構缺陷** —— 它取的是**全場**極差，被最慢那一家整個撐開 ⇒ 最快兩家只差 0.0071 而 B 一聲沒吭；由 **`G146`** 補第三條判據（最強者 vs 第二強，只作用於 PASS）結案 `D34`。⚠ ⚠ ⛔ `0.90` **至今一次都沒有被執行過**（判據 A 沒打開）⇒ 它仍然驗不了，**這一條不因上面那次回核而結掉**。判據：`bench/lib.sh` 自測由 19 條加到 **31 條**（全合成輸入），其中一條是**承重的對照** —— 同一組飽和資料餵給判據 ③ 它照常打 PASS，⇒ 證明 ④ 抓的正是 ③ **結構上**抓不到的那件事；五條注入反證各只紅在該紅的那一格；端到端 `tests/bench/gate.sh` 加 C8–C11（含 C10「上限遠高於最強者時照常出結論」防 A 變成恆作廢、C11「ceiling.txt 沒被當成第五家」）。 |
+| **G143** | **`PLAN.md` §1「未完成實作」那一行由 `unwired_contract.rs` 釘住。** ★ owner 拍板「加一道門守住這次這類腐爛」。起因是 2026-09-06 實測：`passive_fail` 由 `G136` 串接並從 `fulcrum_runtime::UNWIRED` 銷號之後，§1 那一行**仍然把它列在「未完成實作」裡**多掛了一天，而它躲過了本儲存庫當時**每一道**門 ——`unwired_contract.rs` 原本只釘 `dsl-reference.md`；`tools/plan-refs.py` 判據 ② 只認**同一行裡帶 `§11` 字樣**的句子（那道門的檔案頭自己把這一類列為第 1 條漏網）；`docs-check.py` 只判可達性不讀句意。⇒ **一句自洽的假話，本儲存庫內原理上沒有任何東西看得見。****判據只判一個方向**（這一行裡的**反引號鍵名**必須還在 `UNWIRED` 裡），⛔ 不判反向：這一行是**摘要不是全集**（`tls_internal` / `on_demand` / `tracing` 都在`UNWIRED` 裡而不在這一行），而 PROXY protocol「發」那半邊**根本進不了 `UNWIRED`** ——它連 DSL 面都沒有，而 `UNWIRED` 記的是「DSL 認得、執行環境不做」⇒ 反向判據會把一句正確的話判紅。★ 判據只截到那一行的**第一個句號**為止，⇒ 句號之後的註解（它必然會提到那些鍵名）不在範圍內 —— 一個把正確寫法判紅的門，最後會被人繞過去而不是被人滿足。⚠ ⚠ ★ **判別力靠合成輸入**：今天那一段裡一個反引號詞都沒有 ⇒ 拿真資料跑只能得到一個空集，而**一個恆回傳空集的判據與一個壞掉的判據輸出完全相同** ⇒ 抽成純函式後由四條合成用例兩個方向都釘住。真資料反證也做了：把 `passive_fail` 注回那一行 ⇒ `RC=1`、**恰好一條**測試紅、訊息逐字點名 `["passive_fail"]`；還原走**位元組副本 + sha256 對帳**，⛔ 不是 `git checkout`。 |
+| **G144** | **`D24` 結案 = 候選 ②：aarch64 那一格只在 `Cargo.lock` 或那三張釘 rustc 的 Dockerfile 變化時才跑。** ★ owner 2026-09-06 拍板。**① 為什麼不是 ①（每次門禁都跑）**：決定性理由不是慢，是**兩臺機器會不一致** —— binfmt 是機器本機狀態，沒裝的機器上這一格要麼把所有活兒全擋死、要麼**靜默跳過**，而「靜默跳過的套件掩蓋整個執行環境起不來」正是本儲存庫栽過的那一條；且完整門禁已 11–14 分鐘，而**門變慢正是它被 `--no-verify` 繞過的起點**（G134）。**② 為什麼不是 ③（留給 M4）**：③ 寫在 §11 裡的理由「缺的不是迴歸而是首次驗證」**已經過期** ——首次驗證 2026-09-05 在 `ShanireHomePC` 上做完了 ⇒ 今天剩下的**只有迴歸**，而 ③ 恰恰是唯一不提供迴歸保護的那條。**③ 觸發集是推導的，⛔ 不是手寫清單**：取「`docker/` 下 `^FROM rust:` 的那幾張」—— `Dockerfile.musl-product` 第 23 行逐字寫著 rustc 版本必須與 `Dockerfile.build`、`Dockerfile.musl-probe` **三者一致**，那就是「三張 Dockerfile」。寫死的清單在出現第四張時會靜靜漏掉它而**漏掉的那一刻不紅**（`shellcheck-all.sh` 為同一條教訓改過一次）。⚠ `Dockerfile.bench` / `Dockerfile.systemd` **有意排除**（不參與 musl 產物建置，算進去會讓一次bench 鏡像調整白白觸發一趟幾十分鐘的冷建），**而這條排除本身由自測釘著**。⚠ ⚠ **原始碼改動有意不觸發**，這是一條判斷不是讀數：`Dockerfile.musl-product` 確實是 `COPY . .`，但我們自己那幾個 crate 是架構中立的、amd64 那一格每趟都編；aarch64 會壞在依賴 / 工具鏈 / 基礎鏡像上 ⇒ 真出現一次原始碼引起的 arm64 迴歸時，要改的是**這個集合**而不是給它加豁免。**④ 驗證記錄是生成的，⛔ 不是手寫的**：`tests/musl/arm64-verified.txt` 由 `arm64-trigger.sh --record` 在一次**真的成功的** aarch64 驗證之後寫入 ——一份生成器重現不出來的記錄，與一份編造的記錄無法區分。**⑤ 跑不了就判紅，⛔ 不靜默跳過**（「沒能檢查」不算「檢查通過」），訊息給出兩條出路。★ 那條紅路徑在裝了 binfmt 的機器上**平時一次都執行不到** ⇒ 決定被抽成純函式`fulcrum_arm64_decide`，三條分支各有合成輸入釘著。判據：`arm64-trigger.sh --self-check` **25 條**；**7 條注入反證**各只紅在該紅的那一格（含「驗不了那條退化成照常跑」）；2026-09-06 在 `ShanirePCX` 上裝 binfmt 後真跑了一趟 `ARCHES=arm64`：`RC=0`、**34m05s** 冷建、`ELF Machine = AArch64`、`INTERP=0 NEEDED=0`、BoringSSL 獨有符號 3/3、OpenSSL 0、rustls 本體 0、`FROM scratch` 裡 `validate` 退 0。⚠ ⚠ **34m05s 是這臺機器的數**，`ShanireHomePC` 同樣一趟 18m07s —— 近兩倍，⛔ 別互相照抄。 |
+| **G145** | **對拍的核心參數從「一句宣告」改成「三處門」（M3）。** ★ owner 2026-09-06 拍板取方案 A（容器側 `--sysctl` + 加門，宿主只動一條）。**起因是一次實測推翻了 `bench/sysctl.conf` 的前提**：該檔案 2026-09-06 上午剛完成實作，寫著六個鍵、要求在宿主上 `sysctl --system`，而 `BENCH_HOST_ATTEST` 的第三件就是「核心參數已固化」。當天下午在本機兩個方向都量過 —— 宿主 `net.ipv4.ip_local_port_range` 改成 `20000 60000`，**新開的預設網路容器仍讀到 `32768 60999`**；宿主 `net.core.somaxconn` 改成 12345，**容器仍讀到 4096**。⇒ 那四個鍵是 **per-netns** 的，而對拍整個跑在自己 netns 的容器裡，**在宿主上固化它們對被測行為零影響**。⚠ ⚠ ★ 於是一句**完全誠實**的「已固化」宣告可以什麼都沒做 —— 這正是本儲存庫最在意的那一族：**一道恆綠的門與一道不存在的門，輸出完全一樣**。**① 六個鍵按「設得進哪裡」重分三處，每一處都有門**：容器側四個（`somaxconn` / `tcp_max_syn_backlog` / `ip_local_port_range` / `tcp_tw_reuse`）由 `docker run --sysctl` 設、由 `bench/env-snapshot.sh` 在容器內逐條斷言「實測==宣告」；宿主側一個（`netdev_max_backlog`）由 `bench/sysctl.conf` 設、由新增的宿主機側啟動器 `bench/docker-run.sh` 直讀 `/proc/sys` 硬判，**不符拒絕啟動**；`nofile` 由 `--ulimit` 設、由快照核 `ulimit -n`。**② 為什麼 `netdev_max_backlog` 單獨留在宿主**：實測 `--sysctl` 它會被 runc 當場拒絕（`open sysctl …: no such file or directory`），容器裡 `cat /proc/sys/net/core/netdev_max_backlog` 也是 `No such file or directory` —— 它**非 netns 化**。★ 而它是六個裡**唯一**既設得進又真的相關的：環回包也走 per-CPU `input_pkt_queue`，正歸它管，候選宿主的出廠值實測是 **1000**。**③ `fs.file-max` 移除**：實測那臺機器上它是 `9223372036854775807`，而原檔案寫的 `2097152` 是把它**往下壓**；真正會咬的是每處理程序 `RLIMIT_NOFILE` —— ★ **實測容器預設只有 1024**。⇒ 原檔案末尾那句「file-max 管不到 RLIMIT_NOFILE」的提醒是對的，G145 做的就是照那句提醒去設真正會咬的那個。**④ `tcp_tw_reuse` 由 1 改 2**：`2` 的語義是「僅對環回啟用」，而四家與 oha 同處一個容器只走環回 ⇒ 2 恰好覆蓋本場景，1（全域）更寬卻不更貼切；2 也正是 Linux 4.12 起的核心預設 ⇒ 這條宣告的是「預設沒有被改壞」。**⑤ 宣告只有一份**：`bench_container_sysctls` / `bench_host_sysctls` 同時供給 `--sysctl` 旗標與斷言的期望值 —— 旗標與清單一旦分家，容器會按 A 跑而快照按 B 判、**兩邊都不紅**。⚠ 旗標**一行一個 token**，因為 `10240 65535` 自己帶空格，拼成一行再分詞會被劈成兩個參數而 docker 只報一句語焉不詳的用法錯。判據：`bench/lib.sh` 自測由 31 條加到 **46 條**（全合成輸入，含「空宣告 ⇒ 判紅」兩條 —— 一份空宣告會讓比較函式**恆回傳空集**，與「全部相符」輸出一模一樣）；**5 條注入反證**各只紅在該紅的那一格（去掉空白歸一化 / 鍵讀不到時回傳空串 / 空宣告守衛永不觸發 / 第六個參數被忽略 / 宣告少一條），且反證殼自己帶「基線必須先綠」與「sed 必須真的改到了東西」兩條守衛；端到端 `tests/bench/gate.sh` 加 **C12 / C13**，二者是一對 —— 門禁**有意不設** `BENCH_HOST_SYSCTLS`，⇒ 每一趟門禁裡容器側四個鍵因旗標真的生效而**相符**（C13 正向）、宿主側那一條因缺憑證而**判紅**（C12 反向），**兩個方向都被走到**。⚠ ⚠ **G145 沒有讓 `attest` 變得可驗證**：剩下的兩件（專機 · 無 TUN 代理）仍然只有紀律；⛔ 也證不了 16384 就夠用 —— 夠不夠可以量（`/proc/net/softnet_stat` 第 2 列，實測是全域的），而本套東西今天還沒有自動讀它。 |
+| **G146** | **判據 ④ 補第三條：最強者附近的收斂，且它只作用於 PASS（結案 `D34`）。** ★ owner 2026-09-06 拍板。**起因是第一組真實資料推翻了 B 的一個前提**：那一趟全場極差 **0.8599**（遠高於 `BENCH_MIN_SPREAD=0.05`）⇒ B 一聲沒吭；而**最快兩家 haproxy=54531.2 與 nginx=54144.1 只差 0.0071** —— 兩套架構差異極大的實作落進 0.71% 以內，**那正是 B 聲稱要懷疑的形狀**。⇒ B 取的是**全場極差**，被最慢那一家（樞衡 7638.6）整個撐開了 ⇒ **一個慢的被測會掩蓋掉快的那幾家之間的收斂**。**① 為什麼不是原先登記的那三條候選**（最快 k 家 / 每一對 / 極差外加一條獨立判據）：它們**都漏了同一件事** —— 頂部收斂只威脅 **PASS**，永遠不威脅 **FAIL**。門檻 = `max(竞品) × 0.9`，那個 max 被外部上限壓住時**門檻是被低估的**；結論是 PASS 時樞衡可能只是壓過了一個被低估的門檻（不可信），而結論是 FAIL 時真實門檻只會**更高** ⇒ FAIL **更成立**。⇒ 三條原候選任一條都會把 2026-09-06 那個結實的 FAIL 扣掉，⚠ ⚠ ★ **而這不是推理，是量出來的**：反證裡把判據改成「作用於所有結論」（就是那三條的形狀），C15 那個 FAIL 當場變成 VOID。★ `G142` 那條「兩邊都往作廢側倒」的初衷是**不給出錯結論**，而天花板之下的 FAIL 不可能是錯的 ⇒ 本條不是放鬆那條紀律，是把它貫徹到底。**② 位置與 B 恰好相反**：B 排在 `bench_verdict_one` **之前**（G142：先打出來的 PASS 已經會被人引用），而 C 必須排在它**之後** —— 它要先知道結論。⚠ ⚠ ⛔ **「排在後面」絕不等於「可以先把 PASS 打出來」**：`bench_verdict_one` 那一步**只算不打**，到 C 之後才決定 `verdict.txt` 與標準輸出上寫 PASS 還是 VOID；一個會被作廢的 PASS **一個字都不許寫入磁碟**，而這一條由門禁 C14 的第三個方向釘著（「整份判定裡一個 `VERDICT: PASS` 都不許有」）。**③ 比的是最強者與第二強**（k=2，⛔ 沒有自由參數 —— 原候選 ① 的「k 取幾」本身又是一個沒有實測支撐的數），且喂的是**全場**讀數含樞衡：樞衡自己與最強者一起頂在天花板上時，那個 PASS 同樣不可信。**④ 「判不了」一律作廢**（有效讀數不足兩條 / 最強者不是正數），⛔ 不算「分得開」。邊界與其餘判據同一個約定：**恰好壓在閾值上算分得開**。判據：`bench/lib.sh` 自測由 46 條加到 **55 條**，其中**承重的是那條對照** —— 2026-09-06 那組**真實資料**餵給 B 時它一聲沒吭、餵給 C 時它響，⇒ 證明 C 抓的正是 B **結構上**抓不到的那件事（⛔ 少了它，「C 判得動」與「C 在重複 B 已經會做的事」分不開）；端到端 `tests/bench/gate.sh` 加 **C14 / C15**，二者是一對而 **C15 才是分水嶺**（同樣頂部收斂但結論是 FAIL ⇒ 必須照常打 FAIL）；**兩條注入反證方向相反**：判據整個不生效 ⇒ C14 由 VOID 變 PASS；判據作用於所有結論 ⇒ C15 由 FAIL 變 VOID。⚠ ⚠ ⛔ **`0.05` 這個數本身仍然沒有實測支撐** —— 本條改的是「拿它去比什麼」，**不是「它該取多少」**；同樣 `BENCH_GEN_HEADROOM=0.90` 至今**一次都沒被執行過**（判據 A 沒打開）。 |
+| **G147** | **對拍的負載參數預設只在 `bench/lib.sh` 定義一次；新增門禁 `C16` 判「原始資料說得出自己是在什麼口徑下量的」。** owner 2026-09-06 拍板。**起因是一個真實缺陷，而它比登記時以為的寬**：`bench/env-snapshot.sh` 記的是**宣告值** `${BENCH_PAYLOAD_BYTES:-}`，而 `bench/case/static-throughput.sh` 跑的是**宣告值或預設** `${BENCH_PAYLOAD_BYTES:-4096}` ⇒ **沒人顯式設的參數，用例真的用了預設，而快照寫 `null`**。2026-09-06 那組真實讀數就帶著它（`payload_bytes: null`，而那一趟真的用了 4096）。⚠ ⚠ **它不止 payload 一格** —— 四個負載參數（`BENCH_DURATION` / `BENCH_CONNECTIONS` / `BENCH_WORKERS` / `BENCH_PAYLOAD_BYTES`）用的是同一個寫法，只是那一趟恰好顯式設了另外三個 ⇒ 只有 payload 露了頭；**`C16` 第一次跑就當場露出第二格 `workers`**。⛔ 別把它記成「payload 的毛病」。**① 為什麼這不是「少了一格中繼資料」**：`G19` 要的是**原始資料可被第三方重現**，而一份說不出自己用了多大 payload、幾個 worker 的靜態吞吐讀數**重現不出來** ⇒ 它是**口徑本身**。**② 修法是「一處定義」，⛔ 不是「兩邊各寫一份」**：把預設順手也寫進 `env-snapshot.sh` 一份是**更壞**的形態 —— 兩處一旦飄掉，快照會**理直氣壯地報一個錯的數**，而 `null` 至少不騙人。⇒ 四行搬進 `bench/lib.sh`（與 `BENCH_MIN_SPREAD` 那幾個同一個寫法），用例指令碼 `source` 它，兩邊都**不再帶 `:-`** ⇒ 「兩處預設飄掉」這一族缺陷**結構性地不存在**，而不是被修好一次。★ 四個值一個都沒變（`10s` / `50` / `1` / `4096`），改的只是它們住在哪。**③ 結構反證**：刪掉 `lib.sh` 裡那一行 ⇒ `env-snapshot.sh` 與用例指令碼**雙雙 `unbound variable` 當場死、快照根本沒寫出來**（`set -u`），⛔ 不是安靜回落到一個只有某一個檔案知道的數。**④ `C16` 判的是 A 那一趟真跑出來的 `env.json`**，⛔ 不是合成夾具 —— 這一條問的正是「那份快照誠不誠實」，拿合成的去問等於問了個假問題；它帶自證（`load_params` 整個為空時當場判紅，⛔ 不讓它恆綠）；紅→綠兩個方向都實測過（修前逐字點名 `payload_bytes, workers`，修後四格全有）。⛔ **本條不判那四個值取得對不對** —— 那是口徑本身，歸 `bench/README.md`。**⑤ 那份 2026-09-06 的 `env.json` 一個位元組都沒動**：它是一次真實執行的**原始資料**，事後回填一個「我們知道它當時是多少」的值就把原始資料變成了轉述，比留著那處不一致壞得多 ⇒ 只在同目錄 `README.md` 裡寫明它為什麼是 `null`、真值是多少。⚠ ⚠ ★ **2026-09-07 owner 逐條過目時改了這一條的去向**：⛔ 不是「永遠留著那處不一致」，而是 **⏳ 等壓測視窗在合格宿主上重跑一組口徑完整的新讀數，把它整組替掉**，舊那組降為歷史。★ 在那之前**仍然一個位元組都不改** —— 回填真值這條路**依舊否決**（理由同上：原始資料一改就成了轉述，且開了口子之後讀者分不出哪些被改過）。⇒ 這條掛在 M3 的壓測視窗上，與 `G150` 那格讀數同一趟做。 |
+| **G148** | **`probe_file` 那條回落「只花 1 次跨執行緒」的那一半，明確接受它今天只由診斷臺的讀數守著，⛔ 常設門禁不判它。** owner 2026-09-06 拍板；★ **2026-09-07 owner 逐條過目，維持接受**（那次同時看了 `G147`–`G150` 四條）。**起因**：`crates/fulcrum-server/src/files/probe.rs` 那條快路徑完成實作時做過一次注入反證 —— 把 `probe_file` 裡那次 `spawn_blocking(open_blocking)` 回落**整個刪掉**，**整趟門禁 RC=0、一格都沒紅**，據此把它整個記成「**效能**承重、⛔ 不是**正確性**承重」，於是它沒有任何門。**① 已經補上的那一半**：在 `probe_file` **自己**這一層它是**正確性**承重 —— 它的契約是「小檔案帶回全部位元組」，而在一個**不認 `RWF_NOWAIT`** 的檔案系統上（overlayfs / tmpfs 實測如此）唯一做得到這件事的就是那條回落。⇒ 由單測 `文件系统不认_nowait_时_probe_file_仍然必须带回全部字节` 守著，**刪掉即紅**。⚠ 那是量出來的：同一個注入下 `UNIT_ONLY` **RC=1 而 365 條裡唯一紅的就是它**，同一棵樹 `FILES_ONLY` **RC=0 全綠** ⇒ 一次實驗同時證明了**新門判得動**、且**其餘 364 條單測與整個端到端場景全都瞎**。**② 本條明確接受的是剩下那一半**：把回落重寫成**正確但要三次跨執行緒**的實作，那條測試**照常綠** ⇒ 「它只花 1 次跨執行緒」今天沒有門，⛔ 別把 ① 讀成「那條回落全都有門守著了」。**③ 為什麼不給對拍加一條判據**（原先登記的候選）：⚠ ★ 那條登記寫的是「每請求**系統呼叫數**」，而**量綱挑錯了** —— 這個缺陷動的主要是**跨執行緒次數**（1 → 3），判別力最強的是「自願切換/請求」（診斷臺實測 0.006 對 1.66–1.73）；而「量綱選錯了、**而選錯的那個量綱看上去完全像個正經判據**」正是這條線上**已經栽過一次**的地方（上一輪據切換**次數**判斷，砍掉三分之二隻換來 +18%）。⛔ 更根本的是**結構衝突**：那會是一條**效能**閾值，而常設門禁跑在**不合格**的開發機上，`G132` 的形狀是「數字只在合格宿主上才出得來」⇒ 把效能閾值掛進日常門禁與那個形狀相抵。**④ 重開條件**：等合格宿主上的壓測視窗拿到 `respond` 的真實讀數之後，**連同靜態檔案快取那一步一起定** —— ⛔ 在那之前不給它定閾值，因為今天沒有任何實測支撐。 |
+| **G149** | **`D9` 結案：版本號 `0.x` 排到 M4、M4 起 `1.0`；棄用過渡期按已定的五個面分檔。** owner 2026-09-07 拍板（兩半在同一次彈出視窗裡分別拍）。**① 版本號**：把 `1.0` 與「相容性承諾開始生效」**綁成同一件事** —— [`docs/governance/compatibility.md`](docs/governance/compatibility.md) §一 已定「分類法今天生效、承諾 M4 起生效」，而 `1.0` 就是那句話在版本位上的寫法。⇒ `0.x` 期間任意 breaking（`G129` 收緊 `id` 取值域時逐字用的就是這條自由度：「要收就現在收最便宜」），`1.0` 起按五面分類法約束。★ 2026-09-07 已完成實作（`ad5ca53`）：**六個產品 crate 動到 `0.1.0`**。⚠ 全倉其實有**九個** `Cargo.toml` 寫著 `0.0.0` —— 多出的三個是 `spikes/m0-seam`、`spikes/m1-systemd`、`spikes/musl-boringssl`，**有意留在 `0.0.0`**（它們不是發佈製品，`0.0.0` 恰好表達這一點）。★ 這個取捨是 agent 判的，owner 過目時**未提異議**，⛔ 記成「未提異議」而不是「明確批准」。⚠ ⚠ **crate 版本不是發佈版本** —— 六個 crate `publish = false`、沒有 crates.io 下游（compatibility.md §二 已寫明「Rust 層面的 API 不是對外面」）⇒ **本條排的是發佈製品的號**，⛔ 別讀成給 crate 定版本策略。⛔ **不選 CalVer 的理由**：它表達不了 breaking ⇒ 那五個面的分類法失去承載它的版本位，維運得去讀 changelog 才知道能不能升。⛔ **不選「一直 0.x」的理由**：承諾 M4 起生效了卻沒有任何版本位能表達它，與 §一 直接矛盾。**② 棄用過渡期按面分檔**，與五面分類法**共用同一套分法**（單一真相源，⛔ 不新增第二套要記的東西）：`FUL-DSL-NNNN` **永不棄用**（compatibility.md 已定「一旦發出就不能改含義」）；**指標名與標籤、`/stats` JSON** 給最長過渡期（§三 自己就說指標那面最貴，理由與別處不同 —— 告警與看板在別人手裡，改起來慢）；**DSL 與結構化設定**可以短，因為它們在**編譯期／裝載期當場就能回報錯誤**，配一條明確的棄用警告即可。⚠ ⚠ ★ **過渡期按「時間」算，⛔ 不按 minor 數算**（owner 2026-09-07 逐條過目時拍的，推翻了 agent 原先擬的「兩個 minor / 一個 minor」）：**指標與 `/stats` ≥ 6 個月且 ≥ 1 個 minor；DSL 與結構化設定 ≥ 1 個 minor**。★ 理由是這個產品的形狀：**自託管產物的維運不跟著我們的發佈節奏升級** ⇒ 「兩個 minor」可能是兩週也可能是兩年，對告警與看板那一面等於沒承諾；而 DSL 與結構化設定**裝載期當場回報錯誤**，發現得快，用版本位計就夠。⚠ 那三個數字出自 agent 的建議，owner 在彈出視窗中連同形狀一併選中；⛔ M4 前若實際發佈節奏與預期不同，回來重定。**③ 本條不重開 `G141` 已定的兩件**：五面分類法本身、`fulcrum_build_info{version}` 的三檔取值鏈。 |
+| **G150** | **`D20` 結案：磁碟快取的請求路徑維持同步，一行不改；把「先量再定」從一句話落成 M3 對拍裡的一格讀數。** owner 2026-09-07 拍板。**① 為什麼不現在改**：今天**沒有任何實測支撐** —— `D20` 自己寫的就是「先量再定，M3 對拍時的命中率與 p99 會給出這個數有多大」，而那組讀數**至今不存在**（壓測視窗沒開）。⇒ 現在改 async 等於在零讀數下**把「七個操作的簽名與 `MemStore` 逐字相同」這一點碎掉**，讓資料面為「記憶體還是磁碟」分出兩條路。⛔ **也不選「請求路徑包 `block_in_place`」**：請求路徑上唯讀 meta 與 body **兩個小檔案**（管理面那兩條走遍整棵目錄樹的**已經**包了），而 `block_in_place` 會把當前執行緒從 runtime 借走、可能觸發另起執行緒 ⇒ 對這個規模**很可能是淨負優化**，而今天沒有讀數分辨得開。**② 本條真正定下的是判據**：M3 對拍**必須記錄**「磁碟命中的 p99 − 記憶體命中的 p99」這一格，落進原始資料（與 `G147` / `C16` 同一條口徑 —— 一份說不出自己在什麼條件下量的讀數重現不出來）。⚠ ⚠ **本條有意不定閾值**：定一個沒有實測支撐的數字正是 `G148` ③ 點名的那種錯（量綱挑錯了，**而挑錯的那個看上去完全像個正經判據**）⇒ **先把這個數量出來，閾值等有數之後再定**，屆時連同靜態檔案快取那一步一起。★ ★ **這一步比 owner 當時選的那條收窄了**：那條原話是「並寫明超過多少就重開 `D20`」，而完成實作時 agent 主動改成「先量、後定閾值」—— **2026-09-07 owner 逐條過目時確認了這個收窄**，⛔ 不是悄悄改的。**③ 重開條件**：那格讀數出來後，若差值大到影響 M3 的 p99 目標，`D20` 重開並按 ① 的兩條路重新估價。⚠ ⏳ **那一格的實作還沒完成實作** —— 它要在壓測視窗才驗得了實效，⛔ 別把本條讀成「那一格已經在量了」。 |
+| **G151** | **（修訂 `G150` ② ③）「磁碟命中 p99 − 記憶體命中 p99」那一格不定毫秒閾值；`D20` 何時重開，改由 §8「快取命中」那一類的判定決定。** owner 2026-09-24 拍板（彈出視窗，選的是 agent 推薦項）。**起因是一條量綱事實，⛔ 不是偏好**：那格讀數（2026-09-10 視窗二：記憶體命中 28461.0 rps · p50 7.03 ms · p99 11.06 ms；磁碟命中 13544.9 rps · p50 14.80 ms · p99 20.27 ms；差值 **9.22 ms**）是在 200 並行的**閉環**負載下、兩臂都壓到吞吐上限時量的 ⇒ 按 Little 定律 p50 ≈ 並行 ÷ rps，兩臂實測都吻合到 0.3% 以內（200 ÷ 28461.0 = 7.03 ms · 200 ÷ 13544.9 = 14.77 ms）⇒ 9.22 ms 裡有 **7.77 ms（約 84%）是中位數整體右移**，也就是吞吐差換算出來的排隊時間，⛔ 不是尾延遲。給它定一個毫秒閾值，正是 `G148` ③ 點名的那種錯：量綱挑錯了，而挑錯的那個看上去完全像個正經判據。**① 不變的**：`G150` ② 的**記錄**要求照舊 —— [`bench/diag/cache-hit-p99.sh`](bench/diag/cache-hit-p99.sh) 繼續量、繼續落原始資料；它仍是一份誠實的讀數，只是 ⛔ 不據它下任何判斷。**② 作廢的**：`G150` ③ 的「差值大到影響 M3 的 p99 目標就重開 `D20`」—— 本檔案裡本來就沒有一個單獨的 p99 目標（§8 的門檻由 [`bench/verdict.sh`](bench/verdict.sh) 按 `requestsPerSec` 判）。**③ 換成的**：§8「快取命中」那一類定義並出數之後，由那一類的判定決定 `D20` 要不要重開；具體判法在定義那一類時一併拍 —— ⚠ 那一類在 `G152` 下缺 Caddy，「缺一家競品怎麼判」也要同時拍。⛔ 在那之前 `D20` 保持結案。⚠ `G150` 行末那句「那一格的實作還沒完成實作」早已過期（2026-09-10 視窗二已量出數）；G 行原文 agent 不改，以本行為準。 |
+| **G152** | ★ **（修訂 `G36`）「M3 對拍期間凍結」擴到對拍鏡像 `docker/Dockerfile.bench`：M3 期間整張凍結。** owner 2026-09-24 拍板（彈出視窗）。★ **推翻了 agent 推薦項** —— 推薦的是「`G36` 只管建置鏡像；對拍鏡像另立一條：已釘的四家與 oha 不動，但允許追加同樣按 sha256 釘死的定製建置（caddy-l4 / cache-handler），由門禁核對既有四家的二進位沒變」。**① 起因**：`G36` 行字面管的是**建置鏡像的 rustc**（[`build-and-test.md`](docs/platform/build-and-test.md) 與 `docker/Dockerfile.systemd` 也都寫著「`G36` 只管建置鏡像的 rustc」），而 [`bench/README.md`](bench/README.md) 與反代用例指令碼一直把「往對拍鏡像里加東西」說成「撞 `G36`」—— 兩處口徑對不上。本條把後者**立成決定**。**② 後果（owner 知情拍的）**：M3 期間對拍鏡像裡的四家、oha、python3 **不增、不減、不升** ⇒ **L4 轉發與快取命中兩類只能缺 Caddy**（它的官方二進位既沒有 L4 也沒有 HTTP 快取，定製建置進不了鏡像）⇒ 那兩類定義時必須同時拍「缺一家競品怎麼判」；反代類「源站只能從四家與 python3 裡挑」同理成立。**③ 被取代的一句**：`docker/Dockerfile.bench` 頭註解寫著，當初不把競品掛進建置鏡像的理由之一是「競品版本恰恰是對拍**要**跟著上游走的東西」—— 本條之後，M3 期間競品版本**不**跟上游走。⚠ 那句註解與 `docker/Dockerfile.systemd` 裡「`G36` 只管建置鏡像的 rustc」那句**有意不改**：兩張鏡像都在 Dockerfile 的 sha256 變了時重建（`tests/bench/run.sh` 與 `tests/m1/systemd-run.sh` 的標籤比對），改一個字的註解就觸發一次重建 —— 前者正是本條禁止的；後者的 `apt-get install systemd` 沒釘版本，重建有機會換到更新的補丁版本。**④ 不管的**：systemd 測試宿主鏡像（`G39`）不在本條內；本條也不改 `G36` 對建置鏡像 rustc 的口徑（2026-09-24 `tools/dep-check.py` 報 rustc 1.98.1 可用，照 `G36` 凍結不升）。 |
+| **G153** | ★ **（`G29` 破例一次）2026-09-24 那次依賴追新一次收齊 39 項，其中 `thiserror` / `thiserror-impl` 2.0.21 在 24 小時懷疑期內被採納**（發佈於 2026-09-23 20:24 UTC，採納時約 8 小時）。owner 2026-09-24 拍板（彈出視窗）。★ **推翻了 agent 推薦項** —— 推薦的是「守 `G29`，等它過期再一次收 39 項」（代價是 RUSTSEC-2026-0285 晚修約 15 小時 —— 要等它發佈滿 24 小時，即 2026-09-24 20:24 UTC；實際 05:17 UTC 就採納了）。**① 做法**：`tools/dep-check.py --apply --hours 7`。⚠ 放寬的視窗**只許多放進這兩個**，前後各核一次：採納前，`--hours 7` 與預設 24 小時兩份報告的可採納清單逐項比，差集恰好是這兩個版本；採納後，兩把鎖各與採納前逐包比，按 24 小時口徑只有這兩個落在懷疑期內（兩次核對的輸出都沒留存，記錄只有本行）。**② 邊界**：⛔ 只對這兩個版本成立，不是把 `G29` 的視窗改成 7 小時；下一次 `--apply` 照舊 24 小時。**③ 代價寫在明處**：這正是 `G29` 要擋的那一類風險（投毒版本發佈後數小時內被發現並撤回）。 |
+| **G154** | **vendor 迴歸網 [2/5] 的「兩把鎖對得上」改成由 cargo 推導：根側有、vendor 側缺的版本，再問一句 `cargo tree -i` —— 有 `pingora-*` 在路上 ⇒ 紅；沒有 ⇒ 記一行資訊；問不出來 ⇒ 紅。`tools/dep-check.py --apply` 的對齊判定改成同一口徑（判定規則相同；範圍不同 —— `dep-check` 只判它這次更新的那幾個名字，[2/5] 判兩把鎖共有的全部名字）。** owner 2026-09-24 拍板（彈出視窗，兩項都選了推薦項）。**① 起因**：同一次追新裡 rcgen 0.14.10 → pem 4 把 `base64` 0.23.1 帶進了根鎖，而 pingora 用的仍是 0.22.1（兩把鎖都有）；[2/5] 按包名比，分不出「只有根側獨有的包在用」與「pingora 自己用著一個 vendor 沒解析出來的版本」，當場紅。⛔ **沒選手寫名單**：將來若 pingora 自己也升到那個版本而 vendor 滯後，名單會把真問題蓋住。**② dep-check 那一半**：它原先判「兩邊版本集合逐字相等」，比它聲稱鏡像的 [2/5]（根側版本都在 vendor 側即可）更嚴，那次 `--apply` 因此把 rand / thiserror / thiserror-impl 誤報成對不上、結束代碼 1；判定抽成純函式 `lock_alignment`，`--self-check` 用合成輸入釘住五種情況，掛進門禁 lint 那一格。**③ 判據（都在位元組副本上做、還原後核 sha256）**：[2/5] 先紅（base64）後綠；只在根鎖裡把 pingora 用的 lru 退一個補丁版本 ⇒ 紅、點名 pingora-core / pingora-pool；把 `cargo tree` 改成壞參數 ⇒ 紅（問不出來）；`--self-check` 在舊判定下紅在 rand / base64 兩條，另兩個變異各紅在 zstd（問不出來）/ lru（pingora 在用）；lint 裡掛上它之後，變異副本讓 `LINT_ONLY` 紅在它自己那一行。⚠ bash（[2/5]）與 Python（`lock_alignment`）兩份實作之間沒有一致性判據：`--self-check` 只釘 Python 那份對期望值。 |
+| **G155** | **L7 資料面的監聽（明文與 TLS）把 pingora 給接入連接的寫緩衝從預設 1460 位元組設成 16 KiB（HTTP 層診斷髮現 1 的方案 A）；在 fork 裡把頭與第一塊正文合成一次傳送（方案 B）只登記、不排期；「一個約 4 KiB 的回應只許一個資料段」掛成常設判據。** owner 2026-09-26 拍板（彈出視窗，三項都選了推薦項）。**① 起因**：2026-09-24 的 HTTP 層上界診斷（開發機上、owner 批准的探查，產出是答案不是程式碼）發現：h1 寫回應是先把頭寫進緩衝、再寫正文，而緩衝只有 1460 位元組 ⇒ 頭 + 約 4 KiB 正文的回應是兩次 send、兩個 TCP 段（nginx / haproxy 是一次）。⛔ 診斷的讀數是開發機的、不是效能宣告（`G139`），達沒達標只看 M3 視窗。**② 為什麼 B 不排期**：B 比 A 多出的好處只在兩類回應上 —— 正文超過 16 KiB 的（那時多出的一次 send 已被正文自己的多次 send 攤薄），與沒有 `Content-Length` 的（chunked、`encode` 壓縮後、讀到關閉：寫完頭就 flush，緩衝多大都還是 ≥ 2 次 send；這一類 2026-10-04 評審才補上）；0.9.0 rebase 剛把 fork 縮成形狀 B，不為這一段再加一處改動（⇒ 此後 `G157` / `G162` / `G163` / `G165` 為每請求開銷各加了一處 fork 改動，即改動 16–19，這條前提已不成立；B 仍只登記，決定沒有重估）；上游 `main`（2026-09-11）的預設仍是 1460。**③ 代價**（逐條寫在 [`data-path.md`](docs/architecture/data-path.md)）：每條連接多約 15 KiB；分幾段寫的 `Content-Length` 正文攢滿約 16 KiB 或寫完才發，**回應頭也一起等** ⇒ 反代一個先發頭和不到 16 KiB 正文、然後停住的上游時，用戶端在停頓結束前連狀態行都收不到，**沒有時間上限**（改前的門檻約 1.4 KiB；隻影響反代分支，含快取未命中回源；chunked 與讀到關閉的正文每寫必 flush，不受影響）。★ 這一條是 2026-10-04 評審（I1）補上的，原文只寫了「最多多攢 16 KiB」；owner 同日按補準的代價**重新確認**了本決定（彈出視窗，選推薦項）。緩解要動 fork（h1 工作階段暴露 `flush`，或反代分支在首塊之後 flush），與方案 B 一併**只登記、不排期**。**④ 判據**：[`tests/serve/run.sh`](tests/serve/run.sh) 第 10 節 —— 用戶端讀自己 socket 的 `TCP_INFO`（`tcpi_data_segs_in`），明文與 TLS 各一條「4 KiB 只許 1 個帶資料的段」；32 KiB 那條是內置反證（仍須 ≥ 2）；⚠ 三條都只量了 h1 上 `respond` 的 `Content-Length` 回應，h2 走同一層緩衝、沒單獨量（與 `data-path.md` 同口徑）；明文兩條另用 `tcpi_bytes_received` 自證 struct 佈局（只證了 128 那個偏移；152 寫錯時主要靠 32 KiB 那條反證兜）。舊程式碼上兩條 4 KiB 實測紅在 2、反證那條綠；改後三條全綠（`Compiling fulcrum-server` 為證）。 |
+| **G156** | **指標註冊表按執行緒分片：事件點那一類分成寫死的 64 片（每片按 128 位元組對齊），每個寫執行緒只寫自己那一片；gauge 單獨一張全域表、不分片；標籤值的鍵改成能拿 `&[&str]` 借用查找的類型；族類型與標籤個數的 `assert!` 先在拿鎖之前判一次（鎖裡的方法照舊再判）；抓取時逐片合併，輸出格式與族序、series 排序都不變（`G116` / `G118` 的對外契約不變）。** owner 2026-10-04 拍板（彈出視窗：範圍只做指標、做法 A、設計可以寫成 spec，都選了推薦項）。**① 起因**：HTTP 層診斷髮現 2 的第三項 —— 每條請求收尾往處理程序級 `Mutex<Registry>` 寫兩筆（TLS 三筆），每筆拿一次全處理程序共用的鎖、先分配一份 `Vec<String>` 鍵。2026-10-04 count 口徑 + 呼叫棧歸因（開發機，⛔ 不是效能宣告）：respond 每請求 malloc 46.03，其中指標恰好 8 次。**② 為什麼不選另兩種**：「裝載時給每條位址字面值預解析一組原子計數格」單執行緒最快，但同一站台的格子被所有核共寫（爭用從鎖換成快取行），且要跨訪問紀錄 / 路由 / 裝載鉤子 / `outcome` 下標 / 快取 / TLS 與 `fulcrum-runtime`；「只去分配、保留全域鎖」爭用原樣，執行緒越多越擠。**③ 代價與語義差別**（逐條寫在 [`observability.md`](docs/architecture/observability.md)「註冊表按執行緒分片」）：一次抓取不再是全處理程序的原子快照（對外可見的一致性沒有變差）；直方圖 `_sum` 末位可能有差（單執行緒寫入逐位元組相同）；每條 series 最多存 64 份副本（基數不變；最壞量級約 20 MB，現實裡是 KB 級）；寫執行緒多於 64 個時幾個執行緒共用一片（仍然正確，那幾片回到有人爭）。**④ 判據**：[`crates/fulcrum-server/tests/metrics_alloc.rs`](crates/fulcrum-server/tests/metrics_alloc.rs) 穩態 1000 輪寫入零分配（舊程式碼上紅在 8000 次；只釘了明文那兩筆，TLS 那一筆走同一條路、沒單獨釘）；`metrics.rs` 單測 —— 借用鍵的序與 `Vec<String>` 一致（注入「先比寬度」只紅它）· 握住別的 63 片與 gauge 表時照樣寫得進（注入「寫路徑多鎖一把共用鎖」只紅它）· 80 個執行緒邊寫邊抓合計精確（注入「合併到第一片就停」紅它）· 分兩片合併與一片直寫繪製逐位元組相同 · 斷言失敗不毒化任何片 · 執行緒拆 TLS 時寫指標照樣記上。 |
+| **G157** | **fork 裡收進第一批「只為效能、語義不變」的改動（`vendor/pingora/FORK.md` 改動 16）：l4 流每次讀寫不再記等待計時 · 解析請求時 256 個頭槽位不先填 · 頭偏移不再每條請求分配一個 `Vec`。請求頭 / 回應頭保留大小寫的表、keep-alive 等下一條請求時登記的計時器三項改了行為，⛔ 不在本條。** owner 2026-10-06 拍板（對話原話「按建議，先做 B2+C1+C2 那一筆 fork 改動」，即 agent 推薦項）。**① 起因**：合格宿主分賬表明 M3 靜態那一截的差距有一塊在 pingora / tokio 底座（§7 M3）；開發機裸 pingora 診斷臺對底座候選逐個做了單變數試驗（每個變體一份 fork 副本、只差一處補丁、計數口徑，⛔ 不是效能宣告，`G139`），這三處合計約省每請求使用者指令的 5%、malloc 1 次。**② 為什麼是這三處**：只有它們對樞衡看得見的行為一個不變 —— 等待計時的兩個 getter 在樞衡與 fork 的 8 個 crate 裡沒有讀者；頭槽位走的是同一個解析器、同一份預設設定（httparse 1.10.1 原始碼核過）；偏移只是換了放的地方。另三項省得更多，但各改了一處行為（反代往上游轉發的頭名大小寫、`file_server` 的 `ETag` 等頭會以小寫發出、去掉空閒超時），各要一處設計。**③ 代價**：fork 多一個類別、多 3 個檔案（相對 0.9.0 從 14 到 17）、每次 rebase 要重放；`get_read_pending_time` / `get_write_pending_time` 恆為零。是不是給上游提 PR 另拍（對外動作）。**④ 判據**（都在 fork 自己的測試裡，vendor 迴歸網照跑；每條都在 vendor 副本上注入過、證明會紅）：一次真的掛起過的讀之後讀等待時間仍為零 · 頭數恰好 256 時每個頭的名與值逐個對得上、多一個照上游拒 · `read_request` 解析一條普通請求的分配次數（單獨一個測試二進位，上游原樣多一次）。 |
+| **G158** | **`pre-push` 門提速：shellcheck 只在被推的提交碰到它判得到的東西時才跑；宿主機側自測與遺留卷報告只歸完整門禁。** owner 拍板（對話裡點了兩條）。**起因是一次實測，不是推理**：2026-10-06 熱快取、乾淨工作樹、零改動，三趟 33–61s，而跳過鉤子的 `git push --dry-run` 只要 1.7s ⇒ 慢在門裡不在網路。門裡最慢的一項正是 `G134` 加進來的 shellcheck（54 個指令碼一次全掃，15–33s；`G134` 記的單跑 7.8s 已不成立），且它**每一趟都跑**、不管被推的提交碰沒碰 `.sh`；容器外的宿主機自測與遺留卷報告再佔 13–20s（約 2000 條命令，Git Bash 每次 fork 幾十毫秒；`docker system df -v` 一條 1.8s）。⇒ **① shellcheck 的觸發**：被推那一段兩端的樹（`git diff <远端> <本地>`，⛔ 不是逐筆看提交）在 `*.sh` · `*shellcheckrc` · `docker/Dockerfile.build`（釘著 shellcheck 版本）上有淨改動才跑；★ 判不出來一律照跑 —— 遠端還沒有這個引用、遠端那一端本機沒有、`git diff` 失敗，「沒能判斷」不算「不需要」。**② 宿主機側**：`docker-run.sh` 新增 `HOST_SELFTESTS=0`（九條宿主機自測）、`VOL_REPORT=0`（遺留卷三個桶）、`COMPILE_SHELLCHECK=0`（只作用於 COMPILE 那一格）；三個都只由 `tests/ci/pre-push.sh` **顯式賦值**後傳下去，環境裡帶進來的同名變數蓋不過它們（⛔ 本門仍不提供呼叫方的繞過開關）；預設值照舊，完整門禁不帶它們。「新建的卷當場自證 label」有意留在報告之外：它只在卷是本趟新建時花一次 inspect，錯過那一趟就再沒人驗。⚠ **代價認下，兩條**：① shellcheck 掃的仍是工作樹、跳不跳由被推的提交決定 ⇒ 被推的提交沒碰 `.sh` 而工作樹裡躺著一個未提交的壞 `.sh` 時本門放行（它不在這次推送裡）；② 門自己的機器壞了（卷名推導、鎖、位元組探針）時 pre-push 不再當場發現，要等下一趟完整門禁（⇒ **已由 `G159` 收窄**：宿主機自測改為按指紋跑）。★ **判據**：`tests/ci/pre-push.sh --self-check`，一棵合成 git 儲存庫上 11 條，「要跑」「不必跑」兩個方向都有，掛在完整門禁 lint 那一格（⛔ 不在 pre-push 路徑上跑）；五個注入各只紅在該紅的那幾條（恆答要跑 · 恆答不必跑 · 觸發集只剩 `*.sh` · 觸發集放寬成 `*sh*` · 改成逐筆看提交）。端到端：不碰 `.sh` 的範圍 10.2s 放行且沒跑 shellcheck；碰 `.sh` 的範圍 43.8s、跑了 shellcheck；未跟蹤的 SC2086 探針在「新分支 + 環境裡帶 `COMPILE_SHELLCHECK=0`」下 `RC=1` 並點名那個檔案，在不碰 `.sh` 的範圍下 `RC=0`（即代價 ①）；不帶開關直接跑 `COMPILE_ONLY` 時九條自測、遺留卷報告與 shellcheck 照舊都在。 |
+| **G159** | **`pre-push` 門的宿主機自測從「無條件跳過」（G158 ②）改成「按指紋跑」：門的指令碼或宿主工具變了才跑，否則憑本工作樹上一份同指紋的通過記錄跳過。** owner 拍板（agent 給了三個方案，選了推薦的 A）。**起因**：`G158` 的代價 ② 正好落在最該當場證的那一刻 —— 改 `vol-lock.sh`、換 Git for Windows 之後的第一次推送，自測被無條件跳過。而這十條自測喂的都是**合成輸入**，結論只取決於門自己的指令碼與宿主 shell 工具 ⇒ 兩樣都沒變時上一次的結論仍然成立。⇒ **① 指紋** = `tests/m0/docker-run.sh` 與 `tests/lib/` 下全部 `.sh` 的內容（目錄而不是點名，多一個 lib 時不會安靜地漏掉；多算進來只會多跑，方向安全）+ 宿主工具身分（`BASH_VERSION` · `uname -sr` 即 MSYS 執行環境 · `git --version` 即 Git for Windows 版本，tr / sha256sum / cygpath / mkdir 隨它散布）；不調 docker，自測本來就不碰它。**② 記錄**放在 `git rev-parse --git-path fulcrum-host-selftest.ok`：只屬於本機、本工作樹，不進儲存庫也不進工作樹；★ 只由一次真跑通過的自測寫下（與 `G144` 同一條：生成器重現不出來的記錄與編造的無法區分），★ **要跑就先撤掉舊記錄** ⇒ 指紋沒變而環境壞了的那一趟一紅，下一趟就沒有記錄可用。**③ 開關**：`HOST_SELFTESTS=auto` 只由 `tests/ci/pre-push.sh` 顯式傳；★ **沒有「無條件跳過」這一檔**，除 `auto` 以外的任何值都照跑；預設模式（完整門禁）不問記錄、每趟照跑並刷新記錄。⚠ **剩下的盲區，兩條**：① 指紋沒覆蓋到的環境變化（同一 Git for Windows 版本下單獨換了某個工具）；② 判「對不對得上」的那兩個函式自己壞成「恆答對得上」時 pre-push 會一直跳過 —— 那一種只有完整門禁看得見（它不問記錄，並跑下面那條自測）。★ **判據**：新增第十條宿主機自測 `selftest_host_selftest_stamp`（同一輸入同一指紋 · 改一個位元組指紋變 · 工具身分變指紋變 · 讀不到檔案不給指紋 · 沒有記錄 / 指紋不同 / 空指紋都答對不上 · 寫下的讀回來對得上）；在副本上注入五種缺陷（指紋恆定 · 指紋不看內容 · 指紋不看工具 · 讀不到也給指紋 · 恆答對得上），各只紅在該紅的那幾條，副本里放了假 `docker`，一次都沒走到。端到端：沒有記錄 ⇒ 照跑並寫下（28.8s）· 同指紋 ⇒ 跳過（7.9s）· 記錄裡的指紋改一位 ⇒ 照跑並重寫 · 預設模式下讓 `mktemp` 失敗 ⇒ `RC=1` 且記錄被撤掉，下一次 pre-push 照跑 · 記錄有效時直接跑 `COMPILE_ONLY` ⇒ 十條自測全部執行並刷新記錄。 |
+| **G160** | **keep-alive 的空閒計時改由樞衡自己做：每條連接一個計時器、跨請求帶著走，到點才複核這一次空閒了多久；空閒視窗的口徑由「每一次讀各給 60 s」收緊為「從開始等下一條請求到它的請求頭讀完，合計 60 s」。fork 一行不動。** owner 2026-10-08 拍板（彈出視窗：先寫 B1 的 spec · 落點選方案 P · 計數回開發機做，三項都是推薦項；那處收緊寫在方案 P 的選項與預覽裡）。**① 起因**：§7 M3 底座單變數試驗裡 keep-alive 那一項（B1）的上界最大 —— 裸 pingora 每請求使用者指令約 −9%、malloc −2、`clock_gettime` −2（計數口徑，⛔ 不是效能宣告，`G139`）。pingora 在「限時」下給每一次讀請求頭各包一個快計時器，每條請求一整套登記與登出（兩次裝箱、兩次讀鍾、`Notify` 鏈表掛上又摘下），而 60 秒的計時器在請求不斷的連接上從不到期。**② 做法**（`crates/fulcrum-server/src/keepalive.rs`）：`process_new_http` 讀請求頭前，pingora 若是「限時 d」就切成不限時，用一個 `tokio::time::Sleep` 包住 `read_request()`；讀一次就好了就不碰計時器（與 pingora 原本的惰性相同）；第一次掛起時讀一次鍾記下「這一次開始等」，帶過來的到點若晚於它 + d 就重設；到點時空閒滿 d 才關（與 pingora 自己的超時同一個回傳），否則重設到「開始等 + d」⇒ 登記每連接每 d 至多一次。計時器經 pingora 0.9 的連接級 `user_context` 帶到下一條請求，⚠ 那一格從此歸它用。不續 / 不限時 / h2 / h3 不接管、照舊。`keepalive.rs` 只經一個小 trait `Conn`（讀請求頭 · keep-alive 狀態 · 取上一條帶來的東西，實作在 `lib.rs`）碰連接，⛔ 不含寫回應 —— `G110` 的結構門不許漏斗之外拿到裸 `ServerSession`；⛔ 也沒改用 `Downstream`：它一建構就新建訪問紀錄記錄、讀一次鍾，提前到讀請求頭之前會把空閒等待算進紀錄耗時。**③ 為什麼落在樞衡**：設計給了兩種落點 —— 落在 fork（方案 F）能保住「每次讀各給 d」，代價是 fork 改動 17、`pingora-core` 四處隨 rebase 重放；落在樞衡 fork 與 `Cargo.lock` 都不動，測試能用暫停的 tokio 時間做成確定性的，唯一的語義差是下面那處收緊。**④ 代價**：正常用戶端沒有區別；空閒很久才慢慢發頭、或逐段慢發頭的用戶端會被更早關掉（後者在舊口徑下能無限拖住一條連接）。`tokio` 的 `test-util` 進了 `fulcrum-server` 的 dev 依賴（新增 0 個包；發佈建置不帶 dev 依賴）。省多少隻在開發機診斷臺上按計數口徑量，⏳ 還沒量。**⑤ 判據**（`keepalive.rs` 單測，暫停的 tokio 時間 + `tokio::io::duplex` 當連接，多條請求之間照 pingora `apps/mod.rs` 的循環與 `process_new_http` 的收尾交接）：只在「限時」時接管、接管後 pingora 側是不限時 · 新連接空閒正好 d 關 · 帶過來的計時器先到點（空閒不夠 d）不提前關、按「開始等 + d」關 · 同一連接幾條請求用同一個計時器且沒重設過 · 帶過來的到點太晚（d 變短）就按新的 d 關 · 請求頭分段、合計在 d 內照常讀完 · 空閒 54 s 後才發前一段、後一段在 61 s 到 ⇒ 60 s 關（新口徑釘成斷言）· 到點判定的純邏輯；外層 10 個 d 的上限讓「永遠在續」紅而不是掛住。七個注入各讓針對它的判據變紅、每次都有新鮮 `Compiling fulcrum-server`：到點即超時 · 不重設太晚的到點 · 每條請求新建計時器 · 不切成不限時 · `lib.rs` 裡 `Conn` 的 `set_keepalive` 不生效 這五個只紅針對的那一兩條；每次 poll 重記開始等 · 計時器到點不在 d 這兩個打壞的是主路徑，各紅三四條（前者靠那道 10 個 d 的上限紅，沒有掛住）。發出去的位元組：改前（`e4a5fe3`）改後兩個二進位，同一連接 keep-alive 三條 · `Connection: close` · HTTP/1.0 三組去掉 `Date` 後逐位元組相同（含「回完之後連接關沒關」），負對照（一個頭名改小寫）當場不等。 |
+| **G161** | **讀完請求頭之後續不續聽 pingora 的判定，樞衡只管時長：pingora 判「不續」（HTTP/1.0 沒要求 keep-alive · `Connection: close` · `Transfer-Encoding` 與 `Content-Length` 同在）就不續，判「續」才設 `KEEPALIVE_SECS`；停機視窗內一律不續。** owner 2026-10-08 拍板（彈出視窗，語義與判據範圍兩項都選了推薦項）。**① 起因**：做 `G160` 的位元組對照時發現，`process_new_http` 讀完請求頭後無條件設「續 60 s」，蓋掉了 pingora 在 `read_request` 裡判出的「不續」（`respect_keepalive` 與 TE+CL 那一段）。實測兩處後果（`e4a5fe3` 與 `e911260` 一樣，與 `G160` 無關）：HTTP/1.0 沒要求 keep-alive 也回 `Connection: keep-alive`、回完不關（RFC 9112 §9.3 要求關）；TE 與 CL 同在的請求在把請求體讀完的站台（反代）上回完不關（§6.1 要求**必須**關，防請求走私）。`Connection: close` 沒受影響 —— pingora 的 `set_server_keepalive` 自己認它；`respond` 站台上 TE+CL 也看不出來 —— 它不讀請求體，被 pingora「請求體沒讀完就先回 ⇒ 關」那條另行關掉。**② 做法**：那段收尾挪成 `keepalive::settle_after_read`（經 `G160` 的 `Conn`），條件從「停機」改成「停機或 pingora 判不續」。⇒ 以後 pingora 再加的「不續」判定也自動生效。**③ 代價**：沒要求 keep-alive 的 HTTP/1.0 用戶端每條請求一條連接（這正是協定要的）。**④ 判據**：單測（真 pingora 解析、`duplex` 當連接）三類「不續」各一條 · 「續」的兩類拿到 `KEEPALIVE_SECS` · 停機一律不續；串接測試真跑一次 `process_new_http`，HTTP/1.1 交給下一條的是 `KEEPALIVE_SECS`（⛔ 不是不限時的 0）、HTTP/1.0 無頭不交 —— 端到端判不出「那一行被刪掉」（關與續照樣全對，丟的是時長）；`tests/serve` 第 12 節五類原始訊息走反代，判回應的 `Connection` 頭與回完後關沒關，兩個方向都有。先在舊語義上跑出紅：單測紅在 HTTP/1.0 與 TE+CL 兩條、端到端整節只紅這兩條；四個注入（舊語義 · 什麼都關 · 停機不判 · `process_new_http` 不調它）各紅在該紅的那幾條。 |
+| **G162** | **樞衡自己構的 h1 回應不建保留大小寫的表（底座 A2）：fork 往 pingora 的標題化表裡補七個名（`vendor/pingora/FORK.md` 改動 17：`Allow` `Alt-Svc` `Content-Range` `ETag` `Last-Modified` `Location` `Vary`）並公開它；`file_server` 一律 `build_no_case`，`respond` / 跳轉 / 錯誤頁在要插的名都照原樣寫得出時才不建表，否則照舊建。** owner 2026-10-14 拍板（彈出視窗：A2 選「補表＋自建回應不建表」、A1 選「按連接埠開關」，都是推薦項；動手前報了一處與「逐位元組不變」不符的副作用，owner 再彈出視窗選「接受，補 ETag/Vary」）。**① 起因**：`G157` 那一輪的底座單變數試驗裡，回應頭那張表（第二個 `HeaderMap`）每個回應兩次分配，裸 pingora 上界約 −6% 使用者指令；pingora 沒表時按標題化表寫名、表外寫小寫，而表裡原本只有 12 個名、沒有 `file_server` 發的 `ETag` 等 ⇒ 不補表就換不了。**② 做法**：`h1_name_as_is` 用公開出來的 `titled_header_name_str` 判一個名在沒表時會不會照原樣寫出；`self_built_header` 看使用者 `header` 指令展開出來的名（`-名` 只刪不礙事），一個不照原樣就整條照舊建表 ⇒ 使用者寫的 `X-Frame-Options`、`content-type` 照他寫的發。快取命中（存的是小寫名）、admin、h3 不動；反代轉發的上游回應不在本條。**③ 代價**：⚠ 補的表也決定用 `http::header` 常數插入的名怎麼寫（有沒有表都一樣）⇒ 壓縮層改寫的 `ETag`（弱化）與追加的 `Vary` 從 `etag:` / `vary:` 變成 `ETag:` / `Vary:`；開了 `encode` 的站台上 `Vary` 壓沒壓都追加 ⇒ 那類站台大部分回應的這個頭名都變了（與不壓時、旁檔案、nginx 一致；RFC 9110 §5.1 不分大小寫）。fork 多兩個檔案（相對 0.9.0 從 17 到 19 個）、那七行要隨 rebase 重放；表那一半是上游 TODO 本身，提 PR 另拍。**④ 判據**：位元組 —— 開發機診斷臺改前改後 28 種請求（19 種 `file_server` 含壓縮 / 旁檔案 / 條件 / 區間 / 目錄，加 `respond` / 跳轉 / 錯誤頁 / 指標與帶使用者頭名的三種）除 `Date` 外逐位元組相同，只有 9 條差在允許的 `etag` / `vary` → `ETag` / `Vary`；單測 —— fork 的七個名照寫、樞衡的 `h1_name_as_is` 兩個方向、`self_built_header` 何時建表、`file_server` 從本檔案原始碼摳出的每個頭名都照原樣（掃描器自帶「十個一個不少」的自證與兩個方向的自測）；端到端 —— `tests/files/run.sh` 逐行釘 200 / 206 / 416 / 301 / 405 的頭名、`tests/encode/run.sh` 釘壓縮回應的 `ETag` / `Vary` 大小寫、`tests/serve/run.sh` 釘使用者寫的 `X-Fulcrum`。四個注入（在臨時 worktree 裡）各只紅在該紅的那幾條：表裡刪掉 `ETag` 與 `Vary` · 恆不建表 · `file_server` 加一個表外大寫名 · 掃描器壞成什麼都掃不到。計數（⛔ 不是效能宣告）：每請求 malloc / free 各 −2（`respond` 與 `file_server`、1 條與 200 條連接四格），使用者指令 −5% 到 −6%。 |
+| **G163** | **讀 h1 請求頭時保留頭名原樣大小寫的那張表按連接埠建：連接埠上沒有任何反代站台就不建，有就照舊（底座 A1）。fork 加一個預設「建」的開關（`vendor/pingora/FORK.md` 改動 18），樞衡每條請求讀請求頭之前按連接埠設。** owner 2026-10-14 拍板（彈出視窗，選的是推薦項「按連接埠開關」；另一個選項「一律不建」會讓反代時 h1 用戶端的頭名到上游變成標題化表的寫法或小寫 —— 與 h2 / h3 用戶端今天的樣子相同，但那是一處對上游看得見的變化）。**① 起因**：`G157` 那一輪的底座單變數試驗裡，請求頭那張表（第二個 `HeaderMap`）每條請求兩次分配，裸 pingora 上界約 −4.5% 使用者指令；它只在把請求頭原樣轉發給 h1 上游時有用（反代克隆下游請求頭時連表一起帶走），`respond` / `file_server` / 跳轉從不讀頭名的大小寫。**② 做法**：讀請求頭之前還不知道 Host ⇒ 只能按連接埠。`Runtime::proxy_ports` 從路由用的同三張表（精確 · 通配 · 連接埠備援）推出「哪些連接埠上的站台在執行鏈或錯誤處理器裡（含嵌套的 `handle` / `route`）有 `reverse_proxy`」，走圖的 match 不寫 `_`、新增容器變體時編譯期逼著來改；`SharedRuntime` 在 `new` 與 `swap` 時把它寫進一張 65536 位的點陣圖，每條請求只是一次原子讀，⛔ 不為它再拿一次執行環境的讀鎖。開關放進 `keepalive::read_request` 的參數（經 `Conn` 設到工作階段上）：漏設一行線上看不出任何差別，只多兩次分配 ⇒ 讓編譯器逼著呼叫方表態。**③ 代價**：fork 多一個「加能力」（一格、一個 setter、一處 `if`，相對 0.9.0 從 19 到 20 個檔案），要隨 rebase 重放；點陣圖與執行環境的替換不是原子的 —— 正落在換代那一瞬、而新設定剛在這個連接埠上加了反代的那一條請求，轉發到上游時頭名會是標題化表的寫法或小寫（與 h2 用戶端相同），反過來那一條只是多建一張表。反代連接埠一個位元組不省。**④ 判據**：單測 —— 三張表與嵌套裡的反代都算、只有 `respond` 的連接埠不算；點陣圖兩端（連接埠 0、65535）與 `swap` 之後照新設定答；`keepalive` 真的在讀之前把開關設到真 pingora 工作階段上（關掉時沒有那張表、名與值照查）；fork 的開 / 關 / 預設三種與「關掉時恰好少 2 次分配」。端到端 —— `tests/serve` 第 13 節：反代連接埠上 h1 用戶端發的 `X-Mixed-Case` · `x-lower-case` · `X-ALL-UPPER` 原樣到上游（上游是一個把頭名回成正文的 python 小服務，連接埠 9110）。五個注入（臨時 worktree）各只紅在該紅處：呼叫處恆傳「不建」⇒ 第 13 節；走圖忽略 `handle` ⇒ 兩條 `proxy_ports` 單測 + 第 13 節；點陣圖取位掩碼寫錯 ⇒ 只紅連接埠 65535 那一格；fork 忽略開關 ⇒ fork 兩條 + `keepalive` 那條（改動 16 的分配判據照綠）；`keepalive` 不設開關 ⇒ 只紅 `keepalive` 那條，端到端照綠（正是「線上看不出」那一半要單測守的理由）。計數（開發機診斷臺，⛔ 不是效能宣告）：相對 `G162`，沒有反代的連接埠上 `respond` 與 `file_server`、1 / 200 條連接四格每請求 malloc 各 −2，使用者指令 −2% 到 −5%。 |
+| **G164** | ⛔ **已撤回（2026-10-15，見 ⑤）** —— 下面是做過、量過的那一版，留作記錄。**熱路徑取執行環境快照改走每執行緒快取：命中時不拿讀鎖、不寫全處理程序共用的那一個引用計數；`G8`「一請求一快照、`swap()` 回傳之後才開始的請求看到新設定」一字不變。** owner 2026-10-15 拍板（兩次彈出視窗 + 設計批准，都是推薦項）：用 std 做「世代計數 + 執行緒局部 `Arc`」· 只改四個熱路徑 · 接受閒置執行緒留著舊圖 · 「不寫共用計數」當方向 · A/B 在合格宿主上跑、兩種釘法 × 四類。**① 起因**：§7 M3 登記的「每請求 `SharedRuntime::current()` 的讀鎖」—— 讀鎖一進一出加 `Arc` 一增一減，四次原子讀改寫落在所有工人共寫的兩條快取行上；不分配、指令只有幾十條 ⇒ 開發機診斷臺的計數口徑量不出它。**② 做法**（`crates/fulcrum-runtime/src/snapshot.rs`）：`SharedRuntime` 多一個獨佔快取行的世代字，`swap()` 寫完 `inner` **之後**才 `Release` 加一；`snapshot()` 先 `Acquire` 讀世代，本執行緒那一格（執行個體身分 · 世代 · 快照）都對得上就克隆本執行緒那一格的外層 `Arc`（那塊對齊到 128 位元組、計數獨佔快取行 —— 不墊時開發機上兩個執行緒的外層計數實測相距 0x20、擠在同一行，發佈用的 musl 分配器還沒有每執行緒快取），對不上才拿一次讀鎖、換上新的一格（標的是拿鎖**之前**讀到的世代）；執行緒正在拆 TLS 時不快取。四處熱路徑改調它：`serve_one`（h1 / h2 / h3）· L4 TCP（快照挪到 accept 之後取、隨連接交進任務，順帶省掉每條連接一次 `Arc<SharedRuntime>` 克隆）· L4 UDP 新工作階段 · PROXY protocol 的信任判定。`current()` 與冷路徑（管理面 · DNS · 健康檢查 · 指標抓取 · `Debug`）不動。不加依賴；⛔ 不用 `arc-swap`（+1 個包，且 `load_full` 照樣共寫那一份計數）。**③ 代價**：閒著的執行緒留著它最後見到的那份舊圖，直到再取快照或執行緒結束；上界「HTTP 監聽 service 數（含 h3）× `threads_l7` + L4 service 數 × `threads_l4`」份，只是記憶體 —— 沒有任何東西靠舊圖何時釋放，新請求總是先刷新再用。工作竊取下快照在別的工人上丟掉時仍寫回原工人那一行 ⇒ 爭用是分散到每個工人，不是沒了；要硬性的「零共寫」只能動執行緒模型（碰 `G35` / `G140`），不在本條。**④ 判據**：`snapshot` 單測十二條 —— 命中不碰鎖（寫鎖握著時暖執行緒照樣拿到、冷執行緒拿不到，自帶反證）· 命中不動內層計數 · 換代後本執行緒與別的暖執行緒都拿到新圖 · 換代前的快照跨三次換代照舊指著舊圖 · 兩個執行個體不串 · 4 個讀執行緒對 50 次換代「回傳之後取到的不舊、各執行緒單調」· 舊圖在暖執行緒刷新或退出之後放掉 · 快取那一格已經拆掉之後（執行緒析構裡）取快照不 panic、走不快取的那條路（測試核了走的是哪條） · 讀鎖中毒後照樣取得到 · 快照在別的執行緒丟掉、原執行緒照舊命中 · 兩個執行緒同時換代後取到的就是鎖裡那一份（本執行緒先暖著舊圖，100 輪）· 外層那塊對齊到 128 位元組（8 個執行緒各握一份）。不快取的樸素版上恰好紅四條（守快取的那四條）；三個注入各紅在預計處（命中不看世代 ⇒ 四條；快取鍵不看執行個體 ⇒ 只紅「兩個執行個體」；`swap()` 先加世代後寫 `inner` ⇒ 5 趟 5 趟都只紅「並行換代」，報的正是「第 1 次換代已回傳，卻取到第 0 份」）。終審（另一個上下文的審稿人）指出「同時換代」與「析構裡取快照」兩條原先判不出它們點名的錯，加強之後各補一個注入：命中不看世代 ⇒ 「同時換代」也紅；快取那一格拆掉後不退回 ⇒ 測試處理程序 abort；對齊那條在不墊的舊程式碼上先紅。「拿鎖之後再讀一次世代來標」那種錯序：不加寬 5 趟 0 趟紅、中間加一次 `yield` 3 趟 1 趟紅（報「第 14 次換代已回傳，卻取到第 13 份」）⇒ 這一處與「先加世代後寫」一樣，靠順序論證，測試只能概率地抓。串接：`snapshot()` 一進來就 panic ⇒ `SERVE` / `L4` 的 TCP 各節 / `PP` 全紅；UDP 那處單獨在呼叫處 panic ⇒ L4 只紅 UDP 兩節。線上位元組：改前改後 32 種請求（含四條續連接）除 `Date` 外逐位元組相同。計數（開發機診斷臺，⛔ 不是效能宣告）：每請求 malloc 四格不變（`respond` 18 · `file_server` 21）；使用者指令 1 條連接 `respond` +12 條、`file_server` −40 條（即不變）；200 條連接 `respond` 三輪 +1.4%（三輪區間不重疊，沒達到計畫寫的「落在區間內或更低」，按裁決接受）、五輪補跑 +2.0%（區間重疊）、`file_server` −0.3% —— 在 200 條連接那檔已知的排程噪聲帶內、方向不一，開發機上分不出。**⑤ 合格宿主 A/B 與撤回**（診斷，⛔ 不是 M3 讀數、⛔ 不是效能宣告；owner 當場授權，同日兩個視窗，停服約 54 分鐘 + 16 分鐘，恢復後服務、連接埠、PM2、三個網域的外部狀態碼都與開窗前逐個相同）：兩種釘法（歷次的 `0-1` / `2-3`、跨物理核的 `0,2` / `1,3`）× `respond` · 靜態 · 高並行短連接 · 反代，改前（`35a9c5f`）改後（`e8adcd8`）各 3 輪 —— **哪一格都看不出收益**；跨核釘法四類與歷次釘法的前三類都在三輪區間內或只差一兩個百分點。唯獨歷次釘法的反代，改後三輪都低約 8%，而那一格每輪都是「改前先、改後後」⇒ 第二個短視窗只跑它、兩種順序各 3 輪：改前 → 改後與改後 → 改前**都**是改後低（合併 6 輪中位 7496 對 6970，−7.0%，區間一次都不重疊）⇒ 不是順序造成的。按 owner 彈出視窗選項裡事先說定的「確認是真的變差就撤回」⇒ 三筆（`bd27794` · `86887bd` · `e8adcd8`）一併撤回，產品程式碼回到 `35a9c5f` 那一份。⚠ 機制**沒查清**：本改動每請求只差幾次原子操作（納秒級），解釋不了每請求多出的約 8 µs 使用者態時間；只在「被測與源站擠在同一個物理核的兩個超執行緒上」時出現，跨核釘法沒有 —— 更像程式碼佈局 / 同核超執行緒爭 L1i 一類的副作用，⛔ 未證實。開發機上兩種順序重跑噪聲約 ±13%，判不出。⇒ 讀鎖這一項回到 §7 M3 的登記狀態；要再做，先在核數夠、能給硬體 PMU 的機器上把這 8 µs 歸因清楚。 |
+| **G165** | **寫 h1 回應頭時少兩次分配（`vendor/pingora/FORK.md` 改動 19，與改動 16 同一類「只為效能、語義不變」）：`Connection` 的值改用 `HeaderValue::from_static`（上游那條 `TODO: make these lazy static` 本身）· `prepare_response_header` 回傳 `BytesMut`，只在要 `Bytes` 的 proxy task 那條路 `freeze`。線上位元組一個不變。** owner 2026-10-16 拍板（對話原話「fork 改動 19 照 brief-fork-19.md 的推薦做成 G165：兩處都改，判據併進現有的計數測試二進位，投稿材料先備不發」，即 agent 推薦項）。**① 起因**：§7 M3 記著 `respond` 每請求 18 次 malloc 裡有三次在 pingora 寫回應頭那一步；開發機診斷臺的歸因把其中兩次落在 `prepare_response_header` —— `&str` 經 `HeaderValue::from_str` 每次拷一份；序列化緩衝按 4 KiB 開、長度 ≠ 容量 ⇒ `freeze` 另分配一塊共享頭，而直寫那條路只借用它、用完就丟。第三次是那塊緩衝本身，⛔ 不在本條（要麼跨請求重複使用、要麼直接寫進流的寫緩衝，後者與 `G155` 方案 B 是同一處）。**② 為什麼語義不變**：`from_static` 與 `from_str` 得到相等的值（都不是 sensitive）；不凍結的是同一份位元組；樞衡的 h1 不走 proxy task，那條路照舊 `freeze` 一次，漏了就編不過。**③ 代價**：fork 多兩處要隨 rebase 重放，都在改動 16 已計入的 `v1/server.rs`（相對 0.9.0 仍是 20 個檔案，實測）；類別不新開。兩處在上游也語義不變 ⇒ 做成投稿八（`upstream-pr/`，⏳ 材料已備、未發；發不發是對外動作，另拍）。**④ 判據**（都在 fork 的 `tests/fulcrum_read_request_alloc.rs`，vendor 迴歸網照跑）：讀完一條請求後 `write_response_header` 一共分配 1 次（上游原樣 3 次；`keep-alive` / `close` 兩種都數；`Date` 每秒換一次 ⇒ 熱身後取三次裡最少的）· 續與不續各寫一次，除 `Date` 的值外逐位元組對上（fork 那 8 個 crate 裡寫回應頭的測試幾乎都關了 `update_resp_headers`，沒有一條釘這兩行；上游只在沒進 fork 的 `pingora-proxy` 整合測試裡經 OpenResty 查 `Connection` 的值）。先在改前的程式碼上跑出紅（3 次）；四個注入（臨時 worktree，每次都有新鮮 `Compiling pingora-core`）各只紅在該紅處：① 換回 `&str` ⇒ 只紅分配那條（2 次）· ② 換回 `freeze` ⇒ 只紅分配那條（2 次）· 值寫成 `Keep-Alive` ⇒ 只紅位元組那條（迴歸網裡上游自己的測試一條都沒跟著紅）· proxy task 漏了 `freeze` ⇒ 編不過。端到端：開發機診斷臺改前（`9b43f01`）改後 32 種請求（含四條續連接）除 `Date` 外逐位元組相同（指標端點的正文是活計數，只比頭），比較器負對照（`G162` 之前的二進位）當場紅 9 條。計數（開發機診斷臺，⛔ 不是效能宣告、讀數不入庫）：每請求 malloc / free 各 −2（`respond` 18 → 16、`file_server` 21 → 19，1 / 200 條連接四格）；使用者指令 1 條連接 `respond` −1.9%、`file_server` −2.5%，200 條連接時在三輪區間內分不出。 |
+| **G166** | **帶 ARI `replaces` 下單被 CA 拒了（CA 回了 problem 文件），就去掉 `replaces` 再下一次；`tests/acme/renew.sh` 在續期之前換掉序列號帶 DER 符號位元組的第一代。ARI 標識照 RFC 9773 §4.1 帶符號位元組，⛔ 不剝。** owner 2026-10-16 拍板（彈出視窗三項：門禁選「B：重簽第一代」、產品選「做：被拒就去掉 replaces 重試」、單測選「搬進去」；追問兩者怎麼配時選「照原選擇：B＋D」）。**① 起因**：renew.sh 的偶發紅（pebble 原話 `could not find order resulting in the given certificate serial number`）是 pebble v2.10.1 的缺陷：存訂單的鍵是 `hex(big.Int.Bytes())`，查 `replaces` 的鍵是標識裡的原始位元組；序列號首位元組 ≥ 0x80 時，後者帶著規範要求的那個 `00` ⇒ 查不到，回 `serverInternal`（`GET renewalInfo` 按數值比較，不受影響 ⇒ ARI 視窗照常拿到）。pebble 序列號 < 2^63 ⇒ 約 1/255（實測 6000 張裡 25 張）。上游 issue #550，修在 main `1fcb30c`（2026-09-28），⏳ 未發版。樞衡與 `instant-acme` 都照規範。**② 產品**（`crates/fulcrum-acme/src/issue.rs` `new_order_with_fallback`）：只認 `Error::Api`，打 warn 後不帶 `replaces` 再下一次；連接類錯誤不退回，交給退避。不退回的話，這個網域一直到過期都續不上（失敗 → 退避 → 下一輪算出同一個 `replaces` → 再拒）。⚠ 比 acmez（Caddy）寬：它只認 `alreadyReplaced`，覆蓋不到本例。⛔ 不剝符號位元組：剝了就是對規範 CA 發錯標識。**③ 門禁**：renew.sh 第一代序列號帶符號位元組就重籤一張（由一個確定的位元組決定，發生在被測的續期之前，⛔ 不是重試）；pebble 不是 v2.10.1 就紅，升級的人確認新版本含 `1fcb30c` 後刪掉那段。授權計數判據改為與第一代最後簽完時相減；新增「pebble 說舊訂單已標成被替換」與「續期沒走退回」兩條（16 → 21 條，含版本與 `needs_sign_byte` 自證）。**④ 判據**：單測五條（RFC 原例 · 固定證書 `b36f9903f33bc7` 的標識以 `.ALNvmQPzO8c` 結尾、低位對照沒有 `00` · 退回三條：被拒就不帶再下一次、沒帶就不重下、連接錯誤不退回）。注入（臨時 worktree，每次都有新鮮 `Compiling fulcrum-acme`）各只紅在該紅處：去掉退回 · 剝掉符號位元組 · 任何錯誤都退回 ⇒ 各紅一條單測（952 / 1）；renew.sh 裡發一個 CA 必拒的 `replaces` ⇒ 只紅新加那兩條，其餘 19 條綠（⇒ 退回在真 pebble 上把續期救回來了）；硬讓第一代重籤一次 ⇒ 21 條全綠；版本斷言改成別的版本 ⇒ 當場紅。 |
 
-## 11. ⏳ 待定清单
+## 11. ⏳ 待定清單
 
-> 只列**仍然开着**的。已结案的那些，结论在 §10 的决策表里。
+> 只列**仍然開著**的。已結案的那些，結論在 §10 的決策表裡。
 
-⚠ ⚠ **2026-09-07 起这张表是空的** —— `D9` 与 `D20` 同日结案（`G149` / `G150`），
-而它们是最后两条。
-⛔ **空不等于「没有未决的事」**：M3 的性能目标、压测窗口、静态文件缓存那份设计的
-四处待拍板都还开着 —— 它们**不是 D 号**，登记在 §7 与 `handoff/` 里。
-★ 这张表空着本身是有判据守的：`tools/plan-refs.py` 判据 ① 要求
-`docs/governance/open-questions.md` 的 D 号集合与本表**逐字相等** ⇒ 一边空了另一边没空就当场红。
+⚠ ⚠ **2026-09-07 起這張表是空的** —— `D9` 與 `D20` 同日結案（`G149` / `G150`），
+而它們是最後兩條。
+⛔ **空不等於「沒有未決的事」**：M3 的效能目標、壓測視窗、靜態檔案快取那份設計的
+四處待拍板都還開著 —— 它們**不是 D 號**，登記在 §7 與 `handoff/` 裡。
+★ 這張表空著本身是有判據守的：`tools/plan-refs.py` 判據 ① 要求
+`docs/governance/open-questions.md` 的 D 號集合與本表**逐字相等** ⇒ 一邊空了另一邊沒空就當場紅。
 
 
-| | 待定项 | 最晚需要在 |
+| | 待定項 | 最晚需要在 |
 |---|---|---|
 
-## 12. 官方技术入口
+## 12. 官方技術入口
 
 - [Pingora（GitHub）](https://github.com/cloudflare/pingora)
 - [Caddy API](https://caddyserver.com/docs/api)

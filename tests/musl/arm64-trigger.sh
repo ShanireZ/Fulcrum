@@ -1,55 +1,55 @@
 #!/usr/bin/env bash
-# aarch64 那一格什么时候跑（**D24 = 候选 ②**，owner 2026-09-06 拍板）。
+# aarch64 那一格什麼時候跑（**D24 = 候選 ②**，owner 2026-09-06 拍板）。
 #
-#   . tests/musl/arm64-trigger.sh          # 被 source，拿三个函数
+#   . tests/musl/arm64-trigger.sh          # 被 source，拿三個函式
 #   bash tests/musl/arm64-trigger.sh --self-check
-#   bash tests/musl/arm64-trigger.sh --hash        # 打当前触发集的哈希
+#   bash tests/musl/arm64-trigger.sh --hash        # 打當前觸發集的雜湊
 #
-# ★ ★ ★ 判据只回答一个问题：**「当前这个依赖状态，有没有被 arm64 真的验证过。」**
-#   ⛔ 它不回答「这台机器能不能跑 arm64」（那是 binfmt，机器本地状态，由调用方探）。
+# ★ ★ ★ 判據只回答一個問題：**「當前這個依賴狀態，有沒有被 arm64 真的驗證過。」**
+#   ⛔ 它不回答「這臺機器能不能跑 arm64」（那是 binfmt，機器本機狀態，由呼叫方探）。
 #
-# ── 触发集为什么是这几个文件 ────────────────────────────────────────────────
+# ── 觸發集為什麼是這幾個檔案 ────────────────────────────────────────────────
 #
-# `docker/Dockerfile.musl-product` 第 23 行逐字写着「rustc 版本必须与
+# `docker/Dockerfile.musl-product` 第 23 行逐字寫著「rustc 版本必須與
 # `docker/Dockerfile.build`、`docker/Dockerfile.musl-probe` **三者一致**」
-# ⇒ `G144`（结案 D24）里那句「三张 Dockerfile」指的就是它们。
+# ⇒ `G144`（結案 D24）裡那句「三張 Dockerfile」指的就是它們。
 #
-# ★ 这里用**推导**取它们（`^FROM rust:`），⛔ 不写死清单：写死的清单在出现第四张
-#   钉 rustc 的 Dockerfile 时会静静漏掉它，而**漏掉的那一刻不红**
-#   —— `tests/ci/shellcheck-all.sh` 为同一条教训改过一次（bench/ 带着五个没扫过的脚本进来）。
+# ★ 這裡用**推導**取它們（`^FROM rust:`），⛔ 不寫死清單：寫死的清單在出現第四張
+#   釘 rustc 的 Dockerfile 時會靜靜漏掉它，而**漏掉的那一刻不紅**
+#   —— `tests/ci/shellcheck-all.sh` 為同一條教訓改過一次（bench/ 帶著五個沒掃過的指令碼進來）。
 #
-# ⚠ `Dockerfile.bench` / `Dockerfile.systemd` **有意不在集合里**：它们不参与 musl
-#   产物的构建，算进去会让一次 bench 镜像调整白白触发一趟 18 分钟的 arm64 冷建。
-#   ★ 这条「有意排除」由自测钉着，⇒ 它是一条判据不是一句注释。
+# ⚠ `Dockerfile.bench` / `Dockerfile.systemd` **有意不在集合裡**：它們不參與 musl
+#   產物的建置，算進去會讓一次 bench 鏡像調整白白觸發一趟 18 分鐘的 arm64 冷建。
+#   ★ 這條「有意排除」由自測釘著，⇒ 它是一條判據不是一句註解。
 #
-# ⚠ ⚠ ★ **源码改动有意不触发，而这是一条判断、不是一条读数。**
-#   `Dockerfile.musl-product` 确实是 `COPY . .`，但我们自己那几个 crate 是架构中立的、
-#   amd64 那一格每趟都编；aarch64 会坏在**依赖 / 工具链 / 基础镜像**上，那正是这个集合。
-#   ⛔ 它错的方向是「漏掉一次源码引起的 arm64 回归」。真出现那么一次时，
-#   要改的是**这个集合**，而不是给它加一条豁免。
+# ⚠ ⚠ ★ **原始碼改動有意不觸發，而這是一條判斷、不是一條讀數。**
+#   `Dockerfile.musl-product` 確實是 `COPY . .`，但我們自己那幾個 crate 是架構中立的、
+#   amd64 那一格每趟都編；aarch64 會壞在**依賴 / 工具鏈 / 基礎鏡像**上，那正是這個集合。
+#   ⛔ 它錯的方向是「漏掉一次原始碼引起的 arm64 迴歸」。真出現那麼一次時，
+#   要改的是**這個集合**，而不是給它加一條豁免。
 
 set -euo pipefail
 
-# ── 触发集：推导，⛔ 不是清单 ───────────────────────────────────────────────
+# ── 觸發集：推導，⛔ 不是清單 ───────────────────────────────────────────────
 fulcrum_arm64_trigger_files() {
   local root=${1:-.} p
   {
     if [ -f "$root/Cargo.lock" ]; then
       echo "Cargo.lock"
     fi
-    # ⚠ `grep -l` 在一个都没匹配上时退出码非 0，而本函数在 `set -e` 下被调用
-    #   ⇒ 显式吞掉它的退出码，把「一个都没有」交给自测去判（空集是一种**症状**，
-    #     ⛔ 不是一个可以静静通过的答案）。
+    # ⚠ `grep -l` 在一個都沒匹配上時結束代碼非 0，而本函式在 `set -e` 下被呼叫
+    #   ⇒ 顯式吞掉它的結束代碼，把「一個都沒有」交給自測去判（空集是一種**症狀**，
+    #     ⛔ 不是一個可以靜靜通過的答案）。
     for p in $(grep -l '^FROM rust:' "$root"/docker/Dockerfile.* 2>/dev/null || true); do
       printf '%s\n' "${p#"$root"/}"
     done
   } | LC_ALL=C sort
 }
 
-# ── 触发集的哈希 ───────────────────────────────────────────────────────────
+# ── 觸發集的雜湊 ───────────────────────────────────────────────────────────
 #
-# ★ 路径名与内容**一起**进哈希：只哈希内容的话，把一张 Dockerfile 改名
-#   （或删掉一张、加进另一张同内容的）不会让哈希变。
+# ★ 路徑名與內容**一起**進雜湊：只雜湊內容的話，把一張 Dockerfile 改名
+#   （或刪掉一張、加進另一張同內容的）不會讓雜湊變。
 fulcrum_arm64_trigger_hash() {
   local root=${1:-.} f
   fulcrum_arm64_trigger_files "$root" | while IFS= read -r f; do
@@ -58,14 +58,14 @@ fulcrum_arm64_trigger_hash() {
   done | sha256sum | cut -d' ' -f1
 }
 
-# ── 纯函数：当前哈希 + 验证记录正文 ⇒ 三选一 ─────────────────────────────────
+# ── 純函式：當前雜湊 + 驗證記錄正文 ⇒ 三選一 ─────────────────────────────────
 #
-#   verified —— 这个依赖状态被 arm64 真的验证过，本趟不必再跑
-#   stale    —— 验证过，但验证的是**另一个**依赖状态
-#   never    —— 从来没有过一份验证记录
+#   verified —— 這個依賴狀態被 arm64 真的驗證過，本趟不必再跑
+#   stale    —— 驗證過，但驗證的是**另一個**依賴狀態
+#   never    —— 從來沒有過一份驗證記錄
 #
-# ⚠ `never` 与 `stale` 有意分开：给人的话不一样（一个是「还没有过」，
-#   一个是「你刚改了依赖」），而**合成同一个「要跑」并不会让判据更简单**。
+# ⚠ `never` 與 `stale` 有意分開：給人的話不一樣（一個是「還沒有過」，
+#   一個是「你剛改了依賴」），而**合成同一個「要跑」並不會讓判據更簡單**。
 fulcrum_arm64_state() {
   local cur=$1 stamp=${2:-} recorded
   recorded=$(printf '%s\n' "$stamp" | sed -n 's/^hash=//p' | head -1)
@@ -78,32 +78,32 @@ fulcrum_arm64_state() {
   fi
 }
 
-# ── 这台机器跑得了 aarch64 吗（binfmt，**机器本地状态**）────────────────────
+# ── 這臺機器跑得了 aarch64 嗎（binfmt，**機器本機狀態**）────────────────────
 #
 #   fulcrum_arm64_platform_ok "<docker buildx inspect --bootstrap 的输出>"
 #
-# ★ 写成**纯函数**（读数由调用方喂进来），理由与 `bench/lib.sh` 那几条逐字相同：
-#   直接去问 docker 的判据，只能在**它恰好跑着的那台机器上**被观察到一种结果。
+# ★ 寫成**純函式**（讀數由呼叫方喂進來），理由與 `bench/lib.sh` 那幾條逐字相同：
+#   直接去問 docker 的判據，只能在**它恰好跑著的那臺機器上**被觀察到一種結果。
 #
-# ⚠ ⚠ **诚实交代一条**：容器那一层今天只观察到了**一个方向** —— 2026-09-06 在
-#   `ShanirePCX` 上装 binfmt **之前** `docker run --platform linux/arm64` 回
-#   `exec format error`、装**之后**回 `aarch64`，两个方向都实测过；但
-#   `buildx inspect` 的输出**只在装好之后看过**。⇒ 下面这个函数的**解析**两个方向
-#   都由合成输入钉着，而「装之前 buildx 到底怎么打」本机没有观察过。
+# ⚠ ⚠ **誠實交代一條**：容器那一層今天只觀察到了**一個方向** —— 2026-09-06 在
+#   `ShanirePCX` 上裝 binfmt **之前** `docker run --platform linux/arm64` 回
+#   `exec format error`、裝**之後**回 `aarch64`，兩個方向都實測過；但
+#   `buildx inspect` 的輸出**只在裝好之後看過**。⇒ 下面這個函式的**解析**兩個方向
+#   都由合成輸入釘著，而「裝之前 buildx 到底怎麼打」本機沒有觀察過。
 #
-# ★ ★ ★ **缺的那个方向 2026-09-08 在 `ShanireHomePC` 上量到了，结论比预想的坏：**
-#   binfmt **没有**注册时（`docker run --platform linux/arm64 alpine:3 uname -m`
-#   当场回 `exec /bin/uname: exec format error`），`docker buildx inspect` **照样列着**
+# ★ ★ ★ **缺的那個方向 2026-09-08 在 `ShanireHomePC` 上量到了，結論比預想的壞：**
+#   binfmt **沒有**註冊時（`docker run --platform linux/arm64 alpine:3 uname -m`
+#   當場回 `exec /bin/uname: exec format error`），`docker buildx inspect` **照樣列著**
 #     Platforms: linux/amd64, …, linux/arm64, linux/riscv64, linux/ppc64le, linux/s390x, linux/arm/v7, linux/arm/v6
-#   ⇒ 它列的是**buildx 愿意接受的目标**，⛔ 不是「这台机器现在跑得动的」。
-#   ⇒ **假阳不是边角情况，它是 Docker Desktop 上的常态** ——
-#     这个探针在本机实际上**拦不住任何东西**。
-# ⚠ 同一天还量到：binfmt 的注册**不跨 Docker Desktop / WSL2 VM 重启存活** ——
-#   09-08 10:28 那趟 aarch64 编得好好的，同一台机器同一天下午就 `exec format error` 了。
-# ★ 误判方向仍然是软的（假阳 ⇒ 那趟构建自己报错，本次实测正是如此：
-#   `[build 5/7]` 第一条真正要执行的指令上 `exec /bin/sh: exec format error`），
-#   ⛔ 但别再把这个探针读成一道门。真要判「这台机器现在跑不跑得了 arm64」，
-#   判据得是**真执行一次**（`docker run --platform linux/arm64 … true`），不是问 buildx。
+#   ⇒ 它列的是**buildx 願意接受的目標**，⛔ 不是「這臺機器現在跑得動的」。
+#   ⇒ **假陽不是邊角情況，它是 Docker Desktop 上的常態** ——
+#     這個探針在本機實際上**攔不住任何東西**。
+# ⚠ 同一天還量到：binfmt 的註冊**不跨 Docker Desktop / WSL2 VM 重新啟動存活** ——
+#   09-08 10:28 那趟 aarch64 編得好好的，同一臺機器同一天下午就 `exec format error` 了。
+# ★ 誤判方向仍然是軟的（假陽 ⇒ 那趟建置自己回報錯誤，本次實測正是如此：
+#   `[build 5/7]` 第一條真正要執行的指令上 `exec /bin/sh: exec format error`），
+#   ⛔ 但別再把這個探針讀成一道門。真要判「這臺機器現在跑不跑得了 arm64」，
+#   判據得是**真執行一次**（`docker run --platform linux/arm64 … true`），不是問 buildx。
 fulcrum_arm64_platform_ok() {
   case "$1" in
     *linux/arm64*) return 0 ;;
@@ -111,16 +111,16 @@ fulcrum_arm64_platform_ok() {
   esac
 }
 
-# ── 编排要的那个决定（纯函数）───────────────────────────────────────────────
+# ── 編排要的那個決定（純函式）───────────────────────────────────────────────
 #
 #   fulcrum_arm64_decide <state> <platform_ok: yes|no>
 #
-# 打三选一：`amd64-only` / `both` / `cannot-verify`。
+# 打三選一：`amd64-only` / `both` / `cannot-verify`。
 #
-# ★ ★ ★ **抽成纯函数是为了让那条红路径可以被执行到。** 把它写在 `docker-run.sh` 的
-#   `if/elif/else` 里，`cannot-verify` 那一支在一台装了 binfmt 的机器上**一次都不会跑**
-#   —— 而一条从未被执行过的路径不会自己报错：它坏掉（比如少写一个 `exit 1`）的那天，
-#   正是它本该拦住东西的那天。⇒ 这里两个方向都由合成输入钉着。
+# ★ ★ ★ **抽成純函式是為了讓那條紅路徑可以被執行到。** 把它寫在 `docker-run.sh` 的
+#   `if/elif/else` 裡，`cannot-verify` 那一支在一臺裝了 binfmt 的機器上**一次都不會跑**
+#   —— 而一條從未被執行過的路徑不會自己回報錯誤：它壞掉（比如少寫一個 `exit 1`）的那天，
+#   正是它本該攔住東西的那天。⇒ 這裡兩個方向都由合成輸入釘著。
 fulcrum_arm64_decide() {
   local state=$1 platform_ok=$2
   case "$state" in
@@ -128,13 +128,13 @@ fulcrum_arm64_decide() {
     stale | never)
       if [ "$platform_ok" = yes ]; then echo "both"; else echo "cannot-verify"; fi
       ;;
-    # ⚠ 认不出来的状态**不许**落进任何一条「照常跑」的分支：
-    #   一个 `*)` 兜底到 amd64-only 的实现，会在 `--state` 哪天多一种取值时静默漏跑。
+    # ⚠ 認不出來的狀態**不許**落進任何一條「照常跑」的分支：
+    #   一個 `*)` 備援到 amd64-only 的實作，會在 `--state` 哪天多一種取值時靜默漏跑。
     *) echo "cannot-verify" ;;
   esac
 }
 
-# ── 自测：真实仓库 + 合成输入 ───────────────────────────────────────────────
+# ── 自測：真實儲存庫 + 合成輸入 ───────────────────────────────────────────────
 fulcrum_arm64_selfcheck() {
   local rc=0 n=0 out root
   want_eq() { n=$((n + 1)); [ "$3" = "$2" ] || { echo "✗ $1（该是 '$2'，实得 '$3'）" >&2; rc=1; }; }
@@ -142,36 +142,36 @@ fulcrum_arm64_selfcheck() {
   want_has() { n=$((n + 1)); case "$3" in *"$2"*) ;; *) echo "✗ $1（'$2' 不在里面：$3）" >&2; rc=1 ;; esac; }
   want_hasnt() { n=$((n + 1)); case "$3" in *"$2"*) echo "✗ $1（'$2' 竟然在里面）" >&2; rc=1 ;; esac; }
 
-  # ★ 仓库根可被 `FULCRUM_REPO_ROOT` 覆盖。⚠ 这**不是**调试旋钮，是判据能不能被反证的
-  #   前提：反证要把本文件**复制到别处**再注入（⛔ 不改工作树上的原件 —— 这棵树上常年
-  #   有别的会话在动），而副本按 `BASH_SOURCE` 推出来的「仓库根」会指向那个临时目录，
-  #   于是**基线本身就是红的**，后面每条注入都零判别力。
+  # ★ 儲存庫根可被 `FULCRUM_REPO_ROOT` 覆蓋。⚠ 這**不是**偵錯旋鈕，是判據能不能被反證的
+  #   前提：反證要把本檔案**複製到別處**再注入（⛔ 不改工作樹上的原件 —— 這棵樹上常年
+  #   有別的工作階段在動），而副本按 `BASH_SOURCE` 推出來的「儲存庫根」會指向那個暫存目錄，
+  #   於是**基線本身就是紅的**，後面每條注入都零判別力。
   local REPO
   REPO=${FULCRUM_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 
-  # —— 真实仓库上：★★★ 先证明样本里真有东西 ——
-  #   ⚠ 一个静静返回空集的枚举器，会让哈希恒为「空输入的 sha256」⇒ 状态永远 verified，
-  #     而那与「一切正常」长得一模一样。
+  # —— 真實儲存庫上：★★★ 先證明樣本里真有東西 ——
+  #   ⚠ 一個靜靜回傳空集的枚舉器，會讓雜湊恆為「空輸入的 sha256」⇒ 狀態永遠 verified，
+  #     而那與「一切正常」長得一模一樣。
   out=$(fulcrum_arm64_trigger_files "$REPO" | tr '\n' ' ')
   want_has "触发集里没有 Cargo.lock" "Cargo.lock" "$out"
   want_has "触发集里没有 musl-product" "docker/Dockerfile.musl-product" "$out"
   want_has "触发集里没有 musl-probe" "docker/Dockerfile.musl-probe" "$out"
   want_has "触发集里没有 Dockerfile.build" "docker/Dockerfile.build" "$out"
-  # ★ 「有意排除」那两张：这条让排除成为**判据**而不是一句注释。
+  # ★ 「有意排除」那兩張：這條讓排除成為**判據**而不是一句註解。
   want_hasnt "Dockerfile.bench 不该在触发集里" "Dockerfile.bench" "$out"
   want_hasnt "Dockerfile.systemd 不该在触发集里" "Dockerfile.systemd" "$out"
 
-  # —— 纯函数三个分支 ——
+  # —— 純函式三個分支 ——
   want_eq "哈希相同该判 verified" "verified" "$(fulcrum_arm64_state abc "hash=abc")"
   want_eq "哈希不同该判 stale" "stale" "$(fulcrum_arm64_state abc "hash=zzz")"
   want_eq "没有记录该判 never" "never" "$(fulcrum_arm64_state abc "")"
   want_eq "只有注释的记录该判 never" "never" "$(fulcrum_arm64_state abc "# 什么都没有")"
-  # ⚠ 记录里混着别的行时也要取得到 hash=（⛔ 别假设它在第一行）。
+  # ⚠ 記錄裡混著別的行時也要取得到 hash=（⛔ 別假設它在第一行）。
   want_eq "hash= 不在首行时没取到" "verified" \
     "$(fulcrum_arm64_state abc "$(printf '# 注释\nverified_on=x\nhash=abc\n')")"
 
-  # —— ★★★ 承重：哈希必须对**内容**和**成员集合**都敏感 ——
-  #   ⛔ 用合成目录，不动真树。
+  # —— ★★★ 承重：雜湊必須對**內容**和**成員集合**都敏感 ——
+  #   ⛔ 用合成目錄，不動真樹。
   root=$(mktemp -d)
   mkdir -p "$root/docker"
   printf 'lock v1\n' > "$root/Cargo.lock"
@@ -186,16 +186,16 @@ fulcrum_arm64_selfcheck() {
   printf 'FROM rust:1.0\nRUN b2\n' > "$root/docker/Dockerfile.musl-product"
   h2=$(fulcrum_arm64_trigger_hash "$root")
   want_ne "改了 Dockerfile 哈希却没变" "$h1" "$h2"
-  # ★ 改一张**不在集合里**的 Dockerfile ⇒ 哈希必须**不变**（否则排除是假的）。
+  # ★ 改一張**不在集合裡**的 Dockerfile ⇒ 雜湊必須**不變**（否則排除是假的）。
   printf 'FROM alpine\nRUN noise\n' > "$root/docker/Dockerfile.bench"
   h3=$(fulcrum_arm64_trigger_hash "$root")
   want_eq "改了 Dockerfile.bench 哈希竟然变了 —— 排除没生效" "$h2" "$h3"
-  # ★ 成员集合变了（删掉一张）也必须变哈希。
+  # ★ 成員集合變了（刪掉一張）也必須變雜湊。
   rm -f "$root/docker/Dockerfile.musl-product"
   want_ne "删掉一张 Dockerfile 哈希却没变" "$h3" "$(fulcrum_arm64_trigger_hash "$root")"
   rm -rf "$root"
 
-  # —— binfmt 探针的**解析**，两个方向都钉（容器那一层见函数头的交代）——
+  # —— binfmt 探針的**解析**，兩個方向都釘（容器那一層見函式頭的交代）——
   n=$((n + 1))
   fulcrum_arm64_platform_ok "Platforms: linux/amd64, linux/amd64/v2, linux/arm64" ||
     { echo "✗ 列了 linux/arm64 却判成跑不了" >&2; rc=1; }
@@ -204,25 +204,25 @@ fulcrum_arm64_selfcheck() {
     echo "✗ 没列 linux/arm64 却判成跑得了 —— 这个探针恒真，等于没有" >&2
     rc=1
   fi
-  # ⚠ 空输入（`docker buildx` 压根没跑起来）必须判**跑不了**，
-  #   ⛔ 不许当成「跑得了」——「没能检查」不算「检查通过」。
+  # ⚠ 空輸入（`docker buildx` 壓根沒跑起來）必須判**跑不了**，
+  #   ⛔ 不許當成「跑得了」——「沒能檢查」不算「檢查通過」。
   n=$((n + 1))
   if fulcrum_arm64_platform_ok ""; then
     echo "✗ 空输入被当成了跑得了" >&2
     rc=1
   fi
 
-  # —— 编排的那个决定：**三条分支各钉一次**（含那条平时跑不到的红路径）——
+  # —— 編排的那個決定：**三條分支各釘一次**（含那條平時跑不到的紅路徑）——
   want_eq "已验证时不该跑 aarch64" "amd64-only" "$(fulcrum_arm64_decide verified yes)"
-  # ★ 已验证 ⇒ 跑不跑得了 aarch64 **不该影响**这个决定（否则没装 binfmt 的机器会被误拦）。
+  # ★ 已驗證 ⇒ 跑不跑得了 aarch64 **不該影響**這個決定（否則沒裝 binfmt 的機器會被誤攔）。
   want_eq "已验证时不该因为跑不了 aarch64 就变卦" "amd64-only" "$(fulcrum_arm64_decide verified no)"
   want_eq "依赖变了且跑得了 ⇒ 该两个架构一起跑" "both" "$(fulcrum_arm64_decide stale yes)"
   want_eq "从没验证过且跑得了 ⇒ 该两个架构一起跑" "both" "$(fulcrum_arm64_decide never yes)"
-  # ★ ★ ★ **这两条就是那条平时执行不到的红路径**：依赖变了、而这台机器跑不了 ⇒
-  #   必须判「验不了」，⛔ 不许退化成 amd64-only 悄悄放行。
+  # ★ ★ ★ **這兩條就是那條平時執行不到的紅路徑**：依賴變了、而這臺機器跑不了 ⇒
+  #   必須判「驗不了」，⛔ 不許退化成 amd64-only 悄悄放行。
   want_eq "依赖变了但跑不了 ⇒ 必须判验不了" "cannot-verify" "$(fulcrum_arm64_decide stale no)"
   want_eq "从没验证过且跑不了 ⇒ 必须判验不了" "cannot-verify" "$(fulcrum_arm64_decide never no)"
-  # ⚠ 认不出来的状态也必须落到验不了，⛔ 不许兜底成「照常跑」。
+  # ⚠ 認不出來的狀態也必須落到驗不了，⛔ 不許備援成「照常跑」。
   want_eq "认不出的状态被兜底成了照常跑" "cannot-verify" "$(fulcrum_arm64_decide 天知道 yes)"
 
   if [ "$rc" = 0 ]; then
@@ -239,21 +239,21 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     --hash) fulcrum_arm64_trigger_hash "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" ;;
     --files) fulcrum_arm64_trigger_files "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" ;;
     # `--state <验证记录文件>` ⇒ 打 verified / stale / never。
-    # ★ 给 `docker-run.sh` 用的是**子进程**这条路，⛔ 不是 source ——
-    #   本文件的自测会定义 `want_*` 这几个名字，source 进去会与调用方的同名函数打架，
-    #   而那种打架**不报错**，只是让某一边的断言换了一个实现。
+    # ★ 給 `docker-run.sh` 用的是**子處理程序**這條路，⛔ 不是 source ——
+    #   本檔案的自測會定義 `want_*` 這幾個名字，source 進去會與呼叫方的同名函式打架，
+    #   而那種打架**不回報錯誤**，只是讓某一邊的斷言換了一個實作。
     --state)
       _root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
       _stamp=""
       if [ -n "${2:-}" ] && [ -f "$2" ]; then _stamp=$(cat "$2"); fi
       fulcrum_arm64_state "$(fulcrum_arm64_trigger_hash "$_root")" "$_stamp"
       ;;
-    # `--platform-ok` ⇒ 退出码回答「这台机器跑得了 aarch64 吗」。
+    # `--platform-ok` ⇒ 結束代碼回答「這臺機器跑得了 aarch64 嗎」。
     --platform-ok)
       fulcrum_arm64_platform_ok "$(docker buildx inspect --bootstrap 2>/dev/null || true)"
       ;;
     # `--decide <验证记录文件>` ⇒ 打 amd64-only / both / cannot-verify。
-    # ★ 编排（`tests/m0/docker-run.sh`）只认这三个词，⇒ 那边不再有自己的判断逻辑。
+    # ★ 編排（`tests/m0/docker-run.sh`）只認這三個詞，⇒ 那邊不再有自己的判斷邏輯。
     --decide)
       _root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
       _stamp=""
@@ -266,36 +266,36 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       fi
       fulcrum_arm64_decide "$_state" "$_ok"
       ;;
-    # `--record <文件>` ⇒ 写一份验证记录。
-    # ⛔ **只许在一次真的成功的 aarch64 验证之后调用**（调用点在 `tests/m0/docker-run.sh`）。
-    # ★ 格式只存在这一处 ⇒ 那个文件是**生成出来的**，⛔ 不是手写的；
-    #   一份生成器复现不出来的记录，与一份编造的记录无法区分。
+    # `--record <文件>` ⇒ 寫一份驗證記錄。
+    # ⛔ **只許在一次真的成功的 aarch64 驗證之後呼叫**（呼叫點在 `tests/m0/docker-run.sh`）。
+    # ★ 格式只存在這一處 ⇒ 那個檔案是**生成出來的**，⛔ 不是手寫的；
+    #   一份生成器重現不出來的記錄，與一份編造的記錄無法區分。
     --record)
       _out=${2:?用法：--record <文件>}
       _root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
-      # ── 这份记录是哪一次提交上验的 ────────────────────────────────────────
+      # ── 這份記錄是哪一次提交上驗的 ────────────────────────────────────────
       #
-      # ⚠ ⚠ ★ 原先这里是一句 `git … 2>/dev/null || echo unknown`，于是 git 拒答时
-      #   记录里落一个 `verified_commit=unknown`，而**屏幕上一个字都不会有**。
-      #   ⇒ 2026-09-08 `61b867a` 那份记录正是这么来的：一份**验证记录**说不出
-      #   自己验的是哪一次提交，而当时没有任何东西说过为什么。
-      # ★ 现在真因由 git 的原话说，并且**连同原话一起写进记录** —— 一份记录
-      #   自己说得出「这一格为什么是空的」，比事后猜强。
-      # ⚠ `2>&1 >/dev/null` 只捕 stderr（⛔ 顺序不能反）；`|| _rc=$?` 接住，
-      #   ⛔ 否则 `set -e` 会在这里把整个 --record 掐掉，连成功的那趟也写不成记录。
+      # ⚠ ⚠ ★ 原先這裡是一句 `git … 2>/dev/null || echo unknown`，於是 git 拒答時
+      #   記錄裡落一個 `verified_commit=unknown`，而**螢幕上一個字都不會有**。
+      #   ⇒ 2026-09-08 `61b867a` 那份記錄正是這麼來的：一份**驗證記錄**說不出
+      #   自己驗的是哪一次提交，而當時沒有任何東西說過為什麼。
+      # ★ 現在真因由 git 的原話說，並且**連同原話一起寫進記錄** —— 一份記錄
+      #   自己說得出「這一格為什麼是空的」，比事後猜強。
+      # ⚠ `2>&1 >/dev/null` 只捕 stderr（⛔ 順序不能反）；`|| _rc=$?` 接住，
+      #   ⛔ 否則 `set -e` 會在這裡把整個 --record 掐掉，連成功的那趟也寫不成記錄。
       #
-      # ★ ★ ★ **`61b867a` 那个 `unknown` 的真因（2026-09-08 查实并复现）：**
+      # ★ ★ ★ **`61b867a` 那個 `unknown` 的真因（2026-09-08 查實並重現）：**
       #   `tests/m0/docker-run.sh:615` 有一句 `export MSYS_NO_PATHCONV=1`（docker 那些
-      #   调用要它），而本脚本由该文件在**第 1217 行**调起 ⇒ **继承了这个 export**。
-      #   于是 MSYS 不再翻译 argv 里的路径，原生 `git.exe` 拿到字面量 `/d/Workspace/Fulcrum`：
+      #   呼叫要它），而本指令碼由該檔案在**第 1217 行**調起 ⇒ **繼承了這個 export**。
+      #   於是 MSYS 不再翻譯 argv 裡的路徑，原生 `git.exe` 拿到字面值 `/d/Workspace/Fulcrum`：
       #     fatal: cannot change to '/d/Workspace/Fulcrum': No such file or directory   (rc=128)
-      #   ⚠ 而 `docker-run.sh:495` 那道行尾检查**排在 615 之前**，git 在那里是好的
-      #   ⇒ 同一趟门禁里「git 一会儿行一会儿不行」，看起来毫无道理。
-      # ⛔ **所以这里不用 `git -C <路径>`** —— 那正是把 MSYS 路径喂给原生 exe 的写法。
-      #   改成在子 shell 里 `cd` 过去再问：`cd` 是 bash 内建，⛔ 不经过 argv 转换，
-      #   于是这一句在 `MSYS_NO_PATHCONV` 设与不设时**行为相同**。
-      #   （同源写法：`tests/lib/vol-lock.sh:168` 的 `git hash-object --stdin` —— 没有路径参数。）
+      #   ⚠ 而 `docker-run.sh:495` 那道行尾檢查**排在 615 之前**，git 在那裡是好的
+      #   ⇒ 同一趟門禁裡「git 一會兒行一會兒不行」，看起來毫無道理。
+      # ⛔ **所以這裡不用 `git -C <路径>`** —— 那正是把 MSYS 路徑餵給原生 exe 的寫法。
+      #   改成在子 shell 裡 `cd` 過去再問：`cd` 是 bash 內建，⛔ 不經過 argv 轉換，
+      #   於是這一句在 `MSYS_NO_PATHCONV` 設與不設時**行為相同**。
+      #   （同源寫法：`tests/lib/vol-lock.sh:168` 的 `git hash-object --stdin` —— 沒有路徑參數。）
       _git_head() { ( cd "$_root" 2>/dev/null && git rev-parse --short HEAD ); }
       _commit_rc=0
       _commit=$(_git_head 2>/dev/null) || _commit_rc=$?
@@ -331,10 +331,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         echo "verified_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
         echo "verified_on=$(hostname)"
         echo "verified_commit=$_commit"
-        # ⚠ 只有问不出来的时候才有这一段：把 git 的原话原样留在记录里。
-        #   ⛔ 别把它写成 `verified_commit=` 的值 —— 解析 `hash=` 的是 sed，
-        #   而这几行以 `#` 开头，对解析器天然透明（`--self-check` 里那条
-        #   「hash= 不在首行时也取得到」正是钉这件事的）。
+        # ⚠ 只有問不出來的時候才有這一段：把 git 的原話原樣留在記錄裡。
+        #   ⛔ 別把它寫成 `verified_commit=` 的值 —— 解析 `hash=` 的是 sed，
+        #   而這幾行以 `#` 開頭，對解析器天然透明（`--self-check` 裡那條
+        #   「hash= 不在首行時也取得到」正是釘這件事的）。
         if [ -n "$_commit_err" ]; then
           echo "#"
           echo "# ⚠ verified_commit 问不出来（git 退 $_commit_rc），它自己的原话："

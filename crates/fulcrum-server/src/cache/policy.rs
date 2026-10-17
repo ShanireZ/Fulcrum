@@ -1,109 +1,109 @@
-//! RFC 9111 的**可缓存性**与**新鲜度**判定。全是纯函数。
+//! RFC 9111 的**可快取性**與**新鮮度**判定。全是純函式。
 //!
-//! ★ ★ ★ 这个模块是整批里最该有判据的地方。G82 拍板时就把代价写在了明处：
-//! > **缓存的每一条错都表现为「偶尔给错内容」** —— 不像转发的错那样当场可见。
+//! ★ ★ ★ 這個模組是整批裡最該有判據的地方。G82 拍板時就把代價寫在了明處：
+//! > **快取的每一條錯都表現為「偶爾給錯內容」** —— 不像轉發的錯那樣當場可見。
 //!
-//! ⇒ 下面每一条规则都带一条**说清「写错了会怎样」**的判据，
-//! 而不只是「这样写是对的」。
+//! ⇒ 下面每一條規則都帶一條**說清「寫錯了會怎樣」**的判據，
+//! 而不只是「這樣寫是對的」。
 //!
-//! ## 我们是**共享**缓存，这一条改变好几处判断
+//! ## 我們是**共享**快取，這一條改變好幾處判斷
 //!
-//! - `private` ⇒ **不许存**（浏览器可以，我们不行）。
-//! - `s-maxage` **压过** `max-age`。
-//! - `proxy-revalidate` 与 `must-revalidate` 对我们**等价**。
-//! - 带 `Authorization` 的请求，其响应**默认不可缓存**（RFC 9111 §3.5）——
-//!   ⚠ 这一条最容易漏，而漏了就是**把一个人的私有页面发给下一个人**。
+//! - `private` ⇒ **不許存**（瀏覽器可以，我們不行）。
+//! - `s-maxage` **壓過** `max-age`。
+//! - `proxy-revalidate` 與 `must-revalidate` 對我們**等價**。
+//! - 帶 `Authorization` 的請求，其回應**預設不可快取**（RFC 9111 §3.5）——
+//!   ⚠ 這一條最容易漏，而漏了就是**把一個人的私有頁面發給下一個人**。
 
 use super::cc::{RequestCc, ResponseCc};
 
-/// 一次响应能不能进缓存。
+/// 一次回應能不能進快取。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Storable {
-    /// 能存，新鲜期是 `fresh_for_secs`（从 `Date` 起算）。
+    /// 能存，新鮮期是 `fresh_for_secs`（從 `Date` 起算）。
     Yes { fresh_for_secs: u64 },
-    /// 不能存，附带原因（进日志，也进判据）。
+    /// 不能存，附帶原因（進紀錄，也進判據）。
     No(&'static str),
 }
 
-/// 判定的输入。★ 打包成一个结构是为了让**每一条输入都在签名里看得见** ——
-/// 一个漏掉 `has_authorization` 的调用点，会安静地开始缓存私有页面。
+/// 判定的輸入。★ 打包成一個結構是為了讓**每一條輸入都在簽名裡看得見** ——
+/// 一個漏掉 `has_authorization` 的呼叫點，會安靜地開始快取私有頁面。
 #[derive(Debug, Clone)]
 pub struct StoreInput<'a> {
     pub method: &'a str,
     pub status: u16,
-    /// 请求带没带 `Authorization`（RFC 9111 §3.5）。
+    /// 請求帶沒帶 `Authorization`（RFC 9111 §3.5）。
     pub has_authorization: bool,
-    /// 响应的 `Cache-Control`。
+    /// 回應的 `Cache-Control`。
     pub resp_cc: &'a ResponseCc,
-    /// 请求的 `Cache-Control`。
+    /// 請求的 `Cache-Control`。
     pub req_cc: &'a RequestCc,
-    /// `Expires` 头解析出来的 unix 秒（如果有）。
+    /// `Expires` 頭解析出來的 unix 秒（如果有）。
     pub expires: Option<i64>,
-    /// `Date` 头解析出来的 unix 秒；没有就用收到响应的时刻。
+    /// `Date` 頭解析出來的 unix 秒；沒有就用收到回應的時刻。
     pub date: i64,
-    /// 响应体字节数；`None` = 还不知道（分块）。
+    /// 回應體位元組數；`None` = 還不知道（分塊）。
     pub body_len: Option<u64>,
-    /// 单条目上限。
+    /// 單條目上限。
     pub max_size: u64,
-    /// 配置里的兜底 TTL（G96）。`None` = 上游没说就不缓存。
+    /// 設定裡的備援 TTL（G96）。`None` = 上游沒說就不快取。
     pub default_ttl_secs: Option<u64>,
-    /// 响应里有没有 `Vary: *`。
+    /// 回應裡有沒有 `Vary: *`。
     pub vary_star: bool,
-    /// 响应里有没有 `Set-Cookie`。
+    /// 回應裡有沒有 `Set-Cookie`。
     pub has_set_cookie: bool,
 }
 
-/// RFC 9111 §4.2.2 那张「默认可缓存」的状态码表（启发式那一档）。
+/// RFC 9111 §4.2.2 那張「預設可快取」的狀態碼錶（啟發式那一檔）。
 ///
-/// ⚠ 这张表**只在上游给了新鲜度、或配了兜底 TTL 时**才有意义 ——
-/// 我们**不做启发式新鲜度**（不拿 `Last-Modified` 去猜 10% 寿命），
-/// 那一条留给以后，理由写在 `Storable::No` 的原因串里。
+/// ⚠ 這張表**只在上游給了新鮮度、或配了備援 TTL 時**才有意義 ——
+/// 我們**不做啟發式新鮮度**（不拿 `Last-Modified` 去猜 10% 壽命），
+/// 那一條留給以後，理由寫在 `Storable::No` 的原因串裡。
 const CACHEABLE_STATUS: &[u16] = &[
     200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 451, 501,
 ];
 
-/// 能不能把这次响应存下来。
+/// 能不能把這次回應存下來。
 pub fn is_storable(i: &StoreInput<'_>) -> Storable {
-    // ── 请求侧的一票否决 ──────────────────────────────────────────────
+    // ── 請求側的一票否決 ──────────────────────────────────────────────
     if i.req_cc.no_store {
         return Storable::No("请求带 no-store");
     }
-    // ⚠ 只缓存 GET / HEAD。⚠ HEAD 的响应**没有体**，存下来只能用于回答 HEAD ——
-    //   这一批不做（存了会让「HEAD 之后的 GET 命中一个空体」）。
+    // ⚠ 只快取 GET / HEAD。⚠ HEAD 的回應**沒有體**，存下來只能用於回答 HEAD ——
+    //   這一批不做（存了會讓「HEAD 之後的 GET 命中一個空體」）。
     if i.method != "GET" {
         return Storable::No("只缓存 GET");
     }
 
-    // ── 响应侧的一票否决 ──────────────────────────────────────────────
+    // ── 回應側的一票否決 ──────────────────────────────────────────────
     if i.resp_cc.no_store {
         return Storable::No("响应带 no-store");
     }
-    // ★ ★ 我们是**共享**缓存 —— `private` 对我们是禁令。
+    // ★ ★ 我們是**共享**快取 —— `private` 對我們是禁令。
     if i.resp_cc.private {
         return Storable::No("响应带 private，而我们是共享缓存");
     }
-    // ★ ★ ★ RFC 9111 §3.5：带 `Authorization` 的请求，其响应对共享缓存
-    //   **默认不可存**，除非响应明确说了 `public` / `s-maxage` / `must-revalidate`。
-    //   ⚠ 漏掉这一条就是把一个人的私有页面发给下一个人 —— 而它**不会报错**，
-    //   只会在两个用户之间偶尔串一次内容。
+    // ★ ★ ★ RFC 9111 §3.5：帶 `Authorization` 的請求，其回應對共享快取
+    //   **預設不可存**，除非回應明確說了 `public` / `s-maxage` / `must-revalidate`。
+    //   ⚠ 漏掉這一條就是把一個人的私有頁面發給下一個人 —— 而它**不會回報錯誤**，
+    //   只會在兩個使用者之間偶爾串一次內容。
     if i.has_authorization
         && !(i.resp_cc.public || i.resp_cc.s_maxage.is_some() || i.resp_cc.must_revalidate)
     {
         return Storable::No("请求带 Authorization，而响应没有明确允许共享缓存");
     }
-    // ⚠ `Vary: *` = 「这个响应取决于我说不出来的东西」⇒ 永远不可能安全复用。
+    // ⚠ `Vary: *` = 「這個回應取決於我說不出來的東西」⇒ 永遠不可能安全重複使用。
     if i.vary_star {
         return Storable::No("Vary: *");
     }
-    // ★ `Set-Cookie` 通常是给**这一个**客户端的。RFC 允许存（只要不发给别人），
-    //   但那要求剥头，而剥错一次就是串号。⇒ 这一批**直接不存**，写在明处。
+    // ★ `Set-Cookie` 通常是給**這一個**用戶端的。RFC 允許存（只要不發給別人），
+    //   但那要求剝頭，而剝錯一次就是串號。⇒ 這一批**直接不存**，寫在明處。
     if i.has_set_cookie && !i.resp_cc.public {
         return Storable::No("响应带 Set-Cookie 且没写 public");
     }
     if !CACHEABLE_STATUS.contains(&i.status) {
         return Storable::No("状态码不在可缓存表里");
     }
-    // ⚠ 206 要靠 Content-Range 拼装，这一批不做。
+    // ⚠ 206 要靠 Content-Range 拼裝，這一批不做。
     if i.status == 206 {
         return Storable::No("206 部分响应这一批不缓存");
     }
@@ -113,11 +113,11 @@ pub fn is_storable(i: &StoreInput<'_>) -> Storable {
         return Storable::No("超过单条目大小上限");
     }
 
-    // ── 新鲜期 ────────────────────────────────────────────────────────
+    // ── 新鮮期 ────────────────────────────────────────────────────────
     match freshness_lifetime(i) {
         Some(0) => {
-            // ★ `max-age=0` 是合法的：它意味着「存下来，但每次用之前重验证」。
-            //   ⇒ 存，新鲜期 0。⚠ 判成「不可存」会让重验证这条路整个用不上。
+            // ★ `max-age=0` 是合法的：它意味著「存下來，但每次用之前重驗證」。
+            //   ⇒ 存，新鮮期 0。⚠ 判成「不可存」會讓重驗證這條路整個用不上。
             Storable::Yes { fresh_for_secs: 0 }
         }
         Some(n) => Storable::Yes { fresh_for_secs: n },
@@ -125,75 +125,75 @@ pub fn is_storable(i: &StoreInput<'_>) -> Storable {
     }
 }
 
-/// 新鲜期（秒）。★ 优先级照 RFC 9111 §4.2.1，再加上 G96 的兜底。
+/// 新鮮期（秒）。★ 優先級照 RFC 9111 §4.2.1，再加上 G96 的備援。
 ///
-/// `s-maxage` → `max-age` → `Expires - Date` → **配置的 `ttl`（兜底）** → 无。
+/// `s-maxage` → `max-age` → `Expires - Date` → **設定的 `ttl`（備援）** → 無。
 pub fn freshness_lifetime(i: &StoreInput<'_>) -> Option<u64> {
     if let Some(n) = i.resp_cc.shared_max_age() {
         return Some(n);
     }
     if let Some(exp) = i.expires {
-        // ⚠ `Expires` 早于 `Date` ⇒ 已经过期，新鲜期 0（不是「无」）。
+        // ⚠ `Expires` 早於 `Date` ⇒ 已經過期，新鮮期 0（不是「無」）。
         return Some((exp - i.date).max(0) as u64);
     }
-    // ★ ★ G96：**兜底，不是覆盖** —— 走到这里才用它，也就是上游一个字都没说。
-    //   ⚠ 放到最前面就变成了「覆盖」，而那会让一个带 no-store 的响应
-    //   也拿到新鲜期（虽然上面已经拦住了 no-store，但 private / Authorization
-    //   那几条的边界会跟着松掉）。
+    // ★ ★ G96：**備援，不是覆蓋** —— 走到這裡才用它，也就是上游一個字都沒說。
+    //   ⚠ 放到最前面就變成了「覆蓋」，而那會讓一個帶 no-store 的回應
+    //   也拿到新鮮期（雖然上面已經攔住了 no-store，但 private / Authorization
+    //   那幾條的邊界會跟著鬆掉）。
     i.default_ttl_secs
 }
 
-/// 缓存里那一条的当前状态。
+/// 快取裡那一條的當前狀態。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Freshness {
     /// 可以直接用。
     Fresh,
-    /// 过期了，但可以拿去**重验证**（发条件请求给上游）。
+    /// 過期了，但可以拿去**重驗證**（發條件請求給上游）。
     Stale,
-    /// 不许用（`no-cache`、或请求要求回源）。
+    /// 不許用（`no-cache`、或請求要求回源）。
     MustRevalidate,
 }
 
-/// 判定一条缓存条目现在能不能直接用。
+/// 判定一條快取條目現在能不能直接用。
 ///
-/// `age_secs` = 这条条目已经存在多久（RFC 9111 §4.2.3 的 Age）。
+/// `age_secs` = 這條條目已經存在多久（RFC 9111 §4.2.3 的 Age）。
 pub fn freshness(
     resp_cc: &ResponseCc,
     req_cc: &RequestCc,
     fresh_for_secs: u64,
     age_secs: u64,
 ) -> Freshness {
-    // ★ 响应侧 `no-cache`（**不带参数**那种）⇒ 每次用之前都要重验证。
+    // ★ 回應側 `no-cache`（**不帶參數**那種）⇒ 每次用之前都要重驗證。
     if resp_cc.no_cache {
         return Freshness::MustRevalidate;
     }
-    // ★ 请求侧 `no-cache` ⇒ 客户端要求回源。
+    // ★ 請求側 `no-cache` ⇒ 用戶端要求回源。
     if req_cc.no_cache {
         return Freshness::MustRevalidate;
     }
-    // 客户端可以把新鲜期**收紧**（`max-age` / `min-fresh`），但不能放宽。
+    // 用戶端可以把新鮮期**收緊**（`max-age` / `min-fresh`），但不能放寬。
     let mut limit = fresh_for_secs;
     if let Some(m) = req_cc.max_age {
         limit = limit.min(m);
     }
     if let Some(mf) = req_cc.min_fresh {
-        // 要求「至少还能新鲜 mf 秒」⇒ 相当于把新鲜期提前 mf 秒结束。
+        // 要求「至少還能新鮮 mf 秒」⇒ 相當於把新鮮期提前 mf 秒結束。
         limit = limit.saturating_sub(mf);
     }
     if age_secs < limit {
         return Freshness::Fresh;
     }
-    // ── 过期之后 ──────────────────────────────────────────────────────
-    // ★ ★ `must-revalidate` / `proxy-revalidate` ⇒ **不许**发陈内容。
-    //   ⚠ 对共享缓存这两条等价，合并处理。
+    // ── 過期之後 ──────────────────────────────────────────────────────
+    // ★ ★ `must-revalidate` / `proxy-revalidate` ⇒ **不許**發陳內容。
+    //   ⚠ 對共享快取這兩條等價，合併處理。
     if resp_cc.must_revalidate || resp_cc.proxy_revalidate {
         return Freshness::MustRevalidate;
     }
-    // 客户端明确接受陈内容？
+    // 用戶端明確接受陳內容？
     if let Some(ms) = req_cc.max_stale {
         let stale_by = age_secs - limit;
         let ok = match ms {
-            None => true, // `max-stale` 不带参数 = 不限
+            None => true, // `max-stale` 不帶參數 = 不限
             Some(n) => stale_by <= n,
         };
         if ok {
@@ -239,7 +239,7 @@ mod tests {
         );
     }
 
-    // ★ ★ G96 的兜底：上游一个字都没说时才用配置的 ttl。
+    // ★ ★ G96 的備援：上游一個字都沒說時才用設定的 ttl。
     #[test]
     fn ttl_是兜底_上游说了就听上游的() {
         let (r, q) = input(200, "");
@@ -256,16 +256,16 @@ mod tests {
             }
         );
 
-        // ⚠ 上游说了 60，兜底是 300 ⇒ **听上游的 60**。
-        //   反过来（用 300）就是「覆盖」语义，而 G96 明确取的是兜底。
+        // ⚠ 上游說了 60，備援是 300 ⇒ **聽上游的 60**。
+        //   反過來（用 300）就是「覆蓋」語義，而 G96 明確取的是備援。
         let (r2, q2) = input(200, "max-age=60");
         let mut i2 = mk(&r2, &q2, 200);
         i2.default_ttl_secs = Some(300);
         assert_eq!(is_storable(&i2), Storable::Yes { fresh_for_secs: 60 });
     }
 
-    // ★ ★ ★ 最贵的那一条：带 Authorization 的请求，响应默认不可存。
-    //   ⚠ 漏了它 = 把一个人的私有页面发给下一个人，而不会有任何报错。
+    // ★ ★ ★ 最貴的那一條：帶 Authorization 的請求，回應預設不可存。
+    //   ⚠ 漏了它 = 把一個人的私有頁面發給下一個人，而不會有任何回報錯誤。
     #[test]
     fn 带_authorization_的响应默认不可存() {
         let (r, q) = input(200, "max-age=60");
@@ -273,7 +273,7 @@ mod tests {
         i.has_authorization = true;
         assert!(matches!(is_storable(&i), Storable::No(_)));
 
-        // 三条例外各验一次（RFC 9111 §3.5）。
+        // 三條例外各驗一次（RFC 9111 §3.5）。
         for header in [
             "max-age=60, public",
             "s-maxage=60",
@@ -293,7 +293,7 @@ mod tests {
     fn private_对共享缓存是禁令() {
         let (r, q) = input(200, "private, max-age=60");
         assert!(matches!(is_storable(&mk(&r, &q, 200)), Storable::No(_)));
-        // 而带字段名的 private **不是**整条禁令。
+        // 而帶欄位名的 private **不是**整條禁令。
         let (r2, q2) = input(200, "private=\"X-Foo\", max-age=60");
         assert!(matches!(
             is_storable(&mk(&r2, &q2, 200)),
@@ -311,8 +311,8 @@ mod tests {
         assert!(matches!(is_storable(&mk(&r2, &q2, 200)), Storable::No(_)));
     }
 
-    // ★ `max-age=0` 是「存下来但每次重验证」，**不是**「不可存」。
-    //   ⚠ 判成不可存，重验证这条路整个用不上（每次都全量回源）。
+    // ★ `max-age=0` 是「存下來但每次重驗證」，**不是**「不可存」。
+    //   ⚠ 判成不可存，重驗證這條路整個用不上（每次都全量回源）。
     #[test]
     fn max_age_0_能存_新鲜期是零() {
         let (r, q) = input(200, "max-age=0");
@@ -332,7 +332,7 @@ mod tests {
         let mut i2 = mk(&r, &q, 200);
         i2.has_set_cookie = true;
         assert!(matches!(is_storable(&i2), Storable::No(_)));
-        // 明写 public 的话可以（部署方自己说了算）。
+        // 明寫 public 的話可以（部署方自己說了算）。
         let (r3, q3) = input(200, "max-age=60, public");
         let mut i3 = mk(&r3, &q3, 200);
         i3.has_set_cookie = true;
@@ -379,7 +379,7 @@ mod tests {
         );
     }
 
-    // ★ Expires 早于 Date ⇒ 新鲜期 0，**不是**「没有新鲜度」。
+    // ★ Expires 早於 Date ⇒ 新鮮期 0，**不是**「沒有新鮮度」。
     #[test]
     fn expires_的两个方向() {
         let (r, q) = input(200, "");
@@ -399,7 +399,7 @@ mod tests {
         );
     }
 
-    // ── 新鲜度判定 ────────────────────────────────────────────────────
+    // ── 新鮮度判定 ────────────────────────────────────────────────────
     #[test]
     fn 新鲜与过期的边界() {
         let r = cc::parse_response("max-age=60");
@@ -419,7 +419,7 @@ mod tests {
         let q = RequestCc::default();
         assert_eq!(freshness(&r, &q, 600, 0), Freshness::MustRevalidate);
 
-        // ⚠ 带字段名的 no-cache **不**触发它。
+        // ⚠ 帶欄位名的 no-cache **不**觸發它。
         let r2 = cc::parse_response("no-cache=\"Set-Cookie\", max-age=600");
         assert_eq!(freshness(&r2, &q, 600, 0), Freshness::Fresh);
     }
@@ -433,7 +433,7 @@ mod tests {
             Freshness::MustRevalidate,
             "客户端说接受陈的也不行"
         );
-        // 没有 must-revalidate 时，max-stale 说了算。
+        // 沒有 must-revalidate 時，max-stale 說了算。
         let r2 = cc::parse_response("max-age=60");
         assert_eq!(freshness(&r2, &q, 60, 600), Freshness::Fresh);
     }
@@ -441,11 +441,11 @@ mod tests {
     #[test]
     fn 客户端只能收紧不能放宽() {
         let r = cc::parse_response("max-age=600");
-        // max-age=60：客户端不接受比 60 秒更旧的 ⇒ age=100 时已经不新鲜。
+        // max-age=60：用戶端不接受比 60 秒更舊的 ⇒ age=100 時已經不新鮮。
         let q = cc::parse_request("max-age=60");
         assert_eq!(freshness(&r, &q, 600, 100), Freshness::Stale);
         assert_eq!(freshness(&r, &q, 600, 30), Freshness::Fresh);
-        // min-fresh=100：要求还能新鲜 100 秒 ⇒ age=550 时不够了。
+        // min-fresh=100：要求還能新鮮 100 秒 ⇒ age=550 時不夠了。
         let q2 = cc::parse_request("min-fresh=100");
         assert_eq!(freshness(&r, &q2, 600, 550), Freshness::Stale);
         assert_eq!(freshness(&r, &q2, 600, 400), Freshness::Fresh);
@@ -469,9 +469,9 @@ mod tests {
         assert_eq!(freshness(&r, &unbounded, 60, 100_000), Freshness::Fresh);
     }
 
-    // ★ ★ 覆盖自证：可缓存状态码表里的每一条都真的走得通，
-    //   而表外随便抽的几条都走不通。⚠ 少了它，一次手滑把表清空
-    //   会让「缓存完全不生效」这件事悄悄发生 —— 门全绿，只是再也没有命中。
+    // ★ ★ 覆蓋自證：可快取狀態碼錶裡的每一條都真的走得通，
+    //   而表外隨便抽的幾條都走不通。⚠ 少了它，一次手滑把表清空
+    //   會讓「快取完全不生效」這件事悄悄發生 —— 門全綠，只是再也沒有命中。
     #[test]
     fn 可缓存状态码表自证() {
         let r = cc::parse_response("max-age=60");

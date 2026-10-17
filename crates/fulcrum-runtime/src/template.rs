@@ -1,12 +1,12 @@
-//! 占位符展开。**在构建期把字符串编译成段**，请求路径上只做拼接。
+//! 佔位符展開。**在建置期把字串編譯成段**，請求路徑上只做拼接。
 //!
-//! ★ 为什么要预编译：`{host}` 这类东西出现在 `rewrite` / `redir` / `header` 的取值里，
-//! 而这些是**每个请求都要走一遍**的。每次请求重新扫一遍字符串找花括号，
-//! 是把配置解析的成本搬到了热路径上。
+//! ★ 為什麼要預編譯：`{host}` 這類東西出現在 `rewrite` / `redir` / `header` 的取值裡，
+//! 而這些是**每個請求都要走一遍**的。每次請求重新掃一遍字串找花括號，
+//! 是把設定解析的成本搬到了熱路徑上。
 //!
-//! ★ ★ **时间从参数进来，不从函数里取。** `{time}` 的取值是 `SystemTime`，
-//! 由调用方传入而不是在这里 `SystemTime::now()`——否则这个函数就没法被确定性地测，
-//! 而「判据不能挂在会抖的量上」是本仓库的一条老纪律。
+//! ★ ★ **時間從參數進來，不從函式里取。** `{time}` 的取值是 `SystemTime`，
+//! 由呼叫方傳入而不是在這裡 `SystemTime::now()`——否則這個函式就沒法被確定性地測，
+//! 而「判據不能掛在會抖的量上」是本儲存庫的一條老紀律。
 
 use crate::request::{RequestCtx, ResponseCtx};
 use std::fmt::Write as _;
@@ -27,24 +27,24 @@ enum Seg {
     Time,
     Header(String),
     RespHeader(String),
-    /// `{path.N}` —— `path_regexp` 的第 N 个捕获组。
+    /// `{path.N}` —— `path_regexp` 的第 N 個捕獲組。
     Capture(usize),
     Status,
     Upstream,
 }
 
-/// 一个可能含占位符的取值。
+/// 一個可能含佔位符的取值。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Template {
     segs: Vec<Seg>,
-    /// 整段都是字面量时，那段字面量的一份**共享**副本（parse 时建一次，由 `segs` 派生）。
+    /// 整段都是字面值時，那段字面值的一份**共享**副本（parse 時建一次，由 `segs` 派生）。
     literal: Option<Arc<[u8]>>,
 }
 
 impl Template {
-    /// 编译。★ 认不出来的花括号**原样留着**——配置层已经把「未知占位符」判成编译错误了
-    /// （`FUL-DSL-0016`），能走到运行时的就只有字面量花括号（JSON 体那种）。
-    /// ⚠ 这两层的分工必须写清楚：**这里不报错，是因为报错的地方在上游，不是因为不在乎**。
+    /// 編譯。★ 認不出來的花括號**原樣留著**——設定層已經把「未知佔位符」判成編譯錯誤了
+    /// （`FUL-DSL-0016`），能走到執行環境的就只有字面值花括號（JSON 體那種）。
+    /// ⚠ 這兩層的分工必須寫清楚：**這裡不回報錯誤，是因為回報錯誤的地方在上游，不是因為不在乎**。
     pub fn parse(s: &str) -> Template {
         let b = s.as_bytes();
         let mut segs = Vec::new();
@@ -58,7 +58,7 @@ impl Template {
                 continue;
             }
             if i + 1 < b.len() && b[i + 1] == b'{' {
-                lit.push('{'); // `{{` 是字面量
+                lit.push('{'); // `{{` 是字面值
                 i += 2;
                 continue;
             }
@@ -89,12 +89,12 @@ impl Template {
             segs,
             literal: None,
         };
-        // ★ 「是不是纯字面量」只有 `as_literal` 一处说了算，这里照它派生，⛔ 不另写一遍。
+        // ★ 「是不是純字面值」只有 `as_literal` 一處說了算，這裡照它派生，⛔ 不另寫一遍。
         t.literal = t.as_literal().map(|s| Arc::from(s.as_bytes()));
         t
     }
 
-    /// 完全没有占位符时返回那段字面量——调用方可以省掉一次分配。
+    /// 完全沒有佔位符時回傳那段字面值——呼叫方可以省掉一次分配。
     pub fn as_literal(&self) -> Option<&str> {
         match self.segs.as_slice() {
             [] => Some(""),
@@ -103,20 +103,20 @@ impl Template {
         }
     }
 
-    /// 与 [`Template::as_literal`] 同一段字节，只是装载时就放进了 `Arc`。
+    /// 與 [`Template::as_literal`] 同一段位元組，只是裝載時就放進了 `Arc`。
     ///
-    /// ★ 给数据面当响应正文用：拿它包成 `Bytes`，每个请求就不必再把字面量拷一遍
-    ///   （`respond` 那条路，2026-09-24 HTTP 层诊断的发现 2）。
+    /// ★ 給資料面當回應正文用：拿它包成 `Bytes`，每個請求就不必再把字面值拷一遍
+    ///   （`respond` 那條路，2026-09-24 HTTP 層診斷的發現 2）。
     pub fn shared_literal(&self) -> Option<&Arc<[u8]>> {
         self.literal.as_ref()
     }
 
-    /// 展开。
+    /// 展開。
     ///
-    /// ⚠ **取不到的值展开成空串**，而这**不是**在放任 G61 那条纪律：
-    /// 「用在不可用的位置」已经被配置层判成编译错误；能走到这里的
-    /// `{status}` / `{upstream}` 一定在允许的位置上，只是那一刻的值可能确实没有
-    /// （例如上游根本没连上）。**那是「值为空」，不是「位置错了」。**
+    /// ⚠ **取不到的值展開成空串**，而這**不是**在放任 G61 那條紀律：
+    /// 「用在不可用的位置」已經被設定層判成編譯錯誤；能走到這裡的
+    /// `{status}` / `{upstream}` 一定在允許的位置上，只是那一刻的值可能確實沒有
+    /// （例如上游根本沒連上）。**那是「值為空」，不是「位置錯了」。**
     pub fn expand(
         &self,
         req: &RequestCtx<'_>,
@@ -156,7 +156,7 @@ impl Template {
                     }
                 }
                 Seg::Capture(n) => {
-                    // `{path.1}` 是第 1 个捕获组 → caps[0]
+                    // `{path.1}` 是第 1 個捕獲組 → caps[0]
                     if let Some(v) = n.checked_sub(1).and_then(|i| caps.get(i)) {
                         out.push_str(v);
                     }
@@ -203,24 +203,24 @@ fn classify(inner: &str) -> Option<Seg> {
     })
 }
 
-/// UTC 的 RFC 3339，秒级精度。
+/// UTC 的 RFC 3339，秒級精度。
 ///
-/// ★ 手写而不是拉 `chrono` / `jiff`：只需要「Unix 秒 → 年月日时分秒」这一件事，
-/// 算法是公开的（Howard Hinnant 的 `civil_from_days`），而且**可以被穷尽地测**——
-/// 下面钉了 6 个已知时刻，含两个闰年边界。
+/// ★ 手寫而不是拉 `chrono` / `jiff`：只需要「Unix 秒 → 年月日時分秒」這一件事，
+/// 演算法是公開的（Howard Hinnant 的 `civil_from_days`），而且**可以被窮盡地測**——
+/// 下面釘了 6 個已知時刻，含兩個閏年邊界。
 pub fn format_rfc3339(t: SystemTime) -> String {
     format_rfc3339_inner(t, false)
 }
 
-/// UTC 的 RFC 3339，**毫秒**精度（**M2 批 L 第 ② 步**：访问日志的 `ts` 字段）。
+/// UTC 的 RFC 3339，**毫秒**精度（**M2 批 L 第 ② 步**：訪問紀錄的 `ts` 欄位）。
 ///
-/// # ⚠ ⚠ ★ 为什么它是**另一个函数**，而不是给 [`format_rfc3339`] 加一个参数
+/// # ⚠ ⚠ ★ 為什麼它是**另一個函式**，而不是給 [`format_rfc3339`] 加一個參數
 ///
-/// [`format_rfc3339`] 是 DSL 里 `{time}` 占位符的输出，而**那是一份公开契约**：
-/// 给它加精度，就是悄悄改掉每一个用了 `{time}` 的人的输出 ——
-/// 而那种改动不会让任何东西变红（它仍然是一个合法的 RFC 3339）。
-/// ★ ★ 两者**共用同一段历法计算**（[`civil_from_days`]），
-/// 所以「两处会漂」这件事在结构上做不到。
+/// [`format_rfc3339`] 是 DSL 裡 `{time}` 佔位符的輸出，而**那是一份公開契約**：
+/// 給它加精度，就是悄悄改掉每一個用了 `{time}` 的人的輸出 ——
+/// 而那種改動不會讓任何東西變紅（它仍然是一個合法的 RFC 3339）。
+/// ★ ★ 兩者**共用同一段曆法計算**（[`civil_from_days`]），
+/// 所以「兩處會漂」這件事在結構上做不到。
 pub fn format_rfc3339_millis(t: SystemTime) -> String {
     format_rfc3339_inner(t, true)
 }
@@ -228,8 +228,8 @@ pub fn format_rfc3339_millis(t: SystemTime) -> String {
 fn format_rfc3339_inner(t: SystemTime, with_millis: bool) -> String {
     let (secs, millis) = match t.duration_since(UNIX_EPOCH) {
         Ok(d) => (d.as_secs() as i64, d.subsec_millis()),
-        // 1970 之前：本项目的日志里不该出现，但不能 panic。
-        // ⚠ 这一支有意丢掉亚秒（它本来就只是个不该发生的兜底）。
+        // 1970 之前：本專案的紀錄裡不該出現，但不能 panic。
+        // ⚠ 這一支有意丟掉亞秒（它本來就只是個不該發生的備援）。
         Err(e) => (-(e.duration().as_secs() as i64), 0),
     };
     let days = secs.div_euclid(86_400);
@@ -248,7 +248,7 @@ fn format_rfc3339_inner(t: SystemTime, with_millis: bool) -> String {
     )
 }
 
-/// 从「1970-01-01 起的天数」算出 (年, 月, 日)。Hinnant 算法。
+/// 從「1970-01-01 起的天數」算出 (年, 月, 日)。Hinnant 演算法。
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -308,9 +308,9 @@ mod tests {
     fn 捕获组从_1_开始() {
         let caps = vec!["aa".to_string(), "bb".to_string()];
         assert_eq!(expand("{path.1}-{path.2}", &[], &caps), "aa-bb");
-        // 越界不 panic，展开成空
+        // 越界不 panic，展開成空
         assert_eq!(expand("{path.3}", &[], &caps), "");
-        // `{path.0}` 没有对应的组
+        // `{path.0}` 沒有對應的組
         assert_eq!(expand("{path.0}", &[], &caps), "");
     }
 
@@ -319,9 +319,9 @@ mod tests {
         let t = Template::parse("{status}|{upstream}");
         let h = HeaderList(&[]);
         let r = req(&h);
-        // 路由阶段：还没有值
+        // 路由階段：還沒有值
         assert_eq!(t.expand(&r, &ResponseCtx::default(), &[], UNIX_EPOCH), "|");
-        // 写响应阶段：有了
+        // 寫回應階段：有了
         let resp = ResponseCtx {
             status: Some(502),
             upstream: Some("10.0.0.1:8080"),
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn 字面量花括号原样留着() {
-        // ★ `respond 403 {"error":"nope"}` 里那对花括号不是占位符。
+        // ★ `respond 403 {"error":"nope"}` 裡那對花括號不是佔位符。
         assert_eq!(
             expand("{\"error\":\"nope\"}", &[], &[]),
             "{\"error\":\"nope\"}"
@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(Template::parse("x{host}").as_literal(), None);
     }
 
-    /// ★ 共享副本是**派生**出来的：它与 `as_literal` 必须逐字节相同、有无一致。
+    /// ★ 共享副本是**派生**出來的：它與 `as_literal` 必須逐位元組相同、有無一致。
     #[test]
     fn 共享字面量与_as_literal_是同一段字节() {
         for s in ["", "plain", "/static/a.css", "{{host}", "{host}", "x{host}"] {
@@ -371,26 +371,26 @@ mod tests {
         let at = |s: u64| format_rfc3339(UNIX_EPOCH + Duration::from_secs(s));
         assert_eq!(at(0), "1970-01-01T00:00:00Z");
         assert_eq!(at(1), "1970-01-01T00:00:01Z");
-        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z"); // 闰年（能被 400 整除）
-        assert_eq!(at(1_709_164_800), "2024-02-29T00:00:00Z"); // 闰年
+        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z"); // 閏年（能被 400 整除）
+        assert_eq!(at(1_709_164_800), "2024-02-29T00:00:00Z"); // 閏年
         assert_eq!(at(1_709_251_199), "2024-02-29T23:59:59Z");
-        assert_eq!(at(2_147_483_647), "2038-01-19T03:14:07Z"); // 32 位边界
+        assert_eq!(at(2_147_483_647), "2038-01-19T03:14:07Z"); // 32 位邊界
     }
 
     #[test]
     fn 毫秒那一版与秒那一版逐字同源() {
-        // ★ ★ 判据取的是**关系**不是两个字面量：毫秒版必须等于「秒版去掉 Z + .mmm + Z」。
-        //   ⚠ 各钉一个字面量的话，两者哪天漂开了，两条判据会**一起绿**。
+        // ★ ★ 判據取的是**關係**不是兩個字面值：毫秒版必須等於「秒版去掉 Z + .mmm + Z」。
+        //   ⚠ 各釘一個字面值的話，兩者哪天漂開了，兩條判據會**一起綠**。
         let t = UNIX_EPOCH + Duration::from_millis(1_787_000_000_123);
         let s = format_rfc3339(t);
         let ms = format_rfc3339_millis(t);
         assert_eq!(ms, format!("{}.123Z", s.trim_end_matches('Z')));
-        // 整秒时刻也要有那三位（定长，日志里对齐好看）。
-        // ⚠ ⚠ 这里**有意不写字面量**：手算出来的时刻字面量
-        //   而它错了七天。★ 那个字面量不带任何本函数的信息 ——
-        //   「年月日算得对不对」由上面 `rfc3339_钉住六个已知时刻` 独立守着，
-        //   本条要守的只是「毫秒那一版比秒那一版多了定长的三位」。
-        //   ⇒ **判据只断言它自己负责的那一段**，别顺手把别人的责任也抄一份进来。
+        // 整秒時刻也要有那三位（定長，紀錄裡對齊好看）。
+        // ⚠ ⚠ 這裡**有意不寫字面值**：手算出來的時刻字面值
+        //   而它錯了七天。★ 那個字面值不帶任何本函式的資訊 ——
+        //   「年月日算得對不對」由上面 `rfc3339_钉住六个已知时刻` 獨立守著，
+        //   本條要守的只是「毫秒那一版比秒那一版多了定長的三位」。
+        //   ⇒ **判據只斷言它自己負責的那一段**，別順手把別人的責任也抄一份進來。
         let t2 = UNIX_EPOCH + Duration::from_secs(1_787_000_000);
         let ms2 = format_rfc3339_millis(t2);
         assert!(ms2.ends_with(".000Z"), "整秒时刻也要有三位：{ms2}");

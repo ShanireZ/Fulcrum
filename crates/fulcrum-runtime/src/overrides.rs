@@ -1,8 +1,8 @@
-//! 运行时的**临时覆盖层**（**M2 批 N 任务 3**，G18 / 裁决 R7）。
+//! 執行環境的**臨時覆蓋層**（**M2 批 N 任務 3**，G18 / 裁決 R7）。
 //!
-//! G18 原话：**运行时改动的归宿 = 显式临时覆盖层。不持久化，但永远可见。**
+//! G18 原話：**執行環境改動的歸宿 = 顯式臨時覆蓋層。不持久化，但永遠可見。**
 //!
-//! # ★ ★ ★ 它是一张「格子登记处」，不是一份「待应用的清单」
+//! # ★ ★ ★ 它是一張「格子登記處」，不是一份「待應用的清單」
 //!
 //! ```text
 //! OverrideLayer:  (站点名, reverse_proxy 的 id, 归一化后的上游地址) → Arc<UpstreamOverride>
@@ -11,53 +11,53 @@
 //!                 （每个 HTTP 上游**直接拿着**登记处里的那一格）
 //! ```
 //!
-//! ⇒ 「覆盖层」与「上游身上那两个量」在结构上**是同一份**：
-//! 不存在「改了列表忘了应用」，也不存在「应用了没记进列表」。
+//! ⇒ 「覆蓋層」與「上游身上那兩個量」在結構上**是同一份**：
+//! 不存在「改了列表忘了應用」，也不存在「應用了沒記進列表」。
 //!
-//! ⛔ **不许改成「一份清单 + 一个应用步骤」**：那个形状的失效现场是
-//! 「配置照过、命令回 200、而那台机器还在收流量」，且没有任何东西会报错。
+//! ⛔ **不許改成「一份清單 + 一個應用步驟」**：那個形狀的失效現場是
+//! 「設定照過、命令回 200、而那臺機器還在收流量」，且沒有任何東西會回報錯誤。
 //!
-//! # ⚠ 键相同就是同一格，这是设计不是意外
+//! # ⚠ 鍵相同就是同一格，這是設計不是意外
 //!
-//! 同一个站点里两条 `reverse_proxy` 指着同一台机器而都没写 `id` 时，它们的键
-//! **真的相同** ⇒ 它们从登记处取到**同一个** [`Arc`] ⇒ 一次 `disable` 两条一起生效
-//! （裁决 R6 ③ 第二轮 ⇒ G125）。★ 这个语义**从本模块的设计里免费掉出来**，
-//! ⛔ 别在别处补一条「键撞了要怎么办」的分支。
+//! 同一個站台裡兩條 `reverse_proxy` 指著同一臺機器而都沒寫 `id` 時，它們的鍵
+//! **真的相同** ⇒ 它們從登記處取到**同一個** [`Arc`] ⇒ 一次 `disable` 兩條一起生效
+//! （裁決 R6 ③ 第二輪 ⇒ G125）。★ 這個語義**從本模組的設計裡免費掉出來**，
+//! ⛔ 別在別處補一條「鍵撞了要怎麼辦」的分支。
 //!
 //! # ⛔ 不持久化
 //!
-//! 这里的东西**只活在进程里**。G18 的死线：⛔ 不许出现第二条持久化写路径。
-//! 「永远可见」由 `/stats` 与「每一次管理面响应都带覆盖层计数」承担（任务 5 / 6）。
+//! 這裡的東西**只活在處理程序裡**。G18 的死線：⛔ 不許出現第二條持久化寫路徑。
+//! 「永遠可見」由 `/stats` 與「每一次管理面回應都帶覆蓋層計數」承擔（任務 5 / 6）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-/// 覆盖层的键：`(站点名, reverse_proxy 的 id, 归一化后的上游地址)`（裁决 R6 ⇒ G125）。
+/// 覆蓋層的鍵：`(站点名, reverse_proxy 的 id, 归一化后的上游地址)`（裁決 R6 ⇒ G125）。
 ///
-/// 三格分别是 [`crate::SiteRt::name`] · [`crate::ProxyTarget::id`] · [`crate::Upstream::addr`]。
+/// 三格分別是 [`crate::SiteRt::name`] · [`crate::ProxyTarget::id`] · [`crate::Upstream::addr`]。
 ///
-/// ⚠ ⚠ **三格都只能从 [`crate::Runtime::keyed_proxies`] 那条遍历上取**
-/// —— ⛔ 别在别处再拼一份「差不多的」，两份拼法迟早在某一格上分家。
+/// ⚠ ⚠ **三格都只能從 [`crate::Runtime::keyed_proxies`] 那條遍歷上取**
+/// —— ⛔ 別在別處再拼一份「差不多的」，兩份拼法遲早在某一格上分家。
 ///
-/// ⚠ 第三格是**归一化之后**那个串（`backend` → `backend:80`）：管理面对着的是**运行时**，
-/// 运行时里那个上游就叫 `backend:80`。⇒ 运维照着配置原文写 `backend` 会被告知「找不到」——
+/// ⚠ 第三格是**歸一化之後**那個串（`backend` → `backend:80`）：管理面對著的是**執行環境**，
+/// 執行環境裡那個上游就叫 `backend:80`。⇒ 維運照著設定原文寫 `backend` 會被告知「找不到」——
 ///
-/// ★ ★ ★ **这是有意的边界，不是缺陷**（裁决 R6 ⑤，M2 批 N 任务 4 的主 agent 裁决）：
-/// 管理面**不做归一化**，`(站点名, id, 上游地址)` 三格全部逐字精确匹配。
-/// ⛔ ⛔ **别在管理面那一侧加 `crate::normalize_upstream` 再拿来比键** ——
-/// 指不到时的解药不是"帮运维把地址补全"，而是 `POST /runtime` 的 400 报文
-/// **把该站点下全部合法的键逐条列出来**（`crates/fulcrum-server/src/admin.rs`
-/// 的 `runtime()`），运维照抄即可。做了归一化，那份"列出全部合法键"的清单就
-/// 变成永远走不到的死代码——而这与 Ruling 1（管理面不发明规则、只精确匹配）
-/// 是同一条纪律：输入处理越少，键就越是唯一的一个东西。
+/// ★ ★ ★ **這是有意的邊界，不是缺陷**（裁決 R6 ⑤，M2 批 N 任務 4 的主 agent 裁決）：
+/// 管理面**不做歸一化**，`(站点名, id, 上游地址)` 三格全部逐字精確匹配。
+/// ⛔ ⛔ **別在管理面那一側加 `crate::normalize_upstream` 再拿來比鍵** ——
+/// 指不到時的解藥不是"幫維運把位址補全"，而是 `POST /runtime` 的 400 訊息
+/// **把該站台下全部合法的鍵逐條列出來**（`crates/fulcrum-server/src/admin.rs`
+/// 的 `runtime()`），維運照抄即可。做了歸一化，那份"列出全部合法鍵"的清單就
+/// 變成永遠走不到的死程式碼——而這與 Ruling 1（管理面不發明規則、只精確匹配）
+/// 是同一條紀律：輸入處理越少，鍵就越是唯一的一個東西。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OverrideKey {
-    /// 键的**第一格**：站点名（第一条地址的原文，与访问日志的 `site` 字段逐字同口径）。
+    /// 鍵的**第一格**：站台名（第一條位址的原文，與訪問紀錄的 `site` 欄位逐字同口徑）。
     pub site: String,
-    /// 键的**第二格**：这条 `reverse_proxy` 的 id，**没写就是空串**。
+    /// 鍵的**第二格**：這條 `reverse_proxy` 的 id，**沒寫就是空串**。
     pub id: String,
-    /// 键的**第三格**：**归一化之后**的上游地址。
+    /// 鍵的**第三格**：**歸一化之後**的上游位址。
     pub addr: String,
 }
 
@@ -72,7 +72,7 @@ impl OverrideKey {
 }
 
 impl std::fmt::Display for OverrideKey {
-    /// 给报文与日志用的可读形态。⚠ 三格**原样**印出来，运维照抄即可（裁决 R6 ⑤）。
+    /// 給訊息與紀錄用的可讀形態。⚠ 三格**原樣**印出來，維運照抄即可（裁決 R6 ⑤）。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.id.is_empty() {
             write!(f, "站点 {} · 上游 {}", self.site, self.addr)
@@ -86,45 +86,45 @@ impl std::fmt::Display for OverrideKey {
     }
 }
 
-/// 登记处里的**一格**：一个上游身上「运维改过的那两个量」。
+/// 登記處裡的**一格**：一個上游身上「維運改過的那兩個量」。
 ///
-/// ★ ★ 它被 [`Arc`] 共享：登记处里那一格与 [`crate::Upstream`] 身上那一格
-/// **是同一个对象**。⇒ 改这里，那个上游立刻算数；没有第二步。
+/// ★ ★ 它被 [`Arc`] 共享：登記處裡那一格與 [`crate::Upstream`] 身上那一格
+/// **是同一個物件**。⇒ 改這裡，那個上游立刻算數；沒有第二步。
 ///
-/// ⚠ 两个量都用 `Relaxed`，与 [`crate::Upstream`] 的 `healthy` / `inflight` 同一条理由：
-/// 它们是**建议性**的读数，晚一个调度周期生效不构成任何问题，
-/// 而在请求热路径上加内存序只会白花钱。
+/// ⚠ 兩個量都用 `Relaxed`，與 [`crate::Upstream`] 的 `healthy` / `inflight` 同一條理由：
+/// 它們是**建議性**的讀數，晚一個排程週期生效不構成任何問題，
+/// 而在請求熱路徑上加記憶體序只會白花錢。
 #[derive(Debug, Default)]
 pub struct UpstreamOverride {
-    /// 运维把这个上游摘掉了吗。
+    /// 維運把這個上游摘掉了嗎。
     disabled: AtomicBool,
-    /// 覆盖权重。★ ★ **`0` 是哨兵，意思是「没覆盖，用配置里那个」** ——
-    /// 而不是「权重 0」：裁决 R3 明写 `0` 不是合法权重，
-    /// 「不参与调度」**只有一种表达方式**，就是 `disable`。
+    /// 覆蓋權重。★ ★ **`0` 是哨兵，意思是「沒覆蓋，用設定裡那個」** ——
+    /// 而不是「權重 0」：裁決 R3 明寫 `0` 不是合法權重，
+    /// 「不參與排程」**只有一種表達方式**，就是 `disable`。
     weight: AtomicU32,
-    /// 这一格**最后一次被设定**的墙钟时刻，`UNIX_EPOCH` 起的**纳秒**。`0` = 从来没设过。
+    /// 這一格**最後一次被設定**的牆鍾時刻，`UNIX_EPOCH` 起的**納秒**。`0` = 從來沒設過。
     ///
-    /// ★ ★ ★ 语义是 **「最后一次改动」**（owner 拍板，R6 留下的那条），
-    /// ⛔ 不是「首次被覆盖」：运维问的那句话是「这台机器摘掉多久了」，
-    /// 而那句话问的是**当前形态**的年龄，不是这一格的年龄。
-    /// ⇒ 连着调 `set_weight` 会让它一直往前走 —— 那**正确**，形态确实一直在变。
+    /// ★ ★ ★ 語義是 **「最後一次改動」**（owner 拍板，R6 留下的那條），
+    /// ⛔ 不是「首次被覆蓋」：維運問的那句話是「這臺機器摘掉多久了」，
+    /// 而那句話問的是**當前形態**的年齡，不是這一格的年齡。
+    /// ⇒ 連著調 `set_weight` 會讓它一直往前走 —— 那**正確**，形態確實一直在變。
     ///
-    /// ⚠ 取**墙钟**而不是 `Instant`：这个值是给人看的、要能与日志对时间。
-    /// 代价写在明处：**墙钟会跳**（NTP 校正、手工改时间）⇒ 极端情况下两项覆盖的
-    /// 先后与它们的时间戳顺序可以不一致。⛔ 不为此引入第二个单调时钟：
-    /// 那会让 `/stats` 出现两种时间，而「这两个为什么不一样」没人答得出来。
+    /// ⚠ 取**牆鍾**而不是 `Instant`：這個值是給人看的、要能與紀錄對時間。
+    /// 代價寫在明處：**牆鍾會跳**（NTP 校正、手動改時間）⇒ 極端情況下兩項覆蓋的
+    /// 先後與它們的時間戳順序可以不一致。⛔ 不為此引入第二個單調時鐘：
+    /// 那會讓 `/stats` 出現兩種時間，而「這兩個為什麼不一樣」沒人答得出來。
     ///
-    /// ⚠ 纳秒装进 `u64` 到 **2554 年**溢出。⛔ 不存秒：与
-    /// [`crate::SharedRuntime::loaded_at`] 同一条理由 —— 秒级粒度在一次跑得很快的
-    /// 判据里会落在同一秒，那会让「改动会推进它」这条判据偶发抖动。
+    /// ⚠ 納秒裝進 `u64` 到 **2554 年**溢出。⛔ 不存秒：與
+    /// [`crate::SharedRuntime::loaded_at`] 同一條理由 —— 秒級粒度在一次跑得很快的
+    /// 判據裡會落在同一秒，那會讓「改動會推進它」這條判據偶發抖動。
     set_at_nanos: AtomicU64,
 }
 
 impl UpstreamOverride {
-    /// 盖一次时间戳。**每一个会改动这一格的入口都要调它。**
+    /// 蓋一次時間戳。**每一個會改動這一格的入口都要調它。**
     ///
-    /// ⚠ 「设成同一个值」也算一次改动：管理面分不出「设成 X」与「又设了一次 X」，
-    /// 两者都是运维对这一格动的一次手。
+    /// ⚠ 「設成同一個值」也算一次改動：管理面分不出「設成 X」與「又設了一次 X」，
+    /// 兩者都是維運對這一格動的一次手。
     fn 盖时间戳(&self) {
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -133,30 +133,30 @@ impl UpstreamOverride {
         self.set_at_nanos.store(n, Ordering::Relaxed);
     }
 
-    /// 这一格最后一次被设定的墙钟时刻。没设过就是 `UNIX_EPOCH`。
+    /// 這一格最後一次被設定的牆鍾時刻。沒設過就是 `UNIX_EPOCH`。
     ///
-    /// ★ 出现在清单里的每一格都设过（[`Self::has_override`] 为真的唯一途径就是
-    /// 走过下面那几个 setter），所以 [`OverrideEntry::set_at`] 上不需要 `Option`。
+    /// ★ 出現在清單裡的每一格都設過（[`Self::has_override`] 為真的唯一途徑就是
+    /// 走過下面那幾個 setter），所以 [`OverrideEntry::set_at`] 上不需要 `Option`。
     pub fn set_at(&self) -> std::time::SystemTime {
         std::time::UNIX_EPOCH
             + std::time::Duration::from_nanos(self.set_at_nanos.load(Ordering::Relaxed))
     }
 
-    /// 这个上游被运维摘掉了吗。
+    /// 這個上游被維運摘掉了嗎。
     pub fn is_disabled(&self) -> bool {
         self.disabled.load(Ordering::Relaxed)
     }
 
     /// 摘掉（`true`）或放回（`false`）。
     ///
-    /// ⚠ 放回 = **撤销这一半覆盖**，不是「加一条 enable 覆盖」：
-    /// 一格上两个量都回到默认值之后，它就不再是一项覆盖了（见 [`Self::has_override`]）。
+    /// ⚠ 放回 = **撤銷這一半覆蓋**，不是「加一條 enable 覆蓋」：
+    /// 一格上兩個量都回到預設值之後，它就不再是一項覆蓋了（見 [`Self::has_override`]）。
     pub fn set_disabled(&self, v: bool) {
         self.disabled.store(v, Ordering::Relaxed);
         self.盖时间戳();
     }
 
-    /// 覆盖权重。`None` = **没覆盖**，调度该用配置里那个。
+    /// 覆蓋權重。`None` = **沒覆蓋**，排程該用設定裡那個。
     pub fn weight(&self) -> Option<u32> {
         match self.weight.load(Ordering::Relaxed) {
             0 => None,
@@ -164,15 +164,15 @@ impl UpstreamOverride {
         }
     }
 
-    /// 设一个覆盖权重。**值域与配置权重逐字相同**（裁决 R3：`[1, 65535]`）。
+    /// 設一個覆蓋權重。**值域與設定權重逐字相同**（裁決 R3：`[1, 65535]`）。
     ///
-    /// ★ ★ 值域检查落在**这一处**，⛔ 任务 4 的 `POST /runtime` 不许再写一份：
-    /// 两份「差不多的」值域检查迟早分家，而分家的表现是
-    /// 「管理面收下了一个配置层根本写不出来的权重」。
-    /// ⚠ 值域常量只有一份，在 `fulcrum_config::model` 里。
+    /// ★ ★ 值域檢查落在**這一處**，⛔ 任務 4 的 `POST /runtime` 不許再寫一份：
+    /// 兩份「差不多的」值域檢查遲早分家，而分家的表現是
+    /// 「管理面收下了一個設定層根本寫不出來的權重」。
+    /// ⚠ 值域常數只有一份，在 `fulcrum_config::model` 裡。
     ///
-    /// ⚠ `0` 在这里是**错误**而不是「清除覆盖」：清除走 [`Self::clear_weight`]。
-    /// 两件事共用一个入参值，就等于让「手滑写了 0」与「我要撤销」长得一模一样。
+    /// ⚠ `0` 在這裡是**錯誤**而不是「清除覆蓋」：清除走 [`Self::clear_weight`]。
+    /// 兩件事共用一個入參值，就等於讓「手滑寫了 0」與「我要撤銷」長得一模一樣。
     pub fn set_weight(&self, w: u32) -> Result<(), String> {
         use fulcrum_config::model::{MAX_UPSTREAM_WEIGHT, MIN_UPSTREAM_WEIGHT};
         if !(MIN_UPSTREAM_WEIGHT..=MAX_UPSTREAM_WEIGHT).contains(&w) {
@@ -186,101 +186,101 @@ impl UpstreamOverride {
         Ok(())
     }
 
-    /// 撤掉覆盖权重，回到配置里那个。
+    /// 撤掉覆蓋權重，回到設定裡那個。
     pub fn clear_weight(&self) {
         self.weight.store(0, Ordering::Relaxed);
         self.盖时间戳();
     }
 
-    /// 这一格**现在**带着覆盖吗。
+    /// 這一格**現在**帶著覆蓋嗎。
     ///
-    /// ★ ★ 问的是「现在」，不是「有没有人碰过」：`disable` 之后又 `enable` 回去，
-    /// 这一格就重新变回**空格子**。⇒ 这与 G18 那句「当前有几项临时覆盖生效中」
-    /// 是同一个问题，而 `/stats` 的条目数、`/load` 的回话计数、
-    /// `fulcrum_overrides_active` 三处都必须是**这一个**答案。
+    /// ★ ★ 問的是「現在」，不是「有沒有人碰過」：`disable` 之後又 `enable` 回去，
+    /// 這一格就重新變回**空格子**。⇒ 這與 G18 那句「當前有幾項臨時覆蓋生效中」
+    /// 是同一個問題，而 `/stats` 的條目數、`/load` 的回話計數、
+    /// `fulcrum_overrides_active` 三處都必須是**這一個**答案。
     pub fn has_override(&self) -> bool {
         self.is_disabled() || self.weight().is_some()
     }
 }
 
-/// 登记处里的一条**清单项**：一格覆盖，连同它现在还管不管得到谁（裁决 R8）。
+/// 登記處裡的一條**清單項**：一格覆蓋，連同它現在還管不管得到誰（裁決 R8）。
 ///
-/// ⚠ 清单**只列设过覆盖的那些格子**（[`UpstreamOverride::has_override`]）——
-/// 空格子是惰性的，不计数、不出现在任何清单里。
+/// ⚠ 清單**只列設過覆蓋的那些格子**（[`UpstreamOverride::has_override`]）——
+/// 空格子是惰性的，不計數、不出現在任何清單裡。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverrideEntry {
     pub key: OverrideKey,
     pub disabled: bool,
-    /// 覆盖权重，`None` = 这一格没覆盖权重（只是 `disable`）。
+    /// 覆蓋權重，`None` = 這一格沒覆蓋權重（只是 `disable`）。
     pub weight: Option<u32>,
-    /// ★ **悬空**（裁决 R8）：这个键在**当前**运行时里落不到任何上游。
+    /// ★ **懸空**（裁決 R8）：這個鍵在**當前**執行環境裡落不到任何上游。
     ///
-    /// ⚠ ⚠ 悬空的覆盖**不删**：与 HAProxy 那个「runtime 改动 reload 之后无声消失」
-    /// 正相反 —— `keep` 就是 keep，而「它现在管不到谁」这件事**说出来**。
-    /// ⚠ 悬空的**照样算「生效中」**（R13 明写）：它确实还在登记处占着一格。
+    /// ⚠ ⚠ 懸空的覆蓋**不刪**：與 HAProxy 那個「runtime 改動 reload 之後無聲消失」
+    /// 正相反 —— `keep` 就是 keep，而「它現在管不到誰」這件事**說出來**。
+    /// ⚠ 懸空的**照樣算「生效中」**（R13 明寫）：它確實還在登記處佔著一格。
     pub dangling: bool,
-    /// 这一格**最后一次被设定**的墙钟时刻（R6 留下的那条，owner 拍板取「最后一次改动」）。
+    /// 這一格**最後一次被設定**的牆鍾時刻（R6 留下的那條，owner 拍板取「最後一次改動」）。
     ///
-    /// ⚠ ⚠ 它答的是「**这台机器现在这个样子摆了多久**」，⛔ 不是「这一格多老」——
-    /// 先改 `weight` 再 `disable`，取「首次」的读数会让人以为它已经被摘掉两天了，
-    /// 而其实两分钟前才摘。
+    /// ⚠ ⚠ 它答的是「**這臺機器現在這個樣子擺了多久**」，⛔ 不是「這一格多老」——
+    /// 先改 `weight` 再 `disable`，取「首次」的讀數會讓人以為它已經被摘掉兩天了，
+    /// 而其實兩分鐘前才摘。
     ///
-    /// ★ 换成绝对 Unix 秒是**落到 `/stats` 那一刻**才做的事（`metrics::unix_secs`，
-    /// 与 `config_loaded_at_unix` / `not_after_unix` 同一个换算）——⛔ 这里不存秒，
-    /// 理由与 [`crate::SharedRuntime::loaded_at`] 逐字相同。
+    /// ★ 換成絕對 Unix 秒是**落到 `/stats` 那一刻**才做的事（`metrics::unix_secs`，
+    /// 與 `config_loaded_at_unix` / `not_after_unix` 同一個換算）——⛔ 這裡不存秒，
+    /// 理由與 [`crate::SharedRuntime::loaded_at`] 逐字相同。
     pub set_at: std::time::SystemTime,
 }
 
-/// 一条已经解析好、准备落到某一格的**操作**（**M2 批 N 任务 4**，`POST /runtime`）。
+/// 一條已經解析好、準備落到某一格的**操作**（**M2 批 N 任務 4**，`POST /runtime`）。
 ///
-/// ★ `admin.rs::runtime` 的解析阶段会**先**用 [`UpstreamOverride::set_weight`] 自己的
-/// 判断校验一遍 `weight`（对着一格临时的 `UpstreamOverride::default()` 跑，只借判断、
-/// 不碰真实状态）——这给出更贴切的错误消息（不与"这个键找不到"混在一起）。
+/// ★ `admin.rs::runtime` 的解析階段會**先**用 [`UpstreamOverride::set_weight`] 自己的
+/// 判斷檢核一遍 `weight`（對著一格臨時的 `UpstreamOverride::default()` 跑，只借判斷、
+/// 不碰真實狀態）——這給出更貼切的錯誤訊息（不與"這個鍵找不到"混在一起）。
 ///
-/// ⚠ ⚠ ⚠ **但 `RuntimeOp` 与 [`OverrideLayer::apply_all`] 都是 `pub`**（修复轮 1，
-/// 评审 M4）：管理面之外的调用方——比如任务 5/6——完全可以绕过 `admin.rs` 那道预检，
-/// 直接构造一个越界的 `SetWeight(0)`。⇒ **值域的唯一真正守卫在 [`OverrideLayer::apply_all`]
-/// 自己身上**：它在施加前会用同一个 `UpstreamOverride::set_weight` 再校验一次，越界的
-/// 一律并入寻址失败的 `Err`，⛔ 不会静默吞掉。这不是"两份差不多的值域检查"——
-/// 两处调的是**同一个函数**，不是两份手写的平行逻辑；`admin.rs` 的预检只是为了更好的
-/// 错误消息，不是唯一的防线。
+/// ⚠ ⚠ ⚠ **但 `RuntimeOp` 與 [`OverrideLayer::apply_all`] 都是 `pub`**（修復輪 1，
+/// 評審 M4）：管理面之外的呼叫方——比如任務 5/6——完全可以繞過 `admin.rs` 那道預檢，
+/// 直接建構一個越界的 `SetWeight(0)`。⇒ **值域的唯一真正守衛在 [`OverrideLayer::apply_all`]
+/// 自己身上**：它在施加前會用同一個 `UpstreamOverride::set_weight` 再檢核一次，越界的
+/// 一律併入尋址失敗的 `Err`，⛔ 不會靜默吞掉。這不是"兩份差不多的值域檢查"——
+/// 兩處調的是**同一個函式**，不是兩份手寫的平行邏輯；`admin.rs` 的預檢只是為了更好的
+/// 錯誤訊息，不是唯一的防線。
 #[derive(Debug, Clone, Copy)]
 pub enum RuntimeOp {
     /// 摘掉（`true`）或放回（`false`）。
     SetDisabled(bool),
-    /// 设一个覆盖权重。⚠ **值域到这里还没保证合法**——由 [`OverrideLayer::apply_all`]
-    /// 在施加前用 [`UpstreamOverride::set_weight`] 校验（见上）。
+    /// 設一個覆蓋權重。⚠ **值域到這裡還沒保證合法**——由 [`OverrideLayer::apply_all`]
+    /// 在施加前用 [`UpstreamOverride::set_weight`] 檢核（見上）。
     SetWeight(u32),
 }
 
-/// [`RuntimeOp`] 加上它要落在登记处的哪一格。
+/// [`RuntimeOp`] 加上它要落在登記處的哪一格。
 #[derive(Debug, Clone)]
 pub struct RuntimeAction {
     pub key: OverrideKey,
     pub op: RuntimeOp,
 }
 
-/// **格子登记处**：本进程当前的全部临时覆盖（G18 / 裁决 R7）。
+/// **格子登記處**：本處理程序當前的全部臨時覆蓋（G18 / 裁決 R7）。
 ///
-/// 它**跨换代活着** —— 全量 load 换掉的是 [`crate::Runtime`]，不是这里。
-/// ⇒ 它挂在 [`crate::SharedRuntime`] 上（那是唯一跨换代活着的东西），
-/// ⛔ 别在别处再存一份。
+/// 它**跨換代活著** —— 全量 load 換掉的是 [`crate::Runtime`]，不是這裡。
+/// ⇒ 它掛在 [`crate::SharedRuntime`] 上（那是唯一跨換代活著的東西），
+/// ⛔ 別在別處再存一份。
 ///
-/// # ⚠ 空格子的生命周期
+/// # ⚠ 空格子的生命週期
 ///
-/// [`crate::Runtime::build_with_overrides`] 会给这份配置里的**每一个**键都登记一格
-/// （没有就现建）—— 于是绝大多数格子是**空的**（没设过任何覆盖）。它们：
+/// [`crate::Runtime::build_with_overrides`] 會給這份設定裡的**每一個**鍵都登記一格
+/// （沒有就現建）—— 於是絕大多數格子是**空的**（沒設過任何覆蓋）。它們：
 ///
-/// - **不计数、不进清单**（[`Self::active_count`] / [`Self::entries`] 只看设过覆盖的）
-///   ⇒ 一次建到一半失败的 load 不会让「有几项覆盖」这个数动一下（G8：不留痕迹）；
-/// - 在一次**成功的** swap 之后被清掉（[`Self::retain_after_swap`]），登记处不无界增长。
+/// - **不計數、不進清單**（[`Self::active_count`] / [`Self::entries`] 只看設過覆蓋的）
+///   ⇒ 一次建到一半失敗的 load 不會讓「有幾項覆蓋」這個數動一下（G8：不留痕跡）；
+/// - 在一次**成功的** swap 之後被清掉（[`Self::retain_after_swap`]），登記處不無界增長。
 ///
-/// ⚠ ⚠ **清的只是「没人引用**且**没设过覆盖」的那些**：设过覆盖而暂时没人引用的
-/// 是**悬空**（R8），必须留着 —— 那正是 `overrides=keep` 的全部意义。
+/// ⚠ ⚠ **清的只是「沒人引用**且**沒設過覆蓋」的那些**：設過覆蓋而暫時沒人引用的
+/// 是**懸空**（R8），必須留著 —— 那正是 `overrides=keep` 的全部意義。
 #[derive(Debug, Default)]
 pub struct OverrideLayer {
-    /// ⚠ `BTreeMap` 而不是 `HashMap`：清单是「永远可见」的东西（G18），
-    /// 而每次换一个顺序的清单没法逐次比对。
+    /// ⚠ `BTreeMap` 而不是 `HashMap`：清單是「永遠可見」的東西（G18），
+    /// 而每次換一個順序的清單沒法逐次比對。
     grids: std::sync::Mutex<BTreeMap<OverrideKey, Arc<UpstreamOverride>>>,
 }
 
@@ -289,16 +289,16 @@ impl OverrideLayer {
         OverrideLayer::default()
     }
 
-    /// ⚠ 锁中毒不该让转发或管理面停摆：中毒说明某个持锁线程 panic 过，
-    /// 而这张表本身仍然是完整的（同 [`crate::SharedRuntime::current`] 的处置）。
+    /// ⚠ 鎖中毒不該讓轉發或管理面停擺：中毒說明某個持鎖執行緒 panic 過，
+    /// 而這張表本身仍然是完整的（同 [`crate::SharedRuntime::current`] 的處置）。
     fn grids(&self) -> std::sync::MutexGuard<'_, BTreeMap<OverrideKey, Arc<UpstreamOverride>>> {
         self.grids.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// 按键取那一格，**没有就现建并登记**。
+    /// 按鍵取那一格，**沒有就現建並登記**。
     ///
-    /// ★ ★ 这是 R7 的核心动作：[`crate::Runtime::build_with_overrides`] 给每个上游
-    /// 挂格子走的就是它 ⇒ **键相同的上游拿到的是同一个 [`Arc`]**。
+    /// ★ ★ 這是 R7 的核心動作：[`crate::Runtime::build_with_overrides`] 給每個上游
+    /// 掛格子走的就是它 ⇒ **鍵相同的上游拿到的是同一個 [`Arc`]**。
     pub fn slot(&self, key: &OverrideKey) -> Arc<UpstreamOverride> {
         let mut g = self.grids();
         if let Some(s) = g.get(key) {
@@ -309,41 +309,41 @@ impl OverrideLayer {
         s
     }
 
-    /// 按键查那一格，**不建**。`None` = 登记处里没有这个键。
+    /// 按鍵查那一格，**不建**。`None` = 登記處裡沒有這個鍵。
     pub fn get(&self, key: &OverrideKey) -> Option<Arc<UpstreamOverride>> {
         self.grids().get(key).cloned()
     }
 
-    /// 把一格**已经存在的**格子收进登记处。
+    /// 把一格**已經存在的**格子收進登記處。
     ///
-    /// ★ 只有一个用途：[`crate::SharedRuntime::new`] 从一份**已经建好的**运行时身上
-    /// 认领它的格子 —— 那条路上 `Runtime` 已经是 `Arc`，拿不到 `&mut` 再挂一遍。
-    /// ⚠ 它之所以是对的，是因为**任何一份运行时的格子都已经按键共享过**
-    /// （[`crate::Runtime::build`] 自己也走 [`Self::slot`]，只是那张登记表是一次性的）
-    /// ⇒ 同一个键上认领几次，认领到的都是同一个 [`Arc`]。
+    /// ★ 只有一個用途：[`crate::SharedRuntime::new`] 從一份**已經建好的**執行環境身上
+    /// 認領它的格子 —— 那條路上 `Runtime` 已經是 `Arc`，拿不到 `&mut` 再掛一遍。
+    /// ⚠ 它之所以是對的，是因為**任何一份執行環境的格子都已經按鍵共享過**
+    /// （[`crate::Runtime::build`] 自己也走 [`Self::slot`]，只是那張登記表是一次性的）
+    /// ⇒ 同一個鍵上認領幾次，認領到的都是同一個 [`Arc`]。
     pub fn adopt(&self, key: OverrideKey, slot: Arc<UpstreamOverride>) {
         self.grids().insert(key, slot);
     }
 
-    /// **当前有几项临时覆盖生效中**（G18 原话）。⚠ 空格子不算。
+    /// **當前有幾項臨時覆蓋生效中**（G18 原話）。⚠ 空格子不算。
     pub fn active_count(&self) -> usize {
         self.grids().values().filter(|s| s.has_override()).count()
     }
 
-    /// 登记处里一共有几格（**含空格子**）。
+    /// 登記處裡一共有幾格（**含空格子**）。
     ///
-    /// ⚠ ⚠ 它**不是**「有几项覆盖」—— 那是 [`Self::active_count`]。
-    /// 这个数只给判据用：一条「空格子不计数」的判据，必须能证明**当时真的有空格子**，
-    /// 否则它在「一格都没建」的实现下同样是绿的（那是一把好坏两种情况读数相同的尺）。
+    /// ⚠ ⚠ 它**不是**「有幾項覆蓋」—— 那是 [`Self::active_count`]。
+    /// 這個數只給判據用：一條「空格子不計數」的判據，必須能證明**當時真的有空格子**，
+    /// 否則它在「一格都沒建」的實作下同樣是綠的（那是一把好壞兩種情況讀數相同的尺）。
     pub fn slot_count(&self) -> usize {
         self.grids().len()
     }
 
-    /// 覆盖清单（裁决 R8：悬空的**留着**并标出来）。
+    /// 覆蓋清單（裁決 R8：懸空的**留著**並標出來）。
     ///
-    /// ⚠ `live` 是**当前运行时**里全部的键（[`crate::Runtime::override_keys`]）。
-    /// ★ 别自己去拼这份 `live`：走 [`crate::SharedRuntime::override_entries`]，
-    /// 那里的 `live` 一定取自**正在服务的**那一份运行时。
+    /// ⚠ `live` 是**當前執行環境**裡全部的鍵（[`crate::Runtime::override_keys`]）。
+    /// ★ 別自己去拼這份 `live`：走 [`crate::SharedRuntime::override_entries`]，
+    /// 那裡的 `live` 一定取自**正在服務的**那一份執行環境。
     pub fn entries(&self, live: &BTreeSet<OverrideKey>) -> Vec<OverrideEntry> {
         self.grids()
             .iter()
@@ -353,21 +353,21 @@ impl OverrideLayer {
                 disabled: s.is_disabled(),
                 weight: s.weight(),
                 dangling: !live.contains(k),
-                // ★ 从**那一格自己**身上读，⛔ 不在这里取一次 `now()`：
-                //   那样每次列清单都会把所有时间刷成现在，而三条判据里只有一条看得出来。
+                // ★ 從**那一格自己**身上讀，⛔ 不在這裡取一次 `now()`：
+                //   那樣每次列清單都會把所有時間刷成現在，而三條判據裡只有一條看得出來。
                 set_at: s.set_at(),
             })
             .collect()
     }
 
-    /// 一次**成功的** swap 之后收拾登记处。返回清掉了几格。
+    /// 一次**成功的** swap 之後收拾登記處。回傳清掉了幾格。
     ///
-    /// 清掉的是「**新运行时不引用**、**且**没设过覆盖」的空格子。
+    /// 清掉的是「**新執行環境不引用**、**且**沒設過覆蓋」的空格子。
     ///
-    /// ⚠ ⚠ 两个条件缺一不可：
-    /// - 少了「不引用」⇒ 会把新运行时正拿着的那些空格子从登记表里摘掉，
-    ///   于是管理面按键找到的将是一格**新的**格子，改它对那个上游毫无作用；
-    /// - 少了「没设过覆盖」⇒ 会把**悬空覆盖**当垃圾清掉，那正是 R8 明令保留的东西。
+    /// ⚠ ⚠ 兩個條件缺一不可：
+    /// - 少了「不引用」⇒ 會把新執行環境正拿著的那些空格子從登記表裡摘掉，
+    ///   於是管理面按鍵找到的將是一格**新的**格子，改它對那個上游毫無作用；
+    /// - 少了「沒設過覆蓋」⇒ 會把**懸空覆蓋**當垃圾清掉，那正是 R8 明令保留的東西。
     pub fn retain_after_swap(&self, live: &BTreeSet<OverrideKey>) -> usize {
         let mut g = self.grids();
         let before = g.len();
@@ -375,35 +375,35 @@ impl OverrideLayer {
         before - g.len()
     }
 
-    /// `overrides=clear`（**M2 批 N 任务 5**，G120）：撤销登记处里**全部**格子
-    /// 上的覆盖，返回清空前确实带着覆盖的那些项（供调用方在回话里逐项列出，
-    /// G120 明写「必须逐项列出」，⛔ 只给个数字不算数）。
+    /// `overrides=clear`（**M2 批 N 任務 5**，G120）：撤銷登記處裡**全部**格子
+    /// 上的覆蓋，回傳清空前確實帶著覆蓋的那些項（供呼叫方在回話裡逐項列出，
+    /// G120 明寫「必須逐項列出」，⛔ 只給個數字不算數）。
     ///
-    /// # ⛔ ⛔ ★ ★ ★ 不物理删除格子
+    /// # ⛔ ⛔ ★ ★ ★ 不物理刪除格子
     ///
-    /// 那些格子的 [`Arc`] 还被**正在服务的** `Upstream` 攥着（`override_slot()`）
-    /// —— 物理删掉的只是登记处里的映射：同一个键，登记处再也查不到，而数据面
-    /// 还在用着那一格；下一次 `build_with_overrides` 拿同一个键调 [`Self::slot`]
-    /// 会**现建一格新的 `Arc`**，与仍在服务的那份**分家**——「覆盖层与上游身上
-    /// 那两个量在结构上是同一份」这条本模块的立身之本当场破掉，而且不报错。
+    /// 那些格子的 [`Arc`] 還被**正在服務的** `Upstream` 攥著（`override_slot()`）
+    /// —— 物理刪掉的只是登記處裡的映射：同一個鍵，登記處再也查不到，而資料面
+    /// 還在用著那一格；下一次 `build_with_overrides` 拿同一個鍵調 [`Self::slot`]
+    /// 會**現建一格新的 `Arc`**，與仍在服務的那份**分家**——「覆蓋層與上游身上
+    /// 那兩個量在結構上是同一份」這條本模組的立身之本當場破掉，而且不回報錯誤。
     ///
-    /// ⇒ 这里对每一格调 [`UpstreamOverride::set_disabled`]`(false)` +
-    /// [`UpstreamOverride::clear_weight`]，让 [`UpstreamOverride::has_override`]
-    /// 变回 `false`——格子退化成**空格子**，身份不断、映射不断，下一次成功的
+    /// ⇒ 這裡對每一格調 [`UpstreamOverride::set_disabled`]`(false)` +
+    /// [`UpstreamOverride::clear_weight`]，讓 [`UpstreamOverride::has_override`]
+    /// 變回 `false`——格子退化成**空格子**，身分不斷、映射不斷，下一次成功的
     /// swap 由 [`Self::retain_after_swap`] 自然回收。
     ///
-    /// # ⚠ ⚠ 同一次持锁内做完「枚举 + 清空 + 收集」
+    /// # ⚠ ⚠ 同一次持鎖內做完「枚舉 + 清空 + 收集」
     ///
-    /// 与 [`Self::apply_all`] 同一条纪律：⛔ 不许「先 [`Self::entries`] 列一遍、
-    /// 再在锁外逐个调 [`Self::slot`] 去改」——那是同一个 TOCTOU 窗口的第二个
-    /// 入口（`slot()` 在键不存在时还会现建一格，把一次并发的 `retain_after_swap`
-    /// 刚收走的键又救回来）。本方法用一次 [`Self::grids`] 贯穿读（记录清空前的
-    /// `disabled`/`weight`/`dangling`）与写（清空），中间不会被任何并发的
-    /// `apply_all` / `slot` / `retain_after_swap` 插进来。
+    /// 與 [`Self::apply_all`] 同一條紀律：⛔ 不許「先 [`Self::entries`] 列一遍、
+    /// 再在鎖外逐個調 [`Self::slot`] 去改」——那是同一個 TOCTOU 視窗的第二個
+    /// 入口（`slot()` 在鍵不存在時還會現建一格，把一次並行的 `retain_after_swap`
+    /// 剛收走的鍵又救回來）。本方法用一次 [`Self::grids`] 貫穿讀（記錄清空前的
+    /// `disabled`/`weight`/`dangling`）與寫（清空），中間不會被任何並行的
+    /// `apply_all` / `slot` / `retain_after_swap` 插進來。
     ///
-    /// `live` 与 [`Self::entries`] 同一口径：调用方传
-    /// [`crate::SharedRuntime::override_entries`] 背后那份 **swap 之后**的键集，
-    /// 用来给每一项被清掉的覆盖标好 `dangling`。
+    /// `live` 與 [`Self::entries`] 同一口徑：呼叫方傳
+    /// [`crate::SharedRuntime::override_entries`] 背後那份 **swap 之後**的鍵集，
+    /// 用來給每一項被清掉的覆蓋標好 `dangling`。
     pub fn clear_all(&self, live: &BTreeSet<OverrideKey>) -> Vec<OverrideEntry> {
         let g = self.grids();
         let mut cleared = Vec::new();
@@ -416,9 +416,9 @@ impl OverrideLayer {
                 disabled: s.is_disabled(),
                 weight: s.weight(),
                 dangling: !live.contains(k),
-                // ⚠ **在清掉之前读**：这条清单说的是「被清掉的那项覆盖当时是什么样」，
-                //   而下面两行清空动作本身也会盖一次时间戳 —— 读晚了就变成
-                //   「每一项都是刚刚设的」，那对每一条都是错的。
+                // ⚠ **在清掉之前讀**：這條清單說的是「被清掉的那項覆蓋當時是什麼樣」，
+                //   而下面兩行清空動作本身也會蓋一次時間戳 —— 讀晚了就變成
+                //   「每一項都是剛剛設的」，那對每一條都是錯的。
                 set_at: s.set_at(),
             });
             s.set_disabled(false);
@@ -427,44 +427,44 @@ impl OverrideLayer {
         cleared
     }
 
-    /// `POST /runtime` **唯一**的写入口（**M2 批 N 任务 4**）：一次持锁内做完
-    /// 「每一条都指得到」与「全部施加」——**全有或全无**，且不会撞上
-    /// [`Self::retain_after_swap`] 的 TOCTOU（任务 3 评审开出来的口子）。
+    /// `POST /runtime` **唯一**的寫入口（**M2 批 N 任務 4**）：一次持鎖內做完
+    /// 「每一條都指得到」與「全部施加」——**全有或全無**，且不會撞上
+    /// [`Self::retain_after_swap`] 的 TOCTOU（任務 3 評審開出來的口子）。
     ///
-    /// # ⚠ ⚠ ⚠ 为什么不能写成「先 `get()` 一批 `Arc`，再逐个改」
+    /// # ⚠ ⚠ ⚠ 為什麼不能寫成「先 `get()` 一批 `Arc`，再逐個改」
     ///
-    /// 拆成两步的话，中间可能被一次 `/load`（内部走 [`Self::retain_after_swap`]）
-    /// 插进来，把某一格从登记处移出去——调用方手上那个 `Arc` 还在，改的是一个
-    /// 已经没人认的孤儿：命令回 200，覆盖静默丢失，`/stats` 也看不到它
-    /// （登记处按键查不到）。⇒ 「查存在」与「改」必须在**同一次**持锁内完成，
-    /// 本方法就是那个复合动作。
+    /// 拆成兩步的話，中間可能被一次 `/load`（內部走 [`Self::retain_after_swap`]）
+    /// 插進來，把某一格從登記處移出去——呼叫方手上那個 `Arc` 還在，改的是一個
+    /// 已經沒人認的孤兒：命令回 200，覆蓋靜默丟失，`/stats` 也看不到它
+    /// （登記處按鍵查不到）。⇒ 「查存在」與「改」必須在**同一次**持鎖內完成，
+    /// 本方法就是那個複合動作。
     ///
-    /// # 寻址口径：`live` **与** 登记处**都**要认，两者缺一不可
+    /// # 尋址口徑：`live` **與** 登記處**都**要認，兩者缺一不可
     ///
-    /// `live` 是**当前正在服务**那份运行时的键集（调用方传
-    /// [`crate::Runtime::override_keys`]）。一条动作的键必须**同时**满足：
+    /// `live` 是**當前正在服務**那份執行環境的鍵集（呼叫方傳
+    /// [`crate::Runtime::override_keys`]）。一條動作的鍵必須**同時**滿足：
     ///
-    /// - **在 `live` 里**——把「悬空」（键还留在登记处，但当前运行时已经不认）
-    ///   挡在外面：悬空覆盖是 `keep` 的展示对象（裁决 R8），不是 `/runtime` 的
-    ///   操作对象；
-    /// - **登记处里现在真的有这一格**（不靠 `live`，靠这一次持锁内的 `grids`
-    ///   本身）——防的正是上面那个 TOCTOU：万一调用方传来的 `live` 是旧快照，
-    ///   而这一格真的已经被并发的一次 `/load` 收走了，这里仍然能当场发现并
-    ///   拒绝，不会去改一个孤儿。
+    /// - **在 `live` 裡**——把「懸空」（鍵還留在登記處，但當前執行環境已經不認）
+    ///   擋在外面：懸空覆蓋是 `keep` 的展示物件（裁決 R8），不是 `/runtime` 的
+    ///   操作物件；
+    /// - **登記處裡現在真的有這一格**（不靠 `live`，靠這一次持鎖內的 `grids`
+    ///   本身）——防的正是上面那個 TOCTOU：萬一呼叫方傳來的 `live` 是舊快照，
+    ///   而這一格真的已經被並行的一次 `/load` 收走了，這裡仍然能當場發現並
+    ///   拒絕，不會去改一個孤兒。
     ///
-    /// 任一条指不到、或任一条 `SetWeight` 越界 ⇒ **一格都不改**，返回全部这样的键
-    /// （`Err`，供调用方拼 400 报文时逐条列出）。全部通过 ⇒ 在这同一次持锁内逐条
+    /// 任一條指不到、或任一條 `SetWeight` 越界 ⇒ **一格都不改**，回傳全部這樣的鍵
+    /// （`Err`，供呼叫方拼 400 訊息時逐條列出）。全部通過 ⇒ 在這同一次持鎖內逐條
     /// 施加，`Ok(())`。
     ///
-    /// # ⚠ ⚠ ⚠ 值域校验（修复轮 1，评审 M4）：这里**不信任调用方**
+    /// # ⚠ ⚠ ⚠ 值域檢核（修復輪 1，評審 M4）：這裡**不信任呼叫方**
     ///
-    /// `RuntimeOp` 与本方法都是 `pub`——`admin.rs` 不是唯一可能的调用方（任务 5/6
-    /// 已经在排队）。一个绕过 `admin.rs` 解析阶段、直接构造 `SetWeight(0)` 的调用方，
-    /// 如果这里只顾着"查存在"而不回头看值域，就会在下面的 `set_weight` 上悄悄拿到
-    /// 一个 `Err` 而继续把整批当 `Ok` 收尾——**命令回 200，权重却没真的变**。
-    /// ⇒ 值域检查**在这里、与寻址判定同一次遍历里**做一遍：借
-    /// [`UpstreamOverride::set_weight`] 自己的判断（对着一格临时格子跑），
-    /// 不是重新手写一份平行的边界检查。
+    /// `RuntimeOp` 與本方法都是 `pub`——`admin.rs` 不是唯一可能的呼叫方（任務 5/6
+    /// 已經在排隊）。一個繞過 `admin.rs` 解析階段、直接建構 `SetWeight(0)` 的呼叫方，
+    /// 如果這裡只顧著"查存在"而不回頭看值域，就會在下面的 `set_weight` 上悄悄拿到
+    /// 一個 `Err` 而繼續把整批當 `Ok` 收尾——**命令回 200，權重卻沒真的變**。
+    /// ⇒ 值域檢查**在這裡、與尋址判定同一次遍歷裡**做一遍：借
+    /// [`UpstreamOverride::set_weight`] 自己的判斷（對著一格臨時格子跑），
+    /// 不是重新手寫一份平行的邊界檢查。
     pub fn apply_all(
         &self,
         live: &BTreeSet<OverrideKey>,
@@ -484,11 +484,11 @@ impl OverrideLayer {
         if !bad.is_empty() {
             return Err(bad);
         }
-        // ★ 全部指得到、值域也全部通过，逐条施加。上面已经在**同一次**持锁内
-        //   确认过每一格都在 `g` 里、每个 `SetWeight` 都合法 ⇒ 下面这两步结构上
-        //   都不会失败（没有任何代码能在这次持锁期间插进来改 `g`，`set_weight`
-        //   刚用同样的入参验证过一次）。`debug_assert!` 只是给这份"结构上不会
-        //   失败"的断言留一个看得见的钉子——真出现了就是这份不变量本身被破坏，
+        // ★ 全部指得到、值域也全部通過，逐條施加。上面已經在**同一次**持鎖內
+        //   確認過每一格都在 `g` 裡、每個 `SetWeight` 都合法 ⇒ 下面這兩步結構上
+        //   都不會失敗（沒有任何程式碼能在這次持鎖期間插進來改 `g`，`set_weight`
+        //   剛用同樣的入參驗證過一次）。`debug_assert!` 只是給這份"結構上不會
+        //   失敗"的斷言留一個看得見的釘子——真出現了就是這份不變數本身被破壞，
         //   而不是把它悄悄吞掉再回 `Ok`。
         for a in actions {
             let Some(slot) = g.get(&a.key) else {

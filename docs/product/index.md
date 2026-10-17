@@ -1,9 +1,9 @@
 ---
-type: 产品定位
-title: 产品
-description: 枢衡是什么、首版做多少、拿什么原则否决设计。
+type: 產品定位
+title: 產品
+description: 樞衡是什麼、首版做多少、拿什麼原則否決設計。
 resource: ../../PLAN.md
-tags: [产品, 索引]
+tags: [產品, 索引]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -14,6 +14,6 @@ sources:
     title: PLAN.md §2 §3 §4 §6
 ---
 
-* [定位](/product/positioning.md) - 一个进程覆盖三件事；被点名要消灭的五个坑；★ 竞争位置必须诚实记录
-* [首版范围](/product/scope.md) - ★ 先分清「全量」= 对外能力面全量，不是自研代码面全量
-* [设计原则](/product/design-principles.md) - 七条，每条都对应一个能拿来否决设计的判据
+* [定位](/product/positioning.md) - 一個處理程序覆蓋三件事；被點名要消滅的五個坑；★ 競爭位置必須誠實記錄
+* [首版範圍](/product/scope.md) - ★ 先分清「全量」= 對外能力面全量，不是自研程式碼面全量
+* [設計原則](/product/design-principles.md) - 七條，每條都對應一個能拿來否決設計的判據

@@ -1,4 +1,4 @@
-# AGENTS.md — 枢衡 Fulcrum
+# AGENTS.md — 樞衡 Fulcrum
 
 > Read [workspace rules](../AGENTS.md) on entry; do not assume they were loaded automatically.
 

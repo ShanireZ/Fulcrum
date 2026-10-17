@@ -1,4 +1,4 @@
-//! 枢衡的配置层：**DSL → 结构化配置**。
+//! 樞衡的設定層：**DSL → 結構化設定**。
 //!
 //! ```text
 //! DSL（Caddyfile 式，人写）
@@ -10,15 +10,15 @@
 //! 运行时对象图（路由表、上游池、TLS 解析器、缓存句柄）
 //! ```
 //!
-//! 规格见 [DSL 指令集参考](../../../docs/architecture/dsl-reference.md) 与
-//! [配置分层](../../../docs/architecture/configuration.md)。
+//! 規格見 [DSL 指令集參考](../../../docs/architecture/dsl-reference.md) 與
+//! [設定分層](../../../docs/architecture/configuration.md)。
 //!
-//! # 三条最容易做错的事（都已经变成门）
+//! # 三條最容易做錯的事（都已經變成門）
 //!
-//! 1. **加了指令却没在执行顺序表里给它位置** —— 见 [`directive`]：序号少了编不过；
-//!    而 [`compile`] 里的 `match` 没有 `_` 臂，「有位置但没人接」同样编不过。
-//! 2. **把占位符在不可用的位置解析成空串** —— 见 [`placeholder`]，那是编译错误。
-//! 3. **给 `remote_ip` 取 XFF 最左项** —— 那是客户端可伪造的。
+//! 1. **加了指令卻沒在執行順序表裡給它位置** —— 見 [`directive`]：序號少了編不過；
+//!    而 [`compile`] 裡的 `match` 沒有 `_` 臂，「有位置但沒人接」同樣編不過。
+//! 2. **把佔位符在不可用的位置解析成空串** —— 見 [`placeholder`]，那是編譯錯誤。
+//! 3. **給 `remote_ip` 取 XFF 最左項** —— 那是用戶端可偽造的。
 //!
 //! # 用法
 //!
@@ -46,26 +46,26 @@ pub mod secret_guard;
 pub use diag::{DiagCode, Diagnostic, Diagnostics, Severity, Source, Span};
 pub use model::StructuredConfig;
 
-/// 一次编译的结果。
+/// 一次編譯的結果。
 ///
-/// ★ **诊断与产物同时返回**，不是二选一：G51 要求「一次报全」，
-/// 而只有警告（没有错误）时产物是可用的——把它们做成 `Result` 会逼调用方
-/// 在「有警告」时丢掉一份本来能用的配置。
+/// ★ **診斷與產物同時回傳**，不是二選一：G51 要求「一次報全」，
+/// 而只有警告（沒有錯誤）時產物是可用的——把它們做成 `Result` 會逼呼叫方
+/// 在「有警告」時丟掉一份本來能用的設定。
 pub struct Outcome {
-    /// 只有在**没有 error 级诊断**时才是 `Some`。
+    /// 只有在**沒有 error 級診斷**時才是 `Some`。
     pub config: Option<StructuredConfig>,
     pub diagnostics: Diagnostics,
     pub source: Source,
 }
 
 impl Outcome {
-    /// 把全部诊断渲染成一段可以直接打印的文本。
+    /// 把全部診斷繪製成一段可以直接列印的文字。
     pub fn render_diagnostics(&self) -> String {
         self.diagnostics.render(&self.source)
     }
 }
 
-/// 编译一份 DSL 文本。
+/// 編譯一份 DSL 文字。
 pub fn compile_str(path: &str, text: &str) -> Outcome {
     let source = Source::new(path, text);
     let mut diagnostics = Diagnostics::new();

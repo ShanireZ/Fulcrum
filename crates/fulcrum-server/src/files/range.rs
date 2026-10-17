@@ -1,31 +1,31 @@
-//! `Range` 头：**只做单段**（G89）。
+//! `Range` 頭：**只做單段**（G89）。
 //!
-//! ⚠ 多段 `multipart/byteranges` **不做** —— 实现与判据成本与真实用途不成比例。
-//! 收到多段请求时**回 200 全量**，那是 RFC 9110 明确允许的
-//! （「接收方可以忽略 Range 头」），而不是一个错误。
+//! ⚠ 多段 `multipart/byteranges` **不做** —— 實作與判據成本與真實用途不成比例。
+//! 收到多段請求時**回 200 全量**，那是 RFC 9110 明確允許的
+//! （「接收方可以忽略 Range 頭」），而不是一個錯誤。
 //!
-//! ★ ★ 这里最容易写错的是**边界**，而边界错了不会报错、只会少发或多发几个字节：
-//! `bytes=0-0` 是 **1 个字节**（闭区间），`bytes=-0` 是**不可满足**（要末尾 0 个字节）。
-//! 下面每一条都有判据。
+//! ★ ★ 這裡最容易寫錯的是**邊界**，而邊界錯了不會回報錯誤、只會少發或多發幾個位元組：
+//! `bytes=0-0` 是 **1 個位元組**（閉區間），`bytes=-0` 是**不可滿足**（要末尾 0 個位元組）。
+//! 下面每一條都有判據。
 
-/// 一次单段 Range 的判定结果。
+/// 一次單段 Range 的判定結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeVerdict {
-    /// 就按 `[start, end]`（**闭区间**）发，回 206。
+    /// 就按 `[start, end]`（**閉區間**）發，回 206。
     Single { start: u64, end: u64 },
-    /// 语法认得，但落在文件之外 → **416 + `Content-Range: bytes */len`**。
+    /// 語法認得，但落在檔案之外 → **416 + `Content-Range: bytes */len`**。
     Unsatisfiable,
-    /// 忽略这个头，照常回 200 全量。
+    /// 忽略這個頭，照常回 200 全量。
     ///
-    /// ★ 三种情况都落这里，而它们**不该**被区分开：语法不认识、
-    /// 单位不是 `bytes`、是多段。RFC 允许忽略，忽略之后的行为完全一样。
+    /// ★ 三種情況都落這裡，而它們**不該**被區分開：語法不認識、
+    /// 單位不是 `bytes`、是多段。RFC 允許忽略，忽略之後的行為完全一樣。
     Ignore,
 }
 
-/// 解析 `Range` 头。`len` 是文件字节数。
+/// 解析 `Range` 頭。`len` 是檔案位元組數。
 pub fn parse(header: &str, len: u64) -> RangeVerdict {
     let Some(spec) = header.trim().strip_prefix("bytes=") else {
-        // 单位不是 bytes（RFC 只定义了 bytes 一种）。
+        // 單位不是 bytes（RFC 只定義了 bytes 一種）。
         return RangeVerdict::Ignore;
     };
     let mut parts = spec.split(',');
@@ -43,12 +43,12 @@ pub fn parse(header: &str, len: u64) -> RangeVerdict {
     let (a, b) = (a.trim(), b.trim());
 
     match (a.is_empty(), b.is_empty()) {
-        // `-n`：末尾 n 个字节。
+        // `-n`：末尾 n 個位元組。
         (true, false) => {
             let Ok(n) = b.parse::<u64>() else {
                 return RangeVerdict::Ignore;
             };
-            // ★ `bytes=-0` = 「末尾 0 个字节」= 不可满足，**不是**整个文件。
+            // ★ `bytes=-0` = 「末尾 0 個位元組」= 不可滿足，**不是**整個檔案。
             if n == 0 || len == 0 {
                 return RangeVerdict::Unsatisfiable;
             }
@@ -58,7 +58,7 @@ pub fn parse(header: &str, len: u64) -> RangeVerdict {
                 end: len - 1,
             }
         }
-        // `a-`：从 a 到末尾。
+        // `a-`：從 a 到末尾。
         (false, true) => {
             let Ok(start) = a.parse::<u64>() else {
                 return RangeVerdict::Ignore;
@@ -71,7 +71,7 @@ pub fn parse(header: &str, len: u64) -> RangeVerdict {
                 end: len - 1,
             }
         }
-        // `a-b`：闭区间。
+        // `a-b`：閉區間。
         (false, false) => {
             let (Ok(start), Ok(end)) = (a.parse::<u64>(), b.parse::<u64>()) else {
                 return RangeVerdict::Ignore;
@@ -79,23 +79,23 @@ pub fn parse(header: &str, len: u64) -> RangeVerdict {
             if start > end || start >= len {
                 return RangeVerdict::Unsatisfiable;
             }
-            // ⚠ 末端**截到文件尾**，不是拒 —— `bytes=0-999999` 要的是整个文件。
+            // ⚠ 末端**截到檔案尾**，不是拒 —— `bytes=0-999999` 要的是整個檔案。
             RangeVerdict::Single {
                 start,
                 end: end.min(len - 1),
             }
         }
-        // `-` 光一个连字符：语法不对。
+        // `-` 光一個連字元：語法不對。
         (true, true) => RangeVerdict::Ignore,
     }
 }
 
-/// 416 要带的 `Content-Range: bytes */len`。
+/// 416 要帶的 `Content-Range: bytes */len`。
 pub fn unsatisfiable_header(len: u64) -> String {
     format!("bytes */{len}")
 }
 
-/// 206 要带的 `Content-Range: bytes start-end/len`。
+/// 206 要帶的 `Content-Range: bytes start-end/len`。
 pub fn content_range(start: u64, end: u64, len: u64) -> String {
     format!("bytes {start}-{end}/{len}")
 }
@@ -124,7 +124,7 @@ mod tests {
         );
     }
 
-    // ★ 闭区间：`0-0` 是**一个**字节。差一错就在这里。
+    // ★ 閉區間：`0-0` 是**一個**位元組。差一錯就在這裡。
     #[test]
     fn 闭区间_单字节() {
         assert_eq!(parse("bytes=0-0", 1000), Single { start: 0, end: 0 });
@@ -137,8 +137,8 @@ mod tests {
         );
     }
 
-    // ★ ★ `bytes=-0` 要的是「末尾 0 个字节」⇒ **不可满足**，不是整个文件。
-    //   ⚠ 少了这条判据，`-0` 很容易被 `len - 0` 算成 `start = len` 再往下走。
+    // ★ ★ `bytes=-0` 要的是「末尾 0 個位元組」⇒ **不可滿足**，不是整個檔案。
+    //   ⚠ 少了這條判據，`-0` 很容易被 `len - 0` 算成 `start = len` 再往下走。
     #[test]
     fn 末尾零字节是不可满足而不是整个文件() {
         assert_eq!(parse("bytes=-0", 1000), Unsatisfiable);
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(parse("bytes=5-3", 1000), Unsatisfiable);
     }
 
-    // `-n` 比文件还大 ⇒ 就是整个文件（RFC 9110 明说要截）。
+    // `-n` 比檔案還大 ⇒ 就是整個檔案（RFC 9110 明說要截）。
     #[test]
     fn 末尾_n_大于文件长度就是整个文件() {
         assert_eq!(parse("bytes=-5000", 1000), Single { start: 0, end: 999 });
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(parse("bytes=0-0", 0), Unsatisfiable);
     }
 
-    // ★ 多段忽略 ⇒ 回 200 全量（G89 明确不做 multipart/byteranges）。
+    // ★ 多段忽略 ⇒ 回 200 全量（G89 明確不做 multipart/byteranges）。
     #[test]
     fn 多段被忽略而不是报错() {
         assert_eq!(parse("bytes=0-99,200-299", 1000), Ignore);
@@ -178,10 +178,10 @@ mod tests {
     #[test]
     fn 不认识的写法一律忽略() {
         for bad in [
-            "items=0-10", // 单位不是 bytes
-            "bytes=abc",  // 没有连字符
-            "bytes=-",    // 光一个连字符
-            "bytes=a-b",  // 不是数字
+            "items=0-10", // 單位不是 bytes
+            "bytes=abc",  // 沒有連字元
+            "bytes=-",    // 光一個連字元
+            "bytes=a-b",  // 不是數字
             "bytes=",     // 空
             "0-499",      // 少了 bytes=
         ] {
@@ -195,9 +195,9 @@ mod tests {
         assert_eq!(unsatisfiable_header(1000), "bytes */1000");
     }
 
-    // ★ ★ 长度自证：`Single` 的字节数必须等于 `end - start + 1`，
-    //   而且必须落在文件之内。⚠ 这条是拿**全部**判据的输出再核一遍 ——
-    //   单看每条断言都容易只盯住自己关心的那一端。
+    // ★ ★ 長度自證：`Single` 的位元組數必須等於 `end - start + 1`，
+    //   而且必須落在檔案之內。⚠ 這條是拿**全部**判據的輸出再核一遍 ——
+    //   單看每條斷言都容易只盯住自己關心的那一端。
     #[test]
     fn 凡是_single_都必须落在文件之内且长度自洽() {
         for spec in [

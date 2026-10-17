@@ -1,43 +1,43 @@
-//! 上游域名的**定期重解析**（`dns_refresh`）。
+//! 上游網域的**定期重解析**（`dns_refresh`）。
 //!
-//! # ★ ★ 它修的是三条**请求路径**上的缺陷，而不只是「定期刷新」
+//! # ★ ★ 它修的是三條**請求路徑**上的缺陷，而不只是「定期刷新」
 //!
-//! 根因：`HttpPeer::new` 是 `address.to_socket_addrs().unwrap()`，而数据面
-//! **每个请求**都构造一次 peer ⇒ ① 每请求一次**阻塞** `getaddrinfo`（跑在 async
-//! worker 线程上）；② 解析失败 **panic**，每请求一次（进程活着，站点永久坏掉）；
-//! ③ 客户端拿不到那个干净的 502，只看到连接被丢弃。
+//! 根因：`HttpPeer::new` 是 `address.to_socket_addrs().unwrap()`，而資料面
+//! **每個請求**都建構一次 peer ⇒ ① 每請求一次**阻塞** `getaddrinfo`（跑在 async
+//! worker 執行緒上）；② 解析失敗 **panic**，每請求一次（處理程序活著，站台永久壞掉）；
+//! ③ 用戶端拿不到那個乾淨的 502，只看到連接被丟棄。
 //!
-//! ★ ★ **既有的门一条都没抓到，原因很具体**：判据里所有上游都写的是
-//! `127.0.0.1:端口` —— **IP 字面量不走 DNS**，整套判据从没喂过一个域名上游。
+//! ★ ★ **既有的門一條都沒抓到，原因很具體**：判據裡所有上游都寫的是
+//! `127.0.0.1:端口` —— **IP 字面值不走 DNS**，整套判據從沒餵過一個網域上游。
 //!
-//! # 处置
+//! # 處置
 //!
-//! 解析结果存进 [`fulcrum_runtime::Upstream`] 的槽里，**请求路径只读槽**。
-//! 解析发生在三处、且**都不在请求路径上**：
+//! 解析結果存進 [`fulcrum_runtime::Upstream`] 的槽裡，**請求路徑唯讀槽**。
+//! 解析發生在三處、且**都不在請求路徑上**：
 //!
-//! 1. `serve` 启动时（同步跑一遍，还没收流量）；
-//! 2. 全量 load 生效**之前**（管理面那条路）——⚠ 少了这一步，一次 load
-//!    会让所有域名上游短暂地「没有地址」，而那是一次自找的抖动；
-//! 3. 本模块这个后台任务，按 `dns_refresh` 的节奏。
+//! 1. `serve` 啟動時（同步跑一遍，還沒收流量）；
+//! 2. 全量 load 生效**之前**（管理面那條路）——⚠ 少了這一步，一次 load
+//!    會讓所有網域上游短暫地「沒有位址」，而那是一次自找的抖動；
+//! 3. 本模組這個後台任務，按 `dns_refresh` 的節奏。
 //!
-//! # ⚠ 节奏取**全局最小值**，一处有意的简化
+//! # ⚠ 節奏取**全域最小值**，一處有意的簡化
 //!
-//! 按所有 `dns_refresh` 里最小的那个打点，每次把全部域名上游刷一遍。
-//! ★ 代价是「配了 60s 的那条实际上每 15s 被刷一次」——**更频繁，不是更稀疏**，
-//! 对正确性没有影响。⚠ 写下来是因为不写的话 `dns_refresh 60s` 看起来像是
-//! 做了什么它没做的事。
+//! 按所有 `dns_refresh` 裡最小的那個打點，每次把全部網域上游刷一遍。
+//! ★ 代價是「配了 60s 的那條實際上每 15s 被刷一次」——**更頻繁，不是更稀疏**，
+//! 對正確性沒有影響。⚠ 寫下來是因為不寫的話 `dns_refresh 60s` 看起來像是
+//! 做了什麼它沒做的事。
 
 use fulcrum_runtime::SharedRuntime;
 use log::{error, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 打点间隔的下界。★ 防一份写了 `dns_refresh 1s` 的配置把解析器打爆。
+/// 打點間隔的下界。★ 防一份寫了 `dns_refresh 1s` 的設定把解析器打爆。
 pub const MIN_INTERVAL: Duration = Duration::from_secs(5);
-/// 没有任何 `reverse_proxy` 时的兜底间隔（其实这时任务根本不会起）。
+/// 沒有任何 `reverse_proxy` 時的備援間隔（其實這時任務根本不會起）。
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(30);
 
-/// 从结构化配置里算出打点间隔 = 所有 `dns_refresh` 里最小的那个，再夹上下界。
+/// 從結構化設定裡算出打點間隔 = 所有 `dns_refresh` 裡最小的那個，再夾上下界。
 pub fn tick_interval(cfg: &fulcrum_config::StructuredConfig) -> Duration {
     let mut best: Option<u64> = None;
     fn walk(steps: &[fulcrum_config::model::Step], best: &mut Option<u64>) {
@@ -53,13 +53,13 @@ pub fn tick_interval(cfg: &fulcrum_config::StructuredConfig) -> Duration {
                     }
                 }
                 fulcrum_config::model::StepBody::Route { steps } => walk(steps, best),
-                // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
-                //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
-                //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
-                //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
-                // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
-                //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
-                //   —— 要名单就现场 grep 这两个枚举名。
+                // ⚠ 不寫 `_`：這類「走遍整張圖找某一類步驟」的 match 裡，`_` 還兼著
+                //   「這個變體不裝步驟、不用下鑽」這層意思 —— 而新增一個裝步驟的容器
+                //   變體會讓那層意思悄悄變假，夾具裡只有當時已有的容器，擋不住它。
+                //   ⇒ 規則：新增變體時這一族 match 必須一起改，由編譯期窮舉來逼。
+                // ★ 這一族**跨兩層**：執行環境圖 `BodyRt` 與設定圖 `StepBody` 各有一批
+                //   同形遍歷。⛔ 名單不抄進註解（寫死的名單沒有門守著，當天就會過期）
+                //   —— 要名單就現場 grep 這兩個枚舉名。
                 fulcrum_config::model::StepBody::Tracing
                 | fulcrum_config::model::StepBody::Header { .. }
                 | fulcrum_config::model::StepBody::Rewrite { .. }
@@ -82,12 +82,12 @@ pub fn tick_interval(cfg: &fulcrum_config::StructuredConfig) -> Duration {
     }
 }
 
-/// 启动时（或全量 load 生效前）同步跑一遍。**不在请求路径上。**
+/// 啟動時（或全量 load 生效前）同步跑一遍。**不在請求路徑上。**
 ///
-/// ★ 解析不出来**不拒绝启动**：一次 DNS 抖动不该让整台机器上所有站点都起不来，
-/// 包括那些根本没有域名上游的。⚠ 所以它打的是 **error** 而不是 warn ——
-/// 那个上游现在是**用不了**的状态，`pick()` 会跳过它，而运维需要立刻看到这件事。
-/// ★ 这与 G59 那条凭据校验的取舍是同一个形状，理由也一样。
+/// ★ 解析不出來**不拒絕啟動**：一次 DNS 抖動不該讓整臺機器上所有站台都起不來，
+/// 包括那些根本沒有網域上游的。⚠ 所以它打的是 **error** 而不是 warn ——
+/// 那個上游現在是**用不了**的狀態，`pick()` 會跳過它，而維運需要立刻看到這件事。
+/// ★ 這與 G59 那條憑證檢核的取捨是同一個形狀，理由也一樣。
 pub fn resolve_now(rt: &fulcrum_runtime::Runtime, occasion: &str) {
     let r = fulcrum_runtime::resolve_upstreams(rt);
     if r.queried == 0 {
@@ -107,7 +107,7 @@ pub fn resolve_now(rt: &fulcrum_runtime::Runtime, occasion: &str) {
     }
 }
 
-/// 挂在 Pingora 上的后台任务。
+/// 掛在 Pingora 上的後台任務。
 pub struct DnsRefreshService {
     rt: Arc<SharedRuntime>,
     interval: Duration,
@@ -126,20 +126,20 @@ impl pingora_core::services::background::BackgroundService for DnsRefreshService
             "上游 DNS 定期重解析已启动，每 {}s 一次",
             self.interval.as_secs()
         );
-        // ★ ★ 上一轮**解析不出来**的那些。用来把失败日志压成「状态翻转时才说」。
-        //   ⚠ 没有它的话，一个永久坏掉的上游会每 `interval` warn 一行 ——
-        //   5 秒一次就是一天一万七千行，而日志被淹掉之后，
-        //   真正**新**出现的那一条也没人看得见。
-        //   ★ 这与下面 `changed` 那条「只在有变化时说话」是同一条纪律，
-        //     只把它用在 `changed` 上等于同一条纪律只落实了一半。
+        // ★ ★ 上一輪**解析不出來**的那些。用來把失敗紀錄壓成「狀態翻轉時才說」。
+        //   ⚠ 沒有它的話，一個永久壞掉的上游會每 `interval` warn 一行 ——
+        //   5 秒一次就是一天一萬七千行，而紀錄被淹掉之後，
+        //   真正**新**出現的那一條也沒人看得見。
+        //   ★ 這與下面 `changed` 那條「只在有變化時說話」是同一條紀律，
+        //     只把它用在 `changed` 上等於同一條紀律只落實了一半。
         let mut failing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         loop {
             if *shutdown.borrow() {
                 info!("上游 DNS 重解析收到停机信号，退出");
                 return;
             }
-            // ★ `select!` 而不是先 sleep 再看信号：一个 30 秒的 sleep 会把
-            //   优雅停机拖成 30 秒。（与 ACME 巡检同一条纪律。）
+            // ★ `select!` 而不是先 sleep 再看信號：一個 30 秒的 sleep 會把
+            //   優雅停機拖成 30 秒。（與 ACME 巡檢同一條紀律。）
             tokio::select! {
                 _ = tokio::time::sleep(self.interval) => {}
                 changed = shutdown.changed() => {
@@ -150,9 +150,9 @@ impl pingora_core::services::background::BackgroundService for DnsRefreshService
                 }
             }
             let snapshot = self.rt.current();
-            // ⚠ ⚠ **`getaddrinfo` 是阻塞的**，必须扔进 blocking 池。
-            //   直接在 runtime 线程上跑，一台慢 DNS 就能把一个 worker 占住几秒——
-            //   而那正是本批要修的那件事，在这里重犯一次会格外讽刺。
+            // ⚠ ⚠ **`getaddrinfo` 是阻塞的**，必須扔進 blocking 池。
+            //   直接在 runtime 執行緒上跑，一臺慢 DNS 就能把一個 worker 佔住幾秒——
+            //   而那正是本批要修的那件事，在這裡重犯一次會格外諷刺。
             let joined = tokio::task::spawn_blocking(move || {
                 let r = fulcrum_runtime::resolve_upstreams(&snapshot);
                 (r.queried, r.changed, r.failed)
@@ -163,13 +163,13 @@ impl pingora_core::services::background::BackgroundService for DnsRefreshService
                     if queried == 0 {
                         continue;
                     }
-                    // ★ **只在有变化时说话**。每 30 秒打一行「没变化」会把日志淹掉，
-                    //   而淹掉之后真正变化的那一行也没人看得见。
+                    // ★ **只在有變化時說話**。每 30 秒打一行「沒變化」會把紀錄淹掉，
+                    //   而淹掉之後真正變化的那一行也沒人看得見。
                     for (addr, addrs) in changed {
                         let list: Vec<String> = addrs.iter().map(|a| a.to_string()).collect();
                         info!("上游 {addr} 的地址变了 → {}（dns_refresh）", list.join(" "));
                     }
-                    // ★ 失败**也只在状态翻转时说话**，理由见 `failing` 上那段。
+                    // ★ 失敗**也只在狀態翻轉時說話**，理由見 `failing` 上那段。
                     let now_failing: std::collections::BTreeSet<String> =
                         failed.iter().map(|(a, _)| a.clone()).collect();
                     for (addr, why) in &failed {
@@ -177,12 +177,12 @@ impl pingora_core::services::background::BackgroundService for DnsRefreshService
                             warn!("上游 {addr} 开始解析不出来（{why}）—— 保留上一次的结果继续用");
                         }
                     }
-                    // ⚠ 先收集再赋值：`difference` 借着 `failing`，不能边借边换。
+                    // ⚠ 先收集再賦值：`difference` 藉著 `failing`，不能邊借邊換。
                     let recovered: Vec<String> =
                         failing.difference(&now_failing).cloned().collect();
                     for addr in recovered {
-                        // ★ 恢复也要说一声。只报「开始坏」不报「好了」的日志，
-                        //   会让一次早已过去的故障看起来还在持续。
+                        // ★ 恢復也要說一聲。只報「開始壞」不報「好了」的紀錄，
+                        //   會讓一次早已過去的故障看起來還在持續。
                         info!("上游 {addr} 又解析得出来了");
                     }
                     failing = now_failing;
@@ -213,18 +213,18 @@ mod tests {
 
     #[test]
     fn 容器里面的那条也要被看见() {
-        // ⚠ 反向判据：只扫站点顶层的话，这一条会被漏掉，而漏掉的表现是
-        //   「按兜底 30s 打点」——看起来完全正常。
+        // ⚠ 反向判據：只掃站台頂層的話，這一條會被漏掉，而漏掉的表現是
+        //   「按備援 30s 打點」——看起來完全正常。
         let c = cfg(
             "http://a.com {\n  route {\n    reverse_proxy u:80 {\n      dns_refresh 7s\n    }\n  }\n}\n",
         );
-        // 7s 会被下界夹到 5s 以上 —— 这里它本来就大于下界。
+        // 7s 會被下界夾到 5s 以上 —— 這裡它本來就大於下界。
         assert_eq!(tick_interval(&c), Duration::from_secs(7));
     }
 
     #[test]
     fn 下界夹得住() {
-        // ★ 一份写了 1s 的配置不该把解析器打爆。
+        // ★ 一份寫了 1s 的設定不該把解析器打爆。
         let c = cfg("http://a.com {\n  reverse_proxy u:80 {\n    dns_refresh 1s\n  }\n}\n");
         assert_eq!(tick_interval(&c), MIN_INTERVAL);
     }

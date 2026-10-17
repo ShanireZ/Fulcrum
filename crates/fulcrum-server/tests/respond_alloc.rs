@@ -1,9 +1,9 @@
-//! `respond` 那条路上枢衡自己的分配（2026-10-15 · respond 剩的分配）。
+//! `respond` 那條路上樞衡自己的分配（2026-10-15 · respond 剩的分配）。
 //!
-//! ★ 单独一个测试二进制：`#[global_allocator]` 是整个二进制一份（同 `metrics_alloc.rs`、`files_alloc.rs`）。
-//! ★ 只数打开了开关的那个线程；整条请求在 current-thread 运行时里跑 ⇒ 都落在本线程。
-//! ⚠ **不钉整条请求的绝对次数**：那里一大半是 pingora / tokio / http 的，升一次依赖就会变。
-//!   钉的是两处「差」—— 头表之外只多 `Content-Length` 一个值 · h1 入口那一层只多 pingora 要的那一次装箱。
+//! ★ 單獨一個測試二進位：`#[global_allocator]` 是整個二進位一份（同 `metrics_alloc.rs`、`files_alloc.rs`）。
+//! ★ 只數打開了開關的那個執行緒；整條請求在 current-thread 執行環境裡跑 ⇒ 都落在本執行緒。
+//! ⚠ **不釘整條請求的絕對次數**：那裡一大半是 pingora / tokio / http 的，升一次依賴就會變。
+//!   釘的是兩處「差」—— 頭表之外只多 `Content-Length` 一個值 · h1 入口那一層只多 pingora 要的那一次裝箱。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -22,7 +22,7 @@ thread_local! {
     static N: Cell<u64> = const { Cell::new(0) };
 }
 
-/// 本线程开着开关时记一次。`try_with`：线程拆 TLS 的时候分配器照样会被调到。
+/// 本執行緒開著開關時記一次。`try_with`：執行緒拆 TLS 的時候分配器照樣會被調到。
 fn bump() {
     let _ = ON.try_with(|on| {
         if on.get() {
@@ -46,7 +46,7 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.dealloc(p, l) }
     }
 
-    // ⚠ realloc 也算一次：一个「先小后大」的实现会在这里而不是 alloc 里花钱。
+    // ⚠ realloc 也算一次：一個「先小後大」的實作會在這裡而不是 alloc 裡花錢。
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         bump();
         unsafe { System.realloc(p, l, n) }
@@ -66,21 +66,21 @@ fn stop() -> u64 {
     N.with(|n| n.get())
 }
 
-/// 只数 `f` 执行期间本线程的分配次数。
+/// 只數 `f` 執行期間本執行緒的分配次數。
 fn counted<T>(f: impl FnOnce() -> T) -> (T, u64) {
     start();
     let out = f();
     (out, stop())
 }
 
-/// ★ 内置反证：计数器真的在数。少了它，下面那几条的「差」也可能只是两边都数成了 0。
+/// ★ 內置反證：計數器真的在數。少了它，下面那幾條的「差」也可能只是兩邊都數成了 0。
 #[test]
 fn 计数分配器自己数得到分配() {
     let (_, n) = counted(|| std::hint::black_box(Vec::<u8>::with_capacity(64)));
     assert!(n >= 1, "分配一次都没数到");
 }
 
-/// `Content-Length` 的值：恰好一次分配，且与十进制写法逐字节相同。
+/// `Content-Length` 的值：恰好一次分配，且與十進位寫法逐位元組相同。
 #[test]
 fn content_length_值只分配一次_与十进制逐字节相同() {
     for n in [0u64, 7, 9, 10, 99, 100, 4096, 1 << 32, u64::MAX] {
@@ -90,10 +90,10 @@ fn content_length_值只分配一次_与十进制逐字节相同() {
     }
 }
 
-/// `respond` 一类的响应头：头表之外只多 `Content-Length` 那一个值 —— 带正文时补的 `Content-Type` 不分配。
+/// `respond` 一類的回應頭：頭表之外只多 `Content-Length` 那一個值 —— 帶正文時補的 `Content-Type` 不分配。
 #[test]
 fn 自建响应头在头表之外只多_content_length_一个值() {
-    // 对照：同一个状态码的空头表（表本身那几次）。
+    // 對照：同一個狀態碼的空頭表（表本身那幾次）。
     let (_, table) = counted(|| ResponseHeader::build_no_case(200, None).unwrap());
     let (h, with_body) = counted(|| simple_response_header(200, Some(4096), &[]).unwrap());
     assert_eq!(
@@ -135,20 +135,20 @@ fn app() -> Arc<FulcrumApp> {
     ))
 }
 
-/// 一条已经写进连接里的请求。客户端那一半交回去留着：丢了它，服务端读到的就是 EOF。
+/// 一條已經寫進連接裡的請求。用戶端那一半交回去留著：丟了它，伺服器端讀到的就是 EOF。
 async fn pending_request() -> (ServerSession, tokio::io::DuplexStream) {
     let (server, mut client) = tokio::io::duplex(64 * 1024);
     tokio::io::AsyncWriteExt::write_all(&mut client, b"GET / HTTP/1.1\r\nHost: a.example\r\n\r\n")
         .await
         .unwrap();
     let mut session = ServerSession::new_http1(Box::new(server));
-    // 与 pingora `apps/mod.rs` 给新连接第一条请求设的一样。
+    // 與 pingora `apps/mod.rs` 給新連接第一條請求設的一樣。
     session.set_keepalive(Some(60));
     (session, client)
 }
 
-/// h1 入口（pingora 实际调的 [`H1Entry`]）比直接调 [`FulcrumApp::serve_h1`] 只多 pingora 调它时那一次装箱：
-/// ⛔ 不再经 `HttpServerApp` 转一手（`#[async_trait]` 每过一层装一次箱 ⇒ 那是每条请求再多一次分配）。
+/// h1 入口（pingora 實際調的 [`H1Entry`]）比直接調 [`FulcrumApp::serve_h1`] 只多 pingora 調它時那一次裝箱：
+/// ⛔ 不再經 `HttpServerApp` 轉一手（`#[async_trait]` 每過一層裝一次箱 ⇒ 那是每條請求再多一次分配）。
 #[test]
 fn h1_入口那一层只多_pingora_要的那一次装箱() {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -160,8 +160,8 @@ fn h1_入口那一层只多_pingora_要的那一次装箱() {
         let entry = Arc::new(H1Entry::new(app.clone()));
         let (_tx, shutdown) = tokio::sync::watch::channel(false);
         let (mut via_entry, mut direct) = (u64::MAX, u64::MAX);
-        // 两条路交替各跑 5 轮、各取最小：一次性的分配（第一次用到的线程局部与指标序列、
-        // 跨秒那一刻 pingora 重排 `Date` 缓存）只会让某一轮多、不会让它少。
+        // 兩條路交替各跑 5 輪、各取最小：一次性的分配（第一次用到的執行緒局部與指標序列、
+        // 跨秒那一刻 pingora 重排 `Date` 快取）只會讓某一輪多、不會讓它少。
         for _ in 0..5 {
             let (s, _c) = pending_request().await;
             start();

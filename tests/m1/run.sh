@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# M1 spike #1 主场景：systemd `Type=notify` 前台运行下，一次 `systemctl reload` 触发的
-# 优雅升级要做到——**unit 全程不离开 active、三类流量零中断、停机仍走完排空**。
+# M1 spike #1 主場景：systemd `Type=notify` 前台執行下，一次 `systemctl reload` 觸發的
+# 優雅升級要做到——**unit 全程不離開 active、三類流量零中斷、停機仍走完排空**。
 #
-# ★ 这里跑的是**实测之后定下来的形状**（`ExitType=cgroup`，不交接 MainPID），
-#   而不是 G31 拍板时推断的那个（交接 MainPID）。为什么改，见
-#   `tests/m1/mainpid-handover.sh` 与 `docs/verification/m1-systemd.md`。
+# ★ 這裡跑的是**實測之後定下來的形狀**（`ExitType=cgroup`，不交接 MainPID），
+#   而不是 G31 拍板時推斷的那個（交接 MainPID）。為什麼改，見
+#   `tests/m1/mainpid-handover.sh` 與 `docs/verification/m1-systemd.md`。
 #
-# 这个脚本在**以 systemd 为 PID 1 的容器**里跑（由 tests/m1/systemd-run.sh 拉起），
-# 退出码即结论。
+# 這個指令碼在**以 systemd 為 PID 1 的容器**裡跑（由 tests/m1/systemd-run.sh 拉起），
+# 結束代碼即結論。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +19,7 @@ DURATION_MS=${DURATION_MS:-8000}
 INTERVAL_MS=${INTERVAL_MS:-20}
 BIND_HOST=${M1_BIND_HOST:-127.0.0.1}
 
-# conf/m1.yaml 里的两个值，这里只用来把「停机应该花多久」写成判据。
+# conf/m1.yaml 裡的兩個值，這裡只用來把「停機應該花多久」寫成判據。
 GRACE=5
 GRACEFUL=5
 
@@ -35,8 +35,8 @@ done
   || fail "unit 的 ExitType 是 '$(unit_prop ExitType)'，本场景的全部前提是 cgroup。
        （ExitType=main 时会发生什么，由 tests/m1/exit-type-main.sh 负责证明。）"
 rm -f "$PID_FILE"
-# ★ 这三条是 port_listening 的 **false 方向**。与 [1/9] 的 true 方向合起来，
-#   一次通过的运行就证明了这个原语两个方向都能报——它不是恒 false 的空操作。
+# ★ 這三條是 port_listening 的 **false 方向**。與 [1/9] 的 true 方向合起來，
+#   一次通過的執行就證明了這個原語兩個方向都能報——它不是恆 false 的空操作。
 for p in 8080 8081 8082; do
   proto=tcp; [ "$p" = 8082 ] && proto=udp
   ! port_listening "$p" "$proto" || fail "开跑前 $proto/$p 就已经在监听，端口被别的东西占着"
@@ -50,18 +50,18 @@ GEN1=$(main_pid)
 [ "$GEN1" -gt 0 ] 2>/dev/null || fail "MainPID 是 '$GEN1'，systemd 没跟上主进程"
 echo "  ✓ unit active/running，MainPID=gen1=$GEN1"
 
-# ★ port_listening 的 **true 方向**（见 [0/9]）。
+# ★ port_listening 的 **true 方向**（見 [0/9]）。
 for p in 8080 8081 8082; do
   proto=tcp; [ "$p" = 8082 ] && proto=udp
   port_listening "$p" "$proto" || fail "start 之后 $proto/$p 仍然没在监听"
 done
 pid_in_cgroup "$GEN1" || fail "gen1=$GEN1 不在 unit 的 cgroup 里"
 
-# ★ 两条关于 pid 文件的断言，方向相反，缺一不可：
-#   · pingora 默认的 /tmp/pingora.pid **不该存在** —— 它只由 daemonize() 写，
-#     不存在即证明前台模式生效（G31 的前提），而不只是配置里写了 daemon: false。
-#   · conf 里指定的那个**必须存在且内容正确** —— 它由 m1-systemd 自己兑现，
-#     `ExecReload` 整条路都建在它上面。
+# ★ 兩條關於 pid 檔案的斷言，方向相反，缺一不可：
+#   · pingora 預設的 /tmp/pingora.pid **不該存在** —— 它只由 daemonize() 寫，
+#     不存在即證明前台模式生效（G31 的前提），而不只是設定裡寫了 daemon: false。
+#   · conf 裡指定的那個**必須存在且內容正確** —— 它由 m1-systemd 自己兌現，
+#     `ExecReload` 整條路都建在它上面。
 [ ! -e /tmp/pingora.pid ] || fail "出现了 /tmp/pingora.pid —— 说明 daemonize() 跑了，前台模式没生效"
 [ -s "$PID_FILE" ] || fail "pid 文件 $PID_FILE 没出现，reload 将无处可查"
 [ "$(cat "$PID_FILE")" = "$GEN1" ] || fail "pid 文件里是 $(cat "$PID_FILE")，而 MainPID 是 $GEN1"
@@ -81,10 +81,10 @@ systemctl reload "$UNIT" || fail "systemctl reload 失败"
 echo "  reload 已返回（ExecReload 只是发了 SIGUSR2，换代是异步的）"
 
 echo "=== [4/9] 等新一代接手，并**逐次**盯住 ActiveState ==="
-# ★ ★ 核心判据有两条，缺一不可：
-#     · pid 文件必须指向一个新的、活着的、在本 unit cgroup 里的进程
-#     · 换代过程中 unit **一次都不许**离开 active —— 只看首尾两个快照会漏掉中间的抖动，
-#       而 G31 担心的正是「老进程一退出 unit 即被判定结束」这种瞬间事件。
+# ★ ★ 核心判據有兩條，缺一不可：
+#     · pid 檔案必須指向一個新的、活著的、在本 unit cgroup 裡的處理程序
+#     · 換代過程中 unit **一次都不許**離開 active —— 只看首尾兩個快照會漏掉中間的抖動，
+#       而 G31 擔心的正是「老處理程序一退出 unit 即被判定結束」這種瞬間事件。
 GEN2=""
 for _ in $(seq 1 100); do   # 100 × 0.2s = 20s 上限
   st=$(unit_state)
@@ -100,17 +100,17 @@ alive "$GEN1" || fail "gen1 在换代完成时就已经退出了，这一轮没�
 echo "  ✓ gen2 在 unit 的 cgroup 里；此刻两代同时活着（重叠窗口成立）"
 
 echo "=== [5/9] 等第一代自己退出 —— 这一步才是 G31 那条推断的真正判据 ==="
-for _ in $(seq 1 150); do   # 30s 上限：CLOSE_TIMEOUT(5) + grace(5) + graceful(5) 还有富余
+for _ in $(seq 1 150); do   # 30s 上限：CLOSE_TIMEOUT(5) + grace(5) + graceful(5) 還有富餘
   alive "$GEN1" || break
   sleep 0.2
 done
 alive "$GEN1" && fail "30 秒后 gen1=$GEN1 还没退出，排空卡住了"
-sleep 1   # 给 systemd 一点时间对「主进程退了」做出反应
+sleep 1   # 給 systemd 一點時間對「主處理程序退了」做出反應
 assert_active "第一代退出之后"
 alive "$GEN2" || fail "★ gen1 退出把 gen2 一起带走了 —— ExitType=cgroup 没有起作用"
-# ★ 把「MainPID 归零」这个代价也钉成判据。它不是缺陷，是 ExitType=cgroup 的直接后果，
-#   而**整个 pid 文件方案正是为它存在的**。哪天它不再归零（systemd 改了行为），
-#   ExecReload 就可以退回 $MAINPID，这条断言会红并提醒我们去简化。
+# ★ 把「MainPID 歸零」這個代價也釘成判據。它不是缺陷，是 ExitType=cgroup 的直接後果，
+#   而**整個 pid 檔案方案正是為它存在的**。哪天它不再歸零（systemd 改了行為），
+#   ExecReload 就可以退回 $MAINPID，這條斷言會紅並提醒我們去簡化。
 [ "$(main_pid)" = "0" ] \
   || fail "老代退出后 MainPID 是 $(main_pid)，而 ExitType=cgroup 下实测应当归零。
        行为变了：若它现在稳定指向新一代，ExecReload 可以退回 \$MAINPID，pid 文件那套可以删。"
@@ -135,18 +135,18 @@ UDP_OK=$(num udp_ok);     UDP_LOSS=$(num udp_losses)
 echo "  ✓ http $HTTP_OK/0  tcp $TCP_OK/0  udp $UDP_OK/0（成功/失败）"
 
 echo "=== [7/9] 再升一次（gen2 → gen3）——三件事一起验 ==="
-# 其一：**第二次 reload 必须也能成**。这不是凑数——`ExitType=cgroup` 之后 MainPID 已归零，
-#       若 ExecReload 还写着 `$MAINPID`，第一次 reload 能成、第二次失败（实测：退出码 1，
-#       journal 里是 kill 的 Usage，而 unit 仍 active —— **升级没发生**）。
-#       只升一次的测试**看不见**这个洞。
+# 其一：**第二次 reload 必須也能成**。這不是湊數——`ExitType=cgroup` 之後 MainPID 已歸零，
+#       若 ExecReload 還寫著 `$MAINPID`，第一次 reload 能成、第二次失敗（實測：結束代碼 1，
+#       journal 裡是 kill 的 Usage，而 unit 仍 active —— **升級沒發生**）。
+#       只升一次的測試**看不見**這個洞。
 #
-# 其二、其三：★ ★ 守住在 vendor/pingora 里修掉的两个 fd 缺陷。
-#       **它们只有到第三代才显形**，所以必须连升两次：
-#         ② 移交来的监听 fd 没有 CLOEXEC → gen3 每个监听 socket 被 2 个 fd 指着
-#         ① accept 出来的升级 socket 从不 close → gen2 漏 1 个、gen3 漏 2 个（叠乘）
-#       两条在 M0 里都不可能被覆盖：M0 的第二代是从 shell 起的，与第一代没有 fork 关系。
-#       ★ 修复在 fork 里（`FORK.md` 改动 ①②），所以这两条断言同时是**rebase 的守门人**：
-#         上游没接受、而 rebase 时漏了重做，它们会红。
+# 其二、其三：★ ★ 守住在 vendor/pingora 裡修掉的兩個 fd 缺陷。
+#       **它們只有到第三代才顯形**，所以必須連升兩次：
+#         ② 移交來的監聽 fd 沒有 CLOEXEC → gen3 每個監聽 socket 被 2 個 fd 指著
+#         ① accept 出來的升級 socket 從不 close → gen2 漏 1 個、gen3 漏 2 個（疊乘）
+#       兩條在 M0 裡都不可能被覆蓋：M0 的第二代是從 shell 起的，與第一代沒有 fork 關係。
+#       ★ 修復在 fork 裡（`FORK.md` 改動 ①②），所以這兩條斷言同時是**rebase 的守門人**：
+#         上游沒接受、而 rebase 時漏了重做，它們會紅。
 systemctl reload "$UNIT" || fail "第二次 reload 失败"
 GEN3=""
 for _ in $(seq 1 100); do
@@ -175,8 +175,8 @@ for g in "gen1:$FDPROF_GEN1" "gen2:$FDPROF_GEN2" "gen3:$FDPROF_GEN3"; do
 done
 echo "  ✓ 三代的监听 fd 都是每个 socket 一个（移交来的 fd 带 CLOEXEC，没有被 fork 带进下一代）"
 
-# ★ 把**原因**也钉住，而不是只钉后果。上面那条只说「没有多出来」，
-#   下面这条说明**为什么**没有多出来——两者一起才挡得住「换了别的机制碰巧也是 1」。
+# ★ 把**原因**也釘住，而不是隻釘後果。上面那條只說「沒有多出來」，
+#   下面這條說明**為什麼**沒有多出來——兩者一起才擋得住「換了別的機制碰巧也是 1」。
 for fd in $(listener_fds 8081 tcp); do
   fd_has_cloexec "$GEN3" "$fd" \
     || fail "gen3 的监听 fd=$fd **没有** FD_CLOEXEC。它会被 fork 带进下一代，
@@ -184,9 +184,9 @@ for fd in $(listener_fds 8081 tcp); do
 done
 echo "  ✓ gen3 的监听 fd 都带着 FD_CLOEXEC（原因，不只是后果）"
 
-# ★ ★ 第二条修复的判据：accept 出来的升级 socket 必须被关掉。
-#   修复前实测：gen1=0、gen2=1、gen3=2（自己泄漏一个 + 从 gen2 继承一个）——
-#   **两个缺陷会叠乘**：泄漏的那个也没有 CLOEXEC，于是逐代累加。
+# ★ ★ 第二條修復的判據：accept 出來的升級 socket 必須被關掉。
+#   修復前實測：gen1=0、gen2=1、gen3=2（自己洩漏一個 + 從 gen2 繼承一個）——
+#   **兩個缺陷會疊乘**：洩漏的那個也沒有 CLOEXEC，於是逐代累加。
 for g in "gen1:$GEN1" "gen2:$GEN2" "gen3:$GEN3"; do
   n=$(upgrade_sock_fds "${g#*:}")
   [ "$n" = "0" ] \
@@ -210,8 +210,8 @@ RESULT_PROP=$(unit_prop Result)
        ★ 若是 'signal'，那正是「交接过 MainPID」时的形状（见 mainpid-handover.sh）——
        检查有没有人把 MainPID 交接又加了回来。"
 [ -z "$(cgroup_pids)" ] || fail "stop 之后 cgroup 里还有进程：$(cgroup_pids | tr '\n' ' ')"
-# ★ 下界比上界更值钱：如果 stop **秒回**，说明它根本没等排空——那 TimeoutStopSec 这条
-#   结论就是假的，而且那恰好就是 MainPID 交接被否掉的原因。
+# ★ 下界比上界更值錢：如果 stop **秒回**，說明它根本沒等排空——那 TimeoutStopSec 這條
+#   結論就是假的，而且那恰好就是 MainPID 交接被否掉的原因。
 [ "$STOP_SECS" -ge "$GRACE" ] || fail "stop 只用了 ${STOP_SECS}s，比 grace_period_seconds=${GRACE} 还短 ——
        说明 systemd 没有等排空就把进程收掉了。这正是 MainPID 交接那条路的失败形状。"
 echo "  ✓ stop 用了 ${STOP_SECS}s（grace=${GRACE} + graceful=${GRACEFUL}），Result=success，cgroup 已空"

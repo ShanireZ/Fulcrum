@@ -1,19 +1,19 @@
-# PR — 投稿七（⏳ **材料已备，未发**；owner 2026-10-08 拍「先备材料、暂不发」）
+# PR — 投稿七（⏳ **材料已備，未發**；owner 2026-10-08 拍「先備材料、暫不發」）
 
-> ★ 本目录纪律：**先 issue、后 PR**。先发 [`issue-7-read-request.md`](issue-7-read-request.md)，
-> 拿到编号后把正文第一行的 `#<ISSUE_NUMBER>` 换掉。
-> ⚠ 正文 Verification 表里的 `#<H2_ISSUE_NUMBER>` 是**投稿九**的 issue 号（2026-10-16 补，那两条 h2 测试的根因）；
-> 投稿九没发就把「which fail with h2 0.4.20, see …」那半句删掉。
+> ★ 本目錄紀律：**先 issue、後 PR**。先發 [`issue-7-read-request.md`](issue-7-read-request.md)，
+> 拿到編號後把正文第一行的 `#<ISSUE_NUMBER>` 換掉。
+> ⚠ 正文 Verification 表裡的 `#<H2_ISSUE_NUMBER>` 是**投稿九**的 issue 號（2026-10-16 補，那兩條 h2 測試的根因）；
+> 投稿九沒發就把「which fail with h2 0.4.20, see …」那半句刪掉。
 >
-> 补丁（基于上游 `main` = `4487f7b`，带 `Signed-off-by`，**一份 PR、两个提交**，各自也能单独 `git am`）：
+> 補丁（基於上游 `main` = `4487f7b`，帶 `Signed-off-by`，**一份 PR、兩個提交**，各自也能單獨 `git am`）：
 > [`0007-Parse-request-headers-into-uninitialized-header-slots.patch`](0007-Parse-request-headers-into-uninitialized-header-slots.patch) ·
 > [`0008-Keep-request-header-refs-on-the-stack-instead-of-in-a-Vec.patch`](0008-Keep-request-header-refs-on-the-stack-instead-of-in-a-Vec.patch)。
-> 验证与注入反证见 [`README.md`](README.md) 投稿七一节。
+> 驗證與注入反證見 [`README.md`](README.md) 投稿七一節。
 >
-> ⚠ 机制上发 PR 前还要先把补丁推成 `ShanireZ/pingora` 上的一个分支（建议名 `read-request-slots`）——
-> 那也是一次以 owner 名义的外部写入，⛔ 未做。
+> ⚠ 機制上發 PR 前還要先把補丁推成 `ShanireZ/pingora` 上的一個分支（建議名 `read-request-slots`）——
+> 那也是一次以 owner 名義的外部寫入，⛔ 未做。
 >
-> ⚠ 正文 Verification 一节的环境与数字是 2026-10-08 在 `4487f7b` 上跑的；发前若 `main` 动了，**重跑后再改**。
+> ⚠ 正文 Verification 一節的環境與數字是 2026-10-08 在 `4487f7b` 上跑的；發前若 `main` 動了，**重跑後再改**。
 
 **Title**
 

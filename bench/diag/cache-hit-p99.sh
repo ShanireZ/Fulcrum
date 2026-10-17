@@ -1,48 +1,48 @@
 #!/usr/bin/env bash
-# 诊断读数：**磁盘命中**与**内存命中**的 p99 差（`G150` ②）。
+# 診斷讀數：**磁碟命中**與**記憶體命中**的 p99 差（`G150` ②）。
 #
 #   bash bench/diag/cache-hit-p99.sh <输出目录>
 #
-# ★ ★ ★ **这不是 §8 七类里的一类，本步也不判定、不比较、不打印任何「谁更快」。**
-#   §8 那七类是「与 Caddy / HAProxy / Nginx 三家对拍」；这一步只有枢衡自己，
-#   量的是**同一个进程的两种缓存后端**之间的差 —— 磁盘命中对内存命中，
-#   根本没有竞品。它回答 `PLAN.md` `G150` ② 那条判据：
-#   「M3 对拍**必须记录**『磁盘命中的 p99 − 内存命中的 p99』这一格，落进原始数据」。
+# ★ ★ ★ **這不是 §8 七類裡的一類，本步也不判定、不比較、不列印任何「誰更快」。**
+#   §8 那七類是「與 Caddy / HAProxy / Nginx 三家對拍」；這一步只有樞衡自己，
+#   量的是**同一個處理程序的兩種快取後端**之間的差 —— 磁碟命中對記憶體命中，
+#   根本沒有競品。它回答 `PLAN.md` `G150` ② 那條判據：
+#   「M3 對拍**必須記錄**『磁碟命中的 p99 − 記憶體命中的 p99』這一格，落進原始資料」。
 #
-# ⚠ ⚠ ⛔ **输出落 `diag/`，不落 `raw/`。** `bench/verdict.sh` 是
-#   `for raw_case in "$OUT_DIR"/raw/*/` —— `raw/` 下每个子目录都会被当成一类去判，
-#   而 `bench/read-raw.py` 把该目录下每个 `*.json` 当成一家被测。只有枢衡一家
-#   ⇒ 判据 ④ 会按「有效读数不足两条」判 `VOID`。两个方向由 `tests/bench/gate.sh`
-#   的 C18 钉着（与 `respond-ceiling` 的 C17 同形）。
+# ⚠ ⚠ ⛔ **輸出落 `diag/`，不落 `raw/`。** `bench/verdict.sh` 是
+#   `for raw_case in "$OUT_DIR"/raw/*/` —— `raw/` 下每個子目錄都會被當成一類去判，
+#   而 `bench/read-raw.py` 把該目錄下每個 `*.json` 當成一家被測。只有樞衡一家
+#   ⇒ 判據 ④ 會按「有效讀數不足兩條」判 `VOID`。兩個方向由 `tests/bench/gate.sh`
+#   的 C18 釘著（與 `respond-ceiling` 的 C17 同形）。
 #
-# ⚠ ⚠ **有意不定阈值**（`G150` ② 明写）：定一个没有实测支撑的数字正是 `G148` ③
-#   点名的那种错。本步只把数量出来。
+# ⚠ ⚠ **有意不定閾值**（`G150` ② 明寫）：定一個沒有實測支撐的數字正是 `G148` ③
+#   點名的那種錯。本步只把數量出來。
 #
-# ── 拓扑 ───────────────────────────────────────────────────────────────────
+# ── 拓撲 ───────────────────────────────────────────────────────────────────
 #
-#   源站（file_server） ← 反代 + cache（内存 / 磁盘两个变体，**一次只起一个**）
+#   源站（file_server） ← 反代 + cache（記憶體 / 磁碟兩個變體，**一次只起一個**）
 #
-# ★ 为什么必须有源站：`crates/fulcrum-server/src/lib.rs:654` 写着「缓存**只裹
-#   `reverse_proxy`**」⇒ ⛔ 不能把 `cache` 挂在 `file_server` 上省掉这一层。
-# ⚠ 而**命中之后源站根本不被访问** ⇒ 它在测量窗口里的 CPU 成本 ≈ 0。
+# ★ 為什麼必須有源站：`crates/fulcrum-server/src/lib.rs:654` 寫著「快取**只裹
+#   `reverse_proxy`**」⇒ ⛔ 不能把 `cache` 掛在 `file_server` 上省掉這一層。
+# ⚠ 而**命中之後源站根本不被訪問** ⇒ 它在測量視窗裡的 CPU 成本 ≈ 0。
 #
-# ── 对齐口径（两个变体之间）────────────────────────────────────────────────
+# ── 對齊口徑（兩個變體之間）────────────────────────────────────────────────
 #
-#   ① **一次只起一个变体。** 同时跑会互相抢 CPU，量到的是「两个一起跑」这件事。
-#   ② 同一个源站进程、同一份 payload 字节、同一个 URL 路径。
-#   ③ 访问日志两边全关；明文 HTTP/1.1 + keep-alive。
-#   ④ worker 数三个进程一致（`BENCH_WORKERS`）。
-#   ⑤ 内存那份是**从磁盘那份删行派生**的，⛔ 不是另写一份（单变量由生成方式保证）。
-#      ⚠ **两处差别，如实写在这里**：① `disk` 那一行被删掉（这是被测的那个变量）；
-#      ② 监听端口不同 —— 两个变体虽然一次只起一个，但沿用 `respond-ceiling.sh` 的
-#      两端口做法，⛔ 不共用一个端口去赌 TIME_WAIT 与释放时机。
-#      ⇒ 「唯一差别是 disk 那一行」这句话**不成立**，别那么写；成立的是
-#      「**语义上**唯一的变量是缓存后端，端口那处是机械必需」。
+#   ① **一次只起一個變體。** 同時跑會互相搶 CPU，量到的是「兩個一起跑」這件事。
+#   ② 同一個源站處理程序、同一份 payload 位元組、同一個 URL 路徑。
+#   ③ 訪問紀錄兩邊全關；明文 HTTP/1.1 + keep-alive。
+#   ④ worker 數三個處理程序一致（`BENCH_WORKERS`）。
+#   ⑤ 記憶體那份是**從磁碟那份刪行派生**的，⛔ 不是另寫一份（單變數由生成方式保證）。
+#      ⚠ **兩處差別，如實寫在這裡**：① `disk` 那一行被刪掉（這是被測的那個變數）；
+#      ② 監聽連接埠不同 —— 兩個變體雖然一次只起一個，但沿用 `respond-ceiling.sh` 的
+#      兩連接埠做法，⛔ 不共用一個連接埠去賭 TIME_WAIT 與釋放時機。
+#      ⇒ 「唯一差別是 disk 那一行」這句話**不成立**，別那麼寫；成立的是
+#      「**語義上**唯一的變數是快取後端，連接埠那處是機械必需」。
 set -euo pipefail
 
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# ⚠ 只为拿那四个负载参数的缺省（`bench/lib.sh` 的「负载参数」一节）。
-#   ⛔ 不许在本文件里再写一份 `:-` 缺省 —— 那正是 G147 治掉的那一族。
+# ⚠ 只為拿那四個負載參數的預設（`bench/lib.sh` 的「負載參數」一節）。
+#   ⛔ 不許在本檔案裡再寫一份 `:-` 預設 —— 那正是 G147 治掉的那一族。
 # shellcheck source=bench/lib.sh
 . "$BENCH_DIR/lib.sh"
 
@@ -52,16 +52,16 @@ DIAG_DIR="$OUT_DIR/diag/$NAME"
 WORK=$(mktemp -d)
 HOST=127.0.0.1
 
-# ⛔ 这四个不带 `:-`：缺省由上面那次 `source` 供（G147 一处定义）。
+# ⛔ 這四個不帶 `:-`：預設由上面那次 `source` 供（G147 一處定義）。
 DURATION=$BENCH_DURATION
 CONNECTIONS=$BENCH_CONNECTIONS
 WORKERS=$BENCH_WORKERS
 PAYLOAD_BYTES=$BENCH_PAYLOAD_BYTES
 FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 
-# 端口：9946–9948，在 `docs/platform/host-and-gate-traps.md` 那张表已保留的
-# 9940–9949 段之内（9940–9943 归静态吞吐，9944–9945 归 respond-ceiling）。
-# ⛔ 一个都别改成 :80 —— 那个端口在门禁里是共享的（G137）。
+# 連接埠：9946–9948，在 `docs/platform/host-and-gate-traps.md` 那張表已保留的
+# 9940–9949 段之內（9940–9943 歸靜態吞吐，9944–9945 歸 respond-ceiling）。
+# ⛔ 一個都別改成 :80 —— 那個連接埠在門禁裡是共享的（G137）。
 PORT_ORIGIN=${BENCH_PORT_CACHE_ORIGIN:-9946}
 PORT_MEM=${BENCH_PORT_CACHE_MEM:-9947}
 PORT_DISK=${BENCH_PORT_CACHE_DISK:-9948}
@@ -75,13 +75,13 @@ bad() {
   echo "  ✗ $*" >&2
 }
 
-# ── ttl 由 BENCH_DURATION 算出来，⛔ 不写字面量 ────────────────────────────
+# ── ttl 由 BENCH_DURATION 算出來，⛔ 不寫字面值 ────────────────────────────
 #
-# ★ ★ 一个写死的 `ttl` 与一个可改的 `BENCH_DURATION` 是**两处会飘的值**，
-#   而飘掉的那天没有任何东西会说 —— 症状是「量到的其实是重验证」，
-#   而 oha 的 JSON 里看不出这件事，输出看着完全正常。⇒ 一处定义（G147 那条形状）。
-# ⚠ 认不出的写法**当场死**，⛔ 不回落到某个缺省：一个安静回落的解析器
-#   会让 ttl 变成一个只有它自己知道的数。
+# ★ ★ 一個寫死的 `ttl` 與一個可改的 `BENCH_DURATION` 是**兩處會飄的值**，
+#   而飄掉的那天沒有任何東西會說 —— 症狀是「量到的其實是重驗證」，
+#   而 oha 的 JSON 裡看不出這件事，輸出看著完全正常。⇒ 一處定義（G147 那條形狀）。
+# ⚠ 認不出的寫法**當場死**，⛔ 不回落到某個預設：一個安靜回落的解析器
+#   會讓 ttl 變成一個只有它自己知道的數。
 duration_secs() {
   local d=$1 n unit
   n=${d%[smh]}
@@ -105,7 +105,7 @@ duration_secs() {
 DURATION_SECS=$(duration_secs "$DURATION")
 TTL="$((DURATION_SECS * 10))s"
 
-# ── 原语（与 bench/diag/respond-ceiling.sh 同一套，理由见那里的注释）──────
+# ── 原語（與 bench/diag/respond-ceiling.sh 同一套，理由見那裡的註解）──────
 port_listening() {
   timeout 1 bash -c "exec 3<>/dev/tcp/$HOST/$1" 2>/dev/null
 }
@@ -164,11 +164,11 @@ if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
   pin_load=(taskset -c "$BENCH_LOAD_CPUS")
 fi
 
-# ── 站点根与缓存根：**各开各的子目录**，⛔ 不共用一个 ──────────────────────
+# ── 站台根與快取根：**各開各的子目錄**，⛔ 不共用一個 ──────────────────────
 #
-# ★ 复用现有 ext4 匿名卷（owner 2026-09-09 拍板）：不动 bench/docker-run.sh 的卷集；
-#   与生产形状一致（同一块盘）。⚠ 带 `$$` 是照 respond-ceiling.sh:128 的做法 ——
-#   `BENCH_WWW_ROOT` 是跨步骤共用的挂载点，不带 pid 时两步会互相踩。
+# ★ 重複使用現有 ext4 匿名卷（owner 2026-09-09 拍板）：不動 bench/docker-run.sh 的卷集；
+#   與生產形狀一致（同一塊盤）。⚠ 帶 `$$` 是照 respond-ceiling.sh:128 的做法 ——
+#   `BENCH_WWW_ROOT` 是跨步驟共用的掛載點，不帶 pid 時兩步會互相踩。
 if [ -n "${BENCH_WWW_ROOT:-}" ]; then
   BASE="$BENCH_WWW_ROOT/$NAME-$$"
 else
@@ -179,8 +179,8 @@ WWW="$BASE/www"
 CACHE_DIR="$BASE/cache"
 mkdir -p "$WWW" "$CACHE_DIR" "$DIAG_DIR"
 
-# payload：⚠ 与 respond-ceiling 不同，这里**不必可打印** —— 它由源站的
-# `file_server` 从磁盘发出，不进 DSL 的内联正文。⇒ 与静态吞吐那一类同源。
+# payload：⚠ 與 respond-ceiling 不同，這裡**不必可列印** —— 它由源站的
+# `file_server` 從磁碟發出，不進 DSL 的內聯正文。⇒ 與靜態吞吐那一類同源。
 head -c "$PAYLOAD_BYTES" /dev/urandom > "$WWW/payload.bin"
 ACTUAL_BYTES=$(wc -c < "$WWW/payload.bin" | tr -d ' ')
 [ "$ACTUAL_BYTES" = "$PAYLOAD_BYTES" ] || {
@@ -189,7 +189,7 @@ ACTUAL_BYTES=$(wc -c < "$WWW/payload.bin" | tr -d ' ')
 }
 URL_PATH=/payload.bin
 
-# ── 渲染三份配置 ───────────────────────────────────────────────────────────
+# ── 繪製三份設定 ───────────────────────────────────────────────────────────
 render() {
   local src=$1 dst=$2 port=$3
   sed -e "s|__PORT__|$port|g" \
@@ -203,14 +203,14 @@ render() {
 render "$BENCH_DIR/conf/fulcrum-cache-origin.Fulcrumfile" "$WORK/origin.Fulcrumfile" "$PORT_ORIGIN"
 render "$BENCH_DIR/conf/fulcrum-cache-disk.Fulcrumfile" "$WORK/disk.Fulcrumfile" "$PORT_DISK"
 
-# ★ ★ ★ 内存那一份**由磁盘那份删掉 `disk` 一行派生**，别的一个字节不改
-#   —— 单变量由生成方式保证（照 tests/cache/disk.sh:145-146）。
-#   ⚠ 端口那一格要换成内存变体的，⇒ 先删行再改端口，两步都只动一行。
+# ★ ★ ★ 記憶體那一份**由磁碟那份刪掉 `disk` 一行派生**，別的一個位元組不改
+#   —— 單變數由生成方式保證（照 tests/cache/disk.sh:145-146）。
+#   ⚠ 連接埠那一格要換成記憶體變體的，⇒ 先刪行再改連接埠，兩步都只動一行。
 grep -v '^        disk ' "$WORK/disk.Fulcrumfile" > "$WORK/mem.Fulcrumfile.tmp"
 sed -e "s|:$PORT_DISK {|:$PORT_MEM {|" "$WORK/mem.Fulcrumfile.tmp" > "$WORK/mem.Fulcrumfile"
-# ⚠ 派生自证：删掉的**必须恰好是一行**，且那一行**必须**是 `disk`。
-#   ⛔ 少了这一步，缩进一改 grep 就什么都删不掉，而两个变体会变成同一个后端 ——
-#   那种失效下 delta 恒等于「两次内存命中之差」，看着完全正常。
+# ⚠ 派生自證：刪掉的**必須恰好是一行**，且那一行**必須**是 `disk`。
+#   ⛔ 少了這一步，縮進一改 grep 就什麼都刪不掉，而兩個變體會變成同一個後端 ——
+#   那種失效下 delta 恆等於「兩次記憶體命中之差」，看著完全正常。
 DISK_LINES=$(wc -l < "$WORK/disk.Fulcrumfile")
 MEM_LINES=$(wc -l < "$WORK/mem.Fulcrumfile")
 if [ "$((DISK_LINES - MEM_LINES))" != 1 ]; then
@@ -222,23 +222,23 @@ if grep -q '^        disk ' "$WORK/mem.Fulcrumfile"; then
   exit 1
 fi
 
-# ── 承重件：量之前先证明量的真是那个后端的命中 ─────────────────────────────
+# ── 承重件：量之前先證明量的真是那個後端的命中 ─────────────────────────────
 #
-# ⚠ ⚠ ⛔ 这一格最危险的失效是「以为在量磁盘命中，其实缓存压根没开」：
-#   `dsl-reference.md` 明写「配了 `disk` 而目录用不了」时**缓存是关掉的、照常转发**，
-#   `X-Fulcrum-Cache` 那个头**一个都不会出现** —— 而那种情况下 oha 照样量得出
-#   一组**看起来完全正常**的数，⛔ 不会有任何东西说。
-# ★ 判别力来自 `dsl-reference.md`：「后缀说的是**这个进程真的挑中了哪个后端**，
-#   不是配置里写了什么」。单测在 `crates/fulcrum-server/src/cache/mod.rs:587,590`。
-# ⚠ ⚠ **指标那一层答不了这个问题**：`cache/mod.rs:280` 写着它「折得比响应头**粗**：
-#   `HIT` 与 `HIT-DISK` 在指标上是同一格」⇒ ⛔ 别想用 `metrics` 代替本判据。
-# ★ ★ ★ **观测到的值要落进原始数据，⛔ 不能只以「✓ 打印行」的形式存在。**
-#   ⚠ 2026-09-09 实测撞出来的：本步在门禁里跑时，`tests/bench/gate.sh:40` 把
-#   `bench/run.sh` 的输出重定向进**容器里**的 `/tmp/bench-gate.log`，`--rm` 之后就没了
-#   ⇒ 那几行 `✓` **没有任何人看得见**，包括写它的人。
-#   ⇒ 于是「量的是不是那个后端」这件事就只剩「相信这个脚本的控制流」这一条路，
-#   而那正是 G147 治的那一族：**口径必须落在原始数据里**。
-#   ⇒ 观测值写进 `delta.json`，由 `tests/bench/gate.sh` 的 C18 **独立复核**。
+# ⚠ ⚠ ⛔ 這一格最危險的失效是「以為在量磁碟命中，其實快取壓根沒開」：
+#   `dsl-reference.md` 明寫「配了 `disk` 而目錄用不了」時**快取是關掉的、照常轉發**，
+#   `X-Fulcrum-Cache` 那個頭**一個都不會出現** —— 而那種情況下 oha 照樣量得出
+#   一組**看起來完全正常**的數，⛔ 不會有任何東西說。
+# ★ 判別力來自 `dsl-reference.md`：「後綴說的是**這個處理程序真的挑中了哪個後端**，
+#   不是設定裡寫了什麼」。單測在 `crates/fulcrum-server/src/cache/mod.rs:587,590`。
+# ⚠ ⚠ **指標那一層答不了這個問題**：`cache/mod.rs:280` 寫著它「折得比回應頭**粗**：
+#   `HIT` 與 `HIT-DISK` 在指標上是同一格」⇒ ⛔ 別想用 `metrics` 代替本判據。
+# ★ ★ ★ **觀測到的值要落進原始資料，⛔ 不能只以「✓ 列印行」的形式存在。**
+#   ⚠ 2026-09-09 實測撞出來的：本步在門禁裡跑時，`tests/bench/gate.sh:40` 把
+#   `bench/run.sh` 的輸出重定向進**容器裡**的 `/tmp/bench-gate.log`，`--rm` 之後就沒了
+#   ⇒ 那幾行 `✓` **沒有任何人看得見**，包括寫它的人。
+#   ⇒ 於是「量的是不是那個後端」這件事就只剩「相信這個指令碼的控制流」這一條路，
+#   而那正是 G147 治的那一族：**口徑必須落在原始資料裡**。
+#   ⇒ 觀測值寫進 `delta.json`，由 `tests/bench/gate.sh` 的 C18 **獨立複核**。
 STATE_LOG="$WORK/cache-states.tsv"
 : > "$STATE_LOG"
 
@@ -256,8 +256,8 @@ assert_cache_state() {
   hdr=$(curl -sS -D - -o "$WORK/$name.body" "http://$HOST:$port$URL_PATH" 2>>"$log" || true)
   got=$(printf '%s' "$hdr" | tr -d '\r' | awk -F': ' 'tolower($1) == "x-fulcrum-cache" { print $2 }')
   age=$(printf '%s' "$hdr" | tr -d '\r' | awk -F': ' 'tolower($1) == "age" { print $2 }')
-  # ⚠ 无论过没过都记：一份记着「这里当时是空的」的原始数据，比一份干脆没有这一格的
-  #   原始数据诚实得多。⛔ 只在成功时记 = 事后看不出失败长什么样。
+  # ⚠ 無論過沒過都記：一份記著「這裡當時是空的」的原始資料，比一份乾脆沒有這一格的
+  #   原始資料誠實得多。⛔ 只在成功時記 = 事後看不出失敗長什麼樣。
   printf '%s\t%s\t%s\t%s\n' "$name" "$when_key" "${got:-}" "${age:-}" >> "$STATE_LOG"
 
   if [ "$got" != "$want" ]; then
@@ -265,19 +265,19 @@ assert_cache_state() {
     return 1
   fi
 
-  # ── 「整趟没发生重验证」由 `Age` 判，⛔ 不由「前后取值相同」判 ───────────
+  # ── 「整趟沒發生重驗證」由 `Age` 判，⛔ 不由「前後取值相同」判 ───────────
   #
-  # ⛔ ⛔ **本条原先写的是「跑完后再核一次 X-Fulcrum-Cache，相同 ⇒ 没重验证」——
-  #   那是错的，2026-09-09 用反证实测证伪：注入 `ttl=1s` < `duration=2s`
-  #   之后整个门禁**照样全绿**。**
-  # ★ 根因（读源码，⛔ 不是推理）：`CacheState` 只有 `Hit` / `Revalidated` 两个值
-  #   （`cache/mod.rs:261`），而重验证之后条目**重新变新鲜** ⇒ 之后的请求又是 `Hit`
-  #   —— 与「从未过期」在最终那一次观测上**完全相同**。
-  # ★ 改用 `Age`：`Age = now − stored_at`（`lib.rs:1384`），而重验证走
-  #   `refresh(…, now_unix(), …)` → `stored_at = now`（`store.rs:208`，单测
-  #   `refresh_只改元数据不动体` 钉着）⇒ **重验证会把 `Age` 归零**。
-  #   ⇒ 预热在负载之前 ⇒ 中途没被刷新的话，跑完时 `Age` 必然 ≥ 负载时长；
-  #   只要中途重验证过一次，`Age` 就被砍回去。
+  # ⛔ ⛔ **本條原先寫的是「跑完後再核一次 X-Fulcrum-Cache，相同 ⇒ 沒重驗證」——
+  #   那是錯的，2026-09-09 用反證實測證偽：注入 `ttl=1s` < `duration=2s`
+  #   之後整個門禁**照樣全綠**。**
+  # ★ 根因（讀原始碼，⛔ 不是推理）：`CacheState` 只有 `Hit` / `Revalidated` 兩個值
+  #   （`cache/mod.rs:261`），而重驗證之後條目**重新變新鮮** ⇒ 之後的請求又是 `Hit`
+  #   —— 與「從未過期」在最終那一次觀測上**完全相同**。
+  # ★ 改用 `Age`：`Age = now − stored_at`（`lib.rs:1384`），而重驗證走
+  #   `refresh(…, now_unix(), …)` → `stored_at = now`（`store.rs:208`，單測
+  #   `refresh_只改元数据不动体` 釘著）⇒ **重驗證會把 `Age` 歸零**。
+  #   ⇒ 預熱在負載之前 ⇒ 中途沒被刷新的話，跑完時 `Age` 必然 ≥ 負載時長；
+  #   只要中途重驗證過一次，`Age` 就被砍回去。
   if [ "$when_key" = after ]; then
     case "$age" in
       '' | *[!0-9]*)
@@ -319,8 +319,8 @@ run_variant() {
     return 0
   fi
 
-  # ⚠ 预热：第一发必然回源（MISS），把条目灌进缓存。⛔ 结果不判 ——
-  #   本步要判的是**第二发之后**的稳态命中。
+  # ⚠ 預熱：第一發必然回源（MISS），把條目灌進快取。⛔ 結果不判 ——
+  #   本步要判的是**第二發之後**的穩態命中。
   curl -sS -o /dev/null "http://$HOST:$port$URL_PATH" 2>>"$log" || true
 
   if ! assert_cache_state "$name" "$port" "$want" before "$log"; then
@@ -330,8 +330,8 @@ run_variant() {
     return 0
   fi
 
-  # ★ 命中的那份正文必须与 payload **逐字节相同**（同 respond-ceiling.sh:192）：
-  #   两个变体之间的差要有意义，前提是两边回的是同一份字节。
+  # ★ 命中的那份正文必須與 payload **逐位元組相同**（同 respond-ceiling.sh:192）：
+  #   兩個變體之間的差要有意義，前提是兩邊回的是同一份位元組。
   if ! cmp -s "$WORK/$name.body" "$WWW/payload.bin"; then
     bad "$name 回的正文与 payload **不是同一份字节**（$(wc -c < "$WORK/$name.body") 字节对 $PAYLOAD_BYTES）"
     stop_child
@@ -351,16 +351,16 @@ run_variant() {
     sed 's/^/      /' "$log" >&2 || true
   fi
 
-  # ★ ★ 跑完之后**再核一次**：仍是同一个值 ⇒ 整趟没有发生重验证。
-  #   ⚠ 中途过期的话量到的是 `REVALIDATED` 那条**要回源**的路而不是命中，
-  #   而 oha 的 JSON 里看不出这件事 —— 这一次复核就是为它加的。
+  # ★ ★ 跑完之後**再核一次**：仍是同一個值 ⇒ 整趟沒有發生重驗證。
+  #   ⚠ 中途過期的話量到的是 `REVALIDATED` 那條**要回源**的路而不是命中，
+  #   而 oha 的 JSON 裡看不出這件事 —— 這一次複核就是為它加的。
   assert_cache_state "$name" "$port" "$want" after "$log" || true
 
   stop_child
   wait_port_gone "$port" || bad "$name 收掉之后 $port 还占着 —— 下一个变体会起不来"
 }
 
-# ── 源站：整趟只起一次，两个变体共用 ───────────────────────────────────────
+# ── 源站：整趟只起一次，兩個變體共用 ───────────────────────────────────────
 echo "── 源站（file_server，:$PORT_ORIGIN）──"
 "${pin_server[@]}" "$FULCRUM_BIN" serve "$WORK/origin.Fulcrumfile" \
   --bind-host "$HOST" \
@@ -375,17 +375,17 @@ if ! wait_port "$PORT_ORIGIN"; then
 fi
 ok "源站起来了（ttl=$TTL，⇒ 远大于一趟负载的 $DURATION）"
 
-# ⚠ 顺序有意固定：结果与顺序无关才对，⇒ 固定它是为了让两趟之间可比。
+# ⚠ 順序有意固定：結果與順序無關才對，⇒ 固定它是為了讓兩趟之間可比。
 run_variant cache-mem "$PORT_MEM" "$WORK/mem.Fulcrumfile" HIT
 run_variant cache-disk "$PORT_DISK" "$WORK/disk.Fulcrumfile" HIT-DISK
 
 stop_origin
 wait_port_gone "$PORT_ORIGIN" || bad "源站收掉之后 $PORT_ORIGIN 还占着"
 
-# ── 差值落盘 ───────────────────────────────────────────────────────────────
+# ── 差值寫入磁碟 ───────────────────────────────────────────────────────────────
 #
-# ★ 用 python3 序列化，⛔ 不手工拼 JSON。
-# ★ **指名来源**：差值可被第三方按那两份原始读数重算，⛔ 不是一个孤零零的数。
+# ★ 用 python3 序列化，⛔ 不手動拼 JSON。
+# ★ **指名來源**：差值可被第三方按那兩份原始讀數重算，⛔ 不是一個孤零零的數。
 if [ "$FAILS" = 0 ]; then
   DIAG_DIR="$DIAG_DIR" STATE_LOG="$STATE_LOG" TTL="$TTL" DURATION="$DURATION" \
     DURATION_SECS="$DURATION_SECS" python3 - <<'PY'

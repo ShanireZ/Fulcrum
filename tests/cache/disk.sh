@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# 自研 HTTP 缓存的**磁盘后端**端到端（**M2 批 H**，形状由 G83/G84 定死）。
+# 自研 HTTP 快取的**磁碟後端**端到端（**M2 批 H**，形狀由 G83/G84 定死）。
 #
-# ★ 与 `tests/cache/run.sh`（批 G）的分工说死：
-#   · 那一格验的是**语义**（可缓存性 / 新鲜度 / Vary / 防惊群 / purge），跑的是内存后端；
-#   · 这一格验的是**介质**——同一套语义换到盘上之后，多出来的那几件事：
-#     重启之后还在、启动不扫盘、坏条目即丢即删、目录用不了怎么办。
+# ★ 與 `tests/cache/run.sh`（批 G）的分工說死：
+#   · 那一格驗的是**語義**（可快取性 / 新鮮度 / Vary / 防驚群 / purge），跑的是記憶體後端；
+#   · 這一格驗的是**介質**——同一套語義換到盤上之後，多出來的那幾件事：
+#     重新啟動之後還在、啟動不掃盤、壞條目即丟即刪、目錄用不了怎麼辦。
 #
-# ★ ★ ★ **本场景最要紧的一条判据，以及为什么是它。**
-#   判据必须能分辨「从内存来的」与「从磁盘来的」，而那件事靠状态码看不出来。
-#   `X-Fulcrum-Cache: HIT-DISK` 这个头**只是方便的那一半**
-#   —— 它信的是「本进程挑中了哪个后端」，一个把后缀写死的实现照样能骗过它。
-#   ⇒ 真正的判据是**把进程杀掉再起来，东西还在**：
-#     · 磁盘后端：命中，体里是**重启之前**那个 nonce；
-#     · 内存后端：必然回源。
-#   ★ 这两半在**同一次跑里**都做（第 2 格与它下面那条反证），
-#   于是这把尺子在好情况与坏情况下读数不同 —— 那正是 AGENTS.md 那条
-#   「a ruler that reads the same in both cases cannot tell them apart」要的东西。
+# ★ ★ ★ **本場景最要緊的一條判據，以及為什麼是它。**
+#   判據必須能分辨「從記憶體來的」與「從磁碟來的」，而那件事靠狀態碼看不出來。
+#   `X-Fulcrum-Cache: HIT-DISK` 這個頭**只是方便的那一半**
+#   —— 它信的是「本處理程序挑中了哪個後端」，一個把後綴寫死的實作照樣能騙過它。
+#   ⇒ 真正的判據是**把處理程序殺掉再起來，東西還在**：
+#     · 磁碟後端：命中，體裡是**重新啟動之前**那個 nonce；
+#     · 記憶體後端：必然回源。
+#   ★ 這兩半在**同一次跑裡**都做（第 2 格與它下面那條反證），
+#   於是這把尺子在好情況與壞情況下讀數不同 —— 那正是 AGENTS.md 那條
+#   「a ruler that reads the same in both cases cannot tell them apart」要的東西。
 set -euo pipefail
 
 REPO=${REPO:-/w}
@@ -23,8 +23,8 @@ cd "$REPO"
 BIN="$REPO/target/release/fulcrum"
 WORK=$(mktemp -d)
 HOST=127.0.0.1
-# ⚠ 端口表见 AGENTS.md。**9502–9503 是本场景的**（批 H 新增；批 G 那一格是 9500–9501）。
-#   ★ 选之前查过那张表 —— 而批 F 正是因为**表不全**才撞上压力那一格。
+# ⚠ 連接埠表見 AGENTS.md。**9502–9503 是本場景的**（批 H 新增；批 G 那一格是 9500–9501）。
+#   ★ 選之前查過那張表 —— 而批 F 正是因為**表不全**才撞上壓力那一格。
 PORT=${CACHEDISK_PORT:-9502}
 UP_PORT=${CACHEDISK_UP_PORT:-9503}
 ADMIN_SOCK="$WORK/admin.sock"
@@ -86,10 +86,10 @@ ok "$PORT / $UP_PORT 都是空的"
 
 # ── 上游 ────────────────────────────────────────────────────────────────────
 #
-# ★ 上游是**枢衡自己**（与批 G / serve 同一个做法，零外部依赖）。
-# ★ ★ 「每次不同」由客户端现给的 `X-Nonce` 提供，**不是**由时间或端口提供 ——
-#   批 G 在这上面一口气栽了三次（`{time}` 秒级精度、`{remote_port}` 撞上连接池、
-#   忘了带 nonce），三次都是「判据在最该报警的那一刻给一个像样的错答案」。
+# ★ 上游是**樞衡自己**（與批 G / serve 同一個做法，零外部依賴）。
+# ★ ★ 「每次不同」由用戶端現給的 `X-Nonce` 提供，**不是**由時間或連接埠提供 ——
+#   批 G 在這上面一口氣栽了三次（`{time}` 秒級精度、`{remote_port}` 撞上連接池、
+#   忘了帶 nonce），三次都是「判據在最該報警的那一刻給一個像樣的錯答案」。
 cat > "$WORK/up.Fulcrumfile" <<'CONF'
 :UP_PORT {
     # ⚠ 匹配器只能定义在**站点块的顶层**（`FUL-DSL-0010`）——写进 `handle` 里
@@ -118,10 +118,10 @@ cat > "$WORK/up.Fulcrumfile" <<'CONF'
 CONF
 sed -i "s/:UP_PORT/:$UP_PORT/" "$WORK/up.Fulcrumfile"
 
-# ── 两份配置：磁盘后端 / 内存后端。★ 除了那一行 `disk`，**其余一模一样** ────
+# ── 兩份設定：磁碟後端 / 記憶體後端。★ 除了那一行 `disk`，**其餘一模一樣** ────
 #
-# ⚠ 这一点是判据的一部分：两次跑之间只差一行，于是第 2 格那对结果的差别
-#   只可能来自后端本身，不可能来自别的什么。
+# ⚠ 這一點是判據的一部分：兩次跑之間只差一行，於是第 2 格那對結果的差別
+#   只可能來自後端本身，不可能來自別的什麼。
 cat > "$WORK/disk.Fulcrumfile" <<'CONF'
 {
     admin unix/ADMIN_SOCK
@@ -142,7 +142,7 @@ CONF
 sed -i "s/:PORT/:$PORT/; s/:UP_PORT/:$UP_PORT/; s|ADMIN_SOCK|$ADMIN_SOCK|; s|DISK_DIR|$DISK|" \
   "$WORK/disk.Fulcrumfile"
 
-# 内存后端那一份：把 `disk` 那行删掉，别的一个字不改。
+# 記憶體後端那一份：把 `disk` 那行刪掉，別的一個字不改。
 grep -v '^        disk ' "$WORK/disk.Fulcrumfile" > "$WORK/mem.Fulcrumfile"
 if grep -q 'disk ' "$WORK/mem.Fulcrumfile"; then
   echo "CACHE-DISK TESTS FAILED: 内存那份配置里还留着 disk —— 第 2 格的反证会证不到东西。" >&2
@@ -158,7 +158,7 @@ start_up() {
   PIDS+=($!)
 }
 
-# $1 = 配置文件，$2 = 日志文件名（**追加**，重启之后还能读到上一代说过什么）
+# $1 = 設定檔案，$2 = 紀錄檔案名（**追加**，重新啟動之後還能讀到上一代說過什麼）
 start_cache() {
   RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$1" \
     --bind-host "$HOST" \
@@ -169,22 +169,22 @@ start_cache() {
   PIDS+=("$CACHE_PID")
 }
 
-# $1 = 信号（INT = 快停，TERM = 优雅）
+# $1 = 信號（INT = 快停，TERM = 優雅）
 stop_cache() {
   local sig=$1 waited=0
   [ -n "$CACHE_PID" ] || return 0
   kill -"$sig" "$CACHE_PID" 2>/dev/null || true
-  # ⚠ ⚠ **只等这一个 pid，不能用光秃秃的 `wait`** —— 它会等本 shell 的全部后台作业，
-  #   而上游那个 `fulcrum serve` **永远不退出**。批 G 就是这么在屏幕上挂了 9 分多钟，
-  #   最后一行停在「=== [6/7] 防惊群 ===」，读起来像产品死锁。
-  #   > ★ 一个会挂住的判据比一条红的判据更贵：红的指着问题，挂住的指着错误的方向。
+  # ⚠ ⚠ **只等這一個 pid，不能用光禿禿的 `wait`** —— 它會等本 shell 的全部後台作業，
+  #   而上游那個 `fulcrum serve` **永遠不退出**。批 G 就是這麼在螢幕上掛了 9 分多鐘，
+  #   最後一行停在「=== [6/7] 防驚群 ===」，讀起來像產品死鎖。
+  #   > ★ 一個會掛住的判據比一條紅的判據更貴：紅的指著問題，掛住的指著錯誤的方向。
   while kill -0 "$CACHE_PID" 2>/dev/null && [ "$waited" -lt 200 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
   kill -9 "$CACHE_PID" 2>/dev/null || true
-  # ★ 进程没了不等于端口放开了：下一次 bind 会撞 EADDRINUSE，
-  #   而报错读起来像「端口被别人占了」。
+  # ★ 處理程序沒了不等於連接埠放開了：下一次 bind 會撞 EADDRINUSE，
+  #   而回報錯誤讀起來像「連接埠被別人佔了」。
   waited=0
   while port_listening "$PORT" && [ "$waited" -lt 200 ]; do
     sleep 0.1
@@ -203,14 +203,14 @@ BASE="http://$HOST:$PORT"
 # ── helper ─────────────────────────────────────────────────────────────────
 NONCE=0
 probe() {
-  # ⚠ 先清空 body 与 hdr：curl 的 `-o` 在零字节时**不动**那个文件（批 F 栽过），
-  #   于是上一次的内容会被当成这一次的。
+  # ⚠ 先清空 body 與 hdr：curl 的 `-o` 在零位元組時**不動**那個檔案（批 F 栽過），
+  #   於是上一次的內容會被當成這一次的。
   : > "$WORK/body"
   : > "$WORK/hdr"
   curl -s -o "$WORK/body" -D "$WORK/hdr" -w '%{http_code}' --max-time 10 "$@"
 }
 
-# 带一个**新的** nonce 打一次。★ 命中 ⇒ 体里是**上一次**那个 nonce。
+# 帶一個**新的** nonce 打一次。★ 命中 ⇒ 體裡是**上一次**那個 nonce。
 probe_n() {
   NONCE=$((NONCE + 1))
   probe -H "X-Nonce: n$NONCE" "$@"
@@ -224,22 +224,22 @@ admin() {
     -w '\n%{http_code}' --max-time 10 "http://localhost$1"
 }
 
-# ★ ★ ★ **「东西已经落到盘上了」这句话，只能由产品自己说。**
+# ★ ★ ★ **「東西已經落到盤上了」這句話，只能由產品自己說。**
 #
-# ⚠ ⚠ 数据面是**先把响应发完、再存缓存**的（`store_if_allowed` 排在
-#   `write_response_body(…, true)` 之后，而且 body 落盘还带一次 `fsync`）——
-#   那个顺序是对的：客户端不该等一次磁盘写。
-#   ⇒ 于是 `curl` 返回的那一刻，盘上**可能还什么都没有**。
+# ⚠ ⚠ 資料面是**先把回應發完、再存快取**的（`store_if_allowed` 排在
+#   `write_response_body(…, true)` 之後，而且 body 寫入磁碟還帶一次 `fsync`）——
+#   那個順序是對的：用戶端不該等一次磁碟寫。
+#   ⇒ 於是 `curl` 回傳的那一刻，盤上**可能還什麼都沒有**。
 #
-# ★ 这里容易栽：`purge` 之后打一发再 `find` 文件，
-#   两次跑红在**两个不同的格子**（一次说「meta 有 body 没有」、一次说「没找到 body」）——
-#   ⚠ 而它读起来完全像产品缺陷，我据此推出过一个很像真的错结论
-#   （以为是后台清理把刚写下的 body 当成孤儿收走了；开 debug 日志一看，**一次都没收过**）。
-#   > ★ 一条会随机红的判据，红与绿都不说明任何事；而它先教人重跑，再教人忽略。
+# ★ 這裡容易栽：`purge` 之後打一發再 `find` 檔案，
+#   兩次跑紅在**兩個不同的格子**（一次說「meta 有 body 沒有」、一次說「沒找到 body」）——
+#   ⚠ 而它讀起來完全像產品缺陷，我據此推出過一個很像真的錯結論
+#   （以為是後台清理把剛寫下的 body 當成孤兒收走了；開 debug 紀錄一看，**一次都沒收過**）。
+#   > ★ 一條會隨機紅的判據，紅與綠都不說明任何事；而它先教人重跑，再教人忽略。
 #
-# ⇒ 修法**不是** sleep 一下再看，而是：**再打一发，等它说命中**。
-#   命中这件事只有在缓存里真的有那条时才成立 —— 用产品自己的可观测事实
-#   把「存好了」这一刻钉死，与机器快慢无关。
+# ⇒ 修法**不是** sleep 一下再看，而是：**再打一發，等它說命中**。
+#   命中這件事只有在快取裡真的有那條時才成立 —— 用產品自己的可觀測事實
+#   把「存好了」這一刻釘死，與機器快慢無關。
 settle_stored() {
   local what=$1 url=$2 tries=0 state
   while [ "$tries" -lt 50 ]; do
@@ -261,7 +261,7 @@ expect_status() {
   if [ "$got" = "$want" ]; then ok "$what → $got"; else fail "$what 期望 $want，实际 $got"; fi
 }
 
-# ── [1/8] 盘上真的有东西，而且是 G83 那个形状 ──────────────────────────────
+# ── [1/8] 盤上真的有東西，而且是 G83 那個形狀 ──────────────────────────────
 echo
 echo "=== [1/8] 磁盘后端：命中头带 -DISK，盘上是两级分片 + meta/body 两文件 ==="
 probe_n "$BASE/maxage" > /dev/null
@@ -271,15 +271,15 @@ expect_status "GET /maxage（第二次）" 200 "$CODE"
 SECOND=$(body)
 if [ "$FIRST" = "$SECOND" ]; then ok "命中（体没变）"; else
   fail "本该命中：第一次「$FIRST」第二次「$SECOND」"; fi
-# ★ 后缀说的是「这个进程**真的**挑中了哪个后端」——配了 `disk` 而目录用不了时
-#   缓存是关掉的，那时这个头一个都不会出现（第 7 格验它）。
+# ★ 後綴說的是「這個處理程序**真的**挑中了哪個後端」——配了 `disk` 而目錄用不了時
+#   快取是關掉的，那時這個頭一個都不會出現（第 7 格驗它）。
 if [ "$(hdr X-Fulcrum-Cache)" = "HIT-DISK" ]; then
   ok "X-Fulcrum-Cache = HIT-DISK（分得出内存与磁盘）"
 else
   fail "X-Fulcrum-Cache 期望 HIT-DISK，实际「$(hdr X-Fulcrum-Cache)」"
 fi
 
-# G83 的布局：两级分片目录 · meta 与 body 两类文件。
+# G83 的佈局：兩級分片目錄 · meta 與 body 兩類檔案。
 METAS=$(find "$DISK" -name '*.meta' | wc -l)
 BODIES=$(find "$DISK" -name '*.body' | wc -l)
 if [ "$METAS" -ge 1 ] && [ "$BODIES" -ge 1 ]; then
@@ -288,25 +288,25 @@ else
   fail "盘上没落下东西：meta=$METAS body=$BODIES"
   find "$DISK" -type f >&2 || true
 fi
-# ⚠ 分片深度**要数出来**，不是看一眼像不像：`<root>/<aa>/<bb>/<文件>` ⇒ 相对根有 3 段。
-#   ★ 单层目录在几十万文件时会把清理任务本身拖垮，而那件事在门禁里永远不会发生
-#   （门禁只存几条）—— 所以只能钉形状。
+# ⚠ 分片深度**要數出來**，不是看一眼像不像：`<root>/<aa>/<bb>/<文件>` ⇒ 相對根有 3 段。
+#   ★ 單層目錄在幾十萬檔案時會把清理任務本身拖垮，而那件事在門禁裡永遠不會發生
+#   （門禁只存幾條）—— 所以只能釘形狀。
 ONE_META=$(find "$DISK" -name '*.meta' | head -1)
 REL=${ONE_META#"$DISK"/}
 DEPTH=$(echo "$REL" | awk -F/ '{print NF}')
 if [ "$DEPTH" = "3" ]; then ok "两级分片目录（$REL）"; else
   fail "分片深度期望 3 段，实际 $DEPTH 段：$REL"; fi
 
-# ── [2/8] ★★★ 重启之后还在（快停：索引没来得及存）───────────────────────
+# ── [2/8] ★★★ 重新啟動之後還在（快停：索引沒來得及存）───────────────────────
 echo
 echo "=== [2/8] ★★★ 重启之后东西还在，而且启动不扫盘 ==="
-KEEP=$SECOND   # 重启之前缓存里那一份（体里是第一次那个 nonce）
+KEEP=$SECOND   # 重新啟動之前快取裡那一份（體裡是第一次那個 nonce）
 stop_cache INT
 start_cache "$WORK/disk.Fulcrumfile" "disk.log"
 wait_port "$PORT" || { echo "CACHE-DISK TESTS FAILED: 重启之后 $PORT 没起来" >&2; cat "$WORK/disk.log" >&2; exit 1; }
 
-# ⚠ ⚠ **这一步必须排在任何 GET 之前**：读路径会顺手把命中的那条记进索引，
-#   于是先 GET 再问「索引里有几条」，问到的是被自己改过的数。
+# ⚠ ⚠ **這一步必須排在任何 GET 之前**：讀路徑會順手把命中的那條記進索引，
+#   於是先 GET 再問「索引裡有幾條」，問到的是被自己改過的數。
 RESP=$(admin /purge '{"key":"一个从来没有过的键"}')
 LEFT=$(printf '%s' "$RESP" | grep -o '还剩 [0-9]* 条' | grep -o '[0-9]*' || true)
 if [ "$LEFT" = "0" ]; then
@@ -323,9 +323,9 @@ else
   fail "★ ★ ★ 重启之后没命中：期望体「$KEEP」实际「$(body)」cache=「$(hdr X-Fulcrum-Cache)」"
 fi
 
-# ★ ★ 反证的另一半 —— **同一把尺子在内存后端上必须读出相反的结果**。
-#   ⚠ 少了它，上面那条证明不了「是磁盘让它活下来的」：一个把缓存挂在
-#   某处进程外状态上的实现、甚至一个根本没重启成功的脚本，都能让它绿。
+# ★ ★ 反證的另一半 —— **同一把尺子在記憶體後端上必須讀出相反的結果**。
+#   ⚠ 少了它，上面那條證明不了「是磁碟讓它活下來的」：一個把快取掛在
+#   某處處理程序外狀態上的實作、甚至一個根本沒重新啟動成功的指令碼，都能讓它綠。
 echo '  —— 反证：同一份配置去掉 disk 那一行 ——'
 stop_cache INT
 start_cache "$WORK/mem.Fulcrumfile" "mem.log"
@@ -345,13 +345,13 @@ else
 fi
 stop_cache INT
 
-# ── [3/8] 优雅停机把淘汰索引存下去（G84 的 save/load）─────────────────────
+# ── [3/8] 優雅停機把淘汰索引存下去（G84 的 save/load）─────────────────────
 echo
 echo "=== [3/8] 优雅停机存索引，下一代读得回来 ==="
 rm -f "$DISK/index.json"
 start_cache "$WORK/disk.Fulcrumfile" "disk.log"
 wait_port "$PORT" || { echo "CACHE-DISK TESTS FAILED: $PORT 没起来" >&2; exit 1; }
-probe_n "$BASE/maxage" > /dev/null   # 让索引里至少有一条
+probe_n "$BASE/maxage" > /dev/null   # 讓索引裡至少有一條
 stop_cache TERM
 if [ -s "$DISK/index.json" ]; then
   ok "优雅停机把淘汰索引写下去了（index.json）"
@@ -369,15 +369,15 @@ else
   fail "索引没被读回来：$RESP"
 fi
 
-# ── [4/8] 重验证只改 meta，不动 body ───────────────────────────────────────
+# ── [4/8] 重驗證只改 meta，不動 body ───────────────────────────────────────
 echo
 echo "=== [4/8] 重验证（304）只改 meta，不动 body ==="
 admin /purge '{"all":true}' > /dev/null
 probe_n "$BASE/reval" > /dev/null
 settle_stored "/reval" "$BASE/reval" || true
-# ⚠ ⚠ 「缓存里那份」要从**命中的那一发**取，不是从第一发取：第一发的响应
-#   有没有被存下来，正是 `settle_stored` 在确认的那件事 —— 拿它当基准就是
-#   把待证的结论当成了前提。★ 而命中回来的体，按定义就是缓存里那一份。
+# ⚠ ⚠ 「快取裡那份」要從**命中的那一發**取，不是從第一發取：第一發的回應
+#   有沒有被存下來，正是 `settle_stored` 在確認的那件事 —— 拿它當基準就是
+#   把待證的結論當成了前提。★ 而命中回來的體，按定義就是快取裡那一份。
 REVAL_BODY=$(body)
 BODY_FILE=$(find "$DISK" -name '*.body' | head -1)
 META_FILE=$(find "$DISK" -name '*.meta' | head -1)
@@ -388,14 +388,14 @@ else
   find "$DISK" -type f >&2 || true
 fi
 if [ -n "$BODY_FILE" ] && [ -n "$META_FILE" ]; then
-  # ★ 取**纳秒**精度的 mtime：秒级的话，一次落在同一秒里的改写会读不出差别，
-  #   于是「meta 确实被改写了」那条反向判据会随机不成立。
+  # ★ 取**納秒**精度的 mtime：秒級的話，一次落在同一秒裡的改寫會讀不出差別，
+  #   於是「meta 確實被改寫了」那條反向判據會隨機不成立。
   BODY_MTIME_BEFORE=$(stat -c %.9Y "$BODY_FILE")
   META_MTIME_BEFORE=$(stat -c %.9Y "$META_FILE")
-  # ★ 用**请求侧** `max-age=0` 逼出重验证（当场生效），不等时钟。
+  # ★ 用**請求側** `max-age=0` 逼出重驗證（當場生效），不等時鐘。
   CODE=$(probe_n -H "Cache-Control: max-age=0" "$BASE/reval")
   expect_status "请求侧 max-age=0 ⇒ GET /reval" 200 "$CODE"
-  # ★ 回给客户端的必须是**缓存里那份完整响应**，不是上游那个 304。
+  # ★ 回給用戶端的必須是**快取裡那份完整回應**，不是上游那個 304。
   if [ "$(body)" = "$REVAL_BODY" ]; then
     ok "重验证之后回的是缓存里那份完整内容（不是把 304 转下去）"
   else
@@ -408,15 +408,15 @@ if [ -n "$BODY_FILE" ] && [ -n "$META_FILE" ]; then
   fi
   BODY_MTIME_AFTER=$(stat -c %.9Y "$BODY_FILE")
   META_MTIME_AFTER=$(stat -c %.9Y "$META_FILE")
-  # ★ ★ ★ **G83 把 meta 与 body 分开，理由就是这一条**：重验证是最常见的写操作之一，
-  #   而它不该动 body（那可能是几 MB）。⚠ 一个「整条重写」的实现在**别的每一条判据上
-  #   都是绿的** —— 内容对、头对、状态码对，只是每次 304 都把整个 body 重写一遍。
+  # ★ ★ ★ **G83 把 meta 與 body 分開，理由就是這一條**：重驗證是最常見的寫操作之一，
+  #   而它不該動 body（那可能是幾 MB）。⚠ 一個「整條重寫」的實作在**別的每一條判據上
+  #   都是綠的** —— 內容對、頭對、狀態碼對，只是每次 304 都把整個 body 重寫一遍。
   if [ "$BODY_MTIME_BEFORE" = "$BODY_MTIME_AFTER" ]; then
     ok "★ ★ 重验证没动 body 文件（G83 分开存的理由本身）"
   else
     fail "★ ★ 重验证把 body 整个重写了：$BODY_MTIME_BEFORE → $BODY_MTIME_AFTER"
   fi
-  # 反向那一半：meta **必须**变 —— 否则「只改 meta」这句话的前半截也没发生。
+  # 反向那一半：meta **必須**變 —— 否則「只改 meta」這句話的前半截也沒發生。
   if [ "$META_MTIME_BEFORE" != "$META_MTIME_AFTER" ]; then
     ok "★ 而 meta 确实被改写了（新鲜期续上了）"
   else
@@ -424,17 +424,17 @@ if [ -n "$BODY_FILE" ] && [ -n "$META_FILE" ]; then
   fi
 fi
 
-# ── [5/8] purge 以盘为准，不是以索引为准 ──────────────────────────────────
+# ── [5/8] purge 以盤為準，不是以索引為準 ──────────────────────────────────
 echo
 echo "=== [5/8] 索引是冷的时候，purge 照样清得掉 ==="
 probe_n "$BASE/maxage" > /dev/null
-stop_cache INT                       # 快停 ⇒ 索引不存盘
-rm -f "$DISK/index.json"             # 连上一轮存的那份也拿掉
+stop_cache INT                       # 快停 ⇒ 索引不存盤
+rm -f "$DISK/index.json"             # 連上一輪存的那份也拿掉
 start_cache "$WORK/disk.Fulcrumfile" "disk.log"
 wait_port "$PORT" || { echo "CACHE-DISK TESTS FAILED: $PORT 没起来" >&2; exit 1; }
-# ⚠ ⚠ 一个**只看索引**的 purge 会在这一刻清掉 0 条，还回一句「清掉 0 条」——
-#   而这正是有人会去按 purge 的那个时刻（刚重启、缓存里全是旧内容）。
-#   ★ purge 的语义是「让它不在」，所以它必须以盘为准。
+# ⚠ ⚠ 一個**只看索引**的 purge 會在這一刻清掉 0 條，還回一句「清掉 0 條」——
+#   而這正是有人會去按 purge 的那個時刻（剛重新啟動、快取裡全是舊內容）。
+#   ★ purge 的語義是「讓它不在」，所以它必須以盤為準。
 RESP=$(admin /purge '{"prefix":"GET"}')
 CLEARED=$(printf '%s' "$RESP" | grep -o '清掉 [0-9]* 条' | grep -o '[0-9]*' || true)
 if [ -n "$CLEARED" ] && [ "$CLEARED" -ge 1 ]; then
@@ -450,23 +450,23 @@ else
   fail "purge 说清了，下次请求还是命中：$(hdr X-Fulcrum-Cache)"
 fi
 
-# ── [6/8] 坏条目即丢即删（读时校验，G84）──────────────────────────────────
+# ── [6/8] 壞條目即丟即刪（讀時檢核，G84）──────────────────────────────────
 echo
 echo "=== [6/8] body 被截断 ⇒ 即丢即删，不是把半个页面发出去 ==="
 admin /purge '{"all":true}' > /dev/null
 probe_n "$BASE/maxage" > /dev/null
-# ⚠ 同上：`curl` 返回不等于盘上有东西。等它自己说「命中」再去看文件。
+# ⚠ 同上：`curl` 回傳不等於盤上有東西。等它自己說「命中」再去看檔案。
 settle_stored "/maxage" "$BASE/maxage" || true
 GOOD=$(body)
 BODY_FILE=$(find "$DISK" -name '*.body' | head -1)
 if [ -z "$BODY_FILE" ]; then
   fail "没找到 body 文件，这一格证不到东西"
 else
-  printf 'xx' > "$BODY_FILE"        # 截断成两个字节
+  printf 'xx' > "$BODY_FILE"        # 截斷成兩個位元組
   CODE=$(probe_n "$BASE/maxage")
   expect_status "body 被截断之后 GET /maxage" 200 "$CODE"
-  # ★ ★ 判据看的是**体**，不是状态码：一个不做读时校验的实现会把 `xx` 原样
-  #   发出去，而它照样回 200、照样有 Content-Length —— 客户端拿到半个页面。
+  # ★ ★ 判據看的是**體**，不是狀態碼：一個不做讀時檢核的實作會把 `xx` 原樣
+  #   發出去，而它照樣回 200、照樣有 Content-Length —— 用戶端拿到半個頁面。
   if [ "$(body)" != "xx" ] && [ "$(body)" != "$GOOD" ]; then
     ok "★ ★ 坏条目被当成未命中、回源取了新的（体是「$(body)」）"
   elif [ "$(body)" = "xx" ]; then
@@ -481,11 +481,11 @@ else
   fi
 fi
 
-# ── [7/8] 目录用不了 ⇒ 关掉缓存，但照常转发 ───────────────────────────────
+# ── [7/8] 目錄用不了 ⇒ 關掉快取，但照常轉發 ───────────────────────────────
 echo
 echo "=== [7/8] 缓存目录用不了：关掉缓存，服务照常 ==="
 stop_cache INT
-# 用一个**文件**当缓存根 —— `create_dir_all` 会失败。
+# 用一個**檔案**當快取根 —— `create_dir_all` 會失敗。
 BAD_ROOT="$WORK/iam-a-file"
 : > "$BAD_ROOT"
 sed "s|$DISK|$BAD_ROOT|" "$WORK/disk.Fulcrumfile" > "$WORK/bad.Fulcrumfile"
@@ -506,10 +506,10 @@ if port_listening "$PORT"; then
     fail "★ 目录用不了却还在缓存：$(hdr X-Fulcrum-Cache)"
   fi
 fi
-# ★ ★ **两条独立的信号，各自查一遍**：一条是「目录为什么用不了」（error），
-#   另一条是「于是缓存关掉了」（装载结论）。⚠ 合成一条 grep 的话，
-#   两行里少了任何一行都不会红 —— 而少了后面那行，运维只会看到一个红字，
-#   看不到「所以现在到底是什么状态」。
+# ★ ★ **兩條獨立的信號，各自查一遍**：一條是「目錄為什麼用不了」（error），
+#   另一條是「於是快取關掉了」（裝載結論）。⚠ 合成一條 grep 的話，
+#   兩行裡少了任何一行都不會紅 —— 而少了後面那行，維運只會看到一個紅字，
+#   看不到「所以現在到底是什麼狀態」。
 if grep -q '缓存磁盘目录' "$WORK/bad.log"; then
   ok "★ 日志说了目录为什么用不了"
 else
@@ -524,7 +524,7 @@ else
 fi
 stop_cache INT
 
-# ── [8/8] 装载日志 + 编译期那条诊断 ───────────────────────────────────────
+# ── [8/8] 裝載紀錄 + 編譯期那條診斷 ───────────────────────────────────────
 echo
 echo "=== [8/8] 装载日志说得出后端；两个不同的 disk 编译不过 ==="
 if grep -q '磁盘后端' "$WORK/disk.log"; then
@@ -538,15 +538,15 @@ if grep '磁盘后端' "$WORK/disk.log" | grep -q '启动不扫盘'; then
 else
   fail "装载日志没说清磁盘后端的形状"
 fi
-# ⚠ 批 G 留下的那条纪律：`ttl` 是**兜底**不是覆盖，装载时必须说出来。
+# ⚠ 批 G 留下的那條紀律：`ttl` 是**備援**不是覆蓋，裝載時必須說出來。
 if grep '缓存：站点' "$WORK/disk.log" | grep -q '兜底'; then
   ok "ttl 是兜底这件事仍然说得出来（G96）"
 else
   fail "装载日志不再说 ttl 是兜底了 —— 批 G 那条可见性被本批弄丢了"
 fi
 
-# ★ ★ 缓存后端是**进程级**的：两个 `cache` 块写不同的 `disk` 必须编译不过，
-#   而且要给那条**专门的**诊断（`FUL-DSL-0035`），不是一句「未知的子指令」。
+# ★ ★ 快取後端是**處理程序級**的：兩個 `cache` 塊寫不同的 `disk` 必須編譯不過，
+#   而且要給那條**專門的**診斷（`FUL-DSL-0035`），不是一句「未知的子指令」。
 cat > "$WORK/conflict.Fulcrumfile" <<'CONF'
 :18080 {
     cache {
@@ -570,7 +570,7 @@ if [ "$VRC" -ne 0 ] && printf '%s' "$VOUT" | grep -q 'FUL-DSL-0035'; then
 else
   fail "两个不同的 disk 没被拦下（退出码 $VRC）：$VOUT"
 fi
-# 反向那一半：一致的配置必须过。⚠ 少了它，一条「只要有两个 cache 就报错」的实现全绿。
+# 反向那一半：一致的設定必須過。⚠ 少了它，一條「只要有兩個 cache 就回報錯誤」的實作全綠。
 sed 's|/tmp/two|/tmp/one|' "$WORK/conflict.Fulcrumfile" > "$WORK/agree.Fulcrumfile"
 if "$BIN" validate "$WORK/agree.Fulcrumfile" > /dev/null 2>&1; then
   ok "★ 反向：两个 cache 写同一个 disk 照常通过"

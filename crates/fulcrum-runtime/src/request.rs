@@ -1,28 +1,28 @@
-//! 请求视图：路由决策需要知道的全部东西，**和 Pingora 无关**。
+//! 請求視圖：路由決策需要知道的全部東西，**和 Pingora 無關**。
 //!
-//! ★ ★ 这一层刻意不引用 `pingora-core`。理由不是洁癖：
-//! 路由语义（哪个站点、哪条匹配器、跑到第几步、终结成什么）是本项目**最需要被测**的逻辑，
-//! 而它一旦长在 `HttpServerApp` 里，测一条路由就要起监听、发真流量、解析响应。
-//! 那样的测试贵、慢、而且**红了指不到具体哪一条规则**。
+//! ★ ★ 這一層刻意不引用 `pingora-core`。理由不是潔癖：
+//! 路由語義（哪個站台、哪條匹配器、跑到第幾步、終結成什麼）是本專案**最需要被測**的邏輯，
+//! 而它一旦長在 `HttpServerApp` 裡，測一條路由就要起監聽、發真流量、解析回應。
+//! 那樣的測試貴、慢、而且**紅了指不到具體哪一條規則**。
 //!
-//! 代价是数据面那一侧要做一次转换（`&RequestHeader` → `RequestCtx`），
-//! 而它是零拷贝的：全部字段都是借用。
+//! 代價是資料面那一側要做一次轉換（`&RequestHeader` → `RequestCtx`），
+//! 而它是零拷貝的：全部欄位都是借用。
 
 use std::net::IpAddr;
 
-/// 请求头查询。数据面给一个 Pingora 的实现，测试给 [`HeaderList`]。
+/// 請求頭查詢。資料面給一個 Pingora 的實作，測試給 [`HeaderList`]。
 pub trait Headers {
-    /// 取一个头的值。★ 名字**大小写不敏感**（HTTP 的规定，不是可选项）。
+    /// 取一個頭的值。★ 名字**大小寫不敏感**（HTTP 的規定，不是可選項）。
     fn get(&self, name: &str) -> Option<&str>;
 }
 
-/// 一组 `(名字, 值)`。
+/// 一組 `(名字, 值)`。
 ///
-/// ★ 为什么要包一层而不直接 `impl Headers for [(&str, &str)]`：
-/// `&[T]` 本身已经是**胖指针**，没法再变成 `&dyn Headers`（那也是胖指针，
-/// 但要求数据指针是细的）。包一个 sized 的壳是唯一的走法。
-/// ⚠ 顺带避开另一个坑：切片自带一个 `get`，与 trait 里的同名方法**在切片上会赢**，
-/// 于是 `h.get("x")` 会静静地变成按下标取元素。
+/// ★ 為什麼要包一層而不直接 `impl Headers for [(&str, &str)]`：
+/// `&[T]` 本身已經是**胖指針**，沒法再變成 `&dyn Headers`（那也是胖指針，
+/// 但要求資料指針是細的）。包一個 sized 的殼是唯一的走法。
+/// ⚠ 順帶避開另一個坑：切片自帶一個 `get`，與 trait 裡的同名方法**在切片上會贏**，
+/// 於是 `h.get("x")` 會靜靜地變成按下標取元素。
 pub struct HeaderList<'a>(pub &'a [(&'a str, &'a str)]);
 
 impl Headers for HeaderList<'_> {
@@ -34,33 +34,33 @@ impl Headers for HeaderList<'_> {
     }
 }
 
-/// 路由决策要用到的请求侧事实。
+/// 路由決策要用到的請求側事實。
 #[derive(Clone, Copy)]
 pub struct RequestCtx<'a> {
-    /// Host（**不含端口**）。空串表示请求没带 Host。
+    /// Host（**不含連接埠**）。空串表示請求沒帶 Host。
     pub host: &'a str,
-    /// 请求打到的**本地**端口——站点索引按它来分，不是按 Host 里写的那个。
+    /// 請求打到的**本機**連接埠——站台索引按它來分，不是按 Host 裡寫的那個。
     pub port: u16,
     pub scheme: &'a str,
     pub method: &'a str,
-    /// 路径，**不含查询串**。
+    /// 路徑，**不含查詢串**。
     pub path: &'a str,
-    /// 查询串，**不含 `?`**。
+    /// 查詢串，**不含 `?`**。
     pub query: &'a str,
-    /// ⚠ **`+ Sync` 不是装饰**：数据面在 `await` 之间拿着这个 ctx，
+    /// ⚠ **`+ Sync` 不是裝飾**：資料面在 `await` 之間拿著這個 ctx，
     /// 而 Pingora 的 `HttpServerApp` 要求 future 是 `Send`。
-    /// 少了这条界，报出来的是一句「future cannot be sent between threads safely」，
-    /// **指向 trait 定义而不是这一行**——查起来很绕。
+    /// 少了這條界，報出來的是一句「future cannot be sent between threads safely」，
+    /// **指向 trait 定義而不是這一行**——查起來很繞。
     pub headers: &'a (dyn Headers + Sync),
-    /// ★ ★ **客户端 IP 的取值口径见安全基线：不能取 XFF 最左项**（客户端可伪造）。
-    /// 本层只负责用它，取值是数据面的责任——所以这里是一个已经定好的值，
-    /// 而不是一个「从头里现算」的函数。
+    /// ★ ★ **用戶端 IP 的取值口徑見安全基線：不能取 XFF 最左項**（用戶端可偽造）。
+    /// 本層只負責用它，取值是資料面的責任——所以這裡是一個已經定好的值，
+    /// 而不是一個「從頭裡現算」的函式。
     pub remote_ip: Option<IpAddr>,
     pub remote_port: u16,
 }
 
 impl RequestCtx<'_> {
-    /// `{uri}`：路径 + 查询串。
+    /// `{uri}`：路徑 + 查詢串。
     pub fn uri(&self) -> String {
         if self.query.is_empty() {
             self.path.to_string()
@@ -70,15 +70,15 @@ impl RequestCtx<'_> {
     }
 }
 
-/// 响应侧的事实。只有到了写响应那一刻才知道，所以它是**后来才有**的。
+/// 回應側的事實。只有到了寫回應那一刻才知道，所以它是**後來才有**的。
 ///
-/// ★ 这就是为什么 `header` 那些取值在路由阶段**不展开**、只带着模板走：
-/// `{status}` 与 `{upstream}` 在路由阶段还不存在，提前展开只能得到空串——
-/// 而空串正是 G61 点名要避免的那种无声失败。
+/// ★ 這就是為什麼 `header` 那些取值在路由階段**不展開**、只帶著範本走：
+/// `{status}` 與 `{upstream}` 在路由階段還不存在，提前展開只能得到空串——
+/// 而空串正是 G61 點名要避免的那種無聲失敗。
 #[derive(Default)]
 pub struct ResponseCtx<'a> {
     pub status: Option<u16>,
-    /// 本次选中的上游地址。
+    /// 本次選中的上游位址。
     pub upstream: Option<&'a str>,
     pub headers: Option<&'a (dyn Headers + Sync)>,
 }

@@ -2,65 +2,65 @@
 okf_version: "0.2"
 ---
 
-# 枢衡 Fulcrum · 知识 bundle
+# 樞衡 Fulcrum · 知識 bundle
 
-按 [Open Knowledge Format v0.2](/references/okf-spec.md) 组织的知识 bundle。
+按 [Open Knowledge Format v0.2](/references/okf-spec.md) 組織的知識 bundle。
 
-★ **[`PLAN.md`](../PLAN.md) 是唯一权威。** 本 bundle 的绝大部分是指向它的**导航图**——每篇概念用 `sources` 声明出处（章节号 + 决策编号），正文只做定位与串联，不复述结论。与 `PLAN.md` 冲突时一律以 `PLAN.md` 为准，并且要把这里改掉。
+★ **[`PLAN.md`](../PLAN.md) 是唯一權威。** 本 bundle 的絕大部分是指向它的**導覽圖**——每篇概念用 `sources` 宣告出處（章節號 + 決策編號），正文只做定位與串聯，不復述結論。與 `PLAN.md` 衝突時一律以 `PLAN.md` 為準，並且要把這裡改掉。
 
-★ **一处例外必须说清**：[架构](/architecture/index.md) 一节**带真内容**，它是原 `docs/architecture.md` 拆分而来的**技术基线**，不是 `PLAN.md` 的复述。它与原文件一样**服从 `PLAN.md`**。详见 [唯一权威与本 bundle 的定位](/governance/source-of-truth.md)。
+★ **一處例外必須說清**：[架構](/architecture/index.md) 一節**帶真內容**，它是原 `docs/architecture.md` 拆分而來的**技術基線**，不是 `PLAN.md` 的複述。它與原檔案一樣**服從 `PLAN.md`**。詳見 [唯一權威與本 bundle 的定位](/governance/source-of-truth.md)。
 
 ## [治理](/governance/index.md)
 
-* [唯一权威与本 bundle 的定位](/governance/source-of-truth.md) - 谁说了算、架构一节为什么是例外、发现冲突怎么办
-* [决策日志](/governance/decision-log.md) - §10 的导航：哪条管哪件事、★ owner 推翻 AI 建议的那些决定
-* [待定清单](/governance/open-questions.md) - 仍然开着的那些。★ **号码有意不抄在这里**：那张表由门钉成与 `PLAN.md` 待定清单逐字相等，而**抄出来的第二份没有任何门守着** —— 这一行此前就同时错了两头（D26 已由 G118 结案却还列着、D29 开着却没列），而它自洽地躺了很多轮
-* [实施路线](/governance/roadmap.md) - M0–M4 五个里程碑与各自的退出条件；判据只有「能不能真用」
-* [工作方式](/governance/working-agreement.md) - 不可回头的硬约束、不得绕过的三条、性能声明的纪律
+* [唯一權威與本 bundle 的定位](/governance/source-of-truth.md) - 誰說了算、架構一節為什麼是例外、發現衝突怎麼辦
+* [決策紀錄](/governance/decision-log.md) - §10 的導覽：哪條管哪件事、★ owner 推翻 AI 建議的那些決定
+* [待定清單](/governance/open-questions.md) - 仍然開著的那些。★ **號碼有意不抄在這裡**：那張表由門釘成與 `PLAN.md` 待定清單逐字相等，而**抄出來的第二份沒有任何門守著** —— 這一行此前就同時錯了兩頭（D26 已由 G118 結案卻還列著、D29 開著卻沒列），而它自洽地躺了很多輪
+* [實施路線](/governance/roadmap.md) - M0–M4 五個里程碑與各自的退出條件；判據只有「能不能真用」
+* [工作方式](/governance/working-agreement.md) - 不可回頭的硬約束、不得繞過的三條、效能宣告的紀律
 
-## [产品](/product/index.md)
+## [產品](/product/index.md)
 
-* [定位](/product/positioning.md) - 一个进程覆盖三件事；三家的长处与短处；★ 竞争位置必须诚实记录
-* [首版范围](/product/scope.md) - 自研四块、明确不做七项、回落层两家
-* [设计原则](/product/design-principles.md) - 七条；★ 第七条「回落是脚手架」的成功标志是被删除
+* [定位](/product/positioning.md) - 一個處理程序覆蓋三件事；三家的長處與短處；★ 競爭位置必須誠實記錄
+* [首版範圍](/product/scope.md) - 自研四塊、明確不做七項、回落層兩家
+* [設計原則](/product/design-principles.md) - 七條；★ 第七條「回落是腳手架」的成功標誌是被刪除
 
-## [架构（技术基线）](/architecture/index.md)
+## [架構（技術基線）](/architecture/index.md)
 
-* [进程与组件边界](/architecture/process-model.md) - 枢衡是**一个进程**，既是控制面也是数据面
-* [配置分层](/architecture/configuration.md) - DSL → 结构化配置 → 运行时对象图；★ 不做反向生成
-* [DSL 指令集参考](/architecture/dsl-reference.md) - ★ M1 的完整指令清单；执行顺序表是**公开契约**
-* [管理面](/architecture/control-plane.md) - 全量 load + Runtime 增量双通道；★ 基线 ⊕ 临时覆盖层
-* [TLS 与自动 HTTPS](/architecture/tls.md) - ⚠ ★ **此后后端是 BoringSSL 不是 rustls**（G104 推翻 §5.1 第 1 条）；不留双路径、On-Demand 强制准入
-* [数据路径](/architecture/data-path.md) - 三个入口一个路由层；静态与缓存；上游发现与健康
-* [回落层](/architecture/fallback.md) - 过渡期顶班，1.0 时归零；四条防止它长成第二个产品的约束
-* [观测](/architecture/observability.md) - 指标 + 结构化日志 + Runtime 实时 stats
+* [處理程序與元件邊界](/architecture/process-model.md) - 樞衡是**一個處理程序**，既是控制面也是資料面
+* [設定分層](/architecture/configuration.md) - DSL → 結構化設定 → 執行環境物件圖；★ 不做反向生成
+* [DSL 指令集參考](/architecture/dsl-reference.md) - ★ M1 的完整指令清單；執行順序表是**公開契約**
+* [管理面](/architecture/control-plane.md) - 全量 load + Runtime 增量雙通道；★ 基線 ⊕ 臨時覆蓋層
+* [TLS 與自動 HTTPS](/architecture/tls.md) - ⚠ ★ **此後後端是 BoringSSL 不是 rustls**（G104 推翻 §5.1 第 1 條）；不留雙路徑、On-Demand 強制存取資格
+* [資料路徑](/architecture/data-path.md) - 三個入口一個路由層；靜態與快取；上游發現與健康
+* [回落層](/architecture/fallback.md) - 過渡期頂班，1.0 時歸零；四條防止它長成第二個產品的約束
+* [觀測](/architecture/observability.md) - 指標 + 結構化紀錄 + Runtime 即時 stats
 
-## [技术与运维](/platform/index.md)
+## [技術與維運](/platform/index.md)
 
-* [技术栈](/platform/tech-stack.md) - Rust + Pingora 0.8.1 + **quiche** + **BoringSSL**（★ 由 G103/G104 换掉 quinn/h3 与 rustls）；单静态二进制
-* [依赖策略](/platform/dependency-policy.md) - G29：追新 + 不设上界 + `Cargo.lock` 入库 + **24 小时安全怀疑期**
-* [供应链现状](/platform/supply-chain.md) - ★ **必读**：脱字号需求自带上界、pingora 的十条天花板、4 条公告与可达性分析
-* [HTTP/3 库选型事实表](/platform/http3-libraries.md) - D11 拍板前的事实，**不给推荐项**；★ quiche 用 BoringSSL 不是 rustls、s2n-quic 根本不带 HTTP/3
-* [构建与验证](/platform/build-and-test.md) - 一切在 Docker 里跑（G26）；宿主机只需 Docker
-* [部署](/platform/deploy.md) - systemd unit 照抄形状；★ `TimeoutStopSec` 怎么算；变更 / 回滚 / 换二进制三条路
-* [安全基线](/platform/security-baseline.md) - 管理面默认不出机器；不自己实现 TLS/HTTP2/HPACK/QUIC
+* [技術棧](/platform/tech-stack.md) - Rust + Pingora 0.8.1 + **quiche** + **BoringSSL**（★ 由 G103/G104 換掉 quinn/h3 與 rustls）；單靜態二進位
+* [依賴策略](/platform/dependency-policy.md) - G29：追新 + 不設上界 + `Cargo.lock` 入庫 + **24 小時安全懷疑期**
+* [供應鏈現狀](/platform/supply-chain.md) - ★ **必讀**：脫字號需求自帶上界、pingora 的十條天花板、4 條公告與可達性分析
+* [HTTP/3 庫選型事實表](/platform/http3-libraries.md) - D11 拍板前的事實，**不給推薦項**；★ quiche 用 BoringSSL 不是 rustls、s2n-quic 根本不帶 HTTP/3
+* [建置與驗證](/platform/build-and-test.md) - 一切在 Docker 裡跑（G26）；宿主機只需 Docker
+* [部署](/platform/deploy.md) - systemd unit 照抄形狀；★ `TimeoutStopSec` 怎麼算；變更 / 回復 / 換二進位三條路
+* [安全基線](/platform/security-baseline.md) - 管理面預設不出機器；不自己實作 TLS/HTTP2/HPACK/QUIC
 
-## [验证](/verification/index.md)
+## [驗證](/verification/index.md)
 
-* [M0 接缝验证](/verification/m0-seam.md) - ✅ **已通过**：自建 TCP/UDP 监听器参与了 Pingora 的 socket 移交
-* [性能验收标准](/verification/performance-bar.md) - G19：三家全对拍、逐类设门、脚本与原始数据全公开
-* [musl + BoringSSL 静态链接](/verification/musl-boringssl.md) - ✅ **已通过**（G103/G104 的未验前置）；★ ★ ★ 而卡住它的是**构建宿主**，不是 musl 也不是 BoringSSL
-* [尚未验证的接缝](/verification/open-seams.md) - 还剩哪些没被代码证明；★ 升级窗口内 UDP 数据报分流
+* [M0 接縫驗證](/verification/m0-seam.md) - ✅ **已通過**：自建 TCP/UDP 監聽器參與了 Pingora 的 socket 移交
+* [效能驗收標準](/verification/performance-bar.md) - G19：三家全對拍、逐類設門、指令碼與原始資料全公開
+* [musl + BoringSSL 靜態連結](/verification/musl-boringssl.md) - ✅ **已通過**（G103/G104 的未驗前置）；★ ★ ★ 而卡住它的是**建置宿主**，不是 musl 也不是 BoringSSL
+* [尚未驗證的接縫](/verification/open-seams.md) - 還剩哪些沒被程式碼證明；★ 升級視窗內 UDP 資料報分流
 
 ## [外部材料](/references/index.md)
 
-* [OKF 规范](/references/okf-spec.md) - 本 bundle 遵循的格式
-* [PLAN.md](/references/plan.md) - 唯一权威的入口与章节地图
-* [AGENTS.md](/references/agents.md) - agent 的项目级约束
-* [上游技术入口](/references/upstream.md) - Pingora / quiche / BoringSSL 与三家的官方文档
+* [OKF 規範](/references/okf-spec.md) - 本 bundle 遵循的格式
+* [PLAN.md](/references/plan.md) - 唯一權威的入口與章節地圖
+* [AGENTS.md](/references/agents.md) - agent 的專案級約束
+* [上游技術入口](/references/upstream.md) - Pingora / quiche / BoringSSL 與三家的官方文件
 
-## Agent 约定
+## Agent 約定
 
-`agents/` 存的是**工具怎么用这个仓库**（issue 落在哪、triage 标签怎么对应、领域文档去哪找），不是产品知识；工作区准则与 OKF 维护合同只在工作区根各存一份，由索引指过去。项目级 agent 约束的权威始终是 [`AGENTS.md`](../AGENTS.md)，本目录只补它引到的那几份细则。
+`agents/` 存的是**工具怎麼用這個儲存庫**（issue 落在哪、triage 標籤怎麼對應、領域文件去哪找），不是產品知識；工作區準則與 OKF 維護合同只在工作區根各存一份，由索引指過去。專案級 agent 約束的權威始終是 [`AGENTS.md`](../AGENTS.md)，本目錄只補它引到的那幾份細則。
 
-* [Agent 配置索引](/agents/index.md) - 三份细则的入口：issue tracker 与 Wayfinder 约定、triage 标签映射、领域文档布局（`GLOSSARY.md` / ADR，不存在就静默跳过），外加工作区准则与本 bundle 遵循的 OKF v0.2 维护合同的指针。
+* [Agent 設定索引](/agents/index.md) - 三份細則的入口：issue tracker 與 Wayfinder 約定、triage 標籤映射、領域文件佈局（`GLOSSARY.md` / ADR，不存在就靜默跳過），外加工作區準則與本 bundle 遵循的 OKF v0.2 維護合同的指針。

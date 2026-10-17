@@ -1,177 +1,177 @@
-# vendor/pingora —— 枢衡对 Pingora 的 fork
+# vendor/pingora —— 樞衡對 Pingora 的 fork
 
-> 基线：`cloudflare/pingora` **tag `0.9.0`**（commit `702f690`，Apache-2.0）
-> 建立：2026-08-12（基线 `0.8.1` / `719ef6c`），依据 [`PLAN.md`](../../PLAN.md) §10 **G30**
-> ★ rebase：**2026-09-24 从 0.8.1 换到 0.9.0**（owner 当场批）—— 这次撤掉了什么、重做了什么，见下面「★ 2026-09-24：rebase 到 0.9.0」
+> 基線：`cloudflare/pingora` **tag `0.9.0`**（commit `702f690`，Apache-2.0）
+> 建立：2026-08-12（基線 `0.8.1` / `719ef6c`），依據 [`PLAN.md`](../../PLAN.md) §10 **G30**
+> ★ rebase：**2026-09-24 從 0.8.1 換到 0.9.0**（owner 當場批）—— 這次撤掉了什麼、重做了什麼，見下面「★ 2026-09-24：rebase 到 0.9.0」
 > 上游：https://github.com/cloudflare/pingora
 
-## 为什么有这个 fork
+## 為什麼有這個 fork
 
-`pingora-core 0.8.1` 的清单里有十条版本上界，把 44 个传递依赖钉在旧版上，其中两条带真实安全公告。
+`pingora-core 0.8.1` 的清單裡有十條版本上界，把 44 個傳遞依賴釘在舊版上，其中兩條帶真實安全公告。
 
-★ **成因是 Cargo 的默认行为**：`brotli = "3"` 不是「≥3」，而是脱字号需求 `^3` = `>=3.0.0, <4.0.0`——**每一个不带符号的版本字符串都自带一个上界**。
+★ **成因是 Cargo 的預設行為**：`brotli = "3"` 不是「≥3」，而是脫字號需求 `^3` = `>=3.0.0, <4.0.0`——**每一個不帶符號的版本字串都自帶一個上界**。
 
-★ ★ **`[patch.crates-io]` 打不破需求**——被 patch 的 crate 仍须满足依赖方的版本需求，所以没法直接把 `brotli` patch 成 8。**唯一的杠杆是替换 `pingora-core` 本身**，这就是这个 fork 存在的理由。
+★ ★ **`[patch.crates-io]` 打不破需求**——被 patch 的 crate 仍須滿足依賴方的版本需求，所以沒法直接把 `brotli` patch 成 8。**唯一的槓桿是替換 `pingora-core` 本身**，這就是這個 fork 存在的理由。
 
-完整背景见 [`docs/platform/supply-chain.md`](../../docs/platform/supply-chain.md)。
+完整背景見 [`docs/platform/supply-chain.md`](../../docs/platform/supply-chain.md)。
 
-## 范围
+## 範圍
 
-★ **只保留枢衡实际用到的 8 个 crate**，不是整个上游 workspace（0.9.0 是 22 个成员；0.8.1 是 20 个 —— 此处原写的「21」不准）：
+★ **只保留樞衡實際用到的 8 個 crate**，不是整個上游 workspace（0.9.0 是 22 個成員；0.8.1 是 20 個 —— 此處原寫的「21」不準）：
 
 ```
 pingora-core  pingora-error  pingora-http  pingora-pool
 pingora-runtime  pingora-timeout  pingora-rustls  pingora-boringssl
 ```
 
-⚠ ★ ★ **第 8 个是 2026-08-25 加回来的（G104），而它此前是被特意删掉的。**
-删它的理由写在 `pingora-core/Cargo.toml` 里：「`PLAN.md` §5.1 第 1 条把 TLS 后端锁死在
-rustls，三者永远不会被启用」——**而 §5.1 第 1 条已被 G104 推翻**（§10 第 59 轮，
-本项目第一次推翻一条写着「不可回头」的约束）。详见下面的**改动 11**。
-★ `pingora-openssl` 与 `pingora-s2n` 仍然没有 vendor，它们的 `#[cfg]` 分支照旧不会被点亮。
+⚠ ★ ★ **第 8 個是 2026-08-25 加回來的（G104），而它此前是被特意刪掉的。**
+刪它的理由寫在 `pingora-core/Cargo.toml` 裡：「`PLAN.md` §5.1 第 1 條把 TLS 後端鎖死在
+rustls，三者永遠不會被啟用」——**而 §5.1 第 1 條已被 G104 推翻**（§10 第 59 輪，
+本專案第一次推翻一條寫著「不可回頭」的約束）。詳見下面的**改動 11**。
+★ `pingora-openssl` 與 `pingora-s2n` 仍然沒有 vendor，它們的 `#[cfg]` 分支照舊不會被點亮。
 
-~~`pingora-rustls` 目前未被启用，先留着——G6 要求的 `features = ["rustls"]` 在 M1 会用到。~~
-（M1 起它一直是被启用的那一条；⏳ G104 之后它会退到只服务 L4 的 ClientHello 预读，
-最终去留见 `PLAN.md` §10 第 61 轮。）
+~~`pingora-rustls` 目前未被啟用，先留著——G6 要求的 `features = ["rustls"]` 在 M1 會用到。~~
+（M1 起它一直是被啟用的那一條；⏳ G104 之後它會退到只服務 L4 的 ClientHello 預讀，
+最終去留見 `PLAN.md` §10 第 61 輪。）
 
-⚠ ★ ★ ★ **2026-08-25（G104 第 ② 处）更新：`pingora-rustls` 已经退出根 workspace 的依赖图。**
-L4 的 ClientHello 预读换到 BoringSSL 早回调之后，产品 crate 里**没有任何一个**再依赖它，
-根 `Cargo.toml` 的 `[patch]` 与 `[workspace.dependencies]` 两处声明都已删掉
-（实测：根 `Cargo.lock` 少了 `pingora-rustls` 与 `no_debug` 两个包）。
-★ **但这个 crate 本身仍然留在 fork 里，仍是 vendor workspace 的成员，回归网照跑** ——
-理由不是留恋：`pingora-core` 的 `rustls` feature 是**上游原样**的可选分支，
-删掉这个 crate 就等于对上游多改一处，而**留着它一行改动都不用做**。
-⇒ **「范围」仍然是 8 个 crate**，变的是「其中几个进产品依赖图」（现在是 7 个）。
-> ★ 顺带一条方法论：**「没人用了」与「该删了」是两件事。**
-> 前者说的是依赖图，后者说的是 rebase 成本 —— 而这里两者指向相反的方向。
+⚠ ★ ★ ★ **2026-08-25（G104 第 ② 處）更新：`pingora-rustls` 已經退出根 workspace 的依賴圖。**
+L4 的 ClientHello 預讀換到 BoringSSL 早回呼之後，產品 crate 裡**沒有任何一個**再依賴它，
+根 `Cargo.toml` 的 `[patch]` 與 `[workspace.dependencies]` 兩處宣告都已刪掉
+（實測：根 `Cargo.lock` 少了 `pingora-rustls` 與 `no_debug` 兩個包）。
+★ **但這個 crate 本身仍然留在 fork 裡，仍是 vendor workspace 的成員，迴歸網照跑** ——
+理由不是留戀：`pingora-core` 的 `rustls` feature 是**上游原樣**的可選分支，
+刪掉這個 crate 就等於對上游多改一處，而**留著它一行改動都不用做**。
+⇒ **「範圍」仍然是 8 個 crate**，變的是「其中幾個進產品依賴圖」（現在是 7 個）。
+> ★ 順帶一條方法論：**「沒人用了」與「該刪了」是兩件事。**
+> 前者說的是依賴圖，後者說的是 rebase 成本 —— 而這裡兩者指向相反的方向。
 
 ## ★ 2026-09-24：rebase 到 0.9.0
 
-**做法**：8 个 crate 整体换成官方 tag `0.9.0`（`git -c core.autocrlf=false archive` ——
-⚠ 本机全局 `core.autocrlf=true`，不加 `-c` 会导出 CRLF，每个文件都像被改过），
-再按本文件的节号**逐条**重做仍需要的改动（没有走三方合并：被上游吸收的改动会以冲突的形式回来，
-而 `offload.rs` 被上游挪了位置，补丁跟不过去）。
+**做法**：8 個 crate 整體換成官方 tag `0.9.0`（`git -c core.autocrlf=false archive` ——
+⚠ 本機全域 `core.autocrlf=true`，不加 `-c` 會匯出 CRLF，每個檔案都像被改過），
+再按本檔案的節號**逐條**重做仍需要的改動（沒有走三方合併：被上游吸收的改動會以衝突的形式回來，
+而 `offload.rs` 被上游挪了位置，補丁跟不過去）。
 
-| 节 | 结果 | 依据 |
+| 節 | 結果 | 依據 |
 |---|---|---|
-| §1 `lru` / `prometheus` / `nix` 上界 | ✅ 归零 | 0.9.0：`lru = "0.18.2"`（owner 的提交 `6463ad6`）· prometheus 从 pingora-core 整条删掉（`842ddd9`）· `nix = "~0.31.1"`（`7e29246`）|
+| §1 `lru` / `prometheus` / `nix` 上界 | ✅ 歸零 | 0.9.0：`lru = "0.18.2"`（owner 的提交 `6463ad6`）· prometheus 從 pingora-core 整條刪掉（`842ddd9`）· `nix = "~0.31.1"`（`7e29246`）|
 | §1 `brotli` / `rand` / `sfv` / `x509-parser` 上界 | 重做 | 0.9.0 仍是 `3` / `0.8` / `0.10.4` / `0.16.0` |
-| §2 `nix` 调用点 | ✅ 归零 | 上游同一次迁移（`7e29246`），逐条一致 |
-| §2 `rand` / `sfv` 调用点 | 重做 | ⚠ `connectors/offload.rs` 被上游挪成 `pingora-core/src/offload.rs`（`8aeef34`），在新位置重做 |
+| §2 `nix` 呼叫點 | ✅ 歸零 | 上游同一次遷移（`7e29246`），逐條一致 |
+| §2 `rand` / `sfv` 呼叫點 | 重做 | ⚠ `connectors/offload.rs` 被上游挪成 `pingora-core/src/offload.rs`（`8aeef34`），在新位置重做 |
 | §3 `derivative` → `educe` | 重做 | 0.9.0 仍用 derivative 2.2.0 |
-| §4 fd 卫生（① accept 出来的连接不关 · ② 没有 CLOEXEC）| ✅ 归零 | 上游 `b2b35fd`（owner 的 PR #960），并自带测试 `test_receive_does_not_leak_fds` |
-| §5 ① rustls / tokio-rustls 关 default · ③ pingora-core 的 dev-dep | ✅ 归零 | 上游 `5396a1f`（owner 的 PR #966）|
+| §4 fd 衛生（① accept 出來的連接不關 · ② 沒有 CLOEXEC）| ✅ 歸零 | 上游 `b2b35fd`（owner 的 PR #960），並自帶測試 `test_receive_does_not_leak_fds` |
+| §5 ① rustls / tokio-rustls 關 default · ③ pingora-core 的 dev-dep | ✅ 歸零 | 上游 `5396a1f`（owner 的 PR #966）|
 | §5 ② `rustls-native-certs` 0.8.4 | 重做 | 0.9.0 仍是 `0.7.1` |
-| §6 迁走 `rustls-pemfile` + 18 条特征化测试 | 重做 | 三方合并零冲突 |
-| §7 `test_connect_uds` 的 `read_exact` | ✅ 归零 | 上游 `91b880d`（owner 的 PR #968）|
-| §11 `pingora-boringssl` 去掉 `pq-experimental` | ✅ 归零 | 0.9.0 已是 `boring = "5"` 且不带特性（boring 5 里 `pq-experimental` 是空特性）；quiche 0.30 放宽到 `>=4.19, <6` ⇒ 图里只有一个 boring 5.2.0 |
-| §12 PROXY protocol「收」 | **重做，换了形状（B）** | 上游新增 `PreTlsProcess`，但只在 TLS 分支里调（`600c5c0` 有意收窄）⇒ fork 只剩「把调用挪到 TLS 分支之前」几行；读取循环搬进 `crates/fulcrum-server/src/proxyproto.rs`（owner 2026-09-24 拍板）|
-| §13 h1 `body_bytes_sent` | ✅ 归零 | 上游 `e7de90a`，语义与我们一致，还自带更强的测试 `body_bytes_sent_excludes_response_header` |
-| §14 `SslDigest` 的 `sni` / `alpn` | 重做 | 两个文件三方合并零冲突 |
-| §15 连接计数接缝 | 重做 | ⚠ 0.9.0 新增构造点 `add_listener()`（`add_tcp` / `add_uds` / `add_tls_with_settings` 都走它）⇒ 那里也复制了 `connection_counter`；⛔ 填 `None` 能编过，但之后加的端口会静默不计数 |
-| **新增：裁掉 dial9** | 新 | 删 pingora-core 的 `dial9*` 三个特性与 pingora-runtime 的两个可选依赖（`dial9-tokio-telemetry`、`aws-sdk-s3`）。vendor 锁会记下成员 crate 的**全部**可选依赖，而 aws-sdk-s3 的默认特性拉进 aws-lc-rs ⇒ `crates/fulcrum/tests/supply_gates.rs` 门 1 红。★ 反证实测：保留 dial9 时 vendor 锁多出 aws-lc-rs / aws-lc-sys / aws-sdk-s3 等，387 → 544 个包。★ 删掉的特性名（连同第 4 步删的 openssl / s2n）凡源码里仍有 `cfg` 引用的，登记进 workspace 清单 `[workspace.lints.rust]` 的 `check-cfg`，`pingora-core` 接上 `[lints] workspace = true` —— 不登记时每次编译 58 条 `unexpected_cfgs` 警告（实测：`LINT_ONLY` 58 → 0；`--features s2n` 仍报「没有这个特性」）|
+| §6 遷走 `rustls-pemfile` + 18 條特徵化測試 | 重做 | 三方合併零衝突 |
+| §7 `test_connect_uds` 的 `read_exact` | ✅ 歸零 | 上游 `91b880d`（owner 的 PR #968）|
+| §11 `pingora-boringssl` 去掉 `pq-experimental` | ✅ 歸零 | 0.9.0 已是 `boring = "5"` 且不帶特性（boring 5 裡 `pq-experimental` 是空特性）；quiche 0.30 放寬到 `>=4.19, <6` ⇒ 圖裡只有一個 boring 5.2.0 |
+| §12 PROXY protocol「收」 | **重做，換了形狀（B）** | 上游新增 `PreTlsProcess`，但只在 TLS 分支裡調（`600c5c0` 有意收窄）⇒ fork 只剩「把呼叫挪到 TLS 分支之前」幾行；讀取循環搬進 `crates/fulcrum-server/src/proxyproto.rs`（owner 2026-09-24 拍板）|
+| §13 h1 `body_bytes_sent` | ✅ 歸零 | 上游 `e7de90a`，語義與我們一致，還自帶更強的測試 `body_bytes_sent_excludes_response_header` |
+| §14 `SslDigest` 的 `sni` / `alpn` | 重做 | 兩個檔案三方合併零衝突 |
+| §15 連接計數接縫 | 重做 | ⚠ 0.9.0 新增建構點 `add_listener()`（`add_tcp` / `add_uds` / `add_tls_with_settings` 都走它）⇒ 那裡也複製了 `connection_counter`；⛔ 填 `None` 能編過，但之後加的連接埠會靜默不計數 |
+| **新增：裁掉 dial9** | 新 | 刪 pingora-core 的 `dial9*` 三個特性與 pingora-runtime 的兩個可選依賴（`dial9-tokio-telemetry`、`aws-sdk-s3`）。vendor 鎖會記下成員 crate 的**全部**可選依賴，而 aws-sdk-s3 的預設特性拉進 aws-lc-rs ⇒ `crates/fulcrum/tests/supply_gates.rs` 門 1 紅。★ 反證實測：保留 dial9 時 vendor 鎖多出 aws-lc-rs / aws-lc-sys / aws-sdk-s3 等，387 → 544 個包。★ 刪掉的特性名（連同第 4 步刪的 openssl / s2n）凡原始碼裡仍有 `cfg` 引用的，登記進 workspace 清單 `[workspace.lints.rust]` 的 `check-cfg`，`pingora-core` 接上 `[lints] workspace = true` —— 不登記時每次編譯 58 條 `unexpected_cfgs` 警告（實測：`LINT_ONLY` 58 → 0；`--features s2n` 仍報「沒有這個特性」）|
 
-**结果**：fork 相对官方 0.9.0 改动 **14 个文件**（相对 0.8.1 时是 19 个），清单见文末「怎么核对」。
-**判据**：vendor 回归网的失败集合与官方 0.9.0 在同款容器里逐项相同（官方 0.9.0：19 个二进制 735 过 / 1 败，
-败的只有宿主机相关那条 ⇒ `tests/vendor/run.sh` 的 `EXPECTED_FAILURES` 清空）；fork 多出的 20 条是本 fork 自己的测试
-（§6 的 18 条 + §15 的 2 条）。
+**結果**：fork 相對官方 0.9.0 改動 **14 個檔案**（相對 0.8.1 時是 19 個），清單見文末「怎麼核對」。
+**判據**：vendor 迴歸網的失敗集合與官方 0.9.0 在同款容器裡逐項相同（官方 0.9.0：19 個二進位 735 過 / 1 敗，
+敗的只有宿主機相關那條 ⇒ `tests/vendor/run.sh` 的 `EXPECTED_FAILURES` 清空）；fork 多出的 20 條是本 fork 自己的測試
+（§6 的 18 條 + §15 的 2 條）。
 
-**0.9.0 带来的、本 fork 之外的变化**（产品侧已适配或接受）：`ListenFds` 换成 parking_lot 锁（产品三处 + spike 三处
-fd 表取用改成短持锁）· 新一代关掉未认领的继承 fd（`f82478a`；产品与 spike 的自建服务都实现了 `listen_addresses()`，
-`tests/m0/unclaimed.sh` 反写成「修好了」）· 上游空闲连接池改成全局 LRU（反代 `Connector` 显式给 `128 × threads_l7`）·
-boring 5 默认开后量子密钥交换 · quiche 0.30 · HTTP/1 / HTTP/2 入口若干新拒绝 · h2 入口默认上限收紧到每连接 100 条流 /
-头部表 64 KiB（`90890bb`；枢衡没覆写 `h2_options()`，owner 2026-09-24 拍了接受）· 停机时 h2 已收到的流会处理完（`aece993`）
-（后三条见 `docs/architecture/data-path.md`，后量子那条见 `docs/architecture/tls.md`）。
+**0.9.0 帶來的、本 fork 之外的變化**（產品側已適配或接受）：`ListenFds` 換成 parking_lot 鎖（產品三處 + spike 三處
+fd 表取用改成短持鎖）· 新一代關掉未認領的繼承 fd（`f82478a`；產品與 spike 的自建服務都實作了 `listen_addresses()`，
+`tests/m0/unclaimed.sh` 反寫成「修好了」）· 上游空閒連接池改成全域 LRU（反代 `Connector` 顯式給 `128 × threads_l7`）·
+boring 5 預設開後量子金鑰交換 · quiche 0.30 · HTTP/1 / HTTP/2 入口若干新拒絕 · h2 入口預設上限收緊到每連接 100 條流 /
+頭部表 64 KiB（`90890bb`；樞衡沒覆寫 `h2_options()`，owner 2026-09-24 拍了接受）· 停機時 h2 已收到的流會處理完（`aece993`）
+（後三條見 `docs/architecture/data-path.md`，後量子那條見 `docs/architecture/tls.md`）。
 
-## 改了什么
+## 改了什麼
 
-★ **改动的意图严格限定为「放宽版本上界 + 随之而来的调用点适配」。**
-（这句是建 fork 时的口径；此后由 owner 逐条拍进来的另外几类 —— 加能力（含 `G163` 那个缺省不变的开关）、缺陷修复、`G157` 的语义不变的性能改动、`G162` 改了线上头名大小写的性能改动 —— 各自写在本节对应的条目里。）
+★ **改動的意圖嚴格限定為「放寬版本上界 + 隨之而來的呼叫點適配」。**
+（這句是建 fork 時的口徑；此後由 owner 逐條拍進來的另外幾類 —— 加能力（含 `G163` 那個預設不變的開關）、缺陷修復、`G157` 的語義不變的效能改動、`G162` 改了線上頭名大小寫的效能改動 —— 各自寫在本節對應的條目裡。）
 
-⚠ ★ ★ **但「没有行为变更」这句话，2026-08-12 建立本 fork 时写下来是错的**：`nix` 那一轮实际引入了一条真回归（见下面第 2 节），它在 2026-08-13 补上回归网的当天被逮到并修好。
-**教训不是「当时不够小心」，是「当时没有能发现它的东西」**——编译过、M0 七跑全绿，而那条 bug 一直在。
+⚠ ★ ★ **但「沒有行為變更」這句話，2026-08-12 建立本 fork 時寫下來是錯的**：`nix` 那一輪實際引入了一條真迴歸（見下面第 2 節），它在 2026-08-13 補上回歸網的當天被逮到並修好。
+**教訓不是「當時不夠小心」，是「當時沒有能發現它的東西」**——編譯過、M0 七跑全綠，而那條 bug 一直在。
 
 ### 1. 版本上界（`Cargo.toml` × 3）
 
-> ★ 2026-09-24（0.9.0）：`lru` / `prometheus` / `nix` 三行**已归零**（0.9.0 自己就是这几个值，或把依赖整条删了）；
-> `brotli` / `rand` / `sfv` / `x509-parser` 四行照旧重做。下表是 0.8.1 时的原样，留作出处。
+> ★ 2026-09-24（0.9.0）：`lru` / `prometheus` / `nix` 三行**已歸零**（0.9.0 自己就是這幾個值，或把依賴整條刪了）；
+> `brotli` / `rand` / `sfv` / `x509-parser` 四行照舊重做。下表是 0.8.1 時的原樣，留作出處。
 
-| 依赖 | 上游 0.8.1 | fork | 动机 |
+| 依賴 | 上游 0.8.1 | fork | 動機 |
 |---|---|---|---|
-| `lru` | `0.16.3` | **`0.18.2`** | ★ **RUSTSEC-2026-0253**（UAF）。✅ ★ **上游 `main` 已于 2026-08-25 落地这一条 —— 那是我们的 [PR #962](https://github.com/cloudflare/pingora/pull/962)**；⚠ PR 本身显示 `closed / merged=false`（Cloudflare 从内部仓库导入再推，PR 就这么收场）——★ **那个状态读起来像被拒，而它不是**。⇒ 上游发版后本条可归零 |
-| `prometheus` | `0.13` | **`0.14`** | ★ 连带把 `protobuf` 2.28 → 3.7.2，修 **RUSTSEC-2024-0437**（DoS）|
-| `nix` | `~0.24.3` | **`0.31`** | ★ 波浪号连小版本都钉死；上游 main 已自行抬到 `~0.31.1` |
-| `brotli` | `3` | **`8`** | 无公告，纯版本号；**无源码改动**，保留成本近似为零 |
-| `rand` | `0.8` | **`0.10`** | 无公告，纯版本号；有源码改动（3 个文件），已被单元测试覆盖 |
-| `sfv` | `0.10.4` | **`0.15`** | 无公告，纯版本号；⚠ 见「残余风险」 |
-| `x509-parser` | `0.16.0` | **`0.18.1`** | ★ **2026-08-20 加**：`instant-acme`（ARI）要 `^0.18`，不抬就是**产物里两份 x509-parser**。**零调用点适配**（用到的只有 `FromDer` / `raw_serial_as_string` / `iter_organization*` / `nom::AsBytes`，跨版本未变）|
+| `lru` | `0.16.3` | **`0.18.2`** | ★ **RUSTSEC-2026-0253**（UAF）。✅ ★ **上游 `main` 已於 2026-08-25 完成實作這一條 —— 那是我們的 [PR #962](https://github.com/cloudflare/pingora/pull/962)**；⚠ PR 本身顯示 `closed / merged=false`（Cloudflare 從內部儲存庫匯入再推，PR 就這麼收場）——★ **那個狀態讀起來像被拒，而它不是**。⇒ 上游發版後本條可歸零 |
+| `prometheus` | `0.13` | **`0.14`** | ★ 連帶把 `protobuf` 2.28 → 3.7.2，修 **RUSTSEC-2024-0437**（DoS）|
+| `nix` | `~0.24.3` | **`0.31`** | ★ 波浪號連小版本都釘死；上游 main 已自行抬到 `~0.31.1` |
+| `brotli` | `3` | **`8`** | 無公告，純版本號；**無原始碼改動**，保留成本近似為零 |
+| `rand` | `0.8` | **`0.10`** | 無公告，純版本號；有原始碼改動（3 個檔案），已被單元測試覆蓋 |
+| `sfv` | `0.10.4` | **`0.15`** | 無公告，純版本號；⚠ 見「殘餘風險」 |
+| `x509-parser` | `0.16.0` | **`0.18.1`** | ★ **2026-08-20 加**：`instant-acme`（ARI）要 `^0.18`，不抬就是**產物裡兩份 x509-parser**。**零呼叫點適配**（用到的只有 `FromDer` / `raw_serial_as_string` / `iter_organization*` / `nom::AsBytes`，跨版本未變）|
 
-★ ★ **`x509-parser` 那条的判据值得单说：它不是「体积大了点」。**
-`tests/vendor/run.sh` 的第 [2/5] 步会比对 vendor 锁与根锁的版本，对不上就**拒绝跑测试**，
-理由是「vendor 测试跑的不是产物里那套组合，结果不可采信」——**那道门是对的**。
-所以引入一份重复依赖的真实代价是**整个回归网停摆**，而不是几百 KB。
-⚠ 它是 2026-08-19 那批 ACME 代码引入的，当时**没跑回归网**所以没人看见；
-交接单里那句「没跑不等于绿」第二天就兑现了。
+★ ★ **`x509-parser` 那條的判據值得單說：它不是「體積大了點」。**
+`tests/vendor/run.sh` 的第 [2/5] 步會比對 vendor 鎖與根鎖的版本，對不上就**拒絕跑測試**，
+理由是「vendor 測試跑的不是產物裡那套組合，結果不可採信」——**那道門是對的**。
+所以引入一份重複依賴的真實代價是**整個迴歸網停擺**，而不是幾百 KB。
+⚠ 它是 2026-08-19 那批 ACME 程式碼引入的，當時**沒跑回歸網**所以沒人看見；
+交接單裡那句「沒跑不等於綠」第二天就兌現了。
 
-### ★ 2026-08-13：还原了四条纯装饰的上界
+### ★ 2026-08-13：還原了四條純裝飾的上界
 
-`strum` / `strum_macros`（→ `0.26.2`）、`daggy`（→ `0.8`）、`openssl-probe`（→ `0.1.6`）、`windows-sys`（→ `0.59.0`）**已还原为上游值**。
+`strum` / `strum_macros`（→ `0.26.2`）、`daggy`（→ `0.8`）、`openssl-probe`（→ `0.1.6`）、`windows-sys`（→ `0.59.0`）**已還原為上游值**。
 
-判据是 **保留成本 vs 收益**，而不是「新就是好」：
+判據是 **保留成本 vs 收益**，而不是「新就是好」：
 
 | | 收益 | 保留成本 |
 |---|---|---|
-| `openssl-probe` · `windows-sys` | ★ **零**——前者只在 openssl/boringssl 后端编译（§5.1 锁死 rustls），后者只在 Windows（G13 只出 Linux）。**它们对产物一个字节都不影响** | 每次 rebase 都要重做 |
-| `strum` · `daggy` | 无安全公告，纯版本号 | 同上；`daggy` 还连带把 `petgraph` 拖到 0.8 |
+| `openssl-probe` · `windows-sys` | ★ **零**——前者只在 openssl/boringssl 後端編譯（§5.1 鎖死 rustls），後者只在 Windows（G13 只出 Linux）。**它們對產物一個位元組都不影響** | 每次 rebase 都要重做 |
+| `strum` · `daggy` | 無安全公告，純版本號 | 同上；`daggy` 還連帶把 `petgraph` 拖到 0.8 |
 
-★ 留下来的六条里，**只有 `lru` 与 `prometheus` 有安全公告** —— 按 `G32` 该推 PR 的就是这两条。
-⚠ ⚠ **2026-09-08 实测：上游 `main` 已经自己把这两条抬到位了**（`lru 0.18.2` / `prometheus 0.14`）
-⇒ **没有 PR 可推了**，详见文末「rebase 的步骤」那一节。
-（⛔ 此处原写「D12 选项 1」—— `D12` 已由 `G32` 结案，⛔ 不是待办。）
+★ 留下來的六條裡，**只有 `lru` 與 `prometheus` 有安全公告** —— 按 `G32` 該推 PR 的就是這兩條。
+⚠ ⚠ **2026-09-08 實測：上游 `main` 已經自己把這兩條抬到位了**（`lru 0.18.2` / `prometheus 0.14`）
+⇒ **沒有 PR 可推了**，詳見文末「rebase 的步驟」那一節。
+（⛔ 此處原寫「D12 選項 1」—— `D12` 已由 `G32` 結案，⛔ 不是待辦。）
 
-★ ★ **还原不改变任何源码**：这四条升级当初就没有产生调用点适配（升级后签名未变），所以还原是纯清单编辑。fork 相对官方原版的全部改动只有 **12 个文件**（2026-08-14 实测，G41 之后），可用下面「怎么核对」一节的命令随时重算。
+★ ★ **還原不改變任何原始碼**：這四條升級當初就沒有產生呼叫點適配（升級後簽名未變），所以還原是純清單編輯。fork 相對官方原版的全部改動只有 **12 個檔案**（2026-08-14 實測，G41 之後），可用下面「怎麼核對」一節的命令隨時重算。
 
-### 2. 调用点适配（12 处，3 个文件）
+### 2. 呼叫點適配（12 處，3 個檔案）
 
-> ★ 2026-09-24（0.9.0）：`nix` 那部分**已归零**（上游同一次迁移，`7e29246`）；`rand` / `sfv` 部分重做 ——
-> ⚠ `connectors/offload.rs` 被上游挪成了 `pingora-core/src/offload.rs`（`8aeef34`），改动在新位置。
+> ★ 2026-09-24（0.9.0）：`nix` 那部分**已歸零**（上游同一次遷移，`7e29246`）；`rand` / `sfv` 部分重做 ——
+> ⚠ `connectors/offload.rs` 被上游挪成了 `pingora-core/src/offload.rs`（`8aeef34`），改動在新位置。
 
 **`nix` 0.24 → 0.31**（`server/transfer_fd/mod.rs`、`protocols/l4/stream.rs`）
 
-★ ★ **这两处按上游 main 的做法改**——上游已经做过同一次迁移（main 的 `nix` 是 `~0.31.1`），照抄它的模式比自己发明可靠。**但没有整文件覆盖**：上游 main 还带着与本次无关的行为变更，而那些没有被 M0 验证过。
+★ ★ **這兩處按上游 main 的做法改**——上游已經做過同一次遷移（main 的 `nix` 是 `~0.31.1`），照抄它的模式比自己發明可靠。**但沒有整檔案覆蓋**：上游 main 還帶著與本次無關的行為變更，而那些沒有被 M0 驗證過。
 
-| 变化 | 落法 |
+| 變化 | 落法 |
 |---|---|
-| `socket::socket()` 返回 `OwnedFd` 而非 `RawFd` | 调用点加 `.as_raw_fd()`；★ **`unistd::close` 现在签名是 `IntoRawFd` 会消费所有权，所以原有的手动 close 语义仍然正确，没有 double-close** |
+| `socket::socket()` 回傳 `OwnedFd` 而非 `RawFd` | 呼叫點加 `.as_raw_fd()`；★ **`unistd::close` 現在簽名是 `IntoRawFd` 會消費所有權，所以原有的手動 close 語義仍然正確，沒有 double-close** |
 | `listen(fd, i32)` → `listen(&impl AsFd, Backlog)` | `Backlog::new(8)` |
-| `fchmodat(None, ..)` → `fchmodat(impl AsFd, ..)` | `BorrowedFd::borrow_raw(libc::AT_FDCWD)`，语义与原来的 `None` 一致 |
-| `RecvMsg::cmsgs()` 变为可失败 | `?` 传播（控制缓冲被截断时返回 `ENOBUFS`）|
-| `setsockopt(RawFd, ..)` → `setsockopt(&impl AsFd, ..)` | 传引用 |
+| `fchmodat(None, ..)` → `fchmodat(impl AsFd, ..)` | `BorrowedFd::borrow_raw(libc::AT_FDCWD)`，語義與原來的 `None` 一致 |
+| `RecvMsg::cmsgs()` 變為可失敗 | `?` 傳播（控制緩衝被截斷時回傳 `ENOBUFS`）|
+| `setsockopt(RawFd, ..)` → `setsockopt(&impl AsFd, ..)` | 傳引用 |
 
-★ ★ ★ **上面这五条是编译器逼着改的。`nix` 这一轮还有两条编译器不会报错的语义变化，2026-08-12 全漏了**，导致 `protocols/l4/stream.rs` 里**开了 rx timestamp 的连接每一次 `read()` 都会失败**（`ENOBUFS`）。2026-08-13 照上游 main 修好（它做同一次迁移时两条都改了）：
+★ ★ ★ **上面這五條是編譯器逼著改的。`nix` 這一輪還有兩條編譯器不會回報錯誤的語義變化，2026-08-12 全漏了**，導致 `protocols/l4/stream.rs` 裡**開了 rx timestamp 的連接每一次 `read()` 都會失敗**（`ENOBUFS`）。2026-08-13 照上游 main 修好（它做同一次遷移時兩條都改了）：
 
-| 变化（编译器不报错） | 漏掉的后果 | 修法（同上游 main） |
+| 變化（編譯器不回報錯誤） | 漏掉的後果 | 修法（同上遊 main） |
 |---|---|---|
-| `cmsg_space!` 从「只有 capacity、`len == 0`」变成 ★ **`len == n` 的零向量**，而 `recvmsg` 按 **len** 取控制缓冲 | 沿用旧写法 `.clear()` 把控制缓冲清成 **0 字节**，于是每次 `recvmsg` 都截断 | `.clear()` → **`.fill(0)`** |
-| 配合上一行，截断后 `cmsgs()?` 现在返回 `ENOBUFS` 而不再静默忽略 | `?` 把它一路抛出 `poll_read`，**read 整个失败** | 缓冲改按 `cmsg_space!(nix::sys::socket::Timestamps)` 留（`SO_TIMESTAMPING` 给的是**三个** `TimeSpec`，原来只按一个留） |
+| `cmsg_space!` 從「只有 capacity、`len == 0`」變成 ★ **`len == n` 的零向量**，而 `recvmsg` 按 **len** 取控制緩衝 | 沿用舊寫法 `.clear()` 把控制緩衝清成 **0 位元組**，於是每次 `recvmsg` 都截斷 | `.clear()` → **`.fill(0)`** |
+| 配合上一行，截斷後 `cmsgs()?` 現在回傳 `ENOBUFS` 而不再靜默忽略 | `?` 把它一路拋出 `poll_read`，**read 整個失敗** | 緩衝改按 `cmsg_space!(nix::sys::socket::Timestamps)` 留（`SO_TIMESTAMPING` 給的是**三個** `TimeSpec`，原來只按一個留） |
 
-★ **另有 4 处 `nix` 类型错误在 `transfer_fd` 的 `#[cfg(test)]` 里**（`socket()` 返回 `OwnedFd`），2026-08-12 未改——因为那些测试**从来没有被编译过**。同样在 2026-08-13 补上。
+★ **另有 4 處 `nix` 類型錯誤在 `transfer_fd` 的 `#[cfg(test)]` 裡**（`socket()` 回傳 `OwnedFd`），2026-08-12 未改——因為那些測試**從來沒有被編譯過**。同樣在 2026-08-13 補上。
 
 **`rand` 0.8 → 0.10**（`pingora-runtime/src/lib.rs`、`connectors/l4.rs`、`connectors/offload.rs`）
 
-★ **两轮破坏叠在一起**：`thread_rng()` → `rng()`、`gen_range()` → `random_range()`、`seq::SliceRandom` → `seq::IndexedRandom`，
-以及 ★ **0.10 特有的一条**：便捷方法从 `Rng` 移到了**新的 `RngExt` trait**（`Rng` 现在是 `rand_core` 的再导出）。
-失效形态很迷惑——`use rand::Rng;` 会被报成 **unused import**，同时 `random_range` 报 **not found**。
+★ **兩輪破壞疊在一起**：`thread_rng()` → `rng()`、`gen_range()` → `random_range()`、`seq::SliceRandom` → `seq::IndexedRandom`，
+以及 ★ **0.10 特有的一條**：便捷方法從 `Rng` 移到了**新的 `RngExt` trait**（`Rng` 現在是 `rand_core` 的再匯出）。
+失效形態很迷惑——`use rand::Rng;` 會被報成 **unused import**，同時 `random_range` 報 **not found**。
 
 **`sfv` 0.10 → 0.15**（`protocols/http/compression/mod.rs`）
 
-★ 上游 main **还没做这个**，这一处是枢衡自己迁的。`Parser::parse_list(bytes)` → `Parser::new(bytes).parse_list::<sfv::List>()`；token 从 `&str` 变成 `&TokenRef`，取值走 `.as_str()`。
+★ 上游 main **還沒做這個**，這一處是樞衡自己遷的。`Parser::parse_list(bytes)` → `Parser::new(bytes).parse_list::<sfv::List>()`；token 從 `&str` 變成 `&TokenRef`，取值走 `.as_str()`。
 
-### 3. 换掉 `derivative`（RUSTSEC-2024-0388）
+### 3. 換掉 `derivative`（RUSTSEC-2024-0388）
 
-★ **`derivative` → `educe` 0.7.6**（`pingora-core/src/upstreams/peer.rs`，5 处）。
+★ **`derivative` → `educe` 0.7.6**（`pingora-core/src/upstreams/peer.rs`，5 處）。
 
-`derivative` 自 2021 年起未更新且已被标记失维；它在这里只做一件事——给 `PeerOptions` 派生 `Debug` 并忽略三个函数指针字段。`educe` 是直接对应物（2026-08-01 更新，97M 下载，OSV 干净）：
+`derivative` 自 2021 年起未更新且已被標記失維；它在這裡只做一件事——給 `PeerOptions` 派生 `Debug` 並忽略三個函式指針欄位。`educe` 是直接對應物（2026-08-01 更新，97M 下載，OSV 乾淨）：
 
 | | |
 |---|---|
@@ -179,1008 +179,1008 @@ boring 5 默认开后量子密钥交换 · quiche 0.30 · HTTP/1 / HTTP/2 入口
 | `#[derive(Clone, Derivative)]` `#[derivative(Debug)]` | `#[derive(Clone, Educe)]` `#[educe(Debug)]` |
 | `#[derivative(Debug = "ignore")]` ×3 | `#[educe(Debug(ignore))]` ×3 |
 
-★ ★ **连带白赚一个**：`syn 1.0.109` 一起消失了——`derivative` 是整个依赖图里**唯一**还要 `syn ^1` 的包。
+★ ★ **連帶白賺一個**：`syn 1.0.109` 一起消失了——`derivative` 是整個依賴圖裡**唯一**還要 `syn ^1` 的包。
 
-### ★ 4. fd 卫生：`get_fds_from()` 的两处泄漏（2026-08-14，M1 spike 实测发现）
+### ★ 4. fd 衛生：`get_fds_from()` 的兩處洩漏（2026-08-14，M1 spike 實測發現）
 
-> ✅ **2026-09-24 已归零**：上游 0.9.0 含 `b2b35fd`（owner 的 PR #960），`transfer_fd/mod.rs` 整份取上游，
-> 上游还自带 `test_receive_does_not_leak_fds`。⚠ `tests/m1/run.sh` [7/9] 那三条断言**保留**：上游单测只看单个进程，
+> ✅ **2026-09-24 已歸零**：上游 0.9.0 含 `b2b35fd`（owner 的 PR #960），`transfer_fd/mod.rs` 整份取上游，
+> 上游還自帶 `test_receive_does_not_leak_fds`。⚠ `tests/m1/run.sh` [7/9] 那三條斷言**保留**：上游單測只看單個處理程序，
 > 看不到 fork+exec 下的逐代累加 —— 只是提示文字改指上游。
 
-★ **这是 fork 里唯一一处主动改变运行时行为的改动**（其余都是版本上界与随之而来的适配）。
-★ 2026-08-14 补注：§5 的 rustls 那组**不属于**这一类——它是清单 feature 修正加一处
-**刻意保持语义不变**的调用点适配（唯一的新增是一行 `warn!` 日志）。两处都在
-`pingora-core/src/server/transfer_fd/mod.rs` 的 `get_fds_from()` 里，**上游 `0.8.1` 与当前
-`main` 都有**（2026-08-14 核对过 main 的同一函数），且上游仓库**没有任何 issue/PR 提过 CLOEXEC**。
+★ **這是 fork 裡唯一一處主動改變執行環境行為的改動**（其餘都是版本上界與隨之而來的適配）。
+★ 2026-08-14 補註：§5 的 rustls 那組**不屬於**這一類——它是清單 feature 修正加一處
+**刻意保持語義不變**的呼叫點適配（唯一的新增是一行 `warn!` 紀錄）。兩處都在
+`pingora-core/src/server/transfer_fd/mod.rs` 的 `get_fds_from()` 裡，**上游 `0.8.1` 與當前
+`main` 都有**（2026-08-14 核對過 main 的同一函式），且上游儲存庫**沒有任何 issue/PR 提過 CLOEXEC**。
 
 | | 缺陷 | 修法 |
 |---|---|---|
-| ① | `accept()` 出来的连接**从来不 close**——下面只 `close(listen_fd)`，而它是裸 `RawFd`、没有 `Drop` | 包成 `OwnedFd` 交给 `Drop`，顺带覆盖 `cmsgs()?` 的提前返回路径 |
-| ② | `recvmsg` 用 `MsgFlags::empty()`，于是经 `SCM_RIGHTS` 收来的监听 fd **没有 `FD_CLOEXEC`** | 改成 `MsgFlags::MSG_CMSG_CLOEXEC` |
+| ① | `accept()` 出來的連接**從來不 close**——下面只 `close(listen_fd)`，而它是裸 `RawFd`、沒有 `Drop` | 包成 `OwnedFd` 交給 `Drop`，順帶覆蓋 `cmsgs()?` 的提前回傳路徑 |
+| ② | `recvmsg` 用 `MsgFlags::empty()`，於是經 `SCM_RIGHTS` 收來的監聽 fd **沒有 `FD_CLOEXEC`** | 改成 `MsgFlags::MSG_CMSG_CLOEXEC` |
 
-**实测（修复前，M1 的三代升级）**：
+**實測（修復前，M1 的三代升級）**：
 
-| | 攥着的 upgrade.sock fd | 每个监听 socket 的 fd 重数 |
+| | 攥著的 upgrade.sock fd | 每個監聽 socket 的 fd 重數 |
 |---|---|---|
-| gen1（没经历过移交）| 0 | 1 |
+| gen1（沒經歷過移交）| 0 | 1 |
 | gen2（一次移交）| **1**（`St=03` CONNECTED）| 1 |
-| gen3（移交 + 继承）| **2** | **2** |
+| gen3（移交 + 繼承）| **2** | **2** |
 
-★ ★ **两个缺陷会叠乘**：泄漏的那个 socket 自己也没有 CLOEXEC，于是逐代累加。
+★ ★ **兩個缺陷會疊乘**：洩漏的那個 socket 自己也沒有 CLOEXEC，於是逐代累加。
 
-★ ★ ★ **② 对枢衡比对上游严重得多**，因为两边的升级形状不同：
+★ ★ ★ **② 對樞衡比對上游嚴重得多**，因為兩邊的升級形狀不同：
 
-- 上游的新进程是**从命令行另起**的，fd 只经 `SCM_RIGHTS` 过去，不存在继承路径；
-- 枢衡（M1）的新进程是**老进程 fork+exec 的**（systemd 要求它落在同一个 cgroup 内），
-  于是没有 CLOEXEC 的 fd 会**同时**从继承与 `SCM_RIGHTS` 两条路进来。
+- 上游的新處理程序是**從命令行另起**的，fd 只經 `SCM_RIGHTS` 過去，不存在繼承路徑；
+- 樞衡（M1）的新處理程序是**老處理程序 fork+exec 的**（systemd 要求它落在同一個 cgroup 內），
+  於是沒有 CLOEXEC 的 fd 會**同時**從繼承與 `SCM_RIGHTS` 兩條路進來。
 
-★ 而继承进来的那一份**不在 pingora 的 fd 表里**，所以上游那条尚未发版的
-`listen_addresses()`（关掉未被认领的 fd）**够不到它**——也就是说
-「未认领 fd 黑洞化」在 fork 式升级下，**即使上游修好也可能仍然存在**。
+★ 而繼承進來的那一份**不在 pingora 的 fd 表裡**，所以上游那條尚未發版的
+`listen_addresses()`（關掉未被認領的 fd）**夠不到它**——也就是說
+「未認領 fd 黑洞化」在 fork 式升級下，**即使上游修好也可能仍然存在**。
 
-**守门人**：`tests/m1/run.sh` [7/9] 三条断言（fd 重数全 1、监听 fd 带 CLOEXEC、
-攥着的 upgrade.sock 数为 0）。★ 它们同时是 **rebase 的守门人**——
-上游若未接受而 rebase 时漏了重做，这三条会红。
+**守門人**：`tests/m1/run.sh` [7/9] 三條斷言（fd 重數全 1、監聽 fd 帶 CLOEXEC、
+攥著的 upgrade.sock 數為 0）。★ 它們同時是 **rebase 的守門人**——
+上游若未接受而 rebase 時漏了重做，這三條會紅。
 
-★ **已备好上游投稿材料**，见 [`upstream-pr/`](../../upstream-pr/README.md)。
+★ **已備好上游投稿材料**，見 [`upstream-pr/`](../../upstream-pr/README.md)。
 
-### ★ 5. rustls 后端：两处清单 + 一处调用点（2026-08-14，G41）
+### ★ 5. rustls 後端：兩處清單 + 一處呼叫點（2026-08-14，G41）
 
-★ ★ ★ **先说这条最值钱的**：`pingora-rustls` 这个 crate **从来没有被编译、测试或审计过**，
-而 G6 把 TLS 后端锁死在 rustls——也就是说 **M1 第一天打开 `features = ["rustls"]` 时，
-产品依赖图会一次进来 42 个从未过任何一道门的 crate**（实测 133 → 175）。
+★ ★ ★ **先說這條最值錢的**：`pingora-rustls` 這個 crate **從來沒有被編譯、測試或稽核過**，
+而 G6 把 TLS 後端鎖死在 rustls——也就是說 **M1 第一天打開 `features = ["rustls"]` 時，
+產品依賴圖會一次進來 42 個從未過任何一道門的 crate**（實測 133 → 175）。
 
-三道门**各自都够不到它**，而且都不是疏忽，是结构：
+三道門**各自都夠不到它**，而且都不是疏忽，是結構：
 
-| 门 | 为什么够不到 |
+| 門 | 為什麼夠不到 |
 |---|---|
-| G30 的上界审计 | 跑在**根 workspace** 上，而根 `Cargo.lock` **根本不含** `pingora-rustls`／`rustls`／`ring`／`rustls-native-certs`（实测：`sentry`／`x509-parser`／`ouroboros` 同样缺席——**未启用的可选依赖一个都不在锁里**）|
-| `tests/vendor/run.sh` 回归网 | `cargo test` **不带任何 `--features`** → `default = []`，rustls 那一半代码一行都不跑 |
-| `tools/supply-audit.py` | 同第一条，跑在根 workspace 上 |
+| G30 的上界稽核 | 跑在**根 workspace** 上，而根 `Cargo.lock` **根本不含** `pingora-rustls`／`rustls`／`ring`／`rustls-native-certs`（實測：`sentry`／`x509-parser`／`ouroboros` 同樣缺席——**未啟用的可選依賴一個都不在鎖裡**）|
+| `tests/vendor/run.sh` 迴歸網 | `cargo test` **不帶任何 `--features`** → `default = []`，rustls 那一半程式碼一行都不跑 |
+| `tools/supply-audit.py` | 同第一條，跑在根 workspace 上 |
 
-✅ **已修**：回归网现在带 `--features pingora-core/rustls` 跑（本条改动的守门人）。
+✅ **已修**：迴歸網現在帶 `--features pingora-core/rustls` 跑（本條改動的守門人）。
 
-#### ① 两处清单：`default-features = false`（aws-lc-rs 被无谓编进产物）
+#### ① 兩處清單：`default-features = false`（aws-lc-rs 被無謂編進產物）
 
-> ✅ 2026-09-24 已归零（上游 `5396a1f`，owner 的 PR #966）。
+> ✅ 2026-09-24 已歸零（上游 `5396a1f`，owner 的 PR #966）。
 
-上游写的是 `rustls = { version = "0.23.12", features = ["ring"] }`，**没有关掉默认 feature**。
+上游寫的是 `rustls = { version = "0.23.12", features = ["ring"] }`，**沒有關掉預設 feature**。
 而 `rustls 0.23` 的 `default` 是 `["aws_lc_rs", "logging", "prefer-post-quantum", "std", "tls12"]`，
-`tokio-rustls 0.26` 的 `default` 是 `["logging", "tls12", "aws_lc_rs"]`——**两扇门，都通向 aws-lc-rs**。
+`tokio-rustls 0.26` 的 `default` 是 `["logging", "tls12", "aws_lc_rs"]`——**兩扇門，都通向 aws-lc-rs**。
 
-于是 **ring 与 aws-lc-rs 两个 crypto provider 一起编进产物**，而这个 crate 自己装的是 ring
+於是 **ring 與 aws-lc-rs 兩個 crypto provider 一起編進產物**，而這個 crate 自己裝的是 ring
 （`install_default_crypto_provider()` → `rustls::crypto::ring::default_provider()`，`ring::digest` 也在用），
-**aws-lc-rs 一行都不会被调用**。
+**aws-lc-rs 一行都不會被呼叫**。
 
-★ **代价不是「多两个 crate」**：`aws-lc-sys` 是 **69 MB 的 C 源码**（ring 是 8.5 MB）走 cmake 编，
-直接顶到 `PLAN.md` G13 的 **musl 静态二进制**分发，也是白送的攻击面。
+★ **代價不是「多兩個 crate」**：`aws-lc-sys` 是 **69 MB 的 C 原始碼**（ring 是 8.5 MB）走 cmake 編，
+直接頂到 `PLAN.md` G13 的 **musl 靜態二進位**散布，也是白送的攻擊面。
 
-| 变化 | 值 |
+| 變化 | 值 |
 |---|---|
-| 丢掉的默认 feature | 只有 `prefer-post-quantum`——★ 而它自己就是 `["aws_lc_rs"]`，rustls 源码里每一处 `#[cfg(feature = "prefer-post-quantum")]` 都在 `src/crypto/aws_lc_rs/` 下。**ring provider 下它是空操作**（读源码确认，非推断）|
-| 依赖图 | 175 → **173**，★ **只少了 `aws-lc-rs` 与 `aws-lc-sys`**，别的一个没动 |
-| 回归网 | stock 与改后**逐项相同**（对照组跑过）|
+| 丟掉的預設 feature | 只有 `prefer-post-quantum`——★ 而它自己就是 `["aws_lc_rs"]`，rustls 原始碼裡每一處 `#[cfg(feature = "prefer-post-quantum")]` 都在 `src/crypto/aws_lc_rs/` 下。**ring provider 下它是空操作**（讀原始碼確認，非推斷）|
+| 依賴圖 | 175 → **173**，★ **只少了 `aws-lc-rs` 與 `aws-lc-sys`**，別的一個沒動 |
+| 迴歸網 | stock 與改後**逐項相同**（對照組跑過）|
 
-★ **上游 `main` 的清单一字未改**（2026-08-14 按 G32 核对），已备投稿三。
+★ **上游 `main` 的清單一字未改**（2026-08-14 按 G32 核對），已備投稿三。
 
 #### ② `rustls-native-certs` `^0.7.1` → `0.8.4`
 
-`^0.7.1` 把它钉在 **0.7.3（2024-08-28）**，而 **0.8.0 第二天就发了**，现在已到 0.8.4——
-**正是 G30 存在的那个「脱字号自带上界」形状，长在审计够不到的 crate 里**。
+`^0.7.1` 把它釘在 **0.7.3（2024-08-28）**，而 **0.8.0 第二天就發了**，現在已到 0.8.4——
+**正是 G30 存在的那個「脫字號自帶上界」形狀，長在稽核夠不到的 crate 裡**。
 
-⚠ **有调用点适配**（`pingora-rustls/src/lib.rs`，`load_platform_certs_incl_env_into_store`）：
-0.8 的 `load_native_certs()` 不再返回 `Result`，改为返回 `CertificateResult { certs, errors }`——
-**部分成功从此是可表达的状态**。
+⚠ **有呼叫點適配**（`pingora-rustls/src/lib.rs`，`load_platform_certs_incl_env_into_store`）：
+0.8 的 `load_native_certs()` 不再回傳 `Result`，改為回傳 `CertificateResult { certs, errors }`——
+**部分成功從此是可表達的狀態**。
 
-★ ★ **这里差点写错，值得记**：直觉写法是「`errors` 非空即失败」，但那**比 0.7.3 更严**。
-0.7.3 的 `CertPaths::load()` 结尾那句注释是 `promote first error if we have no certs to return`——
-**它只在一张都没读到时才返回 `Err`**；只要读到了哪怕一张，错误就被咽掉。
-照直觉写，`/etc/ssl/certs` 里一个读不动的文件就能让反代**起不来**。那是行为变更，不是适配。
+★ ★ **這裡差點寫錯，值得記**：直覺寫法是「`errors` 非空即失敗」，但那**比 0.7.3 更嚴**。
+0.7.3 的 `CertPaths::load()` 結尾那句註解是 `promote first error if we have no certs to return`——
+**它只在一張都沒讀到時才回傳 `Err`**；只要讀到了哪怕一張，錯誤就被咽掉。
+照直覺寫，`/etc/ssl/certs` 裡一個讀不動的檔案就能讓反代**起不來**。那是行為變更，不是適配。
 
-落法：`certs.is_empty() && !errors.is_empty()` 才判失败，其余照旧；`errors` 里的内容
-改为 `warn!` 一行——**控制流与 0.7.3 完全一致，只是不再无声**（0.7.3 是直接丢掉）。
+落法：`certs.is_empty() && !errors.is_empty()` 才判失敗，其餘照舊；`errors` 裡的內容
+改為 `warn!` 一行——**控制流與 0.7.3 完全一致，只是不再無聲**（0.7.3 是直接丟掉）。
 
-连带效果：`rustls-native-certs 0.8.4` 自带 `openssl-probe 0.2.1`（0.7.3 用的是 0.1.x），
-所以最终依赖图是 **174**，不是 173。
+連帶效果：`rustls-native-certs 0.8.4` 自帶 `openssl-probe 0.2.1`（0.7.3 用的是 0.1.x），
+所以最終依賴圖是 **174**，不是 173。
 
-#### ★ ★ ★ ③ 第三扇门：`pingora-core` 自己的 dev-dependency（2026-08-19，G45）
+#### ★ ★ ★ ③ 第三扇門：`pingora-core` 自己的 dev-dependency（2026-08-19，G45）
 
-> ✅ 2026-09-24 已归零（同 `5396a1f`）。
+> ✅ 2026-09-24 已歸零（同 `5396a1f`）。
 
-**G41 只关了两扇。第三扇是上游 PR [#966](https://github.com/cloudflare/pingora/pull/966) 的
-Codex 复审提出来的**（P2），实测属实，而且**比它说的更宽**。
+**G41 只關了兩扇。第三扇是上游 PR [#966](https://github.com/cloudflare/pingora/pull/966) 的
+Codex 複審提出來的**（P2），實測屬實，而且**比它說的更寬**。
 
-`pingora-core/Cargo.toml` 的 `[dev-dependencies]` 里有一行裸的 `rustls = "0.23"`。
-它是**无条件**的，所以不只影响 rustls feature 构建——**默认（openssl）构建跑测试时同样在编 aws-lc-rs**：
+`pingora-core/Cargo.toml` 的 `[dev-dependencies]` 裡有一行裸的 `rustls = "0.23"`。
+它是**無條件**的，所以不只影響 rustls feature 建置——**預設（openssl）建置跑測試時同樣在編 aws-lc-rs**：
 
-| `cargo tree -p pingora-core` | 改前 | 改后 |
+| `cargo tree -p pingora-core` | 改前 | 改後 |
 |---|---|---|
-| `--features rustls -e normal` | 176 | 176（这一格 G41 已经修好了）|
-| `--features rustls -e normal,dev` | **260，aws-lc 在** | **258，没了** |
-| 无 feature，`-e normal,dev` | **228，aws-lc 在** | **226，没了** |
+| `--features rustls -e normal` | 176 | 176（這一格 G41 已經修好了）|
+| `--features rustls -e normal,dev` | **260，aws-lc 在** | **258，沒了** |
+| 無 feature，`-e normal,dev` | **228，aws-lc 在** | **226，沒了** |
 
-> ★ ★ ★ **它为什么此前没被发现**：G41 的判据用的是 `cargo tree -e normal`，
-> 而 **`-e normal` 按定义排除 dev-dependencies**。判据结构上够不到被问的范围——
-> **这在本 fork 已经是第三次**（G41「三道门都够不到 pingora-rustls」、G43「核对命令只 diff 一个目录」）。
-> 三次的形状完全一样：**判据的覆盖面小于它自称回答的范围，而它照样是绿的。**
+> ★ ★ ★ **它為什麼此前沒被發現**：G41 的判據用的是 `cargo tree -e normal`，
+> 而 **`-e normal` 按定義排除 dev-dependencies**。判據結構上夠不到被問的範圍——
+> **這在本 fork 已經是第三次**（G41「三道門都夠不到 pingora-rustls」、G43「核對命令只 diff 一個目錄」）。
+> 三次的形狀完全一樣：**判據的覆蓋面小於它自稱回答的範圍，而它照樣是綠的。**
 
-★ **落法上刻意不指定 provider**：这条 dev-dependency 只被 `connectors/http` 的测试拿去用类型
-（`ServerCertVerifier` / `CertificateDer` / `DigitallySignedStruct`），运行时要的 provider 本来就经
-`pingora-rustls` 进来。在这里点名一个 provider，就是把本改动要修的错误再犯一遍，
-也会和上游 [#630](https://github.com/cloudflare/pingora/pull/630) /
-[#887](https://github.com/cloudflare/pingora/pull/887) 的 provider 选型工作打架。
-★ 带 `ring` 的写法也量过——**依赖图一模一样**，所以不指定不损失任何东西。
+★ **落法上刻意不指定 provider**：這條 dev-dependency 只被 `connectors/http` 的測試拿去用類型
+（`ServerCertVerifier` / `CertificateDer` / `DigitallySignedStruct`），執行環境要的 provider 本來就經
+`pingora-rustls` 進來。在這裡點名一個 provider，就是把本改動要修的錯誤再犯一遍，
+也會和上游 [#630](https://github.com/cloudflare/pingora/pull/630) /
+[#887](https://github.com/cloudflare/pingora/pull/887) 的 provider 選型工作打架。
+★ 帶 `ring` 的寫法也量過——**依賴圖一模一樣**，所以不指定不損失任何東西。
 
-**实测效果**：fork 的 `vendor/pingora/Cargo.lock` 里 `aws-lc-rs` / `aws-lc-sys` 条数
-**由 2 变 0**（连带 `dunce`、`fs_extra` 这两个 `aws-lc-sys` 的构建依赖一起消失）。
-⚠ 也就是说 **G41 之后到今天，回归网每一次都在编那 69 MB 的 C 源码**。
+**實測效果**：fork 的 `vendor/pingora/Cargo.lock` 裡 `aws-lc-rs` / `aws-lc-sys` 條數
+**由 2 變 0**（連帶 `dunce`、`fs_extra` 這兩個 `aws-lc-sys` 的建置依賴一起消失）。
+⚠ 也就是說 **G41 之後到今天，迴歸網每一次都在編那 69 MB 的 C 原始碼**。
 
-### ★ 6. `rustls-pemfile` 迁走（2026-08-19，G45）
+### ★ 6. `rustls-pemfile` 遷走（2026-08-19，G45）
 
-RUSTSEC-2025-0134：`rustls-pemfile` 失维（仓库 2025-08 归档）、`patched = []`、**无版本可升**。
-owner 于 2026-08-19 拍板迁走而不是登记豁免——理由是
-[`tools/supply-audit.py`](../../tools/supply-audit.py) 的 `ACCEPTED` 要求每条写清「出路在哪」，
-而这条**有干净的出路**；有出路却登记进去，等于把一个已知可解的问题挂起来。
-（对照 `daemonize`：它的出路是架构层的 G31，且当时还没落地。）
+RUSTSEC-2025-0134：`rustls-pemfile` 失維（儲存庫 2025-08 歸檔）、`patched = []`、**無版本可升**。
+owner 於 2026-08-19 拍板遷走而不是登記豁免——理由是
+[`tools/supply-audit.py`](../../tools/supply-audit.py) 的 `ACCEPTED` 要求每條寫清「出路在哪」，
+而這條**有乾淨的出路**；有出路卻登記進去，等於把一個已知可解的問題掛起來。
+（對照 `daemonize`：它的出路是架構層的 G31，且當時還沒完成實作。）
 
-★ **它不是换实现，是搬家**——公告原文：*"The latest version of rustls-pemfile is in fact a thin
-wrapper around the same code used in rustls-pki-types"*。读源码确认属实：
-`rustls-pemfile 2.2.0` 里就写着 `impl PemObject for Item`，`read_all` 用的是 pki-types 的同一个
-`ReadIter`。这条事实把「证书与私钥解析属安全敏感」这个顾虑的分量降了下来。
+★ **它不是換實作，是搬家**——公告原文：*"The latest version of rustls-pemfile is in fact a thin
+wrapper around the same code used in rustls-pki-types"*。讀原始碼確認屬實：
+`rustls-pemfile 2.2.0` 裡就寫著 `impl PemObject for Item`，`read_all` 用的是 pki-types 的同一個
+`ReadIter`。這條事實把「證書與私鑰解析屬安全敏感」這個顧慮的分量降了下來。
 
-| 动了什么 | 落法 |
+| 動了什麼 | 落法 |
 |---|---|
-| `Cargo.toml` | 删掉 `rustls-pemfile`；`rustls-pki-types` 下界 `1.7.0` → `1.9`（`PemObject` 自 1.9.0 起提供），实际解析到 1.15.1 |
+| `Cargo.toml` | 刪掉 `rustls-pemfile`；`rustls-pki-types` 下界 `1.7.0` → `1.9`（`PemObject` 自 1.9.0 起提供），實際解析到 1.15.1 |
 | `load_pem_file()` | `Vec<Item>` → `Vec<(SectionKind, Vec<u8>)>` |
 | `load_ca_file_into_store()` | `let Item::X509Certificate(..) else` → `if kind != SectionKind::Certificate` |
-| `load_certs_and_key_files()` | 三分支手写 match → `PrivateKeyDer::from_pem(kind, der)`（★ 它认的**恰好**是 Rsa/Ec/Pkcs8 三种，逐项一致）|
-| `load_pem_file_ca()` / `load_pem_file_private_key()` | `rustls_pemfile::certs()` / `private_key()` → 对应类型的 `pem_reader_iter()` |
+| `load_certs_and_key_files()` | 三分支手寫 match → `PrivateKeyDer::from_pem(kind, der)`（★ 它認的**恰好**是 Rsa/Ec/Pkcs8 三種，逐項一致）|
+| `load_pem_file_ca()` / `load_pem_file_private_key()` | `rustls_pemfile::certs()` / `private_key()` → 對應類型的 `pem_reader_iter()` |
 
-依赖图 **174 → 173**，差集只有 `rustls-pemfile v2.2.0`
-（口径：`cargo tree -p pingora-core --features rustls -e normal --prefix none | sed 's/ (\*)$//' | sort -u | wc -l`，**含根包自己**）。
+依賴圖 **174 → 173**，差集只有 `rustls-pemfile v2.2.0`
+（口徑：`cargo tree -p pingora-core --features rustls -e normal --prefix none | sed 's/ (\*)$//' | sort -u | wc -l`，**含根包自己**）。
 
-#### ⚠ 一处必须逐字保留的语义：ECHCONFIG 会被静默跳过
+#### ⚠ 一處必須逐字保留的語義：ECHCONFIG 會被靜默跳過
 
-`rustls-pemfile` 的 `Item::from_kind()` 只映射 7 种段类型，`SectionKind::EchConfigList` 落在
-`_ => None`，而上一层 `read_one` 写的是 `None => continue`——**ECHCONFIG 段根本不会被交出来**。
-pki-types 的 `(SectionKind, Vec<u8>)` 迭代器**会**把它交出来，于是
-`load_ca_file_into_store()` 的「非证书即报错」会对一个含 ECHCONFIG 的 CA 文件判红。
-**那是行为变更，不是适配**——与 §5 ② 的 `load_native_certs()` 是同一个形状。
+`rustls-pemfile` 的 `Item::from_kind()` 只映射 7 種段類型，`SectionKind::EchConfigList` 落在
+`_ => None`，而上一層 `read_one` 寫的是 `None => continue`——**ECHCONFIG 段根本不會被交出來**。
+pki-types 的 `(SectionKind, Vec<u8>)` 迭代器**會**把它交出來，於是
+`load_ca_file_into_store()` 的「非證書即回報錯誤」會對一個含 ECHCONFIG 的 CA 檔案判紅。
+**那是行為變更，不是適配**——與 §5 ② 的 `load_native_certs()` 是同一個形狀。
 
-落法是 `RUSTLS_PEMFILE_ITEM_KINDS` **白名单**而不是把 `EchConfigList` 单独排掉：
-`SectionKind` 是 `#[non_exhaustive]`，白名单能让将来新增的段类型继续被跳过，
-与 `rustls-pemfile` **冻结下来**的行为一致（它已归档，不会再长出新的 `Item`）。
+落法是 `RUSTLS_PEMFILE_ITEM_KINDS` **白名單**而不是把 `EchConfigList` 單獨排掉：
+`SectionKind` 是 `#[non_exhaustive]`，白名單能讓將來新增的段類型繼續被跳過，
+與 `rustls-pemfile` **凍結下來**的行為一致（它已歸檔，不會再長出新的 `Item`）。
 
-#### ★ ★ 迁移之前，这个 crate 一条测试都没有
+#### ★ ★ 遷移之前，這個 crate 一條測試都沒有
 
-所以先补了 **18 条特征化测试**（`pingora-rustls/src/lib.rs` 末尾），
-**照着 `rustls-pemfile` 的现有行为写、先跑绿，然后才动迁移**。
-★ 其中两条是专门为了不让注释停留在断言上——`load_pem_file_ca` **读完整个文件**
-（第一张证书之后的语法错误照样判红）而 `load_pem_file_private_key` **取到第一把就早退**，
-**这两个函数在这一点上不一样**，而这种不对称最容易在重写时被「统一」掉。
+所以先補了 **18 條特徵化測試**（`pingora-rustls/src/lib.rs` 末尾），
+**照著 `rustls-pemfile` 的現有行為寫、先跑綠，然後才動遷移**。
+★ 其中兩條是專門為了不讓註解停留在斷言上——`load_pem_file_ca` **讀完整個檔案**
+（第一張證書之後的語法錯誤照樣判紅）而 `load_pem_file_private_key` **取到第一把就早退**，
+**這兩個函式在這一點上不一樣**，而這種不對稱最容易在重寫時被「統一」掉。
 
-**三条反证**（撤掉迁移里的某处落法，看对应测试会不会红）：
+**三條反證**（撤掉遷移裡的某處落法，看對應測試會不會紅）：
 
-| 撤掉什么 | 结果 |
+| 撤掉什麼 | 結果 |
 |---|---|
-| 白名单改成全放行（照直迁移的写法）| ✓ `ca_store_silently_skips_echconfig` 判红，**且只有它红** |
-| `load_pem_file_ca` 改成取到第一张就返回 | ✓ `pem_file_ca_still_errors_on_a_malformed_section_after_the_first_cert` 判红，且只有它红 |
-| 私钥改成按类型偏好挑（而非文件顺序）| ✓ `certs_and_key_takes_the_first_key_in_file_order` 判红，且只有它红 |
+| 白名單改成全放行（照直遷移的寫法）| ✓ `ca_store_silently_skips_echconfig` 判紅，**且只有它紅** |
+| `load_pem_file_ca` 改成取到第一張就回傳 | ✓ `pem_file_ca_still_errors_on_a_malformed_section_after_the_first_cert` 判紅，且只有它紅 |
+| 私鑰改成按類型偏好挑（而非檔案順序）| ✓ `certs_and_key_takes_the_first_key_in_file_order` 判紅，且只有它紅 |
 
-★ 第一条同时证明了**照直迁移确实会改变行为**——白名单不是多余的谨慎。
+★ 第一條同時證明了**照直遷移確實會改變行為**——白名單不是多餘的謹慎。
 
-### ★ 7. 一条 flaky 测试的根因：短读（2026-08-19）
+### ★ 7. 一條 flaky 測試的根因：短讀（2026-08-19）
 
-> ✅ 2026-09-24 已归零：上游 0.9.0 含 `91b880d`（owner 的 PR #968）。⚠ 同一条测试的另一个原因（#998 的 TOCTOU）
-> 在 0.9.0 里形状没变，照旧由 `tests/vendor/run.sh` 的重跑逻辑管。
+> ✅ 2026-09-24 已歸零：上游 0.9.0 含 `91b880d`（owner 的 PR #968）。⚠ 同一條測試的另一個原因（#998 的 TOCTOU）
+> 在 0.9.0 裡形狀沒變，照舊由 `tests/vendor/run.sh` 的重跑邏輯管。
 
-`connectors::tests::test_connect_uds` 会**间歇性**失败。它不是环境问题，是测试自己写错了：
+`connectors::tests::test_connect_uds` 會**間歇性**失敗。它不是環境問題，是測試自己寫錯了：
 
 ```rust
 let mut buf = [0; 9];
-let _ = stream.read(&mut buf).await.unwrap();   // ← 返回值就是「读到了多少」
+let _ = stream.read(&mut buf).await.unwrap();   // ← 回傳值就是「讀到了多少」
 assert_eq!(&buf, b"it works!");
 ```
 
-★ **`read()` 读到 1 字节也是成功的**。流式 socket 允许把 `write_all(b"it works!")`
-分成多段送达，此时 `buf` 里是半条消息加一串 0，`assert_eq!` 就挂了。
-返回值被 `let _ =` 丢掉，于是「只读到几个字节」这件事**没有任何地方会说出来**。
+★ **`read()` 讀到 1 位元組也是成功的**。流式 socket 允許把 `write_all(b"it works!")`
+分成多段送達，此時 `buf` 裡是半條訊息加一串 0，`assert_eq!` 就掛了。
+回傳值被 `let _ =` 丟掉，於是「唯讀到幾個位元組」這件事**沒有任何地方會說出來**。
 
-**修法**：`stream.read_exact(&mut buf).await.unwrap()`。这是 fork 里的**第二处行为变更**
-（第一处是 §4 的 fd 卫生），改的是**测试**不是产品代码。
+**修法**：`stream.read_exact(&mut buf).await.unwrap()`。這是 fork 裡的**第二處行為變更**
+（第一處是 §4 的 fd 衛生），改的是**測試**不是產品程式碼。
 
-#### ★ ★ 判据：同一个扰动，修前必红、修后必绿
+#### ★ ★ 判據：同一個擾動，修前必紅、修後必綠
 
-不是「重跑几次没再见到」——那种证据对间歇性缺陷等于没有。做法是**让它变成确定性的**：
-把 mock server 的一次 `write_all` 拆成「1 字节 + 20ms + 剩下 8 字节」两段送达
-（**这是流式 socket 的合法行为，不是破坏**），然后
+不是「重跑幾次沒再見到」——那種證據對間歇性缺陷等於沒有。做法是**讓它變成確定性的**：
+把 mock server 的一次 `write_all` 拆成「1 位元組 + 20ms + 剩下 8 位元組」兩段送達
+（**這是流式 socket 的合法行為，不是破壞**），然後
 
-| | 结果 |
+| | 結果 |
 |---|---|
-| 扰动 + 未修 | **必失败**，`left: [105, 0, 0, 0, 0, 0, 0, 0, 0]`——只有 `i` 到了，后面全是 0 |
-| 扰动 + `read_exact` | **通过** |
-| 无扰动 + `read_exact` | 通过 |
+| 擾動 + 未修 | **必失敗**，`left: [105, 0, 0, 0, 0, 0, 0, 0, 0]`——只有 `i` 到了，後面全是 0 |
+| 擾動 + `read_exact` | **通過** |
+| 無擾動 + `read_exact` | 通過 |
 
-★ 那个 `[105, 0, 0, …]` 就是短读的签名，也正是它偶发时会打出来的东西。
+★ 那個 `[105, 0, 0, …]` 就是短讀的簽名，也正是它偶發時會打出來的東西。
 
-⚠ **同一形状全树扫过**：另有 `listeners/mod.rs` 一处 `let _ = stream.read(&mut buf)`，
-但它读完**不做内容断言**（只为把请求排空），不是同一个缺陷，**没有动**。
+⚠ **同一形狀全樹掃過**：另有 `listeners/mod.rs` 一處 `let _ = stream.read(&mut buf)`，
+但它讀完**不做內容斷言**（只為把請求排空），不是同一個缺陷，**沒有動**。
 
-★ **上游也有这个问题**（fork 没改过这块），已备投稿。
+★ **上游也有這個問題**（fork 沒改過這塊），已備投稿。
 
-### ~~★ ★ ★ 8. 加了一条能力：`TlsSettings::with_cert_resolver`（2026-08-19）~~ ✅ **已删除（2026-08-25）**
+### ~~★ ★ ★ 8. 加了一條能力：`TlsSettings::with_cert_resolver`（2026-08-19）~~ ✅ **已刪除（2026-08-25）**
 
-> ✅ ★ ★ ★ **2026-08-25（G104 第 ② 处）：本条已经删掉了，文件与上游 0.8.1 逐字节相同。**
-> （核法：`git diff 00ebcad -- vendor/pingora/pingora-core/src/listeners/tls/rustls/mod.rs` 为空。）
-> 8 / 8b / 10 三条**一起**删的，正如下面那句预告的 —— L4 的 ClientHello 预读换到
-> BoringSSL 早回调之后，`pingora-rustls` 在根 workspace 里**再没有任何使用者**。
-> ★ ★ **下面的原文全部保留**，因为它记录的是「当初为什么不可避免」，
-> 而那段论证本身没有错 —— 错的是它的前提（§5.1 第 1 条），而前提已被 G104 换掉。
+> ✅ ★ ★ ★ **2026-08-25（G104 第 ② 處）：本條已經刪掉了，檔案與上游 0.8.1 逐位元組相同。**
+> （核法：`git diff 00ebcad -- vendor/pingora/pingora-core/src/listeners/tls/rustls/mod.rs` 為空。）
+> 8 / 8b / 10 三條**一起**刪的，正如下面那句預告的 —— L4 的 ClientHello 預讀換到
+> BoringSSL 早回呼之後，`pingora-rustls` 在根 workspace 裡**再沒有任何使用者**。
+> ★ ★ **下面的原文全部保留**，因為它記錄的是「當初為什麼不可避免」，
+> 而那段論證本身沒有錯 —— 錯的是它的前提（§5.1 第 1 條），而前提已被 G104 換掉。
 >
-> ⚠ ⚠ **原「归零条件」也一并作废，而这一条值得单独说**：本条的归零条件在 2026-08-20
-> 从「我们的投稿被接受」改成了「上游 #632 / #908 落地」，而**真正让它归零的是第三件事** ——
-> 我们自己换掉了那一侧的 TLS 后端。
-> ★ **一条挂在别人身上的归零条件，会让人只盯着别人动没动。**
+> ⚠ ⚠ **原「歸零條件」也一併作廢，而這一條值得單獨說**：本條的歸零條件在 2026-08-20
+> 從「我們的投稿被接受」改成了「上游 #632 / #908 完成實作」，而**真正讓它歸零的是第三件事** ——
+> 我們自己換掉了那一側的 TLS 後端。
+> ★ **一條掛在別人身上的歸零條件，會讓人只盯著別人動沒動。**
 >
-> 以下为原文（2026-08-25 之前）：
+> 以下為原文（2026-08-25 之前）：
 >
-> > ⚠ ⚠ ⚠ ★ **2026-08-25（G104）起，产品已经不走这条路了 —— 本条现在是死代码。**
-> > 监听器侧换成 BoringSSL 之后，动态挑证书走的是
-> > `SslContextBuilder::set_select_certificate_callback`，而 boringssl 那侧的
-> > `TlsSettings` 对 `SslAcceptorBuilder` 有 `Deref`/`DerefMut` ⇒ **这个 setter 本来就够得到**。
-> > ⏳ **本轮没有删它**，理由是**一起删更干净**：改动 **10**（`Acceptor` re-export）
-> > 还被 `crates/fulcrum-server/src/l4.rs` 的 ClientHello 预读用着，`pingora-rustls`
-> > 无论如何要留到那一处也换过去为止。⇒ **8 / 8b / 10 三条随同一批一起删。**
-> > ★ 而「留着它」的代价只在 **rebase 时**才兑现（要手工重贴），
-> > 而在那之前不会有 rebase —— **所以这不是拖，是把一次风险合并成一次。**
+> > ⚠ ⚠ ⚠ ★ **2026-08-25（G104）起，產品已經不走這條路了 —— 本條現在是死程式碼。**
+> > 監聽器側換成 BoringSSL 之後，動態挑證書走的是
+> > `SslContextBuilder::set_select_certificate_callback`，而 boringssl 那側的
+> > `TlsSettings` 對 `SslAcceptorBuilder` 有 `Deref`/`DerefMut` ⇒ **這個 setter 本來就夠得到**。
+> > ⏳ **本輪沒有刪它**，理由是**一起刪更乾淨**：改動 **10**（`Acceptor` re-export）
+> > 還被 `crates/fulcrum-server/src/l4.rs` 的 ClientHello 預讀用著，`pingora-rustls`
+> > 無論如何要留到那一處也換過去為止。⇒ **8 / 8b / 10 三條隨同一批一起刪。**
+> > ★ 而「留著它」的代價只在 **rebase 時**才兌現（要手動重貼），
+> > 而在那之前不會有 rebase —— **所以這不是拖，是把一次風險合併成一次。**
 
-> ★ ★ ★ **2026-08-20 更新：这一条的「归零条件」变了，而且变得更好。**
+> ★ ★ ★ **2026-08-20 更新：這一條的「歸零條件」變了，而且變得更好。**
 >
-> 原打算给上游投一份（投稿五）。**发之前按 G32 搜了一遍，撤稿了**：这件事上游
-> 从 2025-04 起已有 **9 条** issue/PR，其中
-> [#632](https://github.com/cloudflare/pingora/pull/632) **与本条逐点相同、而且更完整**
-> （它顺手把 `build()` 那个 panic 改成了 `Result`），已有 3 个独立使用者证实可用。
-> 它卡的是合并冲突 + 维护者评审带宽，不是设计分歧。
+> 原打算給上游投一份（投稿五）。**發之前按 G32 搜了一遍，撤稿了**：這件事上游
+> 從 2025-04 起已有 **9 條** issue/PR，其中
+> [#632](https://github.com/cloudflare/pingora/pull/632) **與本條逐點相同、而且更完整**
+> （它順手把 `build()` 那個 panic 改成了 `Result`），已有 3 個獨立使用者證實可用。
+> 它卡的是合併衝突 + 維護者評審頻寬，不是設計分歧。
 >
-> ⇒ **本条的归零条件不再是「我们的投稿被接受」，而是「#632 或
-> [#908](https://github.com/cloudflare/pingora/pull/908) 落地」。**
-> 那天到了就把这一条删掉，改用上游的接口。
-> ★ 顺带一条好消息：**归零不再取决于我们自己去推**——有人已经推了 15 个月。
-> ⚠ 但在那之前，rebase 时它照旧要手工重贴。
+> ⇒ **本條的歸零條件不再是「我們的投稿被接受」，而是「#632 或
+> [#908](https://github.com/cloudflare/pingora/pull/908) 完成實作」。**
+> 那天到了就把這一條刪掉，改用上游的介面。
+> ★ 順帶一條好訊息：**歸零不再取決於我們自己去推**——有人已經推了 15 個月。
+> ⚠ 但在那之前，rebase 時它照舊要手動重貼。
 
-**这是 fork 里第一处「加能力」的改动**，前面那些都是抬上界、修缺陷或修测试。
-所以先把它为什么不可避免说清楚。
+**這是 fork 裡第一處「加能力」的改動**，前面那些都是抬上界、修缺陷或修測試。
+所以先把它為什麼不可避免說清楚。
 
-`PLAN.md` §5.1 第 1 条是**不可回头**的硬约束：
+`PLAN.md` §5.1 第 1 條是**不可回頭**的硬約束：
 
-> rustls 后端不支持 `certificate_callback`。**动态证书选择必须实现 `ResolvesServerCert`。**
+> rustls 後端不支援 `certificate_callback`。**動態證書選擇必須實作 `ResolvesServerCert`。**
 
-而上游 0.8.1 的 rustls 监听器**没有任何一扇门通向那个接口**：
+而上游 0.8.1 的 rustls 監聽器**沒有任何一扇門通向那個介面**：
 
-| 门 | 实际情况 |
+| 門 | 實際情況 |
 |---|---|
-| `TlsSettings::intermediate(cert, key)` | 只接受**文件路径**，`build()` 里写死 `with_single_cert` |
-| `TlsSettings::with_callbacks()` | **直接返回错误**（"Certificate callbacks are not supported with feature rustls"）|
-| 自己构造 `Acceptor` | 字段私有，crate 外构造不出来 |
-| `add_address(ServerAddress)` | 枚举只有 `Tcp` / `Uds`，带不上 acceptor |
+| `TlsSettings::intermediate(cert, key)` | 只接受**檔案路徑**，`build()` 裡寫死 `with_single_cert` |
+| `TlsSettings::with_callbacks()` | **直接回傳錯誤**（"Certificate callbacks are not supported with feature rustls"）|
+| 自己建構 `Acceptor` | 欄位私有，crate 外建構不出來 |
+| `add_address(ServerAddress)` | 枚舉只有 `Tcp` / `Uds`，帶不上 acceptor |
 
-后果是：**一个监听端口只能有一张证书、换证书要重载、握手期按 SNI 现签无从实现**——
-而自动 HTTPS（G12）与 On-Demand TLS（G15）都建在那条路上。
+後果是：**一個監聽連接埠只能有一張證書、換證書要重載、握手期按 SNI 現籤無從實作**——
+而自動 HTTPS（G12）與 On-Demand TLS（G15）都建在那條路上。
 
-**改了两处**：
+**改了兩處**：
 
-1. `pingora-rustls/src/lib.rs` —— 再导出 `ResolvesServerCert` / `CertifiedKey` / `ClientHello`。
-   ★ 为什么由这个 crate 集中导出、而不让上层自己依赖 `rustls`：
-   aws-lc-rs 当初正是从 `rustls` 与 `tokio-rustls` **两扇门**一起进来的（见 §5），
-   每多一处 feature 声明就多一扇门。集中在这里，provider 的选择只有一个地方能改。
-2. `pingora-core/src/listeners/tls/rustls/mod.rs` —— `TlsSettings` 多一个
-   `cert_resolver` 字段与一个 `with_cert_resolver()` 构造器；`build()` 里有它就走它，
-   **完全不读证书文件**（于是 `intermediate()` 那个「文件读不到就 panic」与这条路无关）。
+1. `pingora-rustls/src/lib.rs` —— 再匯出 `ResolvesServerCert` / `CertifiedKey` / `ClientHello`。
+   ★ 為什麼由這個 crate 集中匯出、而不讓上層自己依賴 `rustls`：
+   aws-lc-rs 當初正是從 `rustls` 與 `tokio-rustls` **兩扇門**一起進來的（見 §5），
+   每多一處 feature 宣告就多一扇門。集中在這裡，provider 的選擇只有一個地方能改。
+2. `pingora-core/src/listeners/tls/rustls/mod.rs` —— `TlsSettings` 多一個
+   `cert_resolver` 欄位與一個 `with_cert_resolver()` 建構器；`build()` 裡有它就走它，
+   **完全不讀證書檔案**（於是 `intermediate()` 那個「檔案讀不到就 panic」與這條路無關）。
 
-⚠ ⚠ **代价必须记下来**：加能力比抬上界更贵。上游一旦改动 `TlsSettings` 的形状，
-这一条要**手工重贴**，而不是像版本上界那样「看看上游是不是自己抬了」。
-★ 已备上游投稿（这是一个对所有 rustls 用户都缺的能力），若被采纳这条 fork 改动即可归零。
+⚠ ⚠ **代價必須記下來**：加能力比抬上界更貴。上游一旦改動 `TlsSettings` 的形狀，
+這一條要**手動重貼**，而不是像版本上界那樣「看看上游是不是自己抬了」。
+★ 已備上游投稿（這是一個對所有 rustls 使用者都缺的能力），若被採納這條 fork 改動即可歸零。
 
-★ 判据：`crates/fulcrum-tls` 的 `SniResolver` 走这条路，而
-`tests/serve/run.sh` 用真流量验过——`--cacert` 验签通过、ALPN 协商到 h2、
-未知 SNI 被拒绝握手（curl 退出码 35）。
+★ 判據：`crates/fulcrum-tls` 的 `SniResolver` 走這條路，而
+`tests/serve/run.sh` 用真流量驗過——`--cacert` 驗籤通過、ALPN 協商到 h2、
+未知 SNI 被拒絕握手（curl 結束代碼 35）。
 
-### ~~★ ★ 8b. 加了第二条能力：`TlsSettings::set_alpn_wire`（2026-08-20）~~ ✅ **已删除（2026-08-25）**
+### ~~★ ★ 8b. 加了第二條能力：`TlsSettings::set_alpn_wire`（2026-08-20）~~ ✅ **已刪除（2026-08-25）**
 
-> ✅ **2026-08-25（G104 第 ② 处）：随 8 / 10 一起删掉了**，理由与改动 8 同一条：
-> BoringSSL 那侧直接 `set_alpn_select_callback` 写个闭包即可，
-> 而那个「枚举里没有变体能表达混合清单」的阻碍在那一侧根本不存在。
-> ★ 原文保留在下面 —— ⚠ 那段「先更正一句在四份文档里被重复了三天的话」的记录
-> **与本条的存废无关，它记的是一次判据教训**，不随代码删除而作废。
+> ✅ **2026-08-25（G104 第 ② 處）：隨 8 / 10 一起刪掉了**，理由與改動 8 同一條：
+> BoringSSL 那側直接 `set_alpn_select_callback` 寫個閉包即可，
+> 而那個「枚舉裡沒有變體能表達混合清單」的阻礙在那一側根本不存在。
+> ★ 原文保留在下面 —— ⚠ 那段「先更正一句在四份文件裡被重複了三天的話」的記錄
+> **與本條的存廢無關，它記的是一次判據教訓**，不隨程式碼刪除而作廢。
 
-**这是 fork 里第二处「加能力」的改动**，而它比 §8 那处**小一个数量级**：
-只给一个已有的私有字段开一个写入口，不新增类型、不改任何上游行为、不碰别的 TLS 后端。
+**這是 fork 裡第二處「加能力」的改動**，而它比 §8 那處**小一個數量級**：
+只給一個已有的私有欄位開一個寫入口，不新增類型、不改任何上游行為、不碰別的 TLS 後端。
 
-⚠ ★ **先更正一句在四份文档里被重复了三天的话。** 那句话是
-「TLS-ALPN-01 做不了，因为 `TlsSettings` 只能设 `ALPN::{H1,H2,H2H1}`」。
-**它不准确**：上游 0.8.1 的 `ALPN` 枚举**本来就有 `Custom(CustomALPN)` 变体**
-（`protocols/tls/mod.rs`），`set_alpn` 也是公开的。真正的阻碍在别处——
+⚠ ★ **先更正一句在四份文件裡被重複了三天的話。** 那句話是
+「TLS-ALPN-01 做不了，因為 `TlsSettings` 只能設 `ALPN::{H1,H2,H2H1}`」。
+**它不準確**：上游 0.8.1 的 `ALPN` 枚舉**本來就有 `Custom(CustomALPN)` 變體**
+（`protocols/tls/mod.rs`），`set_alpn` 也是公開的。真正的阻礙在別處——
 
-| 变体 | `to_wire_protocols()` 吐出什么 |
+| 變體 | `to_wire_protocols()` 吐出什麼 |
 |---|---|
 | `H1` | `[http/1.1]` |
 | `H2` | `[h2]` |
 | `H2H1` | `[h2, http/1.1]` |
 | `Custom(x)` | **`[x]`** —— 只有它自己 |
 
-⇒ **枚举里没有任何一个变体能表达「内建那两条 + 一条自定义」的混合清单**，
-而 `alpn_protocols` 字段是私有的。这才是阻碍。
+⇒ **枚舉裡沒有任何一個變體能表達「內建那兩條 + 一條自定義」的混合清單**，
+而 `alpn_protocols` 欄位是私有的。這才是阻礙。
 
-RFC 8737 的 TLS-ALPN-01 要的正是这种混合：**同一个 443 端口**既要正常服务
-h2 / http/1.1，又要在 CA 来验证时协商出 `acme-tls/1`。挑战挪不到别的端口——
-RFC 8737 §3 把端口写死成 443。
+RFC 8737 的 TLS-ALPN-01 要的正是這種混合：**同一個 443 連接埠**既要正常服務
+h2 / http/1.1，又要在 CA 來驗證時協商出 `acme-tls/1`。挑戰挪不到別的連接埠——
+RFC 8737 §3 把連接埠寫死成 443。
 
-**改了一处**：`pingora-core/src/listeners/tls/rustls/mod.rs` 加一个
-`set_alpn_wire(Vec<Vec<u8>>)`。枢衡把清单设成 `[h2, http/1.1, acme-tls/1]`。
-★ 协商语义由 rustls 定：服务端这份清单是**偏好序**，取第一条客户端也提供的 ——
-所以 `acme-tls/1` 放在末尾，**正常流量的偏好完全不受影响**，
-而只提供 `acme-tls/1` 的 CA 验证连接会且只会协商到它。
+**改了一處**：`pingora-core/src/listeners/tls/rustls/mod.rs` 加一個
+`set_alpn_wire(Vec<Vec<u8>>)`。樞衡把清單設成 `[h2, http/1.1, acme-tls/1]`。
+★ 協商語義由 rustls 定：伺服器端這份清單是**偏好序**，取第一條用戶端也提供的 ——
+所以 `acme-tls/1` 放在末尾，**正常流量的偏好完全不受影響**，
+而只提供 `acme-tls/1` 的 CA 驗證連接會且只會協商到它。
 
-★ **归零条件**：上游给 `ALPN` 加一个多协议变体，或给 `TlsSettings` 开等价入口。
-⚠ 与 §8 一样，rebase 时要手工重贴——但这一处只有三行。
+★ **歸零條件**：上游給 `ALPN` 加一個多協定變體，或給 `TlsSettings` 開等價入口。
+⚠ 與 §8 一樣，rebase 時要手動重貼——但這一處只有三行。
 
-★ 判据：`tests/acme/run.sh` 里 pebble 的 `tlsPort` 直接指向枢衡的 TLS 端口，
-证书**真的由 TLS-ALPN-01 签下来**；另有两条反向断言钉住
-「普通流量拿不到挑战证书」与「acme-tls/1 拿不到真证书」。
+★ 判據：`tests/acme/run.sh` 裡 pebble 的 `tlsPort` 直接指向樞衡的 TLS 連接埠，
+證書**真的由 TLS-ALPN-01 簽下來**；另有兩條反向斷言釘住
+「普通流量拿不到挑戰證書」與「acme-tls/1 拿不到真證書」。
 
-### ~~★ 10. 一行 re-export：`rustls::server::{Accepted, Acceptor}`（2026-08-23，M2 批 C）~~ ✅ **已删除（2026-08-25）**
+### ~~★ 10. 一行 re-export：`rustls::server::{Accepted, Acceptor}`（2026-08-23，M2 批 C）~~ ✅ **已刪除（2026-08-25）**
 
-> ✅ ★ ★ ★ **2026-08-25（G104 第 ② 处）：换掉了，本条删除。**
-> L4 的 SNI/ALPN 分流现在走 BoringSSL 的早回调（`SSL_CTX_set_select_certificate_cb`），
-> 落点在 [`crates/fulcrum-server/src/l4.rs`](../../crates/fulcrum-server/src/l4.rs) 的
-> `peek_client_hello`：字节喂进一条**内存传输**，ClientHello 解完的那一刻早回调触发，
-> 抄走 `servername()` 与 ALPN 扩展之后**当场把握手掐掉**。
+> ✅ ★ ★ ★ **2026-08-25（G104 第 ② 處）：換掉了，本條刪除。**
+> L4 的 SNI/ALPN 分流現在走 BoringSSL 的早回呼（`SSL_CTX_set_select_certificate_cb`），
+> 落點在 [`crates/fulcrum-server/src/l4.rs`](../../crates/fulcrum-server/src/l4.rs) 的
+> `peek_client_hello`：位元組喂進一條**記憶體傳輸**，ClientHello 解完的那一刻早回呼觸發，
+> 抄走 `servername()` 與 ALPN 擴充之後**當場把握手掐掉**。
 >
-> ⚠ ⚠ **换过来有一处行为变化，而它是变好的那一侧**：早回调发生在几乎所有 ClientHello
-> 校验**之前**，而 rustls 的 `accept()` 要握手前半程做完才给 `Accepted`。
-> ⇒ 一个 rustls 会当场拒掉的 ClientHello（缺 `signature_algorithms`），
-> 在这一侧照样读得出 SNI 并正常分流 —— **那正是 `tests/l4/run.sh` ⑥ 当初写下的意图**
-> （「枢衡不替上游拒绝一个它自己也许能处理的客户端」），只是 rustls 那条路做不到。
-> ★ 那道判据因此换了期望值，旧契约与换的理由留在它自己那里。
+> ⚠ ⚠ **換過來有一處行為變化，而它是變好的那一側**：早回呼發生在幾乎所有 ClientHello
+> 檢核**之前**，而 rustls 的 `accept()` 要握手前半程做完才給 `Accepted`。
+> ⇒ 一個 rustls 會當場拒掉的 ClientHello（缺 `signature_algorithms`），
+> 在這一側照樣讀得出 SNI 並正常分流 —— **那正是 `tests/l4/run.sh` ⑥ 當初寫下的意圖**
+> （「樞衡不替上游拒絕一個它自己也許能處理的用戶端」），只是 rustls 那條路做不到。
+> ★ 那道判據因此換了期望值，舊契約與換的理由留在它自己那裡。
 >
-> ★ 而删掉它的**代价是零**：这一行本来就只是 re-export；
-> 而收益是 `pingora-rustls` 整个退出根 workspace 的依赖图（连同 `no_debug` 共 2 个包）。
+> ★ 而刪掉它的**代價是零**：這一行本來就只是 re-export；
+> 而收益是 `pingora-rustls` 整個退出根 workspace 的依賴圖（連同 `no_debug` 共 2 個包）。
 
-`pingora-rustls/src/lib.rs` 里多了一行 `pub use`。
+`pingora-rustls/src/lib.rs` 裡多了一行 `pub use`。
 
-**为什么需要**：L4 的 SNI/ALPN 分流要**只读 ClientHello、不完成握手**，
-而 rustls 的 `Acceptor` 正是为这件事存在的（`read_tls` + `accept()` → `Accepted`）。
+**為什麼需要**：L4 的 SNI/ALPN 分流要**唯讀 ClientHello、不完成握手**，
+而 rustls 的 `Acceptor` 正是為這件事存在的（`read_tls` + `accept()` → `Accepted`）。
 
-★ ★ **它不是「加能力」**，与 §8 / §8b 那两处性质不同：那两处改的是上游的行为面，
-而这一行只是把 rustls 已有的类型**转出去**。而且这正是那个文件自己写着的做法 ——
-它上面几行的注释是「⚠ 不让上层自己直接依赖 `rustls`……此处集中导出，
-provider 的选择仍然只由本 crate 的清单决定」。
+★ ★ **它不是「加能力」**，與 §8 / §8b 那兩處性質不同：那兩處改的是上游的行為面，
+而這一行只是把 rustls 已有的類型**轉出去**。而且這正是那個檔案自己寫著的做法 ——
+它上面幾行的註解是「⚠ 不讓上層自己直接依賴 `rustls`……此處集中匯出，
+provider 的選擇仍然只由本 crate 的清單決定」。
 
 | | |
 |---|---|
-| rebase 成本 | 几乎为零（一行 `pub use`，与上游代码不冲突）|
-| 新增依赖 | **0 个包** —— rustls 早就在图里 |
-| 归零条件 | 上游哪天自己导出它就删掉这一行 |
+| rebase 成本 | 幾乎為零（一行 `pub use`，與上游程式碼不衝突）|
+| 新增依賴 | **0 個包** —— rustls 早就在圖裡 |
+| 歸零條件 | 上游哪天自己匯出它就刪掉這一行 |
 
-⚠ **替代方案是手写 ClientHello 解析**，而那是在解析**攻击者控制的二进制** ——
-安全基线点名不许手搓的那一类里最靠边的一种。⇒ 这一行换掉的是那件事。
+⚠ **替代方案是手寫 ClientHello 解析**，而那是在解析**攻擊者控制的二進位** ——
+安全基線點名不許手搓的那一類裡最靠邊的一種。⇒ 這一行換掉的是那件事。
 
-### ★ ★ ★ 11. 把删掉的 `pingora-boringssl` 加回来（2026-08-25，G104）
+### ★ ★ ★ 11. 把刪掉的 `pingora-boringssl` 加回來（2026-08-25，G104）
 
-**这是 fork 里第一处「把当初删掉的东西加回来」的改动**，而它的成因不在上游，在我们自己：
-`PLAN.md` §5.1 第 1 条被 **G104** 推翻了。
+**這是 fork 裡第一處「把當初刪掉的東西加回來」的改動**，而它的成因不在上游，在我們自己：
+`PLAN.md` §5.1 第 1 條被 **G104** 推翻了。
 
-改了三处，全在清单里，**没有一行源码改动**：
+改了三處，全在清單裡，**沒有一行原始碼改動**：
 
 1. `Cargo.toml`（workspace）—— members 加 `pingora-boringssl`；
-2. `pingora-core/Cargo.toml` —— 加回可选路径依赖，以及上游原样的
+2. `pingora-core/Cargo.toml` —— 加回可選路徑依賴，以及上游原樣的
    `boringssl = ["pingora-boringssl", "openssl_derived"]`；
-   ★ `openssl_derived` 才是源码里那一大片 `#[cfg]` 用的名字：**boringssl 与 openssl
-   共用同一份实现**（`listeners/tls/boringssl_openssl/`）。
-3. `pingora-boringssl/Cargo.toml` —— 见下面那条**唯一的枢衡改动**。
+   ★ `openssl_derived` 才是原始碼裡那一大片 `#[cfg]` 用的名字：**boringssl 與 openssl
+   共用同一份實作**（`listeners/tls/boringssl_openssl/`）。
+3. `pingora-boringssl/Cargo.toml` —— 見下面那條**唯一的樞衡改動**。
 
-#### ★ 唯一的改动：去掉上游的 `boring/pq-experimental`
+#### ★ 唯一的改動：去掉上游的 `boring/pq-experimental`
 
-> ✅ **2026-09-24 已归零**：0.9.0 的清单是 `boring = "5"` 且不带特性（boring 5 里 `pq-experimental` 是空特性，
-> PQ 补丁无条件打上）⇒ 这个 crate 在 fork 里**零改动**。⚠ 下面「与 G30 相反的上界纪律」（钉在 `^4`）一并作废：
-> quiche 0.30 接 `>=4.19, <6`，三个消费者统一到 boring 5.2.0。⚠ 下文「`SSL_use_second_keyshare` 只有打补丁才存在」
-> 一句存疑：2026-09-24 的调研在本机 boring-sys 4.22.0 源码（含补丁与 deps/boringssl）里没搜到这个符号。
+> ✅ **2026-09-24 已歸零**：0.9.0 的清單是 `boring = "5"` 且不帶特性（boring 5 裡 `pq-experimental` 是空特性，
+> PQ 補丁無條件打上）⇒ 這個 crate 在 fork 裡**零改動**。⚠ 下面「與 G30 相反的上界紀律」（釘在 `^4`）一併作廢：
+> quiche 0.30 接 `>=4.19, <6`，三個消費者統一到 boring 5.2.0。⚠ 下文「`SSL_use_second_keyshare` 只有打補丁才存在」
+> 一句存疑：2026-09-24 的調研在本機 boring-sys 4.22.0 原始碼（含補丁與 deps/boringssl）裡沒搜到這個符號。
 
-上游写的是 `boring = { version = "4.5", features = ["pq-experimental"] }`。
-⚠ ⚠ **那个 feature 不是一个开关，它会让 `boring-sys` 给 BoringSSL 源码打一个补丁**
+上游寫的是 `boring = { version = "4.5", features = ["pq-experimental"] }`。
+⚠ ⚠ **那個 feature 不是一個開關，它會讓 `boring-sys` 給 BoringSSL 原始碼打一個補丁**
 （`boring-sys-4.22.0/build/main.rs`：`apply_patch(config, "boring-pq.patch")`，
-并打一行 `cargo:warning=applying experimental post quantum crypto patch to boringssl`）。
+並打一行 `cargo:warning=applying experimental post quantum crypto patch to boringssl`）。
 
-★ **而本 crate 用不上它**：`src/ext.rs` 里唯一碰后量子的地方是 `ssl_use_second_key_share`，
-被本 crate **自己的** `pq_use_second_keyshare` feature 门控（默认关），关着时是个空函数。
-⇒ 去掉它不改变任何行为。⚠ 将来若要打开 `pq_use_second_keyshare`，
-**必须同时把 `pq-experimental` 加回来** —— `SSL_use_second_keyshare` 这个符号只有补丁打上才存在。
+★ **而本 crate 用不上它**：`src/ext.rs` 裡唯一碰後量子的地方是 `ssl_use_second_key_share`，
+被本 crate **自己的** `pq_use_second_keyshare` feature 門控（預設關），關著時是個空函式。
+⇒ 去掉它不改變任何行為。⚠ 將來若要打開 `pq_use_second_keyshare`，
+**必須同時把 `pq-experimental` 加回來** —— `SSL_use_second_keyshare` 這個符號只有補丁打上才存在。
 
-> ★ ★ ★ **更硬的那条理由：它决定了 `docs/verification/musl-boringssl.md` 那份验证还算不算数。**
-> 那份探针编的是**原版** BoringSSL。开着 `pq-experimental`，产品编的就是另一份打过补丁的源码，
-> 而「musl 上验过了」这句话**不再覆盖产品**。
-> ⇒ **一次验证的适用范围，止于它真正编过的那份源码。**
+> ★ ★ ★ **更硬的那條理由：它決定了 `docs/verification/musl-boringssl.md` 那份驗證還算不算數。**
+> 那份探針編的是**原版** BoringSSL。開著 `pq-experimental`，產品編的就是另一份打過補丁的原始碼，
+> 而「musl 上驗過了」這句話**不再覆蓋產品**。
+> ⇒ **一次驗證的適用範圍，止於它真正編過的那份原始碼。**
 
-#### ⚠ 一条与 G30 相反的上界纪律
+#### ⚠ 一條與 G30 相反的上界紀律
 
-`boring` 的 `"4.5"`（脱字号 ⇒ `<5.0.0`）**必须保留，不许按 G30 抬**。
-G30 的口径是拆掉那些把传递依赖钉在旧版上的上界；这一条相反：**`quiche 0.29.3`（G103）
-要的也是 `boring ^4`，两边必须解到同一个 `boring`**，否则 `SslContextBuilder`
-同名而是两个类型。实测两者解到同一个 **`boring 4.22.0`**。
-⇒ 抬成 `>=4.22` 会让 cargo 挑 5.2.0，当场把 quiche 那条路弄坏。
+`boring` 的 `"4.5"`（脫字號 ⇒ `<5.0.0`）**必須保留，不許按 G30 抬**。
+G30 的口徑是拆掉那些把傳遞依賴釘在舊版上的上界；這一條相反：**`quiche 0.29.3`（G103）
+要的也是 `boring ^4`，兩邊必須解到同一個 `boring`**，否則 `SslContextBuilder`
+同名而是兩個類型。實測兩者解到同一個 **`boring 4.22.0`**。
+⇒ 抬成 `>=4.22` 會讓 cargo 挑 5.2.0，當場把 quiche 那條路弄壞。
 
-#### ★ 它顺手让另外三条 fork 改动**可以归零**
+#### ★ 它順手讓另外三條 fork 改動**可以歸零**
 
-| 改动 | 为什么在 BoringSSL 那侧不需要 |
+| 改動 | 為什麼在 BoringSSL 那側不需要 |
 |---|---|
-| **8**（`TlsSettings::with_cert_resolver`）| boringssl 的 `TlsSettings` 对 `SslAcceptorBuilder` 实现了 `Deref`/`DerefMut`，`set_select_certificate_callback` **本来就够得到** |
-| **8b**（`set_alpn_wire`）| 同上：`set_alpn_select_callback` 也够得到，混合 ALPN 清单自己写一个闭包即可 |
-| **10**（re-export `rustls::server::{Accepted, Acceptor}`）| ⏳ 要等 L4 的 ClientHello 预读也换过去；`boring::ssl::ClientHello` 有 `servername()` / `get_extension()` / `as_bytes()` |
+| **8**（`TlsSettings::with_cert_resolver`）| boringssl 的 `TlsSettings` 對 `SslAcceptorBuilder` 實作了 `Deref`/`DerefMut`，`set_select_certificate_callback` **本來就夠得到** |
+| **8b**（`set_alpn_wire`）| 同上：`set_alpn_select_callback` 也夠得到，混合 ALPN 清單自己寫一個閉包即可 |
+| **10**（re-export `rustls::server::{Accepted, Acceptor}`）| ⏳ 要等 L4 的 ClientHello 預讀也換過去；`boring::ssl::ClientHello` 有 `servername()` / `get_extension()` / `as_bytes()` |
 
-★ ★ **FORK.md 自己写着「加能力比抬上界更贵，rebase 时要手工重贴」**——
-⇒ **这一次换后端会让 fork 变小，不是变大。**
-⚠ 但**现在还一条都没删**：产品仍然跑在 rustls 那条路上（本次只是把后端加回来，没有点亮）。
-删除的时机与判据见 `PLAN.md` §10 第 61 轮。
+★ ★ **FORK.md 自己寫著「加能力比抬上界更貴，rebase 時要手動重貼」**——
+⇒ **這一次換後端會讓 fork 變小，不是變大。**
+⚠ 但**現在還一條都沒刪**：產品仍然跑在 rustls 那條路上（本次只是把後端加回來，沒有點亮）。
+刪除的時機與判據見 `PLAN.md` §10 第 61 輪。
 
-#### 首次点亮的实测
+#### 首次點亮的實測
 
 `cargo check -p pingora-core --features boringssl --no-default-features`（2026-08-25）：
-**0 个 error，43 条 warning，1m25s**。
-★ 值得记一句：**这些 `#[cfg]` 分支在本 fork 里从来没有被编译过**
-（`Cargo.toml` 原注释：「源码里的 `#[cfg(feature)]` 分支原样保留，只是永远不会被点亮」），
-而 fork 期间抬了十条版本上界、换掉了 `derivative`、改过 `nix` 的调用点。
-⇒ 「保留着的分支」与「还能编的分支」是两件事，而**在点亮之前没有任何东西能分开它们**。
-⚠ 那 43 条 warning 集中在 `boring 4.22` 已废弃的 `SslCurve` / `set_curves`
-（`connectors/tls/boringssl_openssl/mod.rs`，出站那侧），**不影响 lint 门**——
-`-D warnings` 只作用于 clippy 直接 lint 的那个 crate，vendor 作为依赖被普通 rustc 编译。
+**0 個 error，43 條 warning，1m25s**。
+★ 值得記一句：**這些 `#[cfg]` 分支在本 fork 裡從來沒有被編譯過**
+（`Cargo.toml` 原註解：「原始碼裡的 `#[cfg(feature)]` 分支原樣保留，只是永遠不會被點亮」），
+而 fork 期間抬了十條版本上界、換掉了 `derivative`、改過 `nix` 的呼叫點。
+⇒ 「保留著的分支」與「還能編的分支」是兩件事，而**在點亮之前沒有任何東西能分開它們**。
+⚠ 那 43 條 warning 集中在 `boring 4.22` 已廢棄的 `SslCurve` / `set_curves`
+（`connectors/tls/boringssl_openssl/mod.rs`，出站那側），**不影響 lint 門**——
+`-D warnings` 只作用於 clippy 直接 lint 的那個 crate，vendor 作為依賴被普通 rustc 編譯。
 
-### ★ ★ ★ 12. 加了一条能力：PROXY protocol 的「收」接缝（2026-08-27，M2 批 L 第 ① 步）
+### ★ ★ ★ 12. 加了一條能力：PROXY protocol 的「收」接縫（2026-08-27，M2 批 L 第 ① 步）
 
-> ★ ★ **2026-09-24（0.9.0）换了形状（B，owner 拍板）**：上游 0.9.0 自己加了 `PreTlsProcess`（`600c5c0`），
-> 但有意只在 TLS 分支里调 ⇒ fork 只剩 `listeners/mod.rs` 的 `handshake()` 里「把回调挪到 TLS 分支之前」几行；
-> trait、读循环、换 digest、setter、四个字段**都不在 fork 里了**。读取逻辑在
-> `crates/fulcrum-server/src/proxyproto.rs`（`PreTlsProcess` 实现，6 条真 socket 单测）。
-> 下文描述的是 0.8.1 时的形状，留作出处。**归零条件改为：上游让 pre-TLS 回调在明文端口也调。**
+> ★ ★ **2026-09-24（0.9.0）換了形狀（B，owner 拍板）**：上游 0.9.0 自己加了 `PreTlsProcess`（`600c5c0`），
+> 但有意只在 TLS 分支裡調 ⇒ fork 只剩 `listeners/mod.rs` 的 `handshake()` 裡「把回呼挪到 TLS 分支之前」幾行；
+> trait、讀循環、換 digest、setter、四個欄位**都不在 fork 裡了**。讀取邏輯在
+> `crates/fulcrum-server/src/proxyproto.rs`（`PreTlsProcess` 實作，6 條真 socket 單測）。
+> 下文描述的是 0.8.1 時的形狀，留作出處。**歸零條件改為：上游讓 pre-TLS 回呼在明文連接埠也調。**
 
-**上游完全不支持 PROXY protocol**（全库零命中，2026-08-24 核过）。
-枢衡要在 **HTTP 面**收它，而唯一正确的位置是**拿到裸 `L4Stream`、TLS 握手之前**的那一处
-—— `listeners/mod.rs` 的 `UninitializedStream::handshake()`，它是 `pub(crate)`，外部够不到。
+**上游完全不支援 PROXY protocol**（全庫零命中，2026-08-24 核過）。
+樞衡要在 **HTTP 面**收它，而唯一正確的位置是**拿到裸 `L4Stream`、TLS 握手之前**的那一處
+—— `listeners/mod.rs` 的 `UninitializedStream::handshake()`，它是 `pub(crate)`，外部夠不到。
 
-⚠ **本条属「加能力」那一类**，G30 刻意让这一类保持稀有 —— 现存的另一处是改动 11。
+⚠ **本條屬「加能力」那一類**，G30 刻意讓這一類保持稀有 —— 現存的另一處是改動 11。
 
-#### 改了什么：**一个文件，190 行，零删除**
+#### 改了什麼：**一個檔案，190 行，零刪除**
 
 `pingora-core/src/listeners/mod.rs`：
 
-| 加了什么 | 说明 |
+| 加了什麼 | 說明 |
 |---|---|
-| `pub trait ProxyProtocolPolicy` + `pub enum ProxyProtocolVerdict` | **接缝本身**。两个方法（`trusts` / `feed`）都由使用方实现 |
-| `Listeners` / `TransportStackBuilder` / `TransportStack` / `UninitializedStream` 各一个字段 | 把策略从 `Listeners` 一路带到那条连接上 |
-| `Listeners::set_proxy_protocol()` | 与上游自己的 `set_connection_filter()` **逐字同形**（含「已有的与之后加的都设上」那半） |
-| `read_proxy_protocol()` + `override_peer_addr()` | 循环读 + 覆盖地址 |
-| `handshake()` 里一次调用 | 在 `set_buffer()` 之后、TLS 之前 |
+| `pub trait ProxyProtocolPolicy` + `pub enum ProxyProtocolVerdict` | **接縫本身**。兩個方法（`trusts` / `feed`）都由使用方實作 |
+| `Listeners` / `TransportStackBuilder` / `TransportStack` / `UninitializedStream` 各一個欄位 | 把策略從 `Listeners` 一路帶到那條連接上 |
+| `Listeners::set_proxy_protocol()` | 與上游自己的 `set_connection_filter()` **逐字同形**（含「已有的與之後加的都設上」那半） |
+| `read_proxy_protocol()` + `override_peer_addr()` | 循環讀 + 覆蓋位址 |
+| `handshake()` 裡一次呼叫 | 在 `set_buffer()` 之後、TLS 之前 |
 
-★ ★ ★ **解析与信任判断一行都没进 fork**：前者在
-[`fulcrum_runtime::proxyproto`](../../crates/fulcrum-runtime/src/proxyproto.rs)（28 条单测），
-后者是 `fulcrum_runtime::Runtime::trusts_proxy_protocol`。
-⇒ **这段代码不认识 PROXY protocol 的任何一个字节**，rebase 时它不会成为负担。
+★ ★ ★ **解析與信任判斷一行都沒進 fork**：前者在
+[`fulcrum_runtime::proxyproto`](../../crates/fulcrum-runtime/src/proxyproto.rs)（28 條單測），
+後者是 `fulcrum_runtime::Runtime::trusts_proxy_protocol`。
+⇒ **這段程式碼不認識 PROXY protocol 的任何一個位元組**，rebase 時它不會成為負擔。
 
-★ 使用方**不需要给上游再加任何东西**：`Service::endpoints()` 本来就是 `pub`，
-返回 `&mut Listeners`。
+★ 使用方**不需要給上游再加任何東西**：`Service::endpoints()` 本來就是 `pub`，
+回傳 `&mut Listeners`。
 
-#### ⚠ ⚠ ★ ★ ★ 一处「看起来行、实际不行」的落法，写下来免得下一个人再走一遍
+#### ⚠ ⚠ ★ ★ ★ 一處「看起來行、實際不行」的落法，寫下來免得下一個人再走一遍
 
-`PLAN.md` §10 **第 49 轮**那份勘察里有一句「好消息」：
+`PLAN.md` §10 **第 49 輪**那份勘察裡有一句「好訊息」：
 
-> 「`SocketDigest.peer_addr` 是 **`pub` 的 `OnceCell`** ⇒ 抢在 pingora 自己填之前
-> `set` 进去就够了，**不必改它读取客户端地址的任何一处**。」
+> 「`SocketDigest.peer_addr` 是 **`pub` 的 `OnceCell`** ⇒ 搶在 pingora 自己填之前
+> `set` 進去就夠了，**不必改它讀取用戶端位址的任何一處**。」
 
-**那句话是错的。** `services/listening.rs` 在 `io.handshake()` **之前**就调了
-`io.peer_addr()`（为了握手失败时那行日志里能带上地址），而
-`SocketDigest::peer_addr()` 是 **`get_or_init`** ⇒ 到我们这一步，那个 `OnceCell`
-**已经被填过了**，`set()` 必然返回 `Err`。
+**那句話是錯的。** `services/listening.rs` 在 `io.handshake()` **之前**就調了
+`io.peer_addr()`（為了握手失敗時那行紀錄裡能帶上位址），而
+`SocketDigest::peer_addr()` 是 **`get_or_init`** ⇒ 到我們這一步，那個 `OnceCell`
+**已經被填過了**，`set()` 必然回傳 `Err`。
 
-⚠ ⚠ 而 `OnceCell::set()` 的返回值**很容易被写成 `let _ =`** ——
-于是「地址没换成」会是一次**完全无声**的失效：日志正常、请求正常、
-只有 `remote_ip` 一直是那台 LB 的地址。
+⚠ ⚠ 而 `OnceCell::set()` 的回傳值**很容易被寫成 `let _ =`** ——
+於是「位址沒換成」會是一次**完全無聲**的失效：紀錄正常、請求正常、
+只有 `remote_ip` 一直是那臺 LB 的位址。
 
-⇒ 落法改成**换一整份 `SocketDigest`**（`GetSocketDigest::set_socket_digest`，上游本来就有）：
-从同一个 fd 新造一份、先把 `peer_addr` 填好再挂上去。
-`local_addr` / `original_dst` 会从**同一个 fd** 重新惰性派生，什么都不丢。
+⇒ 落法改成**換一整份 `SocketDigest`**（`GetSocketDigest::set_socket_digest`，上游本來就有）：
+從同一個 fd 新造一份、先把 `peer_addr` 填好再掛上去。
+`local_addr` / `original_dst` 會從**同一個 fd** 重新惰性派生，什麼都不丟。
 
-> ★ ★ **一份勘察报告里的「好消息」，与一条被跑过的路，是两件事。**
-> 那句话在 2026-08-24 写下时没有任何东西撞过它，而它躺了三天。
-> （同一份勘察里还有一句也错了：「它们是 fork 的第 11 / 12 处」——
-> 11 号在 2026-08-25 被改动 11 占掉了。⇒ **一份勘察会同时留下事实和过期物，而它们长得一样。**）
+> ★ ★ **一份勘察報告裡的「好訊息」，與一條被跑過的路，是兩件事。**
+> 那句話在 2026-08-24 寫下時沒有任何東西撞過它，而它躺了三天。
+> （同一份勘察裡還有一句也錯了：「它們是 fork 的第 11 / 12 處」——
+> 11 號在 2026-08-25 被改動 11 佔掉了。⇒ **一份勘察會同時留下事實和過期物，而它們長得一樣。**）
 
-#### 归零条件
+#### 歸零條件
 
-⏳ **上游支持 PROXY protocol，或接受一个同形的接缝**。
-★ 与改动 8/8b/10 那三条不同的是：**本条不指望上游做什么** ——
-它们当年的归零条件全都挂在「上游动一下」上，而真正让它们归零的是第三件事（G104 换了 TLS 后端）。
-⇒ 这里如实写：**没有已知的归零路径**，它就是一项要跟着 rebase 的常年成本。
+⏳ **上游支援 PROXY protocol，或接受一個同形的接縫**。
+★ 與改動 8/8b/10 那三條不同的是：**本條不指望上游做什麼** ——
+它們當年的歸零條件全都掛在「上游動一下」上，而真正讓它們歸零的是第三件事（G104 換了 TLS 後端）。
+⇒ 這裡如實寫：**沒有已知的歸零路徑**，它就是一項要跟著 rebase 的常年成本。
 
-### ★ ★ ★ 13. 一处缺陷修复：h1 的 `body_bytes_sent` 把响应头也数了进去（2026-08-27，M2 批 L 第 ② 步）
+### ★ ★ ★ 13. 一處缺陷修復：h1 的 `body_bytes_sent` 把回應頭也數了進去（2026-08-27，M2 批 L 第 ② 步）
 
-> ✅ 2026-09-24 已归零：上游 `e7de90a` 修了同一个缺陷，语义与我们一致（h1 与 h2 都不计响应头），
-> 并自带 `body_bytes_sent_excludes_response_header`。
+> ✅ 2026-09-24 已歸零：上游 `e7de90a` 修了同一個缺陷，語義與我們一致（h1 與 h2 都不計回應頭），
+> 並自帶 `body_bytes_sent_excludes_response_header`。
 
-**这一处属「缺陷修复」那一类**（与改动 4「fd 卫生」、改动 7「短读根因」同类），
-**不是「加能力」** —— 它让一个函数**符合它自己的文档**。
+**這一處屬「缺陷修復」那一類**（與改動 4「fd 衛生」、改動 7「短讀根因」同類），
+**不是「加能力」** —— 它讓一個函式**符合它自己的文件**。
 
-#### 事实
+#### 事實
 
-`pingora-core/src/protocols/http/v1/server.rs` 的 `write_response_header` 里有一行：
+`pingora-core/src/protocols/http/v1/server.rs` 的 `write_response_header` 裡有一行：
 
 ```rust
 self.body_bytes_sent += write_buf.len();
 ```
 
-而 `write_buf` 是**序列化之后的响应头**。同一个字段的读取函数上面写着：
+而 `write_buf` 是**序列化之後的回應頭**。同一個欄位的讀取函式上面寫著：
 
 > `/// Return how many response body bytes (application, not wire) already sent downstream`
 
-⇒ **名字说 body，文档说 body，而它数了 header。**
+⇒ **名字說 body，文件說 body，而它數了 header。**
 
-#### ⚠ ⚠ 而决定性的不是「名不副实」，是**它与 h2 不一致**
+#### ⚠ ⚠ 而決定性的不是「名不副實」，是**它與 h2 不一致**
 
-| | 计数点 | 含响应头？ |
+| | 計數點 | 含回應頭？ |
 |---|---|---|
-| **h1**（`v1/server.rs`）| 写头处 **与** 写体处各 `+=` 一次 | ✅ **含** |
-| **h2**（`v2/server.rs`）| 只在写体处 `body_sent += data_len` | ❌ 不含 |
-| **h3**（枢衡自己的 `H3Session`）| 只数体（`sent_n`）| ❌ 不含 |
+| **h1**（`v1/server.rs`）| 寫頭處 **與** 寫體處各 `+=` 一次 | ✅ **含** |
+| **h2**（`v2/server.rs`）| 只在寫體處 `body_sent += data_len` | ❌ 不含 |
+| **h3**（樞衡自己的 `H3Session`）| 只數體（`sent_n`）| ❌ 不含 |
 
-★ 上游自己的三条 h2 测试断言「16 字节体 ⇒ `body_bytes_sent() == 16`」——
-**上游对这个数的期望就是「只数体」**。
+★ 上游自己的三條 h2 測試斷言「16 位元組體 ⇒ `body_bytes_sent() == 16`」——
+**上游對這個數的期望就是「只數體」**。
 
-⇒ 同一个请求走 h1 与走 h2，这个数**差一个响应头的长度**，而没有任何东西说出这件事。
+⇒ 同一個請求走 h1 與走 h2，這個數**差一個回應頭的長度**，而沒有任何東西說出這件事。
 
-#### 为什么枢衡非管不可
+#### 為什麼樞衡非管不可
 
-访问日志有一格 **`resp_size`**，契约（[`docs/architecture/observability.md`](../../docs/architecture/observability.md)）
-写的是「响应**体**字节数（不含头）」—— 而**那是一份公开契约**，
-不能按客户端用了哪个协议给出两个不同的答案。
+訪問紀錄有一格 **`resp_size`**，契約（[`docs/architecture/observability.md`](../../docs/architecture/observability.md)）
+寫的是「回應**體**位元組數（不含頭）」—— 而**那是一份公開契約**，
+不能按用戶端用了哪個協定給出兩個不同的答案。
 
-⚠ 实测形态：一个 4 字节的 `respond 200 "a-ok"`，日志里 `resp_size` 是 **144**。
-★ 它不会让任何东西变红 —— 那个数看起来完全像一个响应的大小。
+⚠ 實測形態：一個 4 位元組的 `respond 200 "a-ok"`，紀錄裡 `resp_size` 是 **144**。
+★ 它不會讓任何東西變紅 —— 那個數看起來完全像一個回應的大小。
 
-#### 改了什么
+#### 改了什麼
 
-**删掉那一行**（一处），并在**上游自己的测试模块里**加一条回归守卫（一处）。
+**刪掉那一行**（一處），並在**上游自己的測試模組裡**加一條迴歸守衛（一處）。
 
-⚠ ⚠ ★ **守卫放在上游的测试模块里，不是放在枢衡那一侧** ——
-那样它才会在 [`tests/vendor/run.sh`](../../tests/vendor/run.sh)（fork 回归网）里跑，
-**于是一次把那行加回来的 rebase 会当场变红**。
+⚠ ⚠ ★ **守衛放在上游的測試模組裡，不是放在樞衡那一側** ——
+那樣它才會在 [`tests/vendor/run.sh`](../../tests/vendor/run.sh)（fork 迴歸網）裡跑，
+**於是一次把那行加回來的 rebase 會當場變紅**。
 
-##### ★ ★ ★ 那条守卫第一版是坏的，而逮到它的是反证的**失败消息**
+##### ★ ★ ★ 那條守衛第一版是壞的，而逮到它的是反證的**失敗訊息**
 
-第一版没给 mock IO 写 `.write(...)` 期望 ⇒ 它在**干净树上也红**，
-而且红在 `tokio-test` 的 `unexpected write` 上 ——
-**一条红得与它声称要守的那件事毫无关系的判据**。
+第一版沒給 mock IO 寫 `.write(...)` 期望 ⇒ 它在**乾淨樹上也紅**，
+而且紅在 `tokio-test` 的 `unexpected write` 上 ——
+**一條紅得與它聲稱要守的那件事毫無關係的判據**。
 
-⚠ 我没在干净树上跑过它就去做注入；注入之后它红了，
-而**红的理由读起来不对**（注入的是计数器，红的是 mock IO）。
+⚠ 我沒在乾淨樹上跑過它就去做注入；注入之後它紅了，
+而**紅的理由讀起來不對**（注入的是計數器，紅的是 mock IO）。
 
-> ★ ★ ★ **「它红了」与「它因为我注入的那件事而红」是两回事。**
-> ⇒ 反证要看的不只是**红没红**，还有**红在哪一行、消息说的是不是那件事**。
-> 修好之后再注入，它红在 `left: 19, right: 0` 上 —— 19 正是那个响应头的字节数。
+> ★ ★ ★ **「它紅了」與「它因為我注入的那件事而紅」是兩回事。**
+> ⇒ 反證要看的不只是**紅沒紅**，還有**紅在哪一行、訊息說的是不是那件事**。
+> 修好之後再注入，它紅在 `left: 19, right: 0` 上 —— 19 正是那個回應頭的位元組數。
 
-#### 归零条件
+#### 歸零條件
 
 ⏳ **上游自己修掉它**（或接受一份同形的 PR）。
-★ 与改动 4 / 7 同类：这两条当年也是「上游也有这个问题，已备投稿」。
-⚠ 本条**尚未投稿** —— 登记在这里，免得它变成一件只有代码记得的事。
+★ 與改動 4 / 7 同類：這兩條當年也是「上游也有這個問題，已備投稿」。
+⚠ 本條**尚未投稿** —— 登記在這裡，免得它變成一件只有程式碼記得的事。
 
-### ★ ★ ★ 14. 加了两格数据：`SslDigest` 的 `sni` / `alpn`（2026-08-27，G128，D27 + D28 结案）
+### ★ ★ ★ 14. 加了兩格資料：`SslDigest` 的 `sni` / `alpn`（2026-08-27，G128，D27 + D28 結案）
 
-**这一处属「加能力」那一类**（与改动 12 同类），⚠ 而它加的是**数据**不是行为 ——
-两个 `Option<String>` 字段 + 两行赋值，**不改任何函数签名**。
+**這一處屬「加能力」那一類**（與改動 12 同類），⚠ 而它加的是**資料**不是行為 ——
+兩個 `Option<String>` 欄位 + 兩行賦值，**不改任何函式簽名**。
 
-#### 改了什么
+#### 改了什麼
 
-| 文件 | 改动 |
+| 檔案 | 改動 |
 |---|---|
-| `pingora-core/src/protocols/tls/digest.rs` | `SslDigest` 加 `pub sni: Option<String>` 与 `pub alpn: Option<String>`；`new()` 的**函数体**里初始化成 `None` |
-| `pingora-core/src/protocols/tls/boringssl_openssl/stream.rs` | `SslDigest::from_ssl()` 在建好之后填这两格（`ssl.servername(HOST_NAME)` / `ssl.selected_alpn_protocol()`）|
+| `pingora-core/src/protocols/tls/digest.rs` | `SslDigest` 加 `pub sni: Option<String>` 與 `pub alpn: Option<String>`；`new()` 的**函式體**裡初始化成 `None` |
+| `pingora-core/src/protocols/tls/boringssl_openssl/stream.rs` | `SslDigest::from_ssl()` 在建好之後填這兩格（`ssl.servername(HOST_NAME)` / `ssl.selected_alpn_protocol()`）|
 
-★ **有意不进 `new()` 的签名**：那样 `rustls` / `s2n` 两个后端的调用点一个字都不用改，
-而它们本来就填不出这两格。⇒ 这次改动**只碰 boringssl 那一支**。
+★ **有意不進 `new()` 的簽名**：那樣 `rustls` / `s2n` 兩個後端的呼叫點一個字都不用改，
+而它們本來就填不出這兩格。⇒ 這次改動**只碰 boringssl 那一支**。
 
-#### 为什么枢衡非管不可
+#### 為什麼樞衡非管不可
 
-访问日志有 `tls_sni` / `tls_alpn` 两格（契约见
+訪問紀錄有 `tls_sni` / `tls_alpn` 兩格（契約見
 [`docs/architecture/observability.md`](../../docs/architecture/observability.md)）。
 
-上游把这两格留给了 `TlsAccept::handshake_complete_callback` + `SslDigest.extension`
-（返回值会被塞进那个扩展位，HTTP 层从 `session.digest()` 拿得到）。
-⚠ ⚠ **走那条路要求监听器带回调**，而带回调时上游走的是 `handshake_with_callback()` ——
-它的第一行 `start_accept()` **无条件**装一个恒回 `-1` 的 `cert_cb`
+上游把這兩格留給了 `TlsAccept::handshake_complete_callback` + `SslDigest.extension`
+（回傳值會被塞進那個擴充位，HTTP 層從 `session.digest()` 拿得到）。
+⚠ ⚠ **走那條路要求監聽器帶回呼**，而帶回呼時上游走的是 `handshake_with_callback()` ——
+它的第一行 `start_accept()` **無條件**裝一個恆回 `-1` 的 `cert_cb`
 （`ext::suspend_when_need_ssl_cert` → `SSL_set_cert_cb(raw_cert_block)`）
-⇒ **每条 TLS 连接都要多走一趟「挂起 → `certificate_callback` → `resume_accept`」**。
+⇒ **每條 TLS 連接都要多走一趟「掛起 → `certificate_callback` → `resume_accept`」**。
 
-> ★ ★ ★ 那趟开销是 §10 **第 78 轮实测**出来的，而它推翻了一句写下来的推理：
-> 「证书是同步挑的 ⇒ 握手不会为证书挂起 ⇒ `certificate_callback` 不该被调到」。
-> **每一个词都对，只有「因此」两个字是错的** —— 挂不挂起不由「需不需要」决定，
-> 由上游那一行**无条件**的 setter 决定。
+> ★ ★ ★ 那趟開銷是 §10 **第 78 輪實測**出來的，而它推翻了一句寫下來的推理：
+> 「證書是同步挑的 ⇒ 握手不會為證書掛起 ⇒ `certificate_callback` 不該被調到」。
+> **每一個詞都對，只有「因此」兩個字是錯的** —— 掛不掛起不由「需不需要」決定，
+> 由上游那一行**無條件**的 setter 決定。
 
-⇒ 第 79 轮改成这一处 fork：`from_ssl()` 在握手结束后本来就握着 `&SslRef`，
-顺手记两格**一分额外开销都没有**。
+⇒ 第 79 輪改成這一處 fork：`from_ssl()` 在握手結束後本來就握著 `&SslRef`，
+順手記兩格**一分額外開銷都沒有**。
 
-##### ★ 它还顺带解决了 h3（D27）
+##### ★ 它還順帶解決了 h3（D27）
 
-`SslDigest` 一旦有了这两格，**h3 也能自己造一份**
+`SslDigest` 一旦有了這兩格，**h3 也能自己造一份**
 （`crates/fulcrum-server/src/quic/h3_session.rs` 的 `quic_digest`：
-`version` 恒 `TLSv1.3`（RFC 9001 §4.2）、`sni`/`alpn` 取自 `quiche::Connection` 的公开 API）。
-⇒ h1/h2 与 h3 在访问日志那一层**走同一段代码**，「同一格数据两个填法」在结构上做不到。
+`version` 恆 `TLSv1.3`（RFC 9001 §4.2）、`sni`/`alpn` 取自 `quiche::Connection` 的公開 API）。
+⇒ h1/h2 與 h3 在訪問紀錄那一層**走同一段程式碼**，「同一格資料兩個填法」在結構上做不到。
 
-⚠ 而 `SslDigestExtension::set` 是 `pub(crate)` —— **不动 fork 的话 h3 根本塞不进那个扩展位**，
-这也是候选方案「只把 `set` 放开成 `pub`」被否掉的原因：它只买到一半（D27），
-而另一半（D28）的落点就在同一个文件里。
+⚠ 而 `SslDigestExtension::set` 是 `pub(crate)` —— **不動 fork 的話 h3 根本塞不進那個擴充位**，
+這也是候選方案「只把 `set` 放開成 `pub`」被否掉的原因：它只買到一半（D27），
+而另一半（D28）的落點就在同一個檔案裡。
 
-#### 守它的是谁
+#### 守它的是誰
 
-| 半边 | 谁守 |
+| 半邊 | 誰守 |
 |---|---|
-| **那两格还在不在** | ★ 编译器（我们的代码读 `ssl.sni`）+ [`crates/fulcrum/tests/tls_digest_gate.rs`](../../crates/fulcrum/tests/tls_digest_gate.rs) 门 1 —— ⚠ 两者的**报错不一样**：编译器说「`SslDigest` 没有 `sni` 字段」（会让人去改自己的代码），门 1 说「**fork 改动 14 被 rebase 冲掉了**」|
-| **`from_ssl()` 还填不填** | ⚠ ⚠ **编译器守不住这一半** —— 一次把 `from_ssl` 恢复成上游版本的 rebase 照样编得过，而日志里那两格会**静静地变成 `None`**（读起来是「客户端没发 SNI」，一句完全成立的假话）。⇒ 门 2 读那个函数体，钉住两处赋值**与它们取自哪两个 `SslRef` 方法** |
-| **运行时真的填对了** | **第二十三个场景** [`tests/log/run.sh`](../../tests/log/run.sh)：真握手上量 h1/h2 四格、h3 三格，外加一条 `--no-alpn` 的反向（★ 它是唯一分得出「量出来的」与「猜出来的」那条）|
+| **那兩格還在不在** | ★ 編譯器（我們的程式碼讀 `ssl.sni`）+ [`crates/fulcrum/tests/tls_digest_gate.rs`](../../crates/fulcrum/tests/tls_digest_gate.rs) 門 1 —— ⚠ 兩者的**回報錯誤不一樣**：編譯器說「`SslDigest` 沒有 `sni` 欄位」（會讓人去改自己的程式碼），門 1 說「**fork 改動 14 被 rebase 沖掉了**」|
+| **`from_ssl()` 還填不填** | ⚠ ⚠ **編譯器守不住這一半** —— 一次把 `from_ssl` 恢復成上游版本的 rebase 照樣編得過，而紀錄裡那兩格會**靜靜地變成 `None`**（讀起來是「用戶端沒發 SNI」，一句完全成立的假話）。⇒ 門 2 讀那個函式體，釘住兩處賦值**與它們取自哪兩個 `SslRef` 方法** |
+| **執行環境真的填對了** | **第二十三個場景** [`tests/log/run.sh`](../../tests/log/run.sh)：真握手上量 h1/h2 四格、h3 三格，外加一條 `--no-alpn` 的反向（★ 它是唯一分得出「量出來的」與「猜出來的」那條）|
 
-★ ★ **这一条与改动 13 的守法不同，而不同是有理由的**：改动 13 是**删一行**，
-守卫能长在上游自己的测试模块里（`tests/vendor/run.sh` 会跑）；
-本条是**加两格数据**，而 `from_ssl()` 要一个真的 `SslRef` 才测得到 ——
-⚠ 在上游测试模块里写不出一条不假装的判据，所以守卫落在**我们这一侧**，并写明了它们各自答什么。
+★ ★ **這一條與改動 13 的守法不同，而不同是有理由的**：改動 13 是**刪一行**，
+守衛能長在上游自己的測試模組裡（`tests/vendor/run.sh` 會跑）；
+本條是**加兩格資料**，而 `from_ssl()` 要一個真的 `SslRef` 才測得到 ——
+⚠ 在上游測試模組裡寫不出一條不假裝的判據，所以守衛落在**我們這一側**，並寫明瞭它們各自答什麼。
 
-#### 归零条件
+#### 歸零條件
 
-⏳ **上游自己把 SNI / ALPN 记进 `SslDigest`**（或接受一份同形的 PR）。
-★ 上游今天的立场是「用 `extension` 自己塞」——
-⚠ 那条路对**只想要 SNI/ALPN** 的人来说，代价是每条握手多一趟挂起/恢复，
-而这一点大概率上游自己也没量过。**本条尚未投稿。**
+⏳ **上游自己把 SNI / ALPN 記進 `SslDigest`**（或接受一份同形的 PR）。
+★ 上游今天的立場是「用 `extension` 自己塞」——
+⚠ 那條路對**只想要 SNI/ALPN** 的人來說，代價是每條握手多一趟掛起/恢復，
+而這一點大概率上游自己也沒量過。**本條尚未投稿。**
 
-### ★ ★ ★ 15. 加了一条能力：连接计数接缝（2026-09-03，M2 批 O）
+### ★ ★ ★ 15. 加了一條能力：連接計數接縫（2026-09-03，M2 批 O）
 
-> ★ 2026-09-24（0.9.0）重做：⚠ 0.9.0 新增构造点 `add_listener()`，`add_tcp` / `add_uds` / `add_tls_with_settings`
-> 都走它 ⇒ 那里也复制 `connection_counter`（填 `None` 能编过，但之后加的端口静默不计数）；
-> `services/listening.rs` 的 import 与 0.9.0 新加的 `ListenerConfig` 并列。
+> ★ 2026-09-24（0.9.0）重做：⚠ 0.9.0 新增建構點 `add_listener()`，`add_tcp` / `add_uds` / `add_tls_with_settings`
+> 都走它 ⇒ 那裡也複製 `connection_counter`（填 `None` 能編過，但之後加的連接埠靜默不計數）；
+> `services/listening.rs` 的 import 與 0.9.0 新加的 `ListenerConfig` 並列。
 
-**上游没有任何按监听器统计连接数的出口**：`Service::run_endpoint` 那条 accept 循环
-把连接直接 spawn 出去，`TransportStack` 是 `pub(crate)`，外部够不到那一刻。
-枢衡要的是 `fulcrum_connections_total` / `fulcrum_connections_active{listen,entrypoint}`
-（`PLAN.md` §10 的 **G122 ②**），而它必须在 **accept 之后、握手之前**记一笔。
+**上游沒有任何按監聽器統計連接數的出口**：`Service::run_endpoint` 那條 accept 循環
+把連接直接 spawn 出去，`TransportStack` 是 `pub(crate)`，外部夠不到那一刻。
+樞衡要的是 `fulcrum_connections_total` / `fulcrum_connections_active{listen,entrypoint}`
+（`PLAN.md` §10 的 **G122 ②**），而它必須在 **accept 之後、握手之前**記一筆。
 
-⚠ **本条属「加能力」那一类**，G30 刻意让这一类保持稀有 —— 现存的另外两处是改动 11 与 12。
+⚠ **本條屬「加能力」那一類**，G30 刻意讓這一類保持稀有 —— 現存的另外兩處是改動 11 與 12。
 
-#### 改了什么：**两个文件，一处删除（一行 import 重排）**
+#### 改了什麼：**兩個檔案，一處刪除（一行 import 重排）**
 
-> ⛔ 这里**有意不写行数**：一个写在散文里的行数没有任何门守着，改一次就过期而不会红
-> （本仓 2026-09-03 为这条栽过一次）。要数就跑
+> ⛔ 這裡**有意不寫行數**：一個寫在散文裡的行數沒有任何門守著，改一次就過期而不會紅
+> （本儲存庫 2026-09-03 為這條栽過一次）。要數就跑
 > `git diff <上游基线> -- pingora-core/src/listeners/mod.rs pingora-core/src/services/listening.rs`。
 
 `pingora-core/src/listeners/mod.rs`：
 
-| 加了什么 | 说明 |
+| 加了什麼 | 說明 |
 |---|---|
-| `pub trait ConnectionCounter` | **接缝本身**，两个方法（`enter` / `leave`）都由使用方实现 |
-| `pub struct ConnGuard` | ★★★ `leave` 的**唯一**调用点。构造即 `enter`，`Drop` 即 `leave` |
-| `Listeners` / `TransportStackBuilder` / `TransportStack` 各一个字段 | 把计数器从 `Listeners` 一路带到那条连接上 |
-| `Listeners::set_connection_counter()` | 与上游自己的 `set_connection_filter()`、与改动 12 的 `set_proxy_protocol()` **逐字同形**（含「已有的与之后加的都设上」那半）|
+| `pub trait ConnectionCounter` | **接縫本身**，兩個方法（`enter` / `leave`）都由使用方實作 |
+| `pub struct ConnGuard` | ★★★ `leave` 的**唯一**呼叫點。建構即 `enter`，`Drop` 即 `leave` |
+| `Listeners` / `TransportStackBuilder` / `TransportStack` 各一個欄位 | 把計數器從 `Listeners` 一路帶到那條連接上 |
+| `Listeners::set_connection_counter()` | 與上游自己的 `set_connection_filter()`、與改動 12 的 `set_proxy_protocol()` **逐字同形**（含「已有的與之後加的都設上」那半）|
 | `TransportStack::connection_counter()` | `run_endpoint` 取句柄用 |
 
-`pingora-core/src/services/listening.rs` 的 `run_endpoint`：循环外取一次句柄与
-`Arc<str>` 地址，**spawn 之前**构造 guard 并把它移进任务。
+`pingora-core/src/services/listening.rs` 的 `run_endpoint`：循環外取一次句柄與
+`Arc<str>` 位址，**spawn 之前**建構 guard 並把它移進任務。
 
-★ ★ ★ **这段代码不认识 Prometheus 的任何一个概念**：它不知道 counter 与 gauge 的区别、
-不认识标签、也不知道 `entrypoint` 是什么。它只递一个 `listen: &str`（就是
-`TransportStack::as_str()` 那个监听地址原样），别的全在
+★ ★ ★ **這段程式碼不認識 Prometheus 的任何一個概念**：它不知道 counter 與 gauge 的區別、
+不認識標籤、也不知道 `entrypoint` 是什麼。它只遞一個 `listen: &str`（就是
+`TransportStack::as_str()` 那個監聽位址原樣），別的全在
 [`crates/fulcrum-server/src/conn_stats.rs`](../../crates/fulcrum-server/src/conn_stats.rs)。
-⇒ rebase 时它不会成为负担。
+⇒ rebase 時它不會成為負擔。
 
-#### ⚠ ⚠ ★ 为什么 `ConnGuard` 必须长在**这一侧**
+#### ⚠ ⚠ ★ 為什麼 `ConnGuard` 必須長在**這一側**
 
-它完全可以定义在枢衡那一侧，fork 只留一个两方法的 trait —— fork 会更薄。
-**但那样 `run_endpoint` 里就变成「先 `enter`、再自己构造 guard」两步**，
-而**漏掉构造 guard 那一行正是 rebase 冲突里最容易被合掉的形状**。
-⚠ 它失效时的表现是 **gauge 只涨不降**：正文格式合法、counter 在动、series 也都在，
-只有一个数字永远只增 —— **没有任何东西会红**。
-⇒ 放在这一侧，是让「守卫存在」成为**结构事实**而不是使用方的纪律。
+它完全可以定義在樞衡那一側，fork 只留一個兩方法的 trait —— fork 會更薄。
+**但那樣 `run_endpoint` 裡就變成「先 `enter`、再自己建構 guard」兩步**，
+而**漏掉建構 guard 那一行正是 rebase 衝突裡最容易被合掉的形狀**。
+⚠ 它失效時的表現是 **gauge 只漲不降**：正文格式合法、counter 在動、series 也都在，
+只有一個數字永遠只增 —— **沒有任何東西會紅**。
+⇒ 放在這一側，是讓「守衛存在」成為**結構事實**而不是使用方的紀律。
 
-#### ⚠ ⚠ ⚠ 那个必须绑名字的变量
+#### ⚠ ⚠ ⚠ 那個必須綁名字的變數
 
-`run_endpoint` 里那句 **`let _conn_guard = conn_guard;`** 写成裸 `let _ = conn_guard;`
-会让它**当场 drop**，于是每条连接进来就立刻减一 ⇒ gauge 恒为 0 而 counter 照涨。
-⚠ **同一个后果还有第二种形态**：把那一行**整个删掉** —— 那个值就不再被移进
-`async move` 块，于是在 accept 循环这一轮末尾就 drop 了。
+`run_endpoint` 裡那句 **`let _conn_guard = conn_guard;`** 寫成裸 `let _ = conn_guard;`
+會讓它**當場 drop**，於是每條連接進來就立刻減一 ⇒ gauge 恆為 0 而 counter 照漲。
+⚠ **同一個後果還有第二種形態**：把那一行**整個刪掉** —— 那個值就不再被移進
+`async move` 塊，於是在 accept 循環這一輪末尾就 drop 了。
 
-✅ **2026-09-04：这一段补上了自己的门。**
-`listeners/mod.rs` 的 `mod test` 里多一条 **`枢衡改动15_守卫必须被移进任务且绑了名字`**：
-它 `include_str!` 读 `services/listening.rs`，剥掉整行注释后要求「构造了 `ConnGuard`」
-∧「有一个**具名**的移动」∧「没有裸 `let _ = conn_guard`」。
-★ **两种形态都实测过会红**（注入写在字节副本上、跑完核 sha256 还原），
-而同一趟里那条**行为**判据（`枢衡改动15_连接守卫在_drop_时减一`）**照旧绿** ——
-⇒ 两条各守一段（一条验行为、一条验接线），⛔ 别合并。
+✅ **2026-09-04：這一段補上了自己的門。**
+`listeners/mod.rs` 的 `mod test` 裡多一條 **`枢衡改动15_守卫必须被移进任务且绑了名字`**：
+它 `include_str!` 讀 `services/listening.rs`，剝掉整行註解後要求「建構了 `ConnGuard`」
+∧「有一個**具名**的移動」∧「沒有裸 `let _ = conn_guard`」。
+★ **兩種形態都實測過會紅**（注入寫在位元組副本上、跑完核 sha256 還原），
+而同一趟裡那條**行為**判據（`枢衡改动15_连接守卫在_drop_时减一`）**照舊綠** ——
+⇒ 兩條各守一段（一條驗行為、一條驗串接），⛔ 別合併。
 
-⚠ ⚠ **它第一次跑就红在自己身上**，而原因值得记住：`listening.rs` 里那句**警告**本身就写着
-「⛔ 写成裸 `let _ = conn_guard;` 会当场 drop」，判据把**注释里那句警告当成了坏代码**。
-⇒ 修法是**先剥整行注释**，⚠ 且只剥整行（行内 `//` 未必是注释）；剥离器自己也带两条自证，
-另有一份夹具专门守「注释里提到坏形态的正确源码必须被判为对」——
-那是这个 bug 的回归测试。★ 已知边界写在门里：**行尾注释剥不掉**。
+⚠ ⚠ **它第一次跑就紅在自己身上**，而原因值得記住：`listening.rs` 裡那句**警告**本身就寫著
+「⛔ 寫成裸 `let _ = conn_guard;` 會當場 drop」，判據把**註解裡那句警告當成了壞程式碼**。
+⇒ 修法是**先剝整行註解**，⚠ 且只剝整行（行內 `//` 未必是註解）；剝離器自己也帶兩條自證，
+另有一份夾具專門守「註解裡提到壞形態的正確原始碼必須被判為對」——
+那是這個 bug 的迴歸測試。★ 已知邊界寫在門裡：**行尾註解剝不掉**。
 
-★ 端到端那一层仍然有它自己的判据（`tests/metrics/run.sh` 里
-「连上 TLS 端口什么都不发 ⇒ `active` +1」）⇒ **三层各守一段**。
+★ 端到端那一層仍然有它自己的判據（`tests/metrics/run.sh` 裡
+「連上 TLS 連接埠什麼都不發 ⇒ `active` +1」）⇒ **三層各守一段**。
 
-#### 守卫
+#### 守衛
 
-照改动 13 的手法，**回归守卫长在上游自己的测试模块里**
-（`listeners/mod.rs` 的 `mod test`）：一个假的 `ConnectionCounter`，
-断言「构造即 enter 一次」「drop 即 leave 一次」「递过去的是监听地址原样」。
-★ 反证实测：把 `ConnGuard::new` 里那句 `counter.enter(&listen)` 删掉 ⇒ 它当场红，
-且 `tests/vendor/run.sh` 把它定向重跑一次后判为「**重跑仍失败 —— 这才是 fork 该被判红的东西**」。
+照改動 13 的手法，**迴歸守衛長在上游自己的測試模組裡**
+（`listeners/mod.rs` 的 `mod test`）：一個假的 `ConnectionCounter`，
+斷言「建構即 enter 一次」「drop 即 leave 一次」「遞過去的是監聽位址原樣」。
+★ 反證實測：把 `ConnGuard::new` 裡那句 `counter.enter(&listen)` 刪掉 ⇒ 它當場紅，
+且 `tests/vendor/run.sh` 把它定向重跑一次後判為「**重跑仍失敗 —— 這才是 fork 該被判紅的東西**」。
 
-#### 归零条件
+#### 歸零條件
 
-⏳ **没有已知的归零路径。** 上游没有表达过要给监听器加统计出口的意思，
-而这条接缝服务的是枢衡自己的指标契约。⇒ 它是一项**要跟着 rebase 的常年成本**。
-★ 与改动 8/8b/10 那三条不同：它们的归零条件挂在「上游动一下」上，本条不指望上游做什么。
-⏳ **投不投上游等 rebase 读过上游 `main` 之后再判**（G122 已定）——
-上游 `main` 已把 `prometheus` 整条删掉，口味未知。
+⏳ **沒有已知的歸零路徑。** 上游沒有表達過要給監聽器加統計出口的意思，
+而這條接縫服務的是樞衡自己的指標契約。⇒ 它是一項**要跟著 rebase 的常年成本**。
+★ 與改動 8/8b/10 那三條不同：它們的歸零條件掛在「上游動一下」上，本條不指望上游做什麼。
+⏳ **投不投上游等 rebase 讀過上游 `main` 之後再判**（G122 已定）——
+上游 `main` 已把 `prometheus` 整條刪掉，口味未知。
 
-### ★ ★ ★ 16. 一类新改动：请求路径上三处语义不变的开销（2026-10-06，G157）
+### ★ ★ ★ 16. 一類新改動：請求路徑上三處語義不變的開銷（2026-10-06，G157）
 
-⚠ **本条开了一个新类别：只为性能、对枢衡看得见的行为一个不变。** 此前的类别是版本上界与调用点适配（§1–§7）、
-加能力（11 / 12 / 14 / 15）、缺陷修复（13）。本类与它们一样要**随 rebase 重放**；收进来的门槛是「语义不变」——
-改了行为的（请求头 / 响应头保留大小写的表、keep-alive 等下一条请求时的计时器）⛔ 不在本条，各要一处设计、另拍。
+⚠ **本條開了一個新類別：只為效能、對樞衡看得見的行為一個不變。** 此前的類別是版本上界與呼叫點適配（§1–§7）、
+加能力（11 / 12 / 14 / 15）、缺陷修復（13）。本類與它們一樣要**隨 rebase 重放**；收進來的門檻是「語義不變」——
+改了行為的（請求頭 / 回應頭保留大小寫的表、keep-alive 等下一條請求時的計時器）⛔ 不在本條，各要一處設計、另拍。
 
-**起因**：M3 的 HTTP 层诊断（`PLAN.md` §7 M3）。开发机上的裸 pingora 诊断台对 fork 里的候选逐个做单变量试验
-（每个变体一份副本、只差一处补丁；计数口径 = 每请求的用户指令数与分配次数，⛔ 不是性能声明，读数不入库，`G139`），
-owner 2026-10-06 按推荐先拍这三处。
+**起因**：M3 的 HTTP 層診斷（`PLAN.md` §7 M3）。開發機上的裸 pingora 診斷臺對 fork 裡的候選逐個做單變數試驗
+（每個變體一份副本、只差一處補丁；計數口徑 = 每請求的使用者指令數與分配次數，⛔ 不是效能宣告，讀數不入庫，`G139`），
+owner 2026-10-06 按推薦先拍這三處。
 
-#### 改了什么：**两个文件，加一个测试文件**
+#### 改了什麼：**兩個檔案，加一個測試檔案**
 
-| | 文件 | 改了什么 | 为什么语义不变 |
+| | 檔案 | 改了什麼 | 為什麼語義不變 |
 |---|---|---|---|
-| ① | `src/protocols/l4/stream.rs` | `poll_read` / `poll_write` / `poll_flush` / `poll_write_vectored` 之后**不再记等待计时**（原来每次都调一次计时，读钟只在挂起的起止：转为挂起时一次、挂起后就绪时一次）。`AccumulatedDuration` 与两个 getter 原样留着（少改上游的行），`total` 恒为零 | 那两个 getter（`get_read_pending_time` / `get_write_pending_time`）在枢衡与本 fork 的 8 个 crate 里**没有任何读者**，只有 trait 实现；恒为零也正是 trait 缺省值 |
-| ② | `src/protocols/http/v1/server.rs` | `read_request` 的 256 个头槽位**不先填**，改走 `httparse::Request::parse_with_uninit_headers` | 读过 httparse 1.10.1 的源码：`parse` = `parse_with_config(缺省配置)` → `parse_with_config_and_uninit_headers`，与 uninit 入口是**同一个解析器、同一份缺省配置**；差别只在没解析完时 `req.headers` 留什么，而 `read_request` 在那两种情况下不读它 |
-| ③ | 同上 | 头偏移写进**栈上**的槽位（新函数 `populate_header_refs`，规则与 `common.rs` 的 `populate_headers` 相同），不再每条请求分配一个 `Vec<KVRef>` | 同一组偏移，只是放的地方不同；`populate_headers` 原样留给 `client.rs` |
-| — | `tests/fulcrum_read_request_alloc.rs`（新文件）| ③ 的分配次数判据，见下 | |
+| ① | `src/protocols/l4/stream.rs` | `poll_read` / `poll_write` / `poll_flush` / `poll_write_vectored` 之後**不再記等待計時**（原來每次都調一次計時，讀鍾只在掛起的起止：轉為掛起時一次、掛起後就緒時一次）。`AccumulatedDuration` 與兩個 getter 原樣留著（少改上游的行），`total` 恆為零 | 那兩個 getter（`get_read_pending_time` / `get_write_pending_time`）在樞衡與本 fork 的 8 個 crate 裡**沒有任何讀者**，只有 trait 實作；恆為零也正是 trait 預設值 |
+| ② | `src/protocols/http/v1/server.rs` | `read_request` 的 256 個頭槽位**不先填**，改走 `httparse::Request::parse_with_uninit_headers` | 讀過 httparse 1.10.1 的原始碼：`parse` = `parse_with_config(缺省配置)` → `parse_with_config_and_uninit_headers`，與 uninit 入口是**同一個解析器、同一份預設設定**；差別只在沒解析完時 `req.headers` 留什麼，而 `read_request` 在那兩種情況下不讀它 |
+| ③ | 同上 | 頭偏移寫進**棧上**的槽位（新函式 `populate_header_refs`，規則與 `common.rs` 的 `populate_headers` 相同），不再每條請求分配一個 `Vec<KVRef>` | 同一組偏移，只是放的地方不同；`populate_headers` 原樣留給 `client.rs` |
+| — | `tests/fulcrum_read_request_alloc.rs`（新檔案）| ③ 的分配次數判據，見下 | |
 
-⚠ ② 只改缺省那条路：`patched_http1` 那条照上游（先填后 `parse_unchecked`）。**该特性在本 fork 本来就编不过** ——
-crates.io 的 httparse 1.10.1 没有 `parse_unchecked`（那是 Cloudflare 自己那份 httparse 的方法），改前改后一样。
+⚠ ② 只改預設那條路：`patched_http1` 那條照上游（先填後 `parse_unchecked`）。**該特性在本 fork 本來就編不過** ——
+crates.io 的 httparse 1.10.1 沒有 `parse_unchecked`（那是 Cloudflare 自己那份 httparse 的方法），改前改後一樣。
 
-**量了多少**（开发机，200 连接 × 200000 条，三轮中位；⛔ 不是性能声明）：裸 pingora 每请求用户指令 ① −374 · ② −770 · ③ −250，
-三处合计约 −1.4k（约 −5%）；malloc ③ −1（25 → 24）；`clock_gettime` ① −2。用这份 fork 本身重编的复核（同一台诊断台、同一口径）：
-用户指令 −1315（200 连接）/ −1388（1 条连接），都是 −4.7%；malloc −1、`clock_gettime` −2 逐位吻合；内核指令在噪声里。
+**量了多少**（開發機，200 連接 × 200000 條，三輪中位；⛔ 不是效能宣告）：裸 pingora 每請求使用者指令 ① −374 · ② −770 · ③ −250，
+三處合計約 −1.4k（約 −5%）；malloc ③ −1（25 → 24）；`clock_gettime` ① −2。用這份 fork 本身重編的複核（同一臺診斷臺、同一口徑）：
+使用者指令 −1315（200 連接）/ −1388（1 條連接），都是 −4.7%；malloc −1、`clock_gettime` −2 逐位吻合；核心指令在噪聲裡。
 
-#### 守卫（都长在 fork 自己的测试里，`tests/vendor/run.sh` 照跑）
+#### 守衛（都長在 fork 自己的測試裡，`tests/vendor/run.sh` 照跑）
 
-| 判据 | 守什么 | 反证（注入写在 vendor 的副本上、挂到同一路径编，⛔ 没碰工作树）|
+| 判據 | 守什麼 | 反證（注入寫在 vendor 的副本上、掛到同一路徑編，⛔ 沒碰工作樹）|
 |---|---|---|
-| `l4/stream.rs` 的 `枢衡改动16_读等待不再计时` | 一次真的挂起过约 50 ms 的读之后，`get_read_pending_time()` 仍是零；自带「这次读确实等过」的自证 | `poll_read` 里那一行等待计时加回去 ⇒ **只红它** |
-| `v1/server.rs` 的 `枢衡改动16_头数正好到上限时逐个对得上_多一个就拒` | 头数恰好 `MAX_HEADERS` 时 256 个头的名与值逐个对得上（② ③ 两处栈上槽位都用满）；多一个照上游拒（`InvalidHTTPHeader`）| 给 httparse 少递一个槽位 ⇒ **只红它**（256 个被拒）；`populate_header_refs` 漏掉最后一个 ⇒ 红它（另一条的「3 个头」断言也跟着红）|
-| `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动16_读请求头不再为偏移单独分配` | 一条普通请求一次读完时，`read_request` 一共分配 **8** 次（三次独立编译都是 8；里面有读缓冲、请求头、头表与保留大小写的表等，⚠ 组成没有逐项拆）；单独一个测试二进制、只数本线程；自带「分配器真的在数」的自证 | ③ 那两处换回上游原样 ⇒ **只红它**，「分配了 9 次（期望 8）」|
+| `l4/stream.rs` 的 `枢衡改动16_读等待不再计时` | 一次真的掛起過約 50 ms 的讀之後，`get_read_pending_time()` 仍是零；自帶「這次讀確實等過」的自證 | `poll_read` 裡那一行等待計時加回去 ⇒ **只紅它** |
+| `v1/server.rs` 的 `枢衡改动16_头数正好到上限时逐个对得上_多一个就拒` | 頭數恰好 `MAX_HEADERS` 時 256 個頭的名與值逐個對得上（② ③ 兩處棧上槽位都用滿）；多一個照上游拒（`InvalidHTTPHeader`）| 給 httparse 少遞一個槽位 ⇒ **只紅它**（256 個被拒）；`populate_header_refs` 漏掉最後一個 ⇒ 紅它（另一條的「3 個頭」斷言也跟著紅）|
+| `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动16_读请求头不再为偏移单独分配` | 一條普通請求一次讀完時，`read_request` 一共分配 **8** 次（三次獨立編譯都是 8；裡面有讀緩衝、請求頭、頭表與保留大小寫的表等，⚠ 組成沒有逐項拆）；單獨一個測試二進位、只數本執行緒；自帶「分配器真的在數」的自證 | ③ 那兩處換回上游原樣 ⇒ **只紅它**，「分配了 9 次（期望 8）」|
 
-四次注入每次都有 `Compiling pingora-core` 为证（副本在容器里先 touch，绕开 mtime 陷阱）。
+四次注入每次都有 `Compiling pingora-core` 為證（副本在容器裡先 touch，繞開 mtime 陷阱）。
 
-⚠ 第三条数的是**整个** `read_request`：rebase 后上游自己增减了分配也会红 —— 那时先核是谁动的，再改期望值，⛔ 别为了绿直接改数。
-跨两次读才完整的请求头、URI 转义后重解析（②③ 都要重新进那个循环），上游自己的测试（`read_2_buf` 等、`escaped_uri_*`）已覆盖。
+⚠ 第三條數的是**整個** `read_request`：rebase 後上遊自己增減了分配也會紅 —— 那時先核是誰動的，再改期望值，⛔ 別為了綠直接改數。
+跨兩次讀才完整的請求頭、URI 轉義後重解析（②③ 都要重新進那個循環），上游自己的測試（`read_2_buf` 等、`escaped_uri_*`）已覆蓋。
 
-#### 归零条件
+#### 歸零條件
 
-② ③ 不依赖枢衡；owner 2026-10-08 拍「先备材料、暂不发」⇒ 投稿材料在 [`upstream-pr/`](../../upstream-pr/README.md) 投稿七
-（一份 issue、一份 PR、两个提交，基于上游 `main` `4487f7b`）。⏳ 发不发是对外动作，另拍。
-⚠ ① **在上游不是语义不变**：上游的 `pingora-proxy` 读上游连接的 `get_write_pending_time()`（`proxy_h1.rs`，`Session::upstream_write_pending_time()`），
-两个 getter 还是公开 trait 的方法 ⇒ 原样投不了，可选做法记在投稿七那一节。在本 fork 里它照样语义不变（那个 crate 不在 fork 里）。
-在归零之前三处都是**要跟着 rebase 的常年成本**：都是小补丁，① 的四处删除最容易在冲突里被合掉 —— 那时第一条判据会红。
+② ③ 不依賴樞衡；owner 2026-10-08 拍「先備材料、暫不發」⇒ 投稿材料在 [`upstream-pr/`](../../upstream-pr/README.md) 投稿七
+（一份 issue、一份 PR、兩個提交，基於上游 `main` `4487f7b`）。⏳ 發不發是對外動作，另拍。
+⚠ ① **在上游不是語義不變**：上游的 `pingora-proxy` 讀上游連接的 `get_write_pending_time()`（`proxy_h1.rs`，`Session::upstream_write_pending_time()`），
+兩個 getter 還是公開 trait 的方法 ⇒ 原樣投不了，可選做法記在投稿七那一節。在本 fork 裡它照樣語義不變（那個 crate 不在 fork 裡）。
+在歸零之前三處都是**要跟著 rebase 的常年成本**：都是小補丁，① 的四處刪除最容易在衝突裡被合掉 —— 那時第一條判據會紅。
 
-### ★ ★ 17. 标题化表补七个名，并公开它（2026-10-14，G162）
+### ★ ★ 17. 標題化表補七個名，並公開它（2026-10-14，G162）
 
-**起因**：§7 M3 底座单变量试验的 A2 —— 响应头保留大小写的那张表（`ResponseHeader::build` 另建的第二个 `HeaderMap`）
-每个响应两次分配，裸 pingora 上界约 −6% 用户指令。枢衡自己构的响应要换 `build_no_case` 而线上头名不变，
-前提是没表时 pingora 写得出同样的大小写；而上游这张表（`pingora-http/src/case_header_name.rs` 的 `titled_header_name_str`，
-12 个名，上游自己留着 `TODO: add more const header here`）里没有枢衡会发的 `ETag` 等几个。owner 2026-10-14 拍（弹窗两次）。
+**起因**：§7 M3 底座單變數試驗的 A2 —— 回應頭保留大小寫的那張表（`ResponseHeader::build` 另建的第二個 `HeaderMap`）
+每個回應兩次分配，裸 pingora 上界約 −6% 使用者指令。樞衡自己構的回應要換 `build_no_case` 而線上頭名不變，
+前提是沒表時 pingora 寫得出同樣的大小寫；而上游這張表（`pingora-http/src/case_header_name.rs` 的 `titled_header_name_str`，
+12 個名，上游自己留著 `TODO: add more const header here`）裡沒有樞衡會發的 `ETag` 等幾個。owner 2026-10-14 拍（彈出視窗兩次）。
 
-#### 改了什么：**两个文件**
+#### 改了什麼：**兩個檔案**
 
-| | 文件 | 改了什么 |
+| | 檔案 | 改了什麼 |
 |---|---|---|
-| ① | `pingora-http/src/case_header_name.rs` | 表里补 `Allow` · `Alt-Svc` · `Content-Range` · `ETag` · `Last-Modified` · `Location` · `Vary`；函数由 `pub(crate)` 改 `pub` |
-| ② | `pingora-http/src/lib.rs` | 在 crate 根再导出它（一行），枢衡用它判「不建表时这个名会不会照原样写出」|
+| ① | `pingora-http/src/case_header_name.rs` | 表裡補 `Allow` · `Alt-Svc` · `Content-Range` · `ETag` · `Last-Modified` · `Location` · `Vary`；函式由 `pub(crate)` 改 `pub` |
+| ② | `pingora-http/src/lib.rs` | 在 crate 根再匯出它（一行），樞衡用它判「不建表時這個名會不會照原樣寫出」|
 
-⚠ ⚠ **这不是「语义不变」那一类（改动 16）**：这张表同时决定**用 `http::header` 常量插入的名**怎么写，有没有大小写表都一样。
-⇒ 压缩层用常量改写的 `ETag`（弱化）与追加的 `Vary`，从小写 `etag:` / `vary:` 变成 `ETag:` / `Vary:`。
-开了 `encode` 的站点上，`Vary` 是只要压缩层认为响应随 `Accept-Encoding` 变就追加（压没压都追加）⇒ 那类站点的大部分响应都看得见。
-owner 10-14 认了这一处（与不压时、与预压缩旁文件、与 nginx 的写法一致）。别的路径上这七个名几乎只出现在响应里：
-h2 / h3 客户端的请求转发到 h1 上游时若带了它们，也从小写变成这里的写法。
+⚠ ⚠ **這不是「語義不變」那一類（改動 16）**：這張表同時決定**用 `http::header` 常數插入的名**怎麼寫，有沒有大小寫表都一樣。
+⇒ 壓縮層用常數改寫的 `ETag`（弱化）與追加的 `Vary`，從小寫 `etag:` / `vary:` 變成 `ETag:` / `Vary:`。
+開了 `encode` 的站台上，`Vary` 是隻要壓縮層認為回應隨 `Accept-Encoding` 變就追加（壓沒壓都追加）⇒ 那類站台的大部分回應都看得見。
+owner 10-14 認了這一處（與不壓時、與預壓縮旁檔案、與 nginx 的寫法一致）。別的路徑上這七個名幾乎只出現在回應裡：
+h2 / h3 用戶端的請求轉發到 h1 上游時若帶了它們，也從小寫變成這裡的寫法。
 
-#### 量了多少（开发机诊断台，计数口径，⛔ 不是性能声明）
+#### 量了多少（開發機診斷臺，計數口徑，⛔ 不是效能宣告）
 
-连同枢衡那一侧（`file_server` 一律、`respond` / 跳转 / 错误页在用户 `header` 指令的名都照原样时不建表）：
-每请求 malloc / free 各 −2（`respond` 与 `file_server`，1 条连接与 200 条连接四格都是）；用户指令 −5% 到 −6%（`file_server` 200 条连接 −9.6%，改前区间宽）。
+連同樞衡那一側（`file_server` 一律、`respond` / 跳轉 / 錯誤頁在使用者 `header` 指令的名都照原樣時不建表）：
+每請求 malloc / free 各 −2（`respond` 與 `file_server`，1 條連接與 200 條連接四格都是）；使用者指令 −5% 到 −6%（`file_server` 200 條連接 −9.6%，改前區間寬）。
 
-#### 守卫
+#### 守衛
 
-| 判据 | 守什么 | 反证（注入写在临时 worktree 里，⛔ 没碰工作树）|
+| 判據 | 守什麼 | 反證（注入寫在臨時 worktree 裡，⛔ 沒碰工作樹）|
 |---|---|---|
-| 本文件的 `枢衡改动17_补进标题化表的名照原样写出` | 七个名照这里写（查表、常量转名、不建表写 h1 三条路）；表外的名照旧小写 | 表里删掉 `ETag` 与 `Vary` ⇒ 红（`None` 对 `Some("ETag")`），同 crate 另外 56 条照绿 |
-| 枢衡的 `tests/files/run.sh` 逐行钉头名（200 / 206 / 416 / 301 / 405）与 `tests/encode/run.sh` 钉 `ETag` / `Vary` 大小写 | rebase 冲掉补的那几行时，线上的样子 | 同一个注入 ⇒ files 红在带 `ETag` 的三条（301 / 405 照绿）、encode 三条全红 |
+| 本檔案的 `枢衡改动17_补进标题化表的名照原样写出` | 七個名照這裡寫（查表、常數轉名、不建表寫 h1 三條路）；表外的名照舊小寫 | 表裡刪掉 `ETag` 與 `Vary` ⇒ 紅（`None` 對 `Some("ETag")`），同 crate 另外 56 條照綠 |
+| 樞衡的 `tests/files/run.sh` 逐行釘頭名（200 / 206 / 416 / 301 / 405）與 `tests/encode/run.sh` 釘 `ETag` / `Vary` 大小寫 | rebase 沖掉補的那幾行時，線上的樣子 | 同一個注入 ⇒ files 紅在帶 `ETag` 的三條（301 / 405 照綠）、encode 三條全紅 |
 
-#### 归零条件
+#### 歸零條件
 
-上游那条 TODO 正是这件事 ⇒ ① 是给上游提 PR 的候选（对外动作，owner 定）；② 上游未必收，收不了就留一行。
-在归零之前是**要跟着 rebase 的常年成本**：表是七行、冲突时最容易被合掉 —— 那时上表两条判据都会红。
+上游那條 TODO 正是這件事 ⇒ ① 是給上游提 PR 的候選（對外動作，owner 定）；② 上游未必收，收不了就留一行。
+在歸零之前是**要跟著 rebase 的常年成本**：表是七行、衝突時最容易被合掉 —— 那時上表兩條判據都會紅。
 
-### ★ ★ 18. 读 h1 请求头时可以不建保留大小写的表（2026-10-14，G163）
+### ★ ★ 18. 讀 h1 請求頭時可以不建保留大小寫的表（2026-10-14，G163）
 
-**起因**：§7 M3 底座单变量试验的 A1 —— 读请求头时另建的那张表（`RequestHeader::build` 的第二个 `HeaderMap`）每条请求两次分配，
-裸 pingora 上界约 −4.5% 用户指令。它只在把请求头**原样转发给 h1 上游**时有用；`respond` / `file_server` 一类终结不读头名的大小写。
-上游 pingora 一律建（`read_request` 写死 `build`）。owner 2026-10-14 拍「按端口开关」（推荐项；另一个选项是一律不建，那会改反代时上游看到的头名）。
+**起因**：§7 M3 底座單變數試驗的 A1 —— 讀請求頭時另建的那張表（`RequestHeader::build` 的第二個 `HeaderMap`）每條請求兩次分配，
+裸 pingora 上界約 −4.5% 使用者指令。它只在把請求頭**原樣轉發給 h1 上游**時有用；`respond` / `file_server` 一類終結不讀頭名的大小寫。
+上游 pingora 一律建（`read_request` 寫死 `build`）。owner 2026-10-14 拍「按連接埠開關」（推薦項；另一個選項是一律不建，那會改反代時上游看到的頭名）。
 
-#### 改了什么：**两个文件，加一条测试**
+#### 改了什麼：**兩個檔案，加一條測試**
 
-| | 文件 | 改了什么 |
+| | 檔案 | 改了什麼 |
 |---|---|---|
-| ① | `pingora-core/src/protocols/http/v1/server.rs` | `HttpSession` 加一格 `preserve_header_case`（缺省 `true`，与上游相同）与它的 setter；`read_request` 按它选 `build` 或 `build_no_case` |
-| ② | `pingora-core/src/protocols/http/server.rs` | `Session::set_preserve_header_case` 转给 h1；h2 / 子请求 / 自定义 no-op（与 `set_keepalive` 同形）|
-| — | `pingora-core/tests/fulcrum_read_request_alloc.rs` | 多一条：关掉时比开着少 2 次分配 |
+| ① | `pingora-core/src/protocols/http/v1/server.rs` | `HttpSession` 加一格 `preserve_header_case`（預設 `true`，與上游相同）與它的 setter；`read_request` 按它選 `build` 或 `build_no_case` |
+| ② | `pingora-core/src/protocols/http/server.rs` | `Session::set_preserve_header_case` 轉給 h1；h2 / 子請求 / 自定義 no-op（與 `set_keepalive` 同形）|
+| — | `pingora-core/tests/fulcrum_read_request_alloc.rs` | 多一條：關掉時比開著少 2 次分配 |
 
-★ **缺省不变** ⇒ 不调 setter 的调用方（含上游自己的全部测试）行为一字不差；这一类与改动 15 一样属「加能力」，G30 刻意让它稀有。
-每条请求的会话都是新建的 ⇒ 调用方要每条设一次；枢衡在 `keepalive::read_request` 的参数里设（编译期逼着调用方表态）。
+★ **預設不變** ⇒ 不調 setter 的呼叫方（含上游自己的全部測試）行為一字不差；這一類與改動 15 一樣屬「加能力」，G30 刻意讓它稀有。
+每條請求的工作階段都是新建的 ⇒ 呼叫方要每條設一次；樞衡在 `keepalive::read_request` 的參數裡設（編譯期逼著呼叫方表態）。
 
-#### 量了多少（开发机诊断台，计数口径，⛔ 不是性能声明）
+#### 量了多少（開發機診斷臺，計數口徑，⛔ 不是效能宣告）
 
-枢衡在没有反代站点的端口上关掉它：`respond` 与 `file_server`、1 / 200 条连接四格每请求 malloc 各 −2，用户指令 −2% 到 −5%；
-反代端口照旧建表，读的是同一条老路。
+樞衡在沒有反代站台的連接埠上關掉它：`respond` 與 `file_server`、1 / 200 條連接四格每請求 malloc 各 −2，使用者指令 −2% 到 −5%；
+反代連接埠照舊建表，讀的是同一條老路。
 
-#### 守卫
+#### 守衛
 
-| 判据 | 守什么 | 反证（注入写在临时 worktree 里，⛔ 没碰工作树）|
+| 判據 | 守什麼 | 反證（注入寫在臨時 worktree 裡，⛔ 沒碰工作樹）|
 |---|---|---|
-| 本 fork `v1/server.rs` 的 `枢衡改动18_关掉保留大小写_名值照旧_写回按缺省写法` | 缺省 / 显式开 / 关三种：名与值照旧可查；开着时有表、写回原样，关掉时没表、写回按标题化表或小写 | setter 被忽略（恒建表）⇒ 红它，并红下一条与枢衡 `keepalive` 的单测 |
-| `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动18_关掉保留大小写少两次分配` | 关掉时恰好少 2 次（同一份请求，开与关各数一次）| 同一个注入 ⇒ 红它，而改动 16 那条照绿 |
+| 本 fork `v1/server.rs` 的 `枢衡改动18_关掉保留大小写_名值照旧_写回按缺省写法` | 預設 / 顯式開 / 關三種：名與值照舊可查；開著時有表、寫回原樣，關掉時沒表、寫回按標題化表或小寫 | setter 被忽略（恆建表）⇒ 紅它，並紅下一條與樞衡 `keepalive` 的單測 |
+| `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动18_关掉保留大小写少两次分配` | 關掉時恰好少 2 次（同一份請求，開與關各數一次）| 同一個注入 ⇒ 紅它，而改動 16 那條照綠 |
 
-#### 归零条件
+#### 歸零條件
 
-要上游接一个「读请求头时不保留大小写」的选项（或把那张表做成按需建）⇒ 是给上游提 PR 的候选（对外动作，owner 定）。
-在那之前是**要跟着 rebase 的常年成本**：一格、一个 setter、一处 `if`，冲突时最容易丢的是那个 `if` —— 上表两条判据都会红。
+要上游接一個「讀請求頭時不保留大小寫」的選項（或把那張表做成按需建）⇒ 是給上游提 PR 的候選（對外動作，owner 定）。
+在那之前是**要跟著 rebase 的常年成本**：一格、一個 setter、一處 `if`，衝突時最容易丟的是那個 `if` —— 上表兩條判據都會紅。
 
-### ★ ★ 19. 写 h1 响应头时少两次分配（2026-10-16，G165）
+### ★ ★ 19. 寫 h1 回應頭時少兩次分配（2026-10-16，G165）
 
-**类别**：与改动 16 同一类 —— 只为性能、对枢衡看得见的行为一个不变（线上字节逐个相同）。
-**起因**：`PLAN.md` §7 M3 记着 `respond` 每请求 18 次 malloc 里有三次在 pingora 写响应头那一步；开发机诊断台的归因
-（`handoff/` 下，⛔ 不入库）把其中两次落在 `prepare_response_header`。owner 2026-10-16 按简报推荐拍（两处都改 · 判据并进现有计数测试二进制 · 投稿材料先备不发）。
+**類別**：與改動 16 同一類 —— 只為效能、對樞衡看得見的行為一個不變（線上位元組逐個相同）。
+**起因**：`PLAN.md` §7 M3 記著 `respond` 每請求 18 次 malloc 裡有三次在 pingora 寫回應頭那一步；開發機診斷臺的歸因
+（`handoff/` 下，⛔ 不入庫）把其中兩次落在 `prepare_response_header`。owner 2026-10-16 按簡報推薦拍（兩處都改 · 判據並進現有計數測試二進位 · 投稿材料先備不發）。
 
-#### 改了什么：**一个文件（改动 16 已计入），判据并进已有的测试文件**
+#### 改了什麼：**一個檔案（改動 16 已計入），判據並進已有的測試檔案**
 
-| | 位置（`src/protocols/http/v1/server.rs`）| 改了什么 | 为什么语义不变 |
+| | 位置（`src/protocols/http/v1/server.rs`）| 改了什麼 | 為什麼語義不變 |
 |---|---|---|---|
-| ① | `prepare_response_header` 里补 `Connection` 那几行 | `"keep-alive"` / `"close"` 改成 `HeaderValue::from_static(…)`；上游那条 `TODO: make these lazy static` 就是这件事 | `&str` 走 `HeaderValue::from_str` → `Bytes::copy_from_slice`，每次拷 5 / 10 字节；`from_static` 不分配。两者都是 `is_sensitive = false`，写出去的字节相同 |
-| ② | `prepare_response_header` 的返回值，与它的两个调用方 | 回传 `BytesMut` 而不是 `freeze` 过的 `Bytes`；proxy task 那条路（`send_header_task` 要 `Bytes`、会存起来）在调用处自己 `freeze` | 缓冲按 4 KiB 开、头只有几百字节 ⇒ 长度 ≠ 容量 ⇒ `freeze` 走 `Vec → Bytes` 要另分配一块 `Shared`（bytes 1.12.1）。直写那条路只 `write_all(&buf)` 借用、用完就丢 ⇒ 那块是白分配的。同一份字节，只是不冻结 |
+| ① | `prepare_response_header` 裡補 `Connection` 那幾行 | `"keep-alive"` / `"close"` 改成 `HeaderValue::from_static(…)`；上游那條 `TODO: make these lazy static` 就是這件事 | `&str` 走 `HeaderValue::from_str` → `Bytes::copy_from_slice`，每次拷 5 / 10 位元組；`from_static` 不分配。兩者都是 `is_sensitive = false`，寫出去的位元組相同 |
+| ② | `prepare_response_header` 的回傳值，與它的兩個呼叫方 | 回傳 `BytesMut` 而不是 `freeze` 過的 `Bytes`；proxy task 那條路（`send_header_task` 要 `Bytes`、會存起來）在呼叫處自己 `freeze` | 緩衝按 4 KiB 開、頭只有幾百位元組 ⇒ 長度 ≠ 容量 ⇒ `freeze` 走 `Vec → Bytes` 要另分配一塊 `Shared`（bytes 1.12.1）。直寫那條路只 `write_all(&buf)` 借用、用完就丟 ⇒ 那塊是白分配的。同一份位元組，只是不凍結 |
 
-⚠ 枢衡的 h1 不走 proxy task（`proxy_tasks_enabled` 缺省 false，`crates/` 里没有启用的）；那条路照旧 `freeze` 一次，行为不变。
-文件数不变：两处都在改动 16 已计入的 `v1/server.rs`，判据在改动 16 已计入的 `tests/fulcrum_read_request_alloc.rs`（2026-10-16 用下文命令对 `0.9.0` 实测仍是 20 个）。
+⚠ 樞衡的 h1 不走 proxy task（`proxy_tasks_enabled` 預設 false，`crates/` 裡沒有啟用的）；那條路照舊 `freeze` 一次，行為不變。
+檔案數不變：兩處都在改動 16 已計入的 `v1/server.rs`，判據在改動 16 已計入的 `tests/fulcrum_read_request_alloc.rs`（2026-10-16 用下文命令對 `0.9.0` 實測仍是 20 個）。
 
-#### 量了多少（开发机诊断台，计数口径，⛔ 不是性能声明）
+#### 量了多少（開發機診斷臺，計數口徑，⛔ 不是效能宣告）
 
-改前 `9b43f01`、改后同一棵树加本改动，同一个容器同一个目标卷编：每请求 malloc / free 各 −2（`respond` 18 → 16、`file_server` 21 → 19，1 与 200 条连接四格都是）；
-用户指令 1 条连接 `respond` −1.9%、`file_server` −2.5%，200 条连接时在三轮区间内分不出；
-32 种请求（含四条续连接）除 `Date` 外逐字节相同（指标端点正文是活计数，只比头），比较器负对照（G162 之前的二进制）红 9 条。
+改前 `9b43f01`、改後同一棵樹加本改動，同一個容器同一個目標卷編：每請求 malloc / free 各 −2（`respond` 18 → 16、`file_server` 21 → 19，1 與 200 條連接四格都是）；
+使用者指令 1 條連接 `respond` −1.9%、`file_server` −2.5%，200 條連接時在三輪區間內分不出；
+32 種請求（含四條續連接）除 `Date` 外逐位元組相同（指標端點正文是活計數，只比頭），比較器負對照（G162 之前的二進位）紅 9 條。
 
-#### 守卫（都在 `tests/fulcrum_read_request_alloc.rs`，`tests/vendor/run.sh` 照跑）
+#### 守衛（都在 `tests/fulcrum_read_request_alloc.rs`，`tests/vendor/run.sh` 照跑）
 
-| 判据 | 守什么 | 反证（注入写在临时 worktree 里，⛔ 没碰工作树；每次都有 `Compiling pingora-core`）|
+| 判據 | 守什麼 | 反證（注入寫在臨時 worktree 裡，⛔ 沒碰工作樹；每次都有 `Compiling pingora-core`）|
 |---|---|---|
-| `枢衡改动19_写响应头不再拷连接头的值也不再冻结缓冲` | 读完一条请求后 `write_response_header` 一共分配 **1** 次（只剩序列化用的那块暂存缓冲；上游原样是 3 次，改前在本 fork 上实测 3）；`keep-alive` 与 `close` 两种都数。连接用预留了容量的 `Cursor<Vec<u8>>`，写的时候连接自己不分配 | ① 换回 `&str` ⇒ **只红它**「分配了 2 次（期望 1）」；② 换回 `freeze` ⇒ **只红它**，同样是 2 |
-| `枢衡改动19_写响应头的字节照旧` | 续与不续各写一次：除 `Date` 的值（核它是 HTTP 日期）外逐字节等于 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。本 fork 8 个 crate 里写响应头的测试几乎都关了 `update_resp_headers`，没有一条钉这两行（上游只在没进 fork 的 `pingora-proxy` 集成测试 `test_basic` / `test_upstream` 里经 OpenResty 查 `Connection` 的值）| 值写成 `Keep-Alive` ⇒ **只红它**（回归网里上游自己的测试没有一条跟着红 —— 正是要补它的理由）|
+| `枢衡改动19_写响应头不再拷连接头的值也不再冻结缓冲` | 讀完一條請求後 `write_response_header` 一共分配 **1** 次（只剩序列化用的那塊暫存緩衝；上游原樣是 3 次，改前在本 fork 上實測 3）；`keep-alive` 與 `close` 兩種都數。連接用預留了容量的 `Cursor<Vec<u8>>`，寫的時候連接自己不分配 | ① 換回 `&str` ⇒ **只紅它**「分配了 2 次（期望 1）」；② 換回 `freeze` ⇒ **只紅它**，同樣是 2 |
+| `枢衡改动19_写响应头的字节照旧` | 續與不續各寫一次：除 `Date` 的值（核它是 HTTP 日期）外逐位元組等於 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。本 fork 8 個 crate 裡寫回應頭的測試幾乎都關了 `update_resp_headers`，沒有一條釘這兩行（上游只在沒進 fork 的 `pingora-proxy` 整合測試 `test_basic` / `test_upstream` 裡經 OpenResty 查 `Connection` 的值）| 值寫成 `Keep-Alive` ⇒ **只紅它**（迴歸網裡上游自己的測試沒有一條跟著紅 —— 正是要補它的理由）|
 
-proxy task 那处漏了 `freeze` ⇒ 编不过（E0308，类型逼着），不需要测试守。
-⚠ `Date` 是线程本地缓存、每秒换一次，换的那一秒里第一次写会多分配几次 ⇒ 分配那条先热身、再取三次里最少的。
-⚠ 与改动 16 那条一样，数的是**整个**调用 ⇒ rebase 后上游自己增减分配也会红：先核是谁动的，再改期望值。
+proxy task 那處漏了 `freeze` ⇒ 編不過（E0308，類型逼著），不需要測試守。
+⚠ `Date` 是執行緒本機快取、每秒換一次，換的那一秒裡第一次寫會多分配幾次 ⇒ 分配那條先熱身、再取三次裡最少的。
+⚠ 與改動 16 那條一樣，數的是**整個**呼叫 ⇒ rebase 後上遊自己增減分配也會紅：先核是誰動的，再改期望值。
 
-#### 归零条件
+#### 歸零條件
 
-① 是上游自己的 TODO、② 动的是私有函数 ⇒ 两处在上游也语义不变，一起做成一份投稿（[`upstream-pr/`](../../upstream-pr/README.md) 投稿八，基于上游 `main` `4487f7b`；⏳ 材料已备、未发，发不发另拍）。
-上游 `main`（2026-10-16 克隆）这两处与 0.9.0 一字不差。在归零之前是**要跟着 rebase 的常年成本**：两处都小，冲突时最容易丢的是调用处那个 `freeze` —— 丢了编不过；另两处被合掉时分配那条会红。
+① 是上游自己的 TODO、② 動的是私有函式 ⇒ 兩處在上游也語義不變，一起做成一份投稿（[`upstream-pr/`](../../upstream-pr/README.md) 投稿八，基於上游 `main` `4487f7b`；⏳ 材料已備、未發，發不發另拍）。
+上游 `main`（2026-10-16 克隆）這兩處與 0.9.0 一字不差。在歸零之前是**要跟著 rebase 的常年成本**：兩處都小，衝突時最容易丟的是呼叫處那個 `freeze` —— 丟了編不過；另兩處被合掉時分配那條會紅。
 
-### ★ 20. 两条上游 h2 测试改成「h2 在 codec 层就拒掉」（2026-10-16，h2 0.4.20）
+### ★ 20. 兩條上游 h2 測試改成「h2 在 codec 層就拒掉」（2026-10-16，h2 0.4.20）
 
-**类别**：改测试、不改产品代码（与改动 7 同一类）。
-**起因**：2026-10-16 的依赖追新（`dep-check.py --apply`，37 项，为修 rustls 四条公告）把 `h2` 0.4.19 → 0.4.20。
-0.4.20 的 `recv_headers` 自己对**值不同的重复 `content-length`** 发 `PROTOCOL_ERROR` 重置流（CHANGELOG「Fix rejecting duplicate `content-length` headers with different values」；0.4.19 只看第一个值）
-⇒ 这样的请求到不了 `accept()`，pingora 自己那道重复 CL 校验与每连接坏流预算都碰不到它。上游两条测试断言的正是 pingora 那一层 ⇒ 回归网红两条、定向重跑仍红。
-上游 `main`（2026-10-16 读）这两条与 0.9.0 一字不差；投稿七、八在上游 `main` 上跑全 workspace 时它们两侧都红、当时没查根因（[`upstream-pr/`](../../upstream-pr/README.md)）——
-就是这一条：同日在上游 `main` `4487f7b` 上实测，h2 0.4.20 两条红、换 0.4.19 两条绿；投稿八那两份现生成的锁都是 0.4.20（投稿七的锁没留下，按日期推断同样是）。
-上游已有人在 PR #816 的评论里提过（2026-10-06），没有 issue、没有修它的 PR。
-owner 2026-10-16 拍（弹窗）：采 0.4.20、改测试（另两个选项：h2 暂留 0.4.19；整批撤回、只升 rustls）。
+**類別**：改測試、不改產品程式碼（與改動 7 同一類）。
+**起因**：2026-10-16 的依賴追新（`dep-check.py --apply`，37 項，為修 rustls 四條公告）把 `h2` 0.4.19 → 0.4.20。
+0.4.20 的 `recv_headers` 自己對**值不同的重複 `content-length`** 發 `PROTOCOL_ERROR` 重置流（CHANGELOG「Fix rejecting duplicate `content-length` headers with different values」；0.4.19 只看第一個值）
+⇒ 這樣的請求到不了 `accept()`，pingora 自己那道重複 CL 檢核與每連接壞流預算都碰不到它。上游兩條測試斷言的正是 pingora 那一層 ⇒ 迴歸網紅兩條、定向重跑仍紅。
+上游 `main`（2026-10-16 讀）這兩條與 0.9.0 一字不差；投稿七、八在上游 `main` 上跑全 workspace 時它們兩側都紅、當時沒查根因（[`upstream-pr/`](../../upstream-pr/README.md)）——
+就是這一條：同日在上游 `main` `4487f7b` 上實測，h2 0.4.20 兩條紅、換 0.4.19 兩條綠；投稿八那兩份現生成的鎖都是 0.4.20（投稿七的鎖沒留下，按日期推斷同樣是）。
+上游已有人在 PR #816 的評論裡提過（2026-10-06），沒有 issue、沒有修它的 PR。
+owner 2026-10-16 拍（彈出視窗）：採 0.4.20、改測試（另兩個選項：h2 暫留 0.4.19；整批撤回、只升 rustls）。
 
-#### 改了什么：**一个文件**（`pingora-core/src/protocols/http/v2/server.rs`，此前与 0.9.0 逐字相同 ⇒ fork 文件数 20 → 21）
+#### 改了什麼：**一個檔案**（`pingora-core/src/protocols/http/v2/server.rs`，此前與 0.9.0 逐字相同 ⇒ fork 檔案數 20 → 21）
 
-| 上游测试 | 上游断言 | 改成 |
+| 上游測試 | 上游斷言 | 改成 |
 |---|---|---|
-| `test_req_conflicting_content_length_rejected` | 服务端拿到 `Some(H2Accept::Rejected)`，下一次 `from_h2_conn` 才是 `None` | 第一次 `from_h2_conn`（1 s 超时）就是 `None` —— 流在 codec 里被重置、pingora 没见过它；客户端照旧断言 `PROTOCOL_ERROR` |
-| `test_req_malformed_stream_budget_exhausted` → **改名** `test_req_conflicting_content_length_not_charged_to_malformed_budget` | 预算 31 时这条请求把预算耗尽（`H2Error`）| 预算 31 时返回 `None`、预算仍是 31 |
+| `test_req_conflicting_content_length_rejected` | 伺服器端拿到 `Some(H2Accept::Rejected)`，下一次 `from_h2_conn` 才是 `None` | 第一次 `from_h2_conn`（1 s 超時）就是 `None` —— 流在 codec 裡被重置、pingora 沒見過它；用戶端照舊斷言 `PROTOCOL_ERROR` |
+| `test_req_malformed_stream_budget_exhausted` → **改名** `test_req_conflicting_content_length_not_charged_to_malformed_budget` | 預算 31 時這條請求把預算耗盡（`H2Error`）| 預算 31 時回傳 `None`、預算仍是 31 |
 
-线上行为：客户端看到的仍是 `RST_STREAM PROTOCOL_ERROR`，只是发的人从 pingora 换成了 h2。
-⚠ 唯一的差别是计数：这类流不再计入 pingora 每连接 32 条的坏流预算，改计入 h2 自己的本地错误重置上限（`DEFAULT_LOCAL_RESET_COUNT_MAX` = 1024）。
-预算耗尽本身仍由上游另两条测试守（`test_authority_mismatch_exhausts_malformed_stream_budget`、`test_forbidden_target_exhausts_malformed_stream_budget`），不靠本节这条。
+線上行為：用戶端看到的仍是 `RST_STREAM PROTOCOL_ERROR`，只是發的人從 pingora 換成了 h2。
+⚠ 唯一的差別是計數：這類流不再計入 pingora 每連接 32 條的壞流預算，改計入 h2 自己的本機錯誤重置上限（`DEFAULT_LOCAL_RESET_COUNT_MAX` = 1024）。
+預算耗盡本身仍由上游另兩條測試守（`test_authority_mismatch_exhausts_malformed_stream_budget`、`test_forbidden_target_exhausts_malformed_stream_budget`），不靠本節這條。
 
-#### 反证（临时副本，⛔ 没碰工作树；每次都重编了 `pingora-core`）
+#### 反證（臨時副本，⛔ 沒碰工作樹；每次都重編了 `pingora-core`）
 
-副本里把 h2 回退到 0.4.19、只跑这两条 ⇒ **两条都红**：「malformed request must not reach Pingora's acceptance checks」与「malformed request was charged to Pingora's budget」；
-工作树（0.4.20）里两条都绿 ⇒ 它们钉的是 h2 这一处行为，h2 哪天退回去会当场红。
+副本里把 h2 退回到 0.4.19、只跑這兩條 ⇒ **兩條都紅**：「malformed request must not reach Pingora's acceptance checks」與「malformed request was charged to Pingora's budget」；
+工作樹（0.4.20）裡兩條都綠 ⇒ 它們釘的是 h2 這一處行為，h2 哪天退回去會當場紅。
 
-#### 归零条件
+#### 歸零條件
 
-上游迟早要为 h2 0.4.20 改这两条；rebase 时照上游的改法、删掉本节。在那之前冲突只会落在这两条测试上（产品代码一行没动）。
-⏳ 投稿材料已备、未发：[`upstream-pr/`](../../upstream-pr/README.md) 投稿九（同样两条测试，另把上游 workspace 的 `h2` 下界抬到 `>=0.4.20`；fork 这边没抬）。
+上游遲早要為 h2 0.4.20 改這兩條；rebase 時照上游的改法、刪掉本節。在那之前衝突只會落在這兩條測試上（產品程式碼一行沒動）。
+⏳ 投稿材料已備、未發：[`upstream-pr/`](../../upstream-pr/README.md) 投稿九（同樣兩條測試，另把上游 workspace 的 `h2` 下界抬到 `>=0.4.20`；fork 這邊沒抬）。
 
-### ★ 21. `serde_yaml` 换成 `serde-saphyr`（2026-10-16）
+### ★ 21. `serde_yaml` 換成 `serde-saphyr`（2026-10-16）
 
-**类别**：换依赖（与改动 3 `derivative` → `educe` 同一类）。
-**起因**：RUSTSEC-2024-0449 —— `serde_yaml`（`0.9.34+deprecated`）底下的 `unsafe-libyaml` 失维（仓库 2024-03 归档，libyaml 的 c2rust 机器翻译），无修复版；
-公告 2026-10-12 改过之后才出现在扫描里，而且它在产品的**编译图**里（`pingora-core` 的非可选依赖）。
-owner 2026-10-16 拍（弹窗），★ **推翻了 agent 推荐项**：推荐的是登记 `ACCEPTED`（产品从不解析 YAML：走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 里构、`opt.conf` 被忽略；
-只有两个 spike 经 `Server::new` 解析常量 `"---\nversion: 1"`），另一个选项是照上游 issue #779 把 `serde_yaml` 做成可选 feature。
+**類別**：換依賴（與改動 3 `derivative` → `educe` 同一類）。
+**起因**：RUSTSEC-2024-0449 —— `serde_yaml`（`0.9.34+deprecated`）底下的 `unsafe-libyaml` 失維（儲存庫 2024-03 歸檔，libyaml 的 c2rust 機器翻譯），無修復版；
+公告 2026-10-12 改過之後才出現在掃描裡，而且它在產品的**編譯圖**裡（`pingora-core` 的非可選依賴）。
+owner 2026-10-16 拍（彈出視窗），★ **推翻了 agent 推薦項**：推薦的是登記 `ACCEPTED`（產品從不解析 YAML：走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 裡構、`opt.conf` 被忽略；
+只有兩個 spike 經 `Server::new` 解析常數 `"---\nversion: 1"`），另一個選項是照上游 issue #779 把 `serde_yaml` 做成可選 feature。
 
-#### 改了什么：**两个文件**（`Cargo.toml` 已计入 ⇒ fork 文件数 21 → 22）
+#### 改了什麼：**兩個檔案**（`Cargo.toml` 已計入 ⇒ fork 檔案數 21 → 22）
 
-| | 文件 | 改了什么 |
+| | 檔案 | 改了什麼 |
 |---|---|---|
 | ① | `pingora-core/Cargo.toml` | `serde_yaml = "0.9"` → `serde-saphyr = { version = "2", default-features = false, features = ["deserialize", "serialize"] }`（不要 `comments`）|
-| ② | `pingora-core/src/server/configuration/mod.rs` | `from_yaml` / `to_yaml` 两处换成 `serde_saphyr::from_str` / `to_string`；测试 `test_working_directory_deserializes_from_yaml_string` 原用 `serde_yaml::to_value` 取树，`serde-saphyr` 没有 `Value` ⇒ 改成核那一行 + 往返一次 |
+| ② | `pingora-core/src/server/configuration/mod.rs` | `from_yaml` / `to_yaml` 兩處換成 `serde_saphyr::from_str` / `to_string`；測試 `test_working_directory_deserializes_from_yaml_string` 原用 `serde_yaml::to_value` 取樹，`serde-saphyr` 沒有 `Value` ⇒ 改成核那一行 + 往返一次 |
 
-两把锁：`serde_yaml` / `unsafe-libyaml` 都走了（根锁连带少了 `ryu`）；新进 `serde-saphyr` 2.0.0 · `granit-parser` 2.0.0 · `annotate-snippets` · `encoding_rs` · `encoding_rs_io` ·
-`arraydeque` · `core_detect` · `multiversion_no_op` · `nohash-hasher` · `unicode-width`（vendor 另有 `simdutf8`，根锁里早有），**全部过 24 小时怀疑期**，现有包一个版本都没动。
-⚠ 这些包**进了产品的编译图**（202 → 210），而产品照旧一行 YAML 都不解析 —— 这是换掉 `unsafe-libyaml` 的代价，写在明处。
-⚠ 看得到的行为差别：序列化时列表里的字符串带引号（`- "1.2.3.4"`），往返不变；两个解析器在边角 YAML 上的差异**没有逐项比**。
-对枢衡无影响（不读 YAML 配置），只影响直接用 pingora YAML 配置的人。
+兩把鎖：`serde_yaml` / `unsafe-libyaml` 都走了（根鎖連帶少了 `ryu`）；新進 `serde-saphyr` 2.0.0 · `granit-parser` 2.0.0 · `annotate-snippets` · `encoding_rs` · `encoding_rs_io` ·
+`arraydeque` · `core_detect` · `multiversion_no_op` · `nohash-hasher` · `unicode-width`（vendor 另有 `simdutf8`，根鎖裡早有），**全部過 24 小時懷疑期**，現有包一個版本都沒動。
+⚠ 這些包**進了產品的編譯圖**（202 → 210），而產品照舊一行 YAML 都不解析 —— 這是換掉 `unsafe-libyaml` 的代價，寫在明處。
+⚠ 看得到的行為差別：序列化時列表裡的字串帶引號（`- "1.2.3.4"`），往返不變；兩個解析器在邊角 YAML 上的差異**沒有逐項比**。
+對樞衡無影響（不讀 YAML 設定），隻影響直接用 pingora YAML 設定的人。
 
-#### 判据
+#### 判據
 
-`pingora-core` 的 `server::configuration` 全部 14 条测试照跑照绿（含读真 YAML 文件的 `test_load_file`、拿常量构默认值的 `test_default`）；两个 spike 的 `Server::new` 由 M0 / M1 场景覆盖。
+`pingora-core` 的 `server::configuration` 全部 14 條測試照跑照綠（含讀真 YAML 檔案的 `test_load_file`、拿常數構預設值的 `test_default`）；兩個 spike 的 `Server::new` 由 M0 / M1 場景覆蓋。
 
-#### 归零条件
+#### 歸零條件
 
-上游 issue #779（「Make serde_yaml optional or configurable」，2025-12 起 open）落地，或上游自己换掉 `serde_yaml` ⇒ rebase 时照上游、删掉本节。
-⛔ 原样投给上游不合适：`serde-saphyr` 2 要 Rust 1.89，上游 MSRV 是 1.85。在那之前是**要跟着 rebase 的常年成本**：一行清单、两处调用、一条测试。
+上游 issue #779（「Make serde_yaml optional or configurable」，2025-12 起 open）完成實作，或上游自己換掉 `serde_yaml` ⇒ rebase 時照上游、刪掉本節。
+⛔ 原樣投給上游不合適：`serde-saphyr` 2 要 Rust 1.89，上游 MSRV 是 1.85。在那之前是**要跟著 rebase 的常年成本**：一行清單、兩處呼叫、一條測試。
 
-### 9. 没有动的一个：`daemonize`
+### 9. 沒有動的一個：`daemonize`
 
-> ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 随 daemonize
-> 一起离开两把锁，`tools/supply-audit.py` 里那条豁免已删。下文是当时的权衡，留作出处。
+> ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 換成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 隨 daemonize
+> 一起離開兩把鎖，`tools/supply-audit.py` 裡那條豁免已刪。下文是當時的權衡，留作出處。
 
-★ **`daemonize` 原样保留，这是一个经过权衡的决定，不是遗漏。**
+★ **`daemonize` 原樣保留，這是一個經過權衡的決定，不是遺漏。**
 
-它的问题同样是**失维**（RUSTSEC-2025-0069）而非陈旧——**没有更新的版本可升**。但与 `derivative` 不同，它做的是**特权丢弃**（`setuid` / `setgid` / `initgroups` / `chown_pid_file`），换掉它的三条路都不划算：
+它的問題同樣是**失維**（RUSTSEC-2025-0069）而非陳舊——**沒有更新的版本可升**。但與 `derivative` 不同，它做的是**特權丟棄**（`setuid` / `setgid` / `initgroups` / `chown_pid_file`），換掉它的三條路都不划算：
 
-| 路 | 为什么不走 |
+| 路 | 為什麼不走 |
 |---|---|
-| 手写替代 | ★ 特权丢弃的顺序错一步就是真实提权漏洞。与项目安全基线「不手写安全关键原语」的精神直接冲突 |
-| 换 `daemonize-me` / `daemonize2` | 维护中，但下载量分别只有 `daemonize` 的 1/50 与 1/1700。**在特权丢弃这条路上，把久经使用但失维的换成新鲜但少人跑的，不是明确的安全改善** |
-| 在 fork 里 vendor 它 | 只是把同一段代码换个位置，OSV 不再报是因为它不再是 registry 包——**那是骗扫描器，不是修问题** |
+| 手寫替代 | ★ 特權丟棄的順序錯一步就是真實提權漏洞。與專案安全基線「不手寫安全關鍵原語」的精神直接衝突 |
+| 換 `daemonize-me` / `daemonize2` | 維護中，但下載量分別只有 `daemonize` 的 1/50 與 1/1700。**在特權丟棄這條路上，把久經使用但失維的換成新鮮但少人跑的，不是明確的安全改善** |
+| 在 fork 裡 vendor 它 | 只是把同一段程式碼換個位置，OSV 不再報是因為它不再是 registry 包——**那是騙掃描器，不是修問題** |
 
-★ ★ **真正的出路是架构层面的**：G13 定的分发方式是 **systemd**，而 systemd 下的现代做法是 `Type=simple` / `Type=notify` **前台运行**，由 `User=` / `Group=` 做特权丢弃、日志走 journal。那样 `conf.daemon` 恒为 `false`，`daemonize()` **整条路径都是死代码**，依赖可以直接删掉——**并且特权丢弃交给了比任何 crate 都更经得起审计的 systemd**。
+★ ★ **真正的出路是架構層面的**：G13 定的散布方式是 **systemd**，而 systemd 下的現代做法是 `Type=simple` / `Type=notify` **前台執行**，由 `User=` / `Group=` 做特權丟棄、紀錄走 journal。那樣 `conf.daemon` 恆為 `false`，`daemonize()` **整條路徑都是死程式碼**，依賴可以直接刪掉——**並且特權丟棄交給了比任何 crate 都更經得起稽核的 systemd**。
 
-但这取决于「Pingora 的零停机升级在前台模式下怎么做」，那是 **M1 的设计问题**（与 D5 / D6 相邻），不是这次 fork 该顺手拍板的。当初登记为 **D12** —— ⚠ 那一条已经结案，不在 `PLAN.md` §11 里了：进程模型由 **G31** 定（`Type=notify` 前台运行）并经 **G37** 修订（`ExitType=cgroup`，不交接 MainPID），而 `daemonize` 这个依赖**是被权衡后保留的**（理由见 [`supply-chain.md`](../../docs/platform/supply-chain.md)）。
+但這取決於「Pingora 的零停機升級在前台模式下怎麼做」，那是 **M1 的設計問題**（與 D5 / D6 相鄰），不是這次 fork 該順手拍板的。當初登記為 **D12** —— ⚠ 那一條已經結案，不在 `PLAN.md` §11 裡了：處理程序模型由 **G31** 定（`Type=notify` 前台執行）並經 **G37** 修訂（`ExitType=cgroup`，不交接 MainPID），而 `daemonize` 這個依賴**是被權衡後保留的**（理由見 [`supply-chain.md`](../../docs/platform/supply-chain.md)）。
 
-★ **在那之前，这条公告是已知且已接受的**：它是 informational（失维），**没有 CVE**。
+★ **在那之前，這條公告是已知且已接受的**：它是 informational（失維），**沒有 CVE**。
 
-## 效果（2026-08-12 实测）
+## 效果（2026-08-12 實測）
 
-| | fork 前 | fork 后 |
+| | fork 前 | fork 後 |
 |---|---|---|
-| 锁定包总数 | 176 | **162** |
-| 陈旧包 | 44 | **17**（排除非 Linux 目标后 **12**）|
+| 鎖定包總數 | 176 | **162** |
+| 陳舊包 | 44 | **17**（排除非 Linux 目標後 **12**）|
 | 安全公告 | 4 | ★ **1** |
 | 其中真漏洞 | 2（`lru` UAF、`protobuf` DoS）| ★ ★ **0** |
 
-**只剩 `daemonize` 一条**（失维、无 CVE、无可升版本），理由见上一节。
+**只剩 `daemonize` 一條**（失維、無 CVE、無可升版本），理由見上一節。
 
-### 剩下 12 项为什么升不动——★ 已逐条查过绑定约束
+### 剩下 12 項為什麼升不動——★ 已逐條查過綁定約束
 
-**其中 2 项根本不参与编译**（`bitflags 1.3.2`、`miniz_oxide 0.8.9` 只存在于其他 target/feature 的解析结果里）。
+**其中 2 項根本不參與編譯**（`bitflags 1.3.2`、`miniz_oxide 0.8.9` 只存在於其他 target/feature 的解析結果裡）。
 
-★ **真正在编译的 10 项，全部被「已经是最新版」的第三方 crate 卡住**——也就是说**不是我们落后，是生态链上游还没采纳新大版本**：
+★ **真正在編譯的 10 項，全部被「已經是最新版」的第三方 crate 卡住**——也就是說**不是我們落後，是生態鏈上游還沒采納新大版本**：
 
-| 陈旧包 | 卡它的是 | 那个卡它的包是不是最新？ |
+| 陳舊包 | 卡它的是 | 那個卡它的包是不是最新？ |
 |---|---|---|
 | `allocator-api2` 0.2.21 | `hashbrown 0.17.1` 要 `^0.2.9` | ★ **是最新** |
 | `base64` 0.22.1 | `sfv 0.15.0` 要 `^0.22.1` | ★ **是最新** |
@@ -1188,26 +1188,26 @@ owner 2026-10-16 拍（弹窗），★ **推翻了 agent 推荐项**：推荐的
 | `thiserror` / `thiserror-impl` 1.0.69 | `protobuf 3.7.2` 要 `^1.0.30` | ★ **是最新** |
 | `getrandom` 0.3.4 | `ahash 0.8.12` 要 `^0.3.1` | ★ **是最新** |
 | `syn` 2.0.119 | `strum_macros 0.28.0` 等要 `^2.0` | ★ **是最新** |
-| `hashbrown` 0.15.5 · `foldhash` 0.1.5 | ★ **`petgraph 0.8.3` 要 `^0.15.0`**（`indexmap` 与 `lru` 都已要 `^0.17`）| ★ **是最新** |
+| `hashbrown` 0.15.5 · `foldhash` 0.1.5 | ★ **`petgraph 0.8.3` 要 `^0.15.0`**（`indexmap` 與 `lru` 都已要 `^0.17`）| ★ **是最新** |
 
-★ ★ **结论：这 10 项不可能靠我们这侧的任何操作升上去**——除非再去 fork `brotli` / `sfv` / `hashbrown` / `protobuf` / `ahash` / `petgraph` 六七个包，而这一层**已经没有任何安全公告**，纯粹是版本号。**性价比为负，明确不做。**
+★ ★ **結論：這 10 項不可能靠我們這側的任何操作升上去**——除非再去 fork `brotli` / `sfv` / `hashbrown` / `protobuf` / `ahash` / `petgraph` 六七個包，而這一層**已經沒有任何安全公告**，純粹是版本號。**性價比為負，明確不做。**
 
-## ★ 迁移完整性（2026-08-13 审计）
+## ★ 遷移完整性（2026-08-13 稽核）
 
-`nix` 那条真回归暴露的问题是「迁移只做了编译器逼着做的那一半」。补完之后**逐条查过还剩什么没做**，方法与结论如下。
+`nix` 那條真迴歸暴露的問題是「遷移只做了編譯器逼著做的那一半」。補完之後**逐條查過還剩什麼沒做**，方法與結論如下。
 
-### 怎么核对（可随时重跑）
+### 怎麼核對（可隨時重跑）
 
 ```bash
-# 1) fork 相对官方原版到底改了哪些文件
-#    ★ ★ 必须**逐个 vendored crate 都比**，外加 workspace 清单。
-#    此前这里只 diff 了 pingora-core 一个目录，于是 pingora-runtime 的两个文件
-#    （它自己的结论段里明明列着）与 workspace Cargo.toml 结构上都看不见。
-#    「改了哪些文件」这种问题，判据的覆盖面必须等于被问的范围。
-#    ★ 2026-09-24 更正：这里原先只列了 7 个 crate，**漏了 G104 加回来的 pingora-boringssl** ——
-#      正是上面那句话说的形状，于是 §11 的改动文件结构上看不见。现在是 8 个。
-#    ⚠ 本机全局 core.autocrlf=true：在 Windows 上导出上游树必须 `-c core.autocrlf=false`，
-#      否则导出的是 CRLF，每个文件都会被比成「有改动」。
+# 1) fork 相對官方原版到底改了哪些檔案
+#    ★ ★ 必須**逐個 vendored crate 都比**，外加 workspace 清單。
+#    此前這裡只 diff 了 pingora-core 一個目錄，於是 pingora-runtime 的兩個檔案
+#    （它自己的結論段裡明明列著）與 workspace Cargo.toml 結構上都看不見。
+#    「改了哪些檔案」這種問題，判據的覆蓋面必須等於被問的範圍。
+#    ★ 2026-09-24 更正：這裡原先只列了 7 個 crate，**漏了 G104 加回來的 pingora-boringssl** ——
+#      正是上面那句話說的形狀，於是 §11 的改動檔案結構上看不見。現在是 8 個。
+#    ⚠ 本機全域 core.autocrlf=true：在 Windows 上匯出上游樹必須 `-c core.autocrlf=false`，
+#      否則匯出的是 CRLF，每個檔案都會被比成「有改動」。
 git clone --depth 1 --branch 0.9.0 https://github.com/cloudflare/pingora /tmp/stock   # 702f690
 for c in pingora-core pingora-error pingora-http pingora-pool \
          pingora-runtime pingora-timeout pingora-rustls pingora-boringssl; do
@@ -1215,107 +1215,107 @@ for c in pingora-core pingora-error pingora-http pingora-pool \
 done
 git --no-pager diff --no-index --stat /tmp/stock/Cargo.toml /w/vendor/pingora/Cargo.toml
 
-# 2) 有上游参照物的那条，逐行比 nix API 的使用
+# 2) 有上游參照物的那條，逐行比 nix API 的使用
 git -C /tmp/stock fetch --depth 1 origin main
 git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 ```
 
-### 结论
+### 結論
 
-> ★ **2026-10-16（改动 21）：22 个文件** —— 改动 20 那 21 个，加 `pingora-core` 的 `src/server/configuration/mod.rs`
-> （改前它与 `0.9.0` 逐字相同；`pingora-core/Cargo.toml` 早已计入）。同日对 vendor 跑 `cargo fmt` 只重排了改动 19 与改动 6 自己写的三处（已计入的文件），文件数不变。
+> ★ **2026-10-16（改動 21）：22 個檔案** —— 改動 20 那 21 個，加 `pingora-core` 的 `src/server/configuration/mod.rs`
+> （改前它與 `0.9.0` 逐字相同；`pingora-core/Cargo.toml` 早已計入）。同日對 vendor 跑 `cargo fmt` 只重排了改動 19 與改動 6 自己寫的三處（已計入的檔案），檔案數不變。
 >
-> ★ **2026-10-16（改动 20）：21 个文件** —— 改动 19 那 20 个，加 `pingora-core` 的 `src/protocols/http/v2/server.rs`
-> （改前它与 `0.9.0` 逐字相同：拿 GitHub 上 tag `0.9.0` 的原文件比，0 行差异；⚠ 没有重跑上面那整条命令）。
+> ★ **2026-10-16（改動 20）：21 個檔案** —— 改動 19 那 20 個，加 `pingora-core` 的 `src/protocols/http/v2/server.rs`
+> （改前它與 `0.9.0` 逐字相同：拿 GitHub 上 tag `0.9.0` 的原檔案比，0 行差異；⚠ 沒有重跑上面那整條命令）。
 >
-> ★ **2026-10-16（改动 19）：仍是 20 个文件** —— 改动 19 两处都落在已计入的 `protocols/http/v1/server.rs`，
-> 判据在已计入的 `tests/fulcrum_read_request_alloc.rs`（同一条命令对 `0.9.0` 实测，`702f690`）。
+> ★ **2026-10-16（改動 19）：仍是 20 個檔案** —— 改動 19 兩處都落在已計入的 `protocols/http/v1/server.rs`，
+> 判據在已計入的 `tests/fulcrum_read_request_alloc.rs`（同一條命令對 `0.9.0` 實測，`702f690`）。
 >
-> ★ **2026-10-14（改动 18）：20 个文件** —— 改动 17 那 19 个，加 `pingora-core` 的 `src/protocols/http/server.rs`
-> （改动 18 另两处落在已计入的 `protocols/http/v1/server.rs` 与 `tests/fulcrum_read_request_alloc.rs`；同一条命令实测）。
+> ★ **2026-10-14（改動 18）：20 個檔案** —— 改動 17 那 19 個，加 `pingora-core` 的 `src/protocols/http/server.rs`
+> （改動 18 另兩處落在已計入的 `protocols/http/v1/server.rs` 與 `tests/fulcrum_read_request_alloc.rs`；同一條命令實測）。
 >
-> ★ **2026-10-14（改动 17）：19 个文件** —— 下面那 17 个，加 `pingora-http` 的 `src/case_header_name.rs` 与 `src/lib.rs`
-> （用上面的命令对 `0.9.0` 实测，`702f690`；只差权限位、内容为 0 行的不算）。`pingora-http` 自此不再是零改动。
+> ★ **2026-10-14（改動 17）：19 個檔案** —— 下面那 17 個，加 `pingora-http` 的 `src/case_header_name.rs` 與 `src/lib.rs`
+> （用上面的命令對 `0.9.0` 實測，`702f690`；只差權限位、內容為 0 行的不算）。`pingora-http` 自此不再是零改動。
 >
-> ★ **2026-10-06（改动 16）：17 个文件** —— 下面那 14 个，加 `pingora-core` 的 `protocols/http/v1/server.rs`、
-> `protocols/l4/stream.rs` 与新增的 `tests/fulcrum_read_request_alloc.rs`（用上面的命令对 `0.9.0` 实测，`702f690`）。
+> ★ **2026-10-06（改動 16）：17 個檔案** —— 下面那 14 個，加 `pingora-core` 的 `protocols/http/v1/server.rs`、
+> `protocols/l4/stream.rs` 與新增的 `tests/fulcrum_read_request_alloc.rs`（用上面的命令對 `0.9.0` 實測，`702f690`）。
 >
-> ★ **2026-09-24（相对 0.9.0）：14 个文件** —— workspace `Cargo.toml` · `pingora-core` 的 `Cargo.toml`、
+> ★ **2026-09-24（相對 0.9.0）：14 個檔案** —— workspace `Cargo.toml` · `pingora-core` 的 `Cargo.toml`、
 > `connectors/l4.rs`、`offload.rs`、`listeners/mod.rs`、`protocols/http/compression/mod.rs`、
 > `protocols/tls/boringssl_openssl/stream.rs`、`protocols/tls/digest.rs`、`services/listening.rs`、`upstreams/peer.rs` ·
 > `pingora-runtime` 的 `Cargo.toml`、`src/lib.rs` · `pingora-rustls` 的 `Cargo.toml`、`src/lib.rs`；
-> `pingora-error` / `pingora-http` / `pingora-pool` / `pingora-timeout` / `pingora-boringssl` 零改动。
-> 下面是 2026-08-14 相对 0.8.1 的那一版，留作出处（⚠ 那张表把 `upstreams/peer.rs` 记在 §2 下，应属 §3；
-> 到 0.8.1 后期它已经涨到 19 个文件）。
+> `pingora-error` / `pingora-http` / `pingora-pool` / `pingora-timeout` / `pingora-boringssl` 零改動。
+> 下面是 2026-08-14 相對 0.8.1 的那一版，留作出處（⚠ 那張表把 `upstreams/peer.rs` 記在 §2 下，應屬 §3；
+> 到 0.8.1 後期它已經漲到 19 個檔案）。
 
-**fork 相对官方原版共改动 12 个文件**（2026-08-14 用上面的命令逐 crate 实测）：
+**fork 相對官方原版共改動 12 個檔案**（2026-08-14 用上面的命令逐 crate 實測）：
 
-| crate | 文件 | 出自 |
+| crate | 檔案 | 出自 |
 |---|---|---|
-| workspace | `Cargo.toml` | 范围裁剪 21 → 7 个成员；`educe` |
-| `pingora-core` | `Cargo.toml` | §1 版本上界 + ★ §5 ③（G45：dev-dependency 那扇门）|
+| workspace | `Cargo.toml` | 範圍裁剪 21 → 7 個成員；`educe` |
+| `pingora-core` | `Cargo.toml` | §1 版本上界 + ★ §5 ③（G45：dev-dependency 那扇門）|
 | | `src/connectors/l4.rs`、`src/connectors/offload.rs` | §2（`rand`）|
 | | `src/protocols/http/compression/mod.rs`、`src/upstreams/peer.rs` | §2（`sfv`）|
-| | `src/protocols/l4/stream.rs` | §2（`nix`，含那条真回归）|
-| | `src/server/transfer_fd/mod.rs` | §2（`nix`）+ ★ §4（两处 fd 泄漏）|
+| | `src/protocols/l4/stream.rs` | §2（`nix`，含那條真迴歸）|
+| | `src/server/transfer_fd/mod.rs` | §2（`nix`）+ ★ §4（兩處 fd 洩漏）|
 | `pingora-runtime` | `Cargo.toml`、`src/lib.rs` | §2（`rand`）|
-| **`pingora-rustls`** | **`Cargo.toml`、`src/lib.rs`** | ★ **§5（G41）+ §6（G45：迁走 `rustls-pemfile` + 18 条特征化测试）** |
+| **`pingora-rustls`** | **`Cargo.toml`、`src/lib.rs`** | ★ **§5（G41）+ §6（G45：遷走 `rustls-pemfile` + 18 條特徵化測試）** |
 
-★ ★ **此前这里写的是「9 个文件」，漏了 3 个**——`pingora-rustls` 那两个是 G41 新增的，
-但 **workspace 的 `Cargo.toml` 从建立 fork 那天起就一直在改动之列，却从来没被算进去**。
-漏算的原因就是上面那条命令：**它只 diff `pingora-core` 一个目录**，结构上看不见另外几个。
-★ 判据够不到的东西，不会因为没人提就不存在。
+★ ★ **此前這裡寫的是「9 個檔案」，漏了 3 個**——`pingora-rustls` 那兩個是 G41 新增的，
+但 **workspace 的 `Cargo.toml` 從建立 fork 那天起就一直在改動之列，卻從來沒被算進去**。
+漏算的原因就是上面那條命令：**它只 diff `pingora-core` 一個目錄**，結構上看不見另外幾個。
+★ 判據夠不到的東西，不會因為沒人提就不存在。
 
-| 升级 | 有上游参照物吗 | 迁移完整性 |
+| 升級 | 有上游參照物嗎 | 遷移完整性 |
 |---|---|---|
-| **`nix`** 0.24→0.31 | ★ **有**（main 已抬到 `~0.31.1`）| ✅ **已逐行核对**：两个文件里所有触碰 nix API 的行**与上游 main 完全一致**，无遗漏 |
-| `rand` 0.8→0.10 | ✗ main 仍是 `0.8` | 改动 3 个文件；`pingora-runtime` 与 `connectors/l4` 的单元测试覆盖到 |
-| `sfv` 0.10→0.15 | ✗ main 仍是 `0.10.4` | ⚠ 见下 |
-| `brotli` 3→8 · `lru` · `prometheus` · `strum` · `daggy` | ✗ | ★ **无源码改动**（升级后签名未变），不存在「迁移的另一半」 |
-| `derivative`→`educe` | ✗（main 仍用 `derivative`）| 只是 `Debug` 派生宏的等价替换，5 处 |
+| **`nix`** 0.24→0.31 | ★ **有**（main 已抬到 `~0.31.1`）| ✅ **已逐行核對**：兩個檔案裡所有觸碰 nix API 的行**與上游 main 完全一致**，無遺漏 |
+| `rand` 0.8→0.10 | ✗ main 仍是 `0.8` | 改動 3 個檔案；`pingora-runtime` 與 `connectors/l4` 的單元測試覆蓋到 |
+| `sfv` 0.10→0.15 | ✗ main 仍是 `0.10.4` | ⚠ 見下 |
+| `brotli` 3→8 · `lru` · `prometheus` · `strum` · `daggy` | ✗ | ★ **無原始碼改動**（升級後簽名未變），不存在「遷移的另一半」 |
+| `derivative`→`educe` | ✗（main 仍用 `derivative`）| 只是 `Debug` 派生宏的等價替換，5 處 |
 
-★ **核对时排除了两条假信号**：main 里的 `close_unclaimed()` 是**新功能**（`f82478ae`，未认领 fd 黑洞化那条修复，0.8.1 里不存在），不属于 nix 迁移，登记在 [尚未验证的接缝](../../docs/verification/open-seams.md)；另一条是 `use std::os::fd::AsRawFd;` 被写进了合并的 `use` 语句里，逐行比对会误报。
+★ **核對時排除了兩條假信號**：main 裡的 `close_unclaimed()` 是**新功能**（`f82478ae`，未認領 fd 黑洞化那條修復，0.8.1 裡不存在），不屬於 nix 遷移，登記在 [尚未驗證的接縫](../../docs/verification/open-seams.md)；另一條是 `use std::os::fd::AsRawFd;` 被寫進了合併的 `use` 語句裡，逐行比對會誤報。
 
-### ⚠ 残余风险：只剩 `sfv` 一条值得记名
+### ⚠ 殘餘風險：只剩 `sfv` 一條值得記名
 
-它是唯一同时满足四条的：**① 改了源码 ② 上游没做过、无参照物 ③ 输入是客户端可控的 `Accept-Encoding` ④ 单元测试只覆盖良构输入**（`test_accept_encoding_req_header` 测的是空值、`"gzip"`、`"what, br, gzip"`，没有畸形输入、没有 q 值）。
+它是唯一同時滿足四條的：**① 改了原始碼 ② 上游沒做過、無參照物 ③ 輸入是用戶端可控的 `Accept-Encoding` ④ 單元測試只覆蓋良構輸入**（`test_accept_encoding_req_header` 測的是空值、`"gzip"`、`"what, br, gzip"`，沒有畸形輸入、沒有 q 值）。
 
-★ **但后果面已经查清并且很浅**：`compression/mod.rs` 的解析失败分支是 `warn!` + **保持算法列表为空**——也就是说，如果 sfv 0.15 对某个畸形头比 0.10 更严格，最坏结果是**该响应不压缩**。不是崩溃，不是错误内容，不是安全问题。
+★ **但後果面已經查清並且很淺**：`compression/mod.rs` 的解析失敗分支是 `warn!` + **保持演算法列表為空**——也就是說，如果 sfv 0.15 對某個畸形頭比 0.10 更嚴格，最壞結果是**該回應不壓縮**。不是崩潰，不是錯誤內容，不是安全問題。
 
-**在这个后果面下，不值得为它再做什么。** 若将来 `sfv` 出现在别的、后果更重的路径上，这条要重新评估。
+**在這個後果面下，不值得為它再做什麼。** 若將來 `sfv` 出現在別的、後果更重的路徑上，這條要重新評估。
 
-## 验证
+## 驗證
 
 ```bash
-bash tests/m0/docker-run.sh                 # 构建 + fork 回归网 + M0
-VENDOR_ONLY=1 bash tests/m0/docker-run.sh   # 只跑 fork 回归网（rebase 后的第一道门）
+bash tests/m0/docker-run.sh                 # 建置 + fork 迴歸網 + M0
+VENDOR_ONLY=1 bash tests/m0/docker-run.sh   # 只跑 fork 迴歸網（rebase 後的第一道門）
 ```
 
-回归网有两层，**缺一不可**：
+迴歸網有兩層，**缺一不可**：
 
-| 层 | 验什么 | 入口 |
+| 層 | 驗什麼 | 入口 |
 |---|---|---|
-| **上游自带的单元测试**（340 条） | 抬过上界的那些库，在 pingora 自己的代码里还对不对 | [`tests/vendor/run.sh`](../../tests/vendor/run.sh) |
-| **M0 接缝验证** | 优雅升级时三类流量零中断 | [`tests/m0/run.sh`](../../tests/m0/run.sh) |
+| **上游自帶的單元測試**（340 條） | 抬過上界的那些庫，在 pingora 自己的程式碼裡還對不對 | [`tests/vendor/run.sh`](../../tests/vendor/run.sh) |
+| **M0 接縫驗證** | 優雅升級時三類流量零中斷 | [`tests/m0/run.sh`](../../tests/m0/run.sh) |
 
-判据不是「零失败」，而是 ★ **失败集合与官方原版 0.8.1 逐项相同**——这个容器里有 3 条测试在官方原版上同样失败（依赖容器外的网络行为）。名单写死在 `tests/vendor/run.sh` 里，**多一条少一条都判红**。
+判據不是「零失敗」，而是 ★ **失敗集合與官方原版 0.8.1 逐項相同**——這個容器裡有 3 條測試在官方原版上同樣失敗（依賴容器外的網路行為）。名單寫死在 `tests/vendor/run.sh` 裡，**多一條少一條都判紅**。
 
-### ★ ★ 这一层是 2026-08-13 才补上的，补上当场就逮到一条真回归
+### ★ ★ 這一層是 2026-08-13 才補上的，補上當場就逮到一條真迴歸
 
-**在那之前，「M0 是这次改动唯一的回归网」是字面属实的**，而且比字面更糟——**上游那 340 条测试当时根本编译不过**：
+**在那之前，「M0 是這次改動唯一的迴歸網」是字面屬實的**，而且比字面更糟——**上游那 340 條測試當時根本編譯不過**：
 
-1. `pingora-core/Cargo.toml` 还指着三个没被 vendor 进来的 TLS 后端。★ 这个坑**在构建时完全不显形**：作为根 workspace 的 **patch 依赖**，cargo 不去读未启用的可选 path 依赖的清单；一旦作为 **workspace 成员**加载就必须全读。
-2. `transfer_fd` 的测试代码里有 4 处 `nix` 0.31 的类型错误——lib 改了，测试没改，而测试从没被编译过。
+1. `pingora-core/Cargo.toml` 還指著三個沒被 vendor 進來的 TLS 後端。★ 這個坑**在建置時完全不顯形**：作為根 workspace 的 **patch 依賴**，cargo 不去讀未啟用的可選 path 依賴的清單；一旦作為 **workspace 成員**載入就必須全讀。
+2. `transfer_fd` 的測試程式碼裡有 4 處 `nix` 0.31 的類型錯誤——lib 改了，測試沒改，而測試從沒被編譯過。
 
-清掉这两条之后跑出来的结果，见下节。
+清掉這兩條之後跑出來的結果，見下節。
 
-## 维护
+## 維護
 
-★ **上游每次发版都要重做一遍这里的改动**——这正是 `PLAN.md` §9 那条「Pingora 上游演进与枢衡定制的合并成本」，G30 把它从一条风险变成了一项进行中的成本。
+★ **上游每次發版都要重做一遍這裡的改動**——這正是 `PLAN.md` §9 那條「Pingora 上游演進與樞衡定製的合併成本」，G30 把它從一條風險變成了一項進行中的成本。
 
-### 上游有没有动，由脚本盯着
+### 上游有沒有動，由指令碼盯著
 
-★ ★ **不要靠人记得去看。** patch 过去的 crate **脱离了 `cargo update` 的视野**，上游发了新版不会有任何提示。`tools/dep-check.py` 因此**单独查一次上游** `pingora-core`，与本 fork 的基线比对：
+★ ★ **不要靠人記得去看。** patch 過去的 crate **脫離了 `cargo update` 的視野**，上游發了新版不會有任何提示。`tools/dep-check.py` 因此**單獨查一次上游** `pingora-core`，與本 fork 的基線比對：
 
 ```bash
 python tools/dep-check.py
@@ -1326,123 +1326,123 @@ python tools/dep-check.py
 fork 基线 pingora-core 0.8.1 仍是上游最新，无需 rebase。
 ```
 
-- **基线从哪来**：★ 直接读本目录 `pingora-core/Cargo.toml` 的 `version`——**不另设一份要手工同步的记录**
-- **退出码 20** = 上游领先（与 cargo 那条叠加，两者都有则 30）
-- ★ **它只报告、绝不自动采纳**——rebase 一个 fork 不是脚本该无人值守去做的事
+- **基線從哪來**：★ 直接讀本目錄 `pingora-core/Cargo.toml` 的 `version`——**不另設一份要手動同步的記錄**
+- **結束代碼 20** = 上游領先（與 cargo 那條疊加，兩者都有則 30）
+- ★ **它只報告、絕不自動採納**——rebase 一個 fork 不是指令碼該無人值守去做的事
 
-### ⚠ ⚠ ★ ★ ★ 上游 `main` 与发布 tag 是 **diverged**，别把 main 当成「tag + 更多」
+### ⚠ ⚠ ★ ★ ★ 上游 `main` 與發佈 tag 是 **diverged**，別把 main 當成「tag + 更多」
 
-2026-08-27（§10 第 75 轮）实测 `GET /compare/0.8.1...main`：
+2026-08-27（§10 第 75 輪）實測 `GET /compare/0.8.1...main`：
 
 ```
 status : diverged        ahead_by : 190        behind_by : 8
 merge_base : faac65b0c2  ← 那是 0.8.0（2026-03-02）
 ```
 
-⇒ **两条线在 0.8.0 分了叉。** 那 8 个「只在 tag 上、不在 main 上」的提交里有：
+⇒ **兩條線在 0.8.0 分了叉。** 那 8 個「只在 tag 上、不在 main 上」的提交裡有：
 
 - `Bound default HTTP/2 server limits to mitigate memory exhaustion`
 - **`RUSTSEC-2026-0098 and RUSTSEC-2026-0099 fixes`**
 
-⚠ ⚠ **把 fork 挪到 `main`、或按 `main` 重做 vendor，会静默丢掉这两条安全修复。**
-✅ 我们从 **0.8.1** vendor，所以它们**我们有**；受威胁的只是「以后照 main 对齐」这个动作。
+⚠ ⚠ **把 fork 挪到 `main`、或按 `main` 重做 vendor，會靜默丟掉這兩條安全修復。**
+✅ 我們從 **0.8.1** vendor，所以它們**我們有**；受威脅的只是「以後照 main 對齊」這個動作。
 
-★ 本节此前只有下面「rebase 的步骤」里那句「先看上游有没有已经自己抬了某几条」，
-而 `dep-check.py` 当时只报「main 领先 N 个提交」—— **一句会被读成「main ⊇ tag」的话**。
-✅ 已修：它现在报 `diverged / 领先 / 落后`，并把只在 tag 上的那几条**逐条列出来**。
+★ 本節此前只有下面「rebase 的步驟」裡那句「先看上游有沒有已經自己抬了某幾條」，
+而 `dep-check.py` 當時只報「main 領先 N 個提交」—— **一句會被讀成「main ⊇ tag」的話**。
+✅ 已修：它現在報 `diverged / 领先 / 落后`，並把只在 tag 上的那幾條**逐條列出來**。
 
-#### ⚠ 「提前捞能省一轮迁移」这句话，2026-08-27 第一次被量了 —— 量出来是零
+#### ⚠ 「提前撈能省一輪遷移」這句話，2026-08-27 第一次被量了 —— 量出來是零
 
-把本文件表里每一条上界与 `main` 逐项比过（取 `raw.githubusercontent.com` 上 8 份清单）：
+把本檔案表裡每一條上界與 `main` 逐項比過（取 `raw.githubusercontent.com` 上 8 份清單）：
 
-| | 我们 | 上游 `main` | 结论 |
+| | 我們 | 上游 `main` | 結論 |
 |---|---|---|---|
-| `brotli` | `8` | `3` | main **更低**，无可捞 |
+| `brotli` | `8` | `3` | main **更低**，無可撈 |
 | `rand` | `0.10` | `0.8` | 同上 |
 | `sfv` | `0.15` | `0.10.4` | 同上 |
 | `x509-parser` | `0.18.1` | `0.16.0` | 同上 |
-| `prometheus` | `0.14` | **这条依赖不在了**（零命中）| ⚠ ⚠ ★ main 把它从 `pingora-core` **整条删了**。⇒ 上游下次发版时：本文件 §1 那条 `prometheus` 上界（**RUSTSEC-2024-0437** 的修法）会随依赖一起消失，而**上游自带的 `prometheus_http_app` 也会消失**。★ 我们的产品代码**一行都不碰它**（任何一份 `crates/*/Cargo.toml` 里都没有 `prometheus` 这个依赖），所以不挡路。✅ **那条「有保质期」的路已经不用走了**：M2 批 M 的指标端点按 **G117 自研 text exposition、零新依赖**，与上游那个 `prometheus_http_app` 无关 —— 它消不消失都碰不到我们。⚠ 判据要按依赖写，别按文本写：`crates/` 下现在**搜得到** `prometheus` 这个词（都是讲我们自己那个端点的注释与文档） |
-| `lru` | `0.18.2` | `0.18.2` | ✅ 已一致（我们的 PR）|
-| `boring` / `boring-sys` | `4.5` | **`5`** | ⛔ **不能捞**，见下 |
+| `prometheus` | `0.14` | **這條依賴不在了**（零命中）| ⚠ ⚠ ★ main 把它從 `pingora-core` **整條刪了**。⇒ 上游下次發版時：本檔案 §1 那條 `prometheus` 上界（**RUSTSEC-2024-0437** 的修法）會隨依賴一起消失，而**上游自帶的 `prometheus_http_app` 也會消失**。★ 我們的產品程式碼**一行都不碰它**（任何一份 `crates/*/Cargo.toml` 裡都沒有 `prometheus` 這個依賴），所以不擋路。✅ **那條「有保質期」的路已經不用走了**：M2 批 M 的指標端點按 **G117 自研 text exposition、零新依賴**，與上游那個 `prometheus_http_app` 無關 —— 它消不消失都碰不到我們。⚠ 判據要按依賴寫，別按文字寫：`crates/` 下現在**搜得到** `prometheus` 這個詞（都是講我們自己那個端點的註解與文件） |
+| `lru` | `0.18.2` | `0.18.2` | ✅ 已一致（我們的 PR）|
+| `boring` / `boring-sys` | `4.5` | **`5`** | ⛔ **不能撈**，見下 |
 
-⛔ **`boring` 4 → 5 是唯一一条 main 真的领先的，而它不能捞**：`quiche` 0.29.3 要
-`boring = "^4.3"` ⇒ 抬到 5 会让图里出现**两份 `boring`/`boring-sys`**，
-也就是一个二进制里链两套 BoringSSL。★ 守住这条的**不是任何一道门，是编译器**
-（`crates/fulcrum/tests/supply_gates.rs` 自己写着：两道门按包名去重，
-答不了「同一个名字有几个版本」）。
+⛔ **`boring` 4 → 5 是唯一一條 main 真的領先的，而它不能撈**：`quiche` 0.29.3 要
+`boring = "^4.3"` ⇒ 抬到 5 會讓圖裡出現**兩份 `boring`/`boring-sys`**，
+也就是一個二進位裡鏈兩套 BoringSSL。★ 守住這條的**不是任何一道門，是編譯器**
+（`crates/fulcrum/tests/supply_gates.rs` 自己寫著：兩道門按包名去重，
+答不了「同一個名字有幾個版本」）。
 
-⚠ 而 `main` 其余的依赖漂移方向是 **Cloudflare 自己的内部需要**：
+⚠ 而 `main` 其餘的依賴漂移方向是 **Cloudflare 自己的內部需要**：
 `aws-sdk-s3` · `dial9-tokio-telemetry` · `daemonix`（替掉 `daemonize`）· `flurry` ·
-`tikv-jemallocator`。⇒ 捞过来等于把别人的部署形态搬进我们的依赖图。
+`tikv-jemallocator`。⇒ 撈過來等於把別人的部署形態搬進我們的依賴圖。
 
-> ★ ★ **「提前捞能省一轮迁移」不是一句错话，是一句从没被量过的话。**
-> 它成立的前提是「上游在往我们要去的方向走」，而 `main` 今天走的是另一个方向。
+> ★ ★ **「提前撈能省一輪遷移」不是一句錯話，是一句從沒被量過的話。**
+> 它成立的前提是「上游在往我們要去的方向走」，而 `main` 今天走的是另一個方向。
 
-### rebase 的步骤
+### rebase 的步驟
 
-1. 取上游新 tag，比对本文件「改了什么」两节
-2. ★ **先看上游有没有已经自己抬了某几条**——`nix` 这一次就是白捡的
-3. 重做剩下的上界改动，逐个修调用点
-4. ★ **把 `pingora-core/Cargo.toml` 里没被 vendor 的 TLS 后端（G104 之后只剩 openssl / s2n 两个）
-   连同 `[features]` 里对应两条一起删掉**——不删，任何直接对 vendor 树跑的 cargo 命令都会失败，
-   而构建时完全不显形（理由见该文件内的注释）。★ 0.9.0 起再加一组：`dial9*` 三个特性与
-   pingora-runtime 的两个可选依赖（理由见文首「rebase 到 0.9.0」一节）。
-   ★ 删完把源码里仍有 `cfg(feature = …)` 引用的那几个名字登记进 workspace 清单的 `check-cfg`
-   （现为 openssl / s2n / dial9 / dial9-worker-s3）—— 否则编得过，但每次编译刷 58 条警告，真的警告被淹掉
-5. ★ ★ **跑 `bash tests/m0/docker-run.sh`**（回归网 + M0，两层都要）
+1. 取上游新 tag，比對本檔案「改了什麼」兩節
+2. ★ **先看上游有沒有已經自己抬了某幾條**——`nix` 這一次就是白撿的
+3. 重做剩下的上界改動，逐個修呼叫點
+4. ★ **把 `pingora-core/Cargo.toml` 裡沒被 vendor 的 TLS 後端（G104 之後只剩 openssl / s2n 兩個）
+   連同 `[features]` 裡對應兩條一起刪掉**——不刪，任何直接對 vendor 樹跑的 cargo 命令都會失敗，
+   而建置時完全不顯形（理由見該檔案內的註解）。★ 0.9.0 起再加一組：`dial9*` 三個特性與
+   pingora-runtime 的兩個可選依賴（理由見文首「rebase 到 0.9.0」一節）。
+   ★ 刪完把原始碼裡仍有 `cfg(feature = …)` 引用的那幾個名字登記進 workspace 清單的 `check-cfg`
+   （現為 openssl / s2n / dial9 / dial9-worker-s3）—— 否則編得過，但每次編譯刷 58 條警告，真的警告被淹掉
+5. ★ ★ **跑 `bash tests/m0/docker-run.sh`**（迴歸網 + M0，兩層都要）
 
-★ ★ **2026-09-24 那次 rebase 补的四条**（每条都是当场踩出来的）：
+★ ★ **2026-09-24 那次 rebase 補的四條**（每條都是當場踩出來的）：
 
-- **导出上游树用 `git -c core.autocrlf=false archive <tag>`**：本机全局 `autocrlf=true`，不加 `-c` 导出的是 CRLF。
-- **官方失败名单要重测**：在门禁同款容器（`fulcrum-build` 镜像 · `NET_ADMIN` · 192.0.2.0/24 DROP）里对官方新 tag 跑
-  `cargo test -p <8 个 crate> --features pingora-core/rustls --no-fail-fast`，按结果改 `tests/vendor/run.sh` 的
-  `EXPECTED_FAILURES`（两个方向都严：名单外的失败判红，名单里的「现在过了」也判红）。
-- **锁文件只增量补、逐个过怀疑期**：⛔ 不删锁重生成（那会把所有包挑到最新、绕过 G29 的 24 小时）。
-  ⚠ 根锁**不能**只跑一次 `cargo metadata` 做最小重解析：锁里钉着 path 版旧 pingora 时，cargo 会转去 crates.io
-  取**官方原版**旧版本（本次实测：官方 pingora-core 0.8.1 连同 prometheus 被拉回了依赖图）⇒ 要点名
-  `cargo update -p pingora-core -p pingora-http -p pingora-boringssl …`，再逐包核新增版本的发布时间。
-- **锁操作一律在构建镜像的一次性容器里跑**（G107）：宿主机跑 cargo 会留下 `target/.rustc_info.json`，
-  G107 那道「仓库里的 target/ 必须为空」当场拦。
+- **匯出上游樹用 `git -c core.autocrlf=false archive <tag>`**：本機全域 `autocrlf=true`，不加 `-c` 匯出的是 CRLF。
+- **官方失敗名單要重測**：在門禁同款容器（`fulcrum-build` 鏡像 · `NET_ADMIN` · 192.0.2.0/24 DROP）裡對官方新 tag 跑
+  `cargo test -p <8 个 crate> --features pingora-core/rustls --no-fail-fast`，按結果改 `tests/vendor/run.sh` 的
+  `EXPECTED_FAILURES`（兩個方向都嚴：名單外的失敗判紅，名單裡的「現在過了」也判紅）。
+- **鎖定檔只增量補、逐個過懷疑期**：⛔ 不刪鎖重生成（那會把所有包挑到最新、繞過 G29 的 24 小時）。
+  ⚠ 根鎖**不能**只跑一次 `cargo metadata` 做最小重解析：鎖裡釘著 path 版舊 pingora 時，cargo 會轉去 crates.io
+  取**官方原版**舊版本（本次實測：官方 pingora-core 0.8.1 連同 prometheus 被拉回了依賴圖）⇒ 要點名
+  `cargo update -p pingora-core -p pingora-http -p pingora-boringssl …`，再逐包核新增版本的發佈時間。
+- **鎖操作一律在建置鏡像的一次性容器裡跑**（G107）：宿主機跑 cargo 會留下 `target/.rustc_info.json`，
+  G107 那道「儲存庫裡的 target/ 必須為空」當場攔。
 
-★ ★ ★ **第 3 步有个必踩的坑，2026-08-12 就踩了一次**：**「改到编译通过」不等于「迁移做完了」。**
-`nix` 那一轮真正伤人的两条（`cmsg_space!` 的 `len` 语义、`.clear()` → `.fill(0)`）**编译器一个字都不会说**。
-所以第 3 步的正确做法是 ★ **把上游 main 对同一个文件的 diff 通读一遍**，而不是只修报错的行：
+★ ★ ★ **第 3 步有個必踩的坑，2026-08-12 就踩了一次**：**「改到編譯通過」不等於「遷移做完了」。**
+`nix` 那一輪真正傷人的兩條（`cmsg_space!` 的 `len` 語義、`.clear()` → `.fill(0)`）**編譯器一個字都不會說**。
+所以第 3 步的正確做法是 ★ **把上游 main 對同一個檔案的 diff 通讀一遍**，而不是隻修回報錯誤的行：
 
 ```bash
 git -C <上游克隆> show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 ```
 
-★ 第 5 步是这个坑唯一的兜底——**上游那 340 条测试是白送的，它当天就逮到了这条**。
+★ 第 5 步是這個坑唯一的備援——**上游那 340 條測試是白送的，它當天就逮到了這條**。
 
-降低成本的路子 —— ⚠ ⚠ **这里原先写着「两条路子，属 D12，尚未拍板」，那是过期的**
-（2026-09-08 更正）。**`D12` 早已结案，结论是 `G32`**，而且它不是「二选一」，是**按判据分流**：
+降低成本的路子 —— ⚠ ⚠ **這裡原先寫著「兩條路子，屬 D12，尚未拍板」，那是過期的**
+（2026-09-08 更正）。**`D12` 早已結案，結論是 `G32`**，而且它不是「二選一」，是**按判據分流**：
 
-> **G32：fork 长期维护 = 把有公告支撑的上界推 PR 给上游，其余常年 rebase。**
+> **G32：fork 長期維護 = 把有公告支撐的上界推 PR 給上游，其餘常年 rebase。**
 
-⚠ `PLAN.md` §11 自 2026-09-07 起**整张表是空的**，`D12` 不在里面。
-⛔ 别再把这里读成一个待办。（⚠ `tools/plan-refs.py` 判据 ② 只认「§11 的 Dnn」那种写法，
-本处这种「属 D12」它**射程外**——它自己的头注写明了「不许读成 D 号引用全都有门守着」。）
+⚠ `PLAN.md` §11 自 2026-09-07 起**整張表是空的**，`D12` 不在裡面。
+⛔ 別再把這裡讀成一個待辦。（⚠ `tools/plan-refs.py` 判據 ② 只認「§11 的 Dnn」那種寫法，
+本處這種「屬 D12」它**射程外**——它自己的頭注寫明瞭「不許讀成 D 號引用全都有門守著」。）
 
-★ ★ ★ **而 `G32` 的「推 PR」那一半，2026-09-08 一查发现已经没有目标了**：
+★ ★ ★ **而 `G32` 的「推 PR」那一半，2026-09-08 一查發現已經沒有目標了**：
 
-| 有公告支撑的两条 | 我们 | 上游 `main` |
+| 有公告支撐的兩條 | 我們 | 上游 `main` |
 |---|---|---|
-| `lru` | `0.18.2` | **`0.18.2`**（根清单，已 workspace 化）|
-| `prometheus` | `0.14` | **`0.14`**（已拆成独立的 `pingora-prometheus` crate）|
+| `lru` | `0.18.2` | **`0.18.2`**（根清單，已 workspace 化）|
+| `prometheus` | `0.14` | **`0.14`**（已拆成獨立的 `pingora-prometheus` crate）|
 
-⇒ 两条**上游都自己抬到位了**，与 `nix` 那次一样是白捡的。**没有 PR 可推**，
-`G32` 剩下的就只有「常年 rebase」那一半 —— 而那正是现状。
-★ 这同时意味着：**下一个 tag 一发布，这几条上界改动就能归零**。
-⚠ ⛔ 但别为此去 rebase 到 `main`：`0.8.1` 仍是最新 tag，而 `main` 与它**是 diverged 的**
-（2026-09-08 实测 ahead 190 / behind 8），本文件上文那条「别把 main 当成 tag + 更多」照旧成立。
-✅ **2026-09-24：兑现了** —— 0.9.0 发布（2026-09-09），本 fork 已 rebase 上去，那几条上界随之归零，见文首。
-⚠ 「别对齐 main」照旧成立：0.9.0 之后 main 又多了 5 个提交，本次一个都没捞。
+⇒ 兩條**上游都自己抬到位了**，與 `nix` 那次一樣是白撿的。**沒有 PR 可推**，
+`G32` 剩下的就只有「常年 rebase」那一半 —— 而那正是現狀。
+★ 這同時意味著：**下一個 tag 一發布，這幾條上界改動就能歸零**。
+⚠ ⛔ 但別為此去 rebase 到 `main`：`0.8.1` 仍是最新 tag，而 `main` 與它**是 diverged 的**
+（2026-09-08 實測 ahead 190 / behind 8），本檔案上文那條「別把 main 當成 tag + 更多」照舊成立。
+✅ **2026-09-24：兌現了** —— 0.9.0 發佈（2026-09-09），本 fork 已 rebase 上去，那幾條上界隨之歸零，見文首。
+⚠ 「別對齊 main」照舊成立：0.9.0 之後 main 又多了 5 個提交，本次一個都沒撈。
 
-★ **重做时先看上游有没有已经自己升了**——`nix` 与这两条都是白捡的。
+★ **重做時先看上游有沒有已經自己升了**——`nix` 與這兩條都是白撿的。
 
-## 已知的轻微行为差异
+## 已知的輕微行為差異
 
-★ 有意的一处（2026-10-14，改动 17 / G162）：`ETag` · `Vary` 等七个头名在 h1 上照标题化表写 —— 压缩层用常量改写 / 追加的
-`etag` / `vary` 因此从小写变成 `ETag` / `Vary`，与上游不同。详见改动 17。
+★ 有意的一處（2026-10-14，改動 17 / G162）：`ETag` · `Vary` 等七個頭名在 h1 上照標題化表寫 —— 壓縮層用常數改寫 / 追加的
+`etag` / `vary` 因此從小寫變成 `ETag` / `Vary`，與上游不同。詳見改動 17。
 
-下面这一处与上游**相同**，只是记下来：`get_fds_from()` 里 `msg.cmsgs()?` 在控制缓冲被截断（`MSG_CTRUNC`）时会提前返回，**跳过 `unlink(path)` 的清理**，留下一个残余的 socket 文件。上游 main 的行为完全相同。这条路径在正常升级中不出现（缓冲按 `MAX_FDS = 32` 预留），记在这里只是为了不让它成为将来某次排查的意外。
+下面這一處與上游**相同**，只是記下來：`get_fds_from()` 裡 `msg.cmsgs()?` 在控制緩衝被截斷（`MSG_CTRUNC`）時會提前回傳，**跳過 `unlink(path)` 的清理**，留下一個殘餘的 socket 檔案。上游 main 的行為完全相同。這條路徑在正常升級中不出現（緩衝按 `MAX_FDS = 32` 預留），記在這裡只是為了不讓它成為將來某次排查的意外。

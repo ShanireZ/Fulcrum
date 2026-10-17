@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
-# **产品**的 musl 静态产物自证（D22，owner 拍板）。
+# **產品**的 musl 靜態產物自證（D22，owner 拍板）。
 #
-#   bash tests/musl/product.sh                 # 正向 + 反证
-#   ARCHES="amd64" bash tests/musl/product.sh  # 只跑一个架构（默认就是它）
-#   REVERSE=0     bash tests/musl/product.sh   # 跳过反证（★ 平时不要跳）
+#   bash tests/musl/product.sh                 # 正向 + 反證
+#   ARCHES="amd64" bash tests/musl/product.sh  # 只跑一個架構（預設就是它）
+#   REVERSE=0     bash tests/musl/product.sh   # 跳過反證（★ 平時不要跳）
 #
-# ── 它与 `tests/musl/probe.sh` 的分工（★ 这一条是全部意义所在）───────────────
+# ── 它與 `tests/musl/probe.sh` 的分工（★ 這一條是全部意義所在）───────────────
 #
-# `probe.sh` 编的是 **spike**（`spikes/musl-boringssl`），本脚本编的是 **产品**
-# （`crates/fulcrum` 的那个 bin）。D22 想守的那句话是 **G13 的分发口径**
-# ——「Linux x86_64 + aarch64 单静态二进制」——**而探针答不了它**：
-# 它自己的验证记录第 5 节第 1 条就写着「『探针编得出来』证不了『枢衡编得出来』」。
-# ⇒ owner 拍板把判据换成产品自证；探针**留在门外**当历史记录。
+# `probe.sh` 編的是 **spike**（`spikes/musl-boringssl`），本指令碼編的是 **產品**
+# （`crates/fulcrum` 的那個 bin）。D22 想守的那句話是 **G13 的散布口徑**
+# ——「Linux x86_64 + aarch64 單靜態二進位」——**而探針答不了它**：
+# 它自己的驗證記錄第 5 節第 1 條就寫著「『探針編得出來』證不了『樞衡編得出來』」。
+# ⇒ owner 拍板把判據換成產品自證；探針**留在門外**當歷史記錄。
 #
-# ── 两个方向，缺一不可 ──────────────────────────────────────────────────────
+# ── 兩個方向，缺一不可 ──────────────────────────────────────────────────────
 #
-# 正向：`+crt-static` 的产物 `INTERP=0 / NEEDED=0`，且在 `FROM scratch` 里
-#       真的跑完一次 `fulcrum validate`（四层：诊断 → 结构化 → 运行时图 → TLS 装载）。
-# 反向①（**同一份 Dockerfile，翻成 `-crt-static`**）：动态版必须在 scratch 里跑不起来。
-#       ★ 分不开好坏两种情况的尺子不是尺子。
-# 反向②（**同一个镜像，喂一份必须被拒的配置**）：退出码非 0，且说得出那句专门的诊断。
-#       ★ ★ 它守的是「退出码 0」这件事本身 —— 一个**启动就 exit(0)**、根本没读配置的
-#       二进制，在正向那一格里与真的跑完四层**完全一样**。
+# 正向：`+crt-static` 的產物 `INTERP=0 / NEEDED=0`，且在 `FROM scratch` 裡
+#       真的跑完一次 `fulcrum validate`（四層：診斷 → 結構化 → 執行環境圖 → TLS 裝載）。
+# 反向①（**同一份 Dockerfile，翻成 `-crt-static`**）：動態版必須在 scratch 裡跑不起來。
+#       ★ 分不開好壞兩種情況的尺子不是尺子。
+# 反向②（**同一個鏡像，喂一份必須被拒的設定**）：結束代碼非 0，且說得出那句專門的診斷。
+#       ★ ★ 它守的是「結束代碼 0」這件事本身 —— 一個**啟動就 exit(0)**、根本沒讀設定的
+#       二進位，在正向那一格里與真的跑完四層**完全一樣**。
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# ★ MSYS 会把容器内路径改写成 Windows 路径，必须关掉；理由与 probe.sh 逐字相同。
+# ★ MSYS 會把容器內路徑改寫成 Windows 路徑，必須關掉；理由與 probe.sh 逐字相同。
 export MSYS_NO_PATHCONV=1
-# ⚠ 关掉之后宿主机侧的路径就没人替你转了 —— docker 是 Windows 程序。
+# ⚠ 關掉之後宿主機側的路徑就沒人替你轉了 —— docker 是 Windows 處理程序。
 if command -v cygpath >/dev/null 2>&1; then
   REPO_HOST="$(cygpath -m "$REPO")"
 else
@@ -35,14 +35,14 @@ else
 fi
 
 DOCKERFILE="docker/Dockerfile.musl-product"
-# ⚠ ⚠ **上下文是仓库根**：根 `Cargo.toml` 的 `[patch.crates-io]` 指着 `vendor/pingora`。
-#   仓库根那份 `.dockerignore` 负责把 `target/` 挡在上下文之外。
+# ⚠ ⚠ **上下文是儲存庫根**：根 `Cargo.toml` 的 `[patch.crates-io]` 指著 `vendor/pingora`。
+#   儲存庫根那份 `.dockerignore` 負責把 `target/` 擋在上下文之外。
 CONTEXT="."
-# ★ 缺省只跑 amd64。aarch64 要在 qemu 上编**整个产品**（不只是探针那点代码）。
-# ✅ 「何时也跑 aarch64」曾挂号 **D24**，已由 **G144** 结案 = 候选 ②：
-#   只在 `Cargo.lock` 或那三张钉 rustc 的 Dockerfile 变化时跑。
-#   ⚠ ⚠ **那个决定不在本脚本里**（本脚本只认 `ARCHES`）—— 编排在 `tests/m0/docker-run.sh`，
-#   判据与触发集在 `tests/musl/arm64-trigger.sh`。⇒ 直接手跑本脚本时它**不会**替你判。
+# ★ 預設只跑 amd64。aarch64 要在 qemu 上編**整個產品**（不只是探針那點程式碼）。
+# ✅ 「何時也跑 aarch64」曾掛號 **D24**，已由 **G144** 結案 = 候選 ②：
+#   只在 `Cargo.lock` 或那三張釘 rustc 的 Dockerfile 變化時跑。
+#   ⚠ ⚠ **那個決定不在本指令碼里**（本指令碼只認 `ARCHES`）—— 編排在 `tests/m0/docker-run.sh`，
+#   判據與觸發集在 `tests/musl/arm64-trigger.sh`。⇒ 直接手跑本指令碼時它**不會**替你判。
 ARCHES=${ARCHES:-"amd64"}
 REVERSE=${REVERSE:-1}
 
@@ -61,8 +61,8 @@ expect_machine() {
   esac
 }
 
-# 从一个 `FROM scratch` 镜像里取文件。
-# ★ 不能 `docker run cat` —— 那个镜像里没有 cat、没有 sh，什么都没有。
+# 從一個 `FROM scratch` 鏡像裡取檔案。
+# ★ 不能 `docker run cat` —— 那個鏡像裡沒有 cat、沒有 sh，什麼都沒有。
 extract() {
   local image=$1 src=$2 dst=$3 cid host_dst
   if command -v cygpath >/dev/null 2>&1; then
@@ -80,22 +80,22 @@ field() { sed -n "s/^$2=//p" "$1"; }
 build_one() {
   local arch=$1 crt=$2 tag=$3
 
-  # ── 构建身份（`G141` 的第 ① 档）─────────────────────────────────────────────
+  # ── 建置身分（`G141` 的第 ① 檔）─────────────────────────────────────────────
   #
-  # ⚠ ★ **只在调用方已经设了 `FULCRUM_BUILD_ID` 时才往下传**，⛔ 不在这里自己去问 git。
-  #   两条理由，都不是风格问题：
-  #   · 这个上下文的 `.dockerignore` 排掉了 `.git/` ⇒ 容器里**读不到**，第 ② 档在这一趟
-  #     必然落空 —— 身份只能从外面喂进来；
-  #   · ⚠ ⚠ 而**无条件喂**会让这一层的哈希**每次提交都变**，于是这道每次提交都要跑的门
-  #     每次都重编我们那几个 crate。门禁跑出来的是**测试产物不是发布物**，它报
-  #     `+unknown` 是如实的。⇒ 发布时由构建环境设这个变量，门禁不设。
+  # ⚠ ★ **只在呼叫方已經設了 `FULCRUM_BUILD_ID` 時才往下傳**，⛔ 不在這裡自己去問 git。
+  #   兩條理由，都不是風格問題：
+  #   · 這個上下文的 `.dockerignore` 排掉了 `.git/` ⇒ 容器裡**讀不到**，第 ② 檔在這一趟
+  #     必然落空 —— 身分只能從外面喂進來；
+  #   · ⚠ ⚠ 而**無條件喂**會讓這一層的雜湊**每次提交都變**，於是這道每次提交都要跑的門
+  #     每次都重編我們那幾個 crate。門禁跑出來的是**測試產物不是發佈物**，它報
+  #     `+unknown` 是如實的。⇒ 發佈時由建置環境設這個變數，門禁不設。
   local id_arg=()
   if [ -n "${FULCRUM_BUILD_ID:-}" ]; then
     id_arg=(--build-arg "FULCRUM_BUILD_ID=$FULCRUM_BUILD_ID")
   fi
 
   echo "[product] docker build --platform linux/$arch（$crt）…"
-  # ⚠ `--pull=false`：基础镜像已按 digest 钉死，不必每次去问 registry。
+  # ⚠ `--pull=false`：基礎鏡像已按 digest 釘死，不必每次去問 registry。
   docker build \
     --platform "linux/$arch" \
     --pull=false \
@@ -111,9 +111,9 @@ for arch in $ARCHES; do
   echo "=== [$arch] 产品编成 musl 静态产物，并在 FROM scratch 里真跑 ==="
   tag="fulcrum-musl-product:$arch"
 
-  # ⚠ 这句话**不许写成「BoringSSL 编不出来」**：产品图里有一整票 `*-sys`，
-  #   而 `docker build` 还会因为上下文、磁盘、网络失败。
-  #   ★ 一句把所有失败都归到同一个原因上的报错，比没有报错更能误导下一个人。
+  # ⚠ 這句話**不許寫成「BoringSSL 編不出來」**：產品圖裡有一整票 `*-sys`，
+  #   而 `docker build` 還會因為上下文、磁碟、網路失敗。
+  #   ★ 一句把所有失敗都歸到同一個原因上的回報錯誤，比沒有回報錯誤更能誤導下一個人。
   if ! build_one "$arch" "+crt-static" "$tag"; then
     fail "[$arch] docker build 没过 —— 具体原因看上面 buildkit 的输出，不要预设是哪个依赖"
     continue
@@ -131,8 +131,8 @@ for arch in $ARCHES; do
     fail "[$arch] ELF Machine 期望「$want_machine」，实际「$got_machine」"
   fi
 
-  # ★ 主判据。完全静态 ⇒ 没有 INTERP 段、没有 NEEDED 条目。
-  #   两个都看：只看 INTERP 会漏掉「有动态段但没解释器」这种畸形产物。
+  # ★ 主判據。完全靜態 ⇒ 沒有 INTERP 段、沒有 NEEDED 條目。
+  #   兩個都看：只看 INTERP 會漏掉「有動態段但沒解釋器」這種畸形產物。
   interp=$(field "$ev" INTERP)
   needed=$(field "$ev" NEEDED)
   if [ "$interp" = "0" ] && [ "$needed" = "0" ]; then
@@ -142,19 +142,19 @@ for arch in $ARCHES; do
   fi
   echo "[product] 大小 $(field "$ev" BYTES) 字节"
 
-  # ── ★ ★ ★ D23：产物里真的链接了哪几套 TLS ────────────────────────────────
+  # ── ★ ★ ★ D23：產物裡真的連結了哪幾套 TLS ────────────────────────────────
   #
-  # ⚠ 它与供应链那两道门问的**不是同一个问题**：门 4 看 `Cargo.lock`、门 5 看依赖图，
-  #   而「图里有、产物里其实没链接」是门 5 **原理上**看不见的那一半。
-  # ★ 判据的推导在 `tests/ci/tls-linkage.sh` 的文件头，这里只做判定。
+  # ⚠ 它與供應鏈那兩道門問的**不是同一個問題**：門 4 看 `Cargo.lock`、門 5 看依賴圖，
+  #   而「圖裡有、產物裡其實沒連結」是門 5 **原理上**看不見的那一半。
+  # ★ 判據的推導在 `tests/ci/tls-linkage.sh` 的檔案頭，這裡只做判定。
   tls_nm=$(field "$ev" TLS_NM)
   tls_ctrl=$(field "$ev" TLS_PROBE_CONTROL)
-  # ⚠ ⚠ **先判「量到了没有」**：读不到符号表时下面每一条「必须为 0」都会凭空全绿。
-  #   ⇒ 「没能检查」不算「检查通过」（与本仓其它几处同一条纪律）。
+  # ⚠ ⚠ **先判「量到了沒有」**：讀不到符號表時下面每一條「必須為 0」都會憑空全綠。
+  #   ⇒ 「沒能檢查」不算「檢查通過」（與本儲存庫其它幾處同一條紀律）。
   if [ "$tls_nm" != "ok" ]; then
     fail "[$arch] 取不到符号表（TLS_NM=$tls_nm）⇒ 下面那组 TLS 链接判据一律不可信"
   elif [ -z "$tls_ctrl" ] || [ "$tls_ctrl" -eq 0 ]; then
-    # ★ 扫描器自证：一个写错的模式与「真的一个都没有」给出完全相同的 0。
+    # ★ 掃描器自證：一個寫錯的模式與「真的一個都沒有」給出完全相同的 0。
     fail "[$arch] 扫描器自证没过（TLS_PROBE_CONTROL=$tls_ctrl）⇒ 那组判据分不出真假"
   else
     if [ "$(field "$ev" TLS_BORINGSSL_ONLY)" -eq 3 ]; then
@@ -175,7 +175,7 @@ for arch in $ARCHES; do
   fi
   rm -f "$ev"
 
-  # ── 正向：在什么都没有的镜像里跑一次 validate ──────────────────────────
+  # ── 正向：在什麼都沒有的鏡像裡跑一次 validate ──────────────────────────
   out="$(mktemp)"
   if docker run --rm --platform "linux/$arch" "$tag" >"$out" 2>&1; then
     run_rc=0
@@ -190,11 +190,11 @@ for arch in $ARCHES; do
   fi
   rm -f "$out"
 
-  # ── 反向②：同一个镜像，喂一份必须被拒的配置 ────────────────────────────
+  # ── 反向②：同一個鏡像，喂一份必須被拒的設定 ────────────────────────────
   #
-  # ★ ★ 它守的是**上面那个「退出码 0」本身**：一个启动就 exit(0)、根本没读配置的
-  #   二进制，在正向那一格里长得一模一样。
-  # ⚠ scratch 里没有 shell，但 `--entrypoint` 走的是 execve，不需要 shell。
+  # ★ ★ 它守的是**上面那個「結束代碼 0」本身**：一個啟動就 exit(0)、根本沒讀設定的
+  #   二進位，在正向那一格里長得一模一樣。
+  # ⚠ scratch 裡沒有 shell，但 `--entrypoint` 走的是 execve，不需要 shell。
   bad="$(mktemp)"
   if docker run --rm --platform "linux/$arch" --entrypoint /fulcrum "$tag" \
     validate /bad.Fulcrumfile >"$bad" 2>&1; then
@@ -213,7 +213,7 @@ for arch in $ARCHES; do
   rm -f "$bad"
 done
 
-# ── 反向①：同一份 Dockerfile，把静态翻成动态 ──────────────────────────────
+# ── 反向①：同一份 Dockerfile，把靜態翻成動態 ──────────────────────────────
 if [ "$REVERSE" = "1" ]; then
   echo
   echo "=== [反证] 动态链接的同一份产物必须在 scratch 里跑不起来 ==="

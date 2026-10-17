@@ -1,19 +1,19 @@
-//! 扩展名 → `Content-Type`（G90）。
+//! 副檔名 → `Content-Type`（G90）。
 //!
-//! ★ ★ **自带一张小表，新增 0 个包** —— 与自研 DNS 客户端（§10）、
-//! 自研 PROXY protocol 编解码同一条口径：
-//! **一个只需要查表的能力，不值得为它抬依赖面**（`mime_guess` 要 +2 个包，
-//! 且要按 G29 纳入每周检查与 24 小时怀疑期）。
+//! ★ ★ **自帶一張小表，新增 0 個包** —— 與自研 DNS 用戶端（§10）、
+//! 自研 PROXY protocol 編解碼同一條口徑：
+//! **一個只需要查表的能力，不值得為它抬依賴面**（`mime_guess` 要 +2 個包，
+//! 且要按 G29 納入每週檢查與 24 小時懷疑期）。
 //!
-//! ⚠ 代价认下：表会过期，新格式要手工补。而这一条与「猜错一个 MIME」相比是便宜的一侧。
+//! ⚠ 代價認下：表會過期，新格式要手動補。而這一條與「猜錯一個 MIME」相比是便宜的一側。
 
-/// 查不到时回这个。★ 不猜 —— 猜错一个 MIME 比回 `octet-stream` 更贵。
+/// 查不到時回這個。★ 不猜 —— 猜錯一個 MIME 比回 `octet-stream` 更貴。
 pub const DEFAULT: &str = "application/octet-stream";
 
-/// `(小写扩展名, Content-Type)`，**按扩展名升序**。
+/// `(小写扩展名, Content-Type)`，**按副檔名升序**。
 ///
-/// ⚠ 带 `charset=utf-8` 的只有那几类**文本**格式：
-/// 给二进制加 charset 是错的，而给文本不加会让浏览器去猜编码。
+/// ⚠ 帶 `charset=utf-8` 的只有那幾類**文字**格式：
+/// 給二進位加 charset 是錯的，而給文字不加會讓瀏覽器去猜編碼。
 const TABLE: &[(&str, &str)] = &[
     ("7z", "application/x-7z-compressed"),
     ("aac", "audio/aac"),
@@ -98,10 +98,10 @@ const TABLE: &[(&str, &str)] = &[
     ("zst", "application/zstd"),
 ];
 
-/// 按文件名末段的扩展名查表。查不到 → [`DEFAULT`]。
+/// 按檔案名末段的副檔名查表。查不到 → [`DEFAULT`]。
 ///
-/// ⚠ 扩展名**大小写不敏感**（`FOO.PNG` 与 `foo.png` 同一个类型），
-/// 而表里存的一律是小写。
+/// ⚠ 副檔名**大小寫不敏感**（`FOO.PNG` 與 `foo.png` 同一個類型），
+/// 而表裡存的一律是小寫。
 pub fn for_name(name: &str) -> &'static str {
     let Some((_, ext)) = name.rsplit_once('.') else {
         return DEFAULT;
@@ -109,9 +109,9 @@ pub fn for_name(name: &str) -> &'static str {
     if ext.is_empty() {
         return DEFAULT;
     }
-    // ★ 转小写写进栈上的缓冲（10-14 · 文件那条路剩下的分配），⛔ 不每请求分配一个 `String`。
-    //   比 [`MAX_EXT`] 长的扩展名一定不在表里（`表里的扩展名都放得进栈上那块缓冲` 钉着）⇒ 直接回缺省。
-    //   按字节比与原来按 `&str` 比是同一个序（`str` 的 `Ord` 就是按字节）。
+    // ★ 轉小寫寫進棧上的緩衝（10-14 · 檔案那條路剩下的分配），⛔ 不每請求分配一個 `String`。
+    //   比 [`MAX_EXT`] 長的副檔名一定不在表裡（`表里的扩展名都放得进栈上那块缓冲` 釘著）⇒ 直接回預設。
+    //   按位元組比與原來按 `&str` 比是同一個序（`str` 的 `Ord` 就是按位元組）。
     let mut buf = [0u8; MAX_EXT];
     let Some(lower) = buf.get_mut(..ext.len()) else {
         return DEFAULT;
@@ -125,14 +125,14 @@ pub fn for_name(name: &str) -> &'static str {
     }
 }
 
-/// 栈上那块缓冲的长度：表里最长的扩展名放得下就够。
+/// 棧上那塊緩衝的長度：表裡最長的副檔名放得下就夠。
 const MAX_EXT: usize = 16;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// ★ 「比缓冲长的一定不在表里」那条捷径的前提；也钉住表里一律是小写（查表前转的就是小写）。
+    /// ★ 「比緩衝長的一定不在表裡」那條捷徑的前提；也釘住表裡一律是小寫（查表前轉的就是小寫）。
     #[test]
     fn 表里的扩展名都放得进栈上那块缓冲() {
         for (k, _) in TABLE {
@@ -141,7 +141,7 @@ mod tests {
         }
     }
 
-    /// 大小写不敏感、表里与表外、长扩展名，与原来「转成 `String` 再查」的写法逐个相同。
+    /// 大小寫不敏感、表裡與表外、長副檔名，與原來「轉成 `String` 再查」的寫法逐個相同。
     #[test]
     fn 与原来转成_string_再查的写法相同() {
         let old = |name: &str| -> &'static str {
@@ -183,9 +183,9 @@ mod tests {
         }
     }
 
-    // ★ ★ 这条是**查表法自己的判据**：`for_name` 用的是二分查找，
-    //   而二分查找在表没排序时不会报错 —— 它只是**查不到本来在表里的那几条**。
-    //   于是现场是「某几个扩展名莫名其妙变成 octet-stream」，没有任何东西会红。
+    // ★ ★ 這條是**查表法自己的判據**：`for_name` 用的是二分查找，
+    //   而二分查找在表沒排序時不會回報錯誤 —— 它只是**查不到本來在表裡的那幾條**。
+    //   於是現場是「某幾個副檔名莫名其妙變成 octet-stream」，沒有任何東西會紅。
     #[test]
     fn 表必须按扩展名升序_否则二分查找会安静地查不到() {
         for w in TABLE.windows(2) {
@@ -198,8 +198,8 @@ mod tests {
         }
     }
 
-    /// ★ `file_server` 用 `HeaderValue::from_static` 发这张表里的值（10-05 · 构响应头不再分配），
-    ///   而 `from_static` 遇到非法字符会**在请求路径上 panic** ⇒ 每个值连同缺省值都钉住。
+    /// ★ `file_server` 用 `HeaderValue::from_static` 發這張表裡的值（10-05 · 構回應頭不再分配），
+    ///   而 `from_static` 遇到非法字元會**在請求路徑上 panic** ⇒ 每個值連同預設值都釘住。
     #[test]
     fn 表里每个值都是合法头值() {
         for (ext, ty) in TABLE.iter().chain(std::iter::once(&("（缺省）", DEFAULT))) {
@@ -228,14 +228,14 @@ mod tests {
         assert_eq!(for_name(""), DEFAULT);
     }
 
-    // ⚠ `.tar.gz` 只看最后一段 ⇒ `application/gzip`。这是有意的，钉住免得有人"顺手改成"
-    //   多段匹配 —— 多段匹配要回答 `.tar.gz` 是 tar 还是 gzip，而那没有唯一答案。
+    // ⚠ `.tar.gz` 只看最後一段 ⇒ `application/gzip`。這是有意的，釘住免得有人"順手改成"
+    //   多段匹配 —— 多段匹配要回答 `.tar.gz` 是 tar 還是 gzip，而那沒有唯一答案。
     #[test]
     fn 只看最后一段扩展名() {
         assert_eq!(for_name("a.tar.gz"), "application/gzip");
     }
 
-    // ★ 隐藏文件（点开头、没有第二个点）不该被当成「扩展名 = 文件名」。
+    // ★ 隱藏檔案（點開頭、沒有第二個點）不該被當成「副檔名 = 檔案名」。
     #[test]
     fn 点开头的文件名不算扩展名() {
         assert_eq!(for_name(".env"), DEFAULT);

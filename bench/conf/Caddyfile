@@ -1,10 +1,10 @@
-# Caddy · 静态吞吐这一类的被测配置（M3 第一刀）。
-# ⚠ 占位符由 bench/case/static-throughput.sh 替换。
+# Caddy · 靜態吞吐這一類的被測設定（M3 第一刀）。
+# ⚠ 佔位符由 bench/case/static-throughput.sh 替換。
 #
-# ★ `auto_https off` 是**口径**不是省事：这一类跑明文 HTTP/1.1，
-#   而 Caddy 默认会去申请证书并把 :80 变成跳转 —— 那会让它量的东西
-#   与另外三家不是同一件事（顺带还会撞上门禁里那个共享的 :80）。
-# ★ Caddy 的并行度由 GOMAXPROCS 定，编排脚本用环境变量给，⛔ 不在这里写。
+# ★ `auto_https off` 是**口徑**不是省事：這一類跑明文 HTTP/1.1，
+#   而 Caddy 預設會去申請證書並把 :80 變成跳轉 —— 那會讓它量的東西
+#   與另外三家不是同一件事（順帶還會撞上門禁裡那個共享的 :80）。
+# ★ Caddy 的並行度由 GOMAXPROCS 定，編排指令碼用環境變數給，⛔ 不在這裡寫。
 
 {
     admin off

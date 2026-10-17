@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 #
-# ACME 两个端到端场景共用的那一半：[`run.sh`](run.sh)（签发）与 [`renew.sh`](renew.sh)（续期）。
+# ACME 兩個端到端場景共用的那一半：[`run.sh`](run.sh)（簽發）與 [`renew.sh`](renew.sh)（續期）。
 #
-# ★ ★ **为什么抽出来，而不是抄一份。**
-#   两个场景都要「起一个真 CA（pebble）+ 一台假权威 NS（challtestsrv）+ 一个 exec hook」，
-#   那是一百多行、且每一行都带着一条踩坑记录（v6 回环、两级证书、SIGTERM vs SIGINT…）。
-#   本仓库在「同一个判定抄了两份」上反复栽过——D18 那次的处置就是**让分家在结构上做不到**
-#   （两侧共用 `wildcard_covers` 一份实现）。抄一份 pebble 起法，等于给下一个人埋一处必然分叉：
-#   改了一边、另一边继续绿，而绿的那边测的已经不是同一个东西了。
+# ★ ★ **為什麼抽出來，而不是抄一份。**
+#   兩個場景都要「起一個真 CA（pebble）+ 一臺假權威 NS（challtestsrv）+ 一個 exec hook」，
+#   那是一百多行、且每一行都帶著一條踩坑記錄（v6 迴環、兩級證書、SIGTERM vs SIGINT…）。
+#   本儲存庫在「同一個判定抄了兩份」上反覆栽過——D18 那次的處置就是**讓分家在結構上做不到**
+#   （兩側共用 `wildcard_covers` 一份實作）。抄一份 pebble 起法，等於給下一個人埋一處必然分叉：
+#   改了一邊、另一邊繼續綠，而綠的那邊測的已經不是同一個東西了。
 #
-# 调用方在 source 之前必须设好：`WORK`（工作目录）、`HOST`、`TRUST_ANCHOR`（信任根落点）。
+# 呼叫方在 source 之前必須設好：`WORK`（工作目錄）、`HOST`、`TRUST_ANCHOR`（信任根落點）。
 
-# 失败计数与进程表。★ 枢衡的进程收 SIGINT，别的（pebble / challtestsrv）收 SIGTERM——
-# 见 `acme_cleanup` 里那段注释，那是量出来的不是洁癖。
+# 失敗計數與處理程序表。★ 樞衡的處理程序收 SIGINT，別的（pebble / challtestsrv）收 SIGTERM——
+# 見 `acme_cleanup` 裡那段註解，那是量出來的不是潔癖。
 FAILS=0
 PIDS=()
 AUX_PIDS=()
@@ -24,12 +24,12 @@ fail() {
 }
 ok() { echo "  ✓ $*"; }
 
-# 收尸：先招呼、再等、最后补刀；然后把信任根摘掉。
+# 收屍：先招呼、再等、最後補刀；然後把信任根摘掉。
 #
-# ★ 不是洁癖：Pingora 把 SIGTERM 当**优雅停机**，会等完整的排空窗口（每次跑白等几秒）；
-#   而 pebble 与 challtestsrv 是 Go 程序，**根本不理 SIGINT 之外的期待**——
-#   对所有进程一律 SIGINT 的话，pebble 每次都要挨一发 SIGKILL，
-#   bash 就在收工时打一行 `Killed`，读起来像是出了事。
+# ★ 不是潔癖：Pingora 把 SIGTERM 當**優雅停機**，會等完整的排空視窗（每次跑白等幾秒）；
+#   而 pebble 與 challtestsrv 是 Go 處理程序，**根本不理 SIGINT 之外的期待**——
+#   對所有處理程序一律 SIGINT 的話，pebble 每次都要挨一發 SIGKILL，
+#   bash 就在收工時打一行 `Killed`，讀起來像是出了事。
 acme_cleanup() {
   local pid waited
   for pid in "${PIDS[@]:-}"; do
@@ -49,8 +49,8 @@ acme_cleanup() {
     done
     kill -9 "$pid" 2>/dev/null || true
   done
-  # ★ 把信任库改回去。容器是 --rm 的，但这些脚本也可能被人在别处跑，
-  #   而「往系统信任库里塞了一张自签根然后不收拾」是一件不该留下的事。
+  # ★ 把信任庫改回去。容器是 --rm 的，但這些指令碼也可能被人在別處跑，
+  #   而「往系統信任庫裡塞了一張自籤根然後不收拾」是一件不該留下的事。
   if [ -f "$TRUST_ANCHOR" ]; then
     rm -f "$TRUST_ANCHOR"
     update-ca-certificates --fresh >/dev/null 2>&1 || true
@@ -71,15 +71,15 @@ wait_port() {
   return 1
 }
 
-# 等某个文件里出现某段文本。★ 用「日志里出现了什么」当同步点，而不是 `sleep N`：
-#   固定 sleep 要么慢、要么在慢一点的机器上变成偶发红。
+# 等某個檔案裡出現某段文字。★ 用「紀錄裡出現了什麼」當同步點，而不是 `sleep N`：
+#   固定 sleep 要麼慢、要麼在慢一點的機器上變成偶發紅。
 wait_log() {
   local file=$1 pattern=$2 limit=${3:-60} waited=0
   while [ "$waited" -lt "$((limit * 4))" ]; do
-    # ★ ★ `-F`（固定字符串）**不是可选的**：要等的那行里有 `*.wild.example`，
-    #   而 `*` 在正则里是元字符 —— `成功：*.wild.example` 会被读成
-    #   「零个或多个『：』+ 任意字符 + wild…」，于是**永远匹配不上一行确实存在的日志**。
-    #   ⚠ 症状极具误导性：门报「120s 内没等到签发成功」，而日志里那一行明明就在那儿。
+    # ★ ★ `-F`（固定字串）**不是可選的**：要等的那行裡有 `*.wild.example`，
+    #   而 `*` 在正則裡是元字元 —— `成功：*.wild.example` 會被讀成
+    #   「零個或多個『：』+ 任意字元 + wild…」，於是**永遠匹配不上一行確實存在的紀錄**。
+    #   ⚠ 症狀極具誤導性：門報「120s 內沒等到簽發成功」，而紀錄裡那一行明明就在那兒。
     if [ -f "$file" ] && grep -qF "$pattern" "$file"; then return 0; fi
     sleep 0.25
     waited=$((waited + 1))
@@ -87,9 +87,9 @@ wait_log() {
   return 1
 }
 
-# 等某个文件里某段文本出现**第 N 次**。续期场景要的判据是「又签了一张」，
-# 而「签发成功」这句在第一次签发时就已经出现过一遍。
-# ⚠ 只等「出现过」会立刻命中第一次那条，于是一道本该验续期的门变成恒绿。
+# 等某個檔案裡某段文字出現**第 N 次**。續期場景要的判據是「又簽了一張」，
+# 而「簽發成功」這句在第一次簽發時就已經出現過一遍。
+# ⚠ 只等「出現過」會立刻命中第一次那條，於是一道本該驗續期的門變成恆綠。
 wait_log_count() {
   local file=$1 pattern=$2 want=$3 limit=${4:-60} waited=0 got
   while [ "$waited" -lt "$((limit * 4))" ]; do
@@ -103,12 +103,12 @@ wait_log_count() {
   return 1
 }
 
-# ⚠ `|| true` 是必需的：`set -e` 之下，赋值里的命令替换失败会让整个脚本退出。
+# ⚠ `|| true` 是必需的：`set -e` 之下，賦值裡的命令替換失敗會讓整個指令碼退出。
 run_curl() { curl "$@" 2>/dev/null || true; }
 
-# ★ ★ 要**退出码**时不能走命令替换（子 shell 里设的变量传不回来）。
+# ★ ★ 要**結束代碼**時不能走命令替換（子 shell 裡設的變數傳不回來）。
 CURL_RC=0
-# shellcheck disable=SC2034  # CURL_RC 由 source 本文件的场景脚本读，跨文件 shellcheck 看不见
+# shellcheck disable=SC2034  # CURL_RC 由 source 本檔案的場景指令碼讀，跨檔案 shellcheck 看不見
 curl_capture() {
   set +e
   curl "$@" > "$WORK/curlw" 2>/dev/null
@@ -121,7 +121,7 @@ expect_status() {
   if [ "$got" = "$want" ]; then ok "$what → $got"; else fail "$what 期望 $want，实际 $got"; fi
 }
 
-# 文件权限判据。私钥必须是 0600（G55）。
+# 檔案權限判據。私鑰必須是 0600（G55）。
 expect_mode() {
   local what=$1 want=$2 path=$3 got
   if [ ! -e "$path" ]; then
@@ -132,7 +132,7 @@ expect_mode() {
   if [ "$got" = "$want" ]; then ok "$what 权限 $got"; else fail "$what 权限期望 $want，实际 $got"; fi
 }
 
-# 镜像里那几个外部程序在不在（G64 装的那套）。第一个参数是场景名，只进报错文本。
+# 鏡像裡那幾個外部處理程序在不在（G64 裝的那套）。第一個參數是場景名，只進回報錯誤文字。
 acme_require_tools() {
   local scenario=$1 one
   for one in pebble pebble-challtestsrv openssl curl update-ca-certificates; do
@@ -143,7 +143,7 @@ acme_require_tools() {
   done
 }
 
-# ★ ★ 这一步不是形式：本仓库栽过一次「基线探针对着上一个场景遗留的进程报绿」。
+# ★ ★ 這一步不是形式：本儲存庫栽過一次「基線探針對著上一個場景遺留的處理程序報綠」。
 acme_require_ports_free() {
   local scenario=$1 p
   shift
@@ -155,32 +155,32 @@ acme_require_ports_free() {
   done
 }
 
-# ── 失败现场取证：那一刻谁占着哪些端口 ──────────────────────────────────
+# ── 失敗現場取證：那一刻誰佔著哪些連接埠 ──────────────────────────────────
 #
-# ⛔ **只在已经要红的路径上调用**：它一行都不参与判定，
-#   因此不可能把一趟本来能过的跑判红。
+# ⛔ **只在已經要紅的路徑上呼叫**：它一行都不參與判定，
+#   因此不可能把一趟本來能過的跑判紅。
 #
-# ★ ★ ★ **它第一次跑就把那次间歇红的根因指出来了，而现有日志一个字都答不出**：
-#   上一个场景（quic-relay）漏了一个进程，它攥着**合成出来的 `:80`**（见 AGENTS.md 端口表）；
-#   pingora 在**持有全局 `ListenFds` 锁**的状态下做那个会重试 30 秒的 bind
-#   ⇒ 排在后面的 `:8083` 跟着起不来，而日志里只有 `:80` 的错。
-#   ⇒ **报出来的端口不是出事的端口**，靠读日志永远绕不出来。
-#   ★ 源头已经在 quic-relay 自己的 `cleanup` 里堵上（它走时要把用过的端口还回去）。
+# ★ ★ ★ **它第一次跑就把那次間歇紅的根因指出來了，而現有紀錄一個字都答不出**：
+#   上一個場景（quic-relay）漏了一個處理程序，它攥著**合成出來的 `:80`**（見 AGENTS.md 連接埠表）；
+#   pingora 在**持有全域 `ListenFds` 鎖**的狀態下做那個會重試 30 秒的 bind
+#   ⇒ 排在後面的 `:8083` 跟著起不來，而紀錄裡只有 `:80` 的錯。
+#   ⇒ **報出來的連接埠不是出事的連接埠**，靠讀紀錄永遠繞不出來。
+#   ★ 源頭已經在 quic-relay 自己的 `cleanup` 裡堵上（它走時要把用過的連接埠還回去）。
 #
-# ⚠ 镜像里**没有 `ss` / `lsof` / `fuser`**（iproute2 只装在 systemd 测试镜像里）
-#   ⇒ 只能读 `/proc/net/tcp{,6}` 与 `/proc/<pid>/fd`。
+# ⚠ 鏡像裡**沒有 `ss` / `lsof` / `fuser`**（iproute2 只裝在 systemd 測試鏡像裡）
+#   ⇒ 只能讀 `/proc/net/tcp{,6}` 與 `/proc/<pid>/fd`。
 #
-# ★ ★ 打的是**全部状态**，不只是 LISTEN：`bind()` 报 `EADDRINUSE` 那一刻，
-#   「另一个进程正在 LISTEN」与「同一个 addr:port 上挂着一条残留连接」是两个不同的答案，
-#   而只打 LISTEN 的话后者会表现成「什么都没有」—— 一句最会把人带偏的结论。
+# ★ ★ 打的是**全部狀態**，不只是 LISTEN：`bind()` 報 `EADDRINUSE` 那一刻，
+#   「另一個處理程序正在 LISTEN」與「同一個 addr:port 上掛著一條殘留連接」是兩個不同的答案，
+#   而只打 LISTEN 的話後者會表現成「什麼都沒有」—— 一句最會把人帶偏的結論。
 #
-# ★ ★ ★ 同一个 inode 的**全部**持有者都要打：一个被子进程继承走的监听 fd，
-#   现场就是「两个 pid 指着同一个 socket」，而进程表里那个 fulcrum 已经不在了。
-#   这个形状本仓库栽过一次，常设判据是 [`tests/m0/unclaimed.sh`](../m0/unclaimed.sh)。
+# ★ ★ ★ 同一個 inode 的**全部**持有者都要打：一個被子處理程序繼承走的監聽 fd，
+#   現場就是「兩個 pid 指著同一個 socket」，而處理程序表裡那個 fulcrum 已經不在了。
+#   這個形狀本儲存庫栽過一次，常設判據是 [`tests/m0/unclaimed.sh`](../m0/unclaimed.sh)。
 
-# `/proc/net/tcp{,6}` → 每行一个 `地址:端口 状态 inode=N`（v6 写成 `[地址]:端口`）。
-# 参数是要读的文件 —— 自测时指向样本，于是**同一份解码**两处共用。
-# ⚠ `strtonum()` 是 gawk 扩展，而镜像里的 awk 是 mawk ⇒ 十六进制只能自己拆。
+# `/proc/net/tcp{,6}` → 每行一個 `地址:端口 状态 inode=N`（v6 寫成 `[地址]:端口`）。
+# 參數是要讀的檔案 —— 自測時指向樣本，於是**同一份解碼**兩處共用。
+# ⚠ `strtonum()` 是 gawk 擴充，而鏡像裡的 awk 是 mawk ⇒ 十六進制只能自己拆。
 acme_decode_proc_net() {
   awk '
     function h2d(s,   i, d, n) {
@@ -225,12 +225,12 @@ acme_decode_proc_net() {
   ' "$@"
 }
 
-# 解码自测。★ 它**不是形式**：一个恒空的取证函数，在最该说话的那一刻是沉默的，
-# 而沉默会被读成「端口上什么都没有」—— 那正好是本次要查的那个问题的错误答案。
-# ⚠ 只在取证路径上跑（一次几毫秒），绿的跑一个字都不多。
+# 解碼自測。★ 它**不是形式**：一個恆空的取證函式，在最該說話的那一刻是沉默的，
+# 而沉默會被讀成「連接埠上什麼都沒有」—— 那正好是本次要查的那個問題的錯誤答案。
+# ⚠ 只在取證路徑上跑（一次幾毫秒），綠的跑一個字都不多。
 #
-# ★ 样本是**真实内核输出**：v4 两行与 v6 那行都是 `tests/m0/unclaimed.sh` 在构建镜像里
-#   实抓下来的那一份（它同时是那处 v6 盲区的实物证据），这里原样引用。
+# ★ 樣本是**真實核心輸出**：v4 兩行與 v6 那行都是 `tests/m0/unclaimed.sh` 在建置鏡像裡
+#   實抓下來的那一份（它同時是那處 v6 盲區的實物證據），這裡原樣引用。
 acme_selftest_decode() {
   local dir out bad="" want
   dir=$(mktemp -d)
@@ -257,8 +257,8 @@ acme_selftest_decode() {
        缺: $want" ;;
     esac
   done
-  # ★ 反方向：两行表头一行都不许变成结果。只对正方向自证的话，
-  #   一个「把每一行都原样吐出来」的坏实现照样能全中。
+  # ★ 反方向：兩行表頭一行都不許變成結果。只對正方向自證的話，
+  #   一個「把每一行都原樣吐出來」的壞實作照樣能全中。
   if [ "$(printf '%s\n' "$out" | grep -c .)" != "3" ]; then
     bad="$bad
        行数不是 3（表头没被挡掉？）"
@@ -271,23 +271,23 @@ acme_selftest_decode() {
   return 0
 }
 
-# inode → 全部持有它的 pid。★ 一个 socket 挂着两个 pid 正是「fd 被继承走了」的现场。
+# inode → 全部持有它的 pid。★ 一個 socket 掛著兩個 pid 正是「fd 被繼承走了」的現場。
 acme_socket_owners() {
   local fd link pid ino
   for fd in /proc/[0-9]*/fd/*; do
-    # 这一条只挡「glob 一个都没匹配上，`$fd` 还是那串字面量」与「进程刚好在这一瞬没了」。
-    # ⚠ 别照着「`socket:[N]` 指不到任何路径，所以要用 `-L`」去理解它 —— **那句是错的**：
-    #   procfs 的这类符号链接是内核造的，`stat()` 直接落到 socket 上，
-    #   实测（构建镜像里，对一个真的监听 fd）`-e` 与 `-L` **都为真**。
-    #   ⇒ 这里选 `-L` 是因为要问的本来就是「它是不是一条符号链接」，不是因为 `-e` 会漏。
+    # 這一條只擋「glob 一個都沒匹配上，`$fd` 還是那串字面值」與「處理程序剛好在這一瞬沒了」。
+    # ⚠ 別照著「`socket:[N]` 指不到任何路徑，所以要用 `-L`」去理解它 —— **那句是錯的**：
+    #   procfs 的這類符號連結是核心造的，`stat()` 直接落到 socket 上，
+    #   實測（建置鏡像裡，對一個真的監聽 fd）`-e` 與 `-L` **都為真**。
+    #   ⇒ 這裡選 `-L` 是因為要問的本來就是「它是不是一條符號連結」，不是因為 `-e` 會漏。
     [ -L "$fd" ] || continue
     link=$(readlink "$fd" 2>/dev/null) || continue
     case $link in
       'socket:['*']') ;;
       *) continue ;;
     esac
-    # ★ 只留数字，不写 `${link#socket:[}` —— `[` 在参数展开的模式里是括号表达式的开头，
-    #   一个没闭合的 `[` 究竟被当成字面量还是模式，靠的是实现的宽容而不是规范。
+    # ★ 只留數字，不寫 `${link#socket:[}` —— `[` 在參數展開的模式裡是括號表達式的開頭，
+    #   一個沒閉合的 `[` 究竟被當成字面值還是模式，靠的是實作的寬容而不是規範。
     ino=${link//[^0-9]/}
     pid=${fd#/proc/}
     pid=${pid%%/*}
@@ -295,13 +295,13 @@ acme_socket_owners() {
   done
 }
 
-# 取证正文。第一个参数进标题（说明是在哪一步红的）。
+# 取證正文。第一個參數進標題（說明是在哪一步紅的）。
 acme_dump_ports() {
   local why=$1 a st ino pid owners hold comm state cmd p
   echo "── 取证（$why）：TCP socket 表 ──" >&2
   acme_selftest_decode || true
-  # ★ 「读不到」与「上面什么都没有」必须分开说：一张空表被读成后者，
-  #   就正好给出本次要查的那个问题的错误答案。
+  # ★ 「讀不到」與「上面什麼都沒有」必須分開說：一張空表被讀成後者，
+  #   就正好給出本次要查的那個問題的錯誤答案。
   if [ ! -r /proc/net/tcp ] && [ ! -r /proc/net/tcp6 ]; then
     echo "  ⚠ /proc/net/tcp 与 /proc/net/tcp6 都读不到 —— 下面这张表是空的，" >&2
     echo "    但那说明的是「问不到」，不是「端口上没有东西」。" >&2
@@ -324,20 +324,20 @@ EOF
   echo "── 取证（$why）：进程表 ──" >&2
   for p in /proc/[0-9]*; do
     [ -r "$p/stat" ] || continue
-    # ⚠ `awk '{print $3}'` 在这里是错的：comm 带括号且可以含空格，
-    #   状态字母要从**最后一个** `)` 之后取。
+    # ⚠ `awk '{print $3}'` 在這裡是錯的：comm 帶括號且可以含空格，
+    #   狀態字母要從**最後一個** `)` 之後取。
     state=$(sed 's/.*) //' "$p/stat" 2>/dev/null | cut -d' ' -f1)
-    # ⚠ 换行也要一起压掉：一条带换行的参数会把这张表拆成好几行，读起来像是多了几个进程。
+    # ⚠ 換行也要一起壓掉：一條帶換行的參數會把這張表拆成好幾行，讀起來像是多了幾個處理程序。
     cmd=$(tr '\0\n' '  ' < "$p/cmdline" 2>/dev/null | cut -c1-140)
     [ -n "$cmd" ] || cmd="[$(cat "$p/comm" 2>/dev/null || echo '?')]"
     printf '  pid=%-7s state=%-3s %s\n' "${p#/proc/}" "$state" "$cmd" >&2
   done
 }
 
-# 某一个端口当下的全部 socket（任意状态）。只取证，不判定；没有就回空串。
-# ★ 与 `acme_decode_proc_net` 一样收「要读哪些文件」—— 于是**过滤本身也能拿样本验**，
-#   而不是留一条只有在真出事那天才第一次执行的分支。
-# ⚠ 锚 `$` 不可省：`:80$` 与 `:8080` / `:8083` 必须分得开。
+# 某一個連接埠當下的全部 socket（任意狀態）。只取證，不判定；沒有就回空串。
+# ★ 與 `acme_decode_proc_net` 一樣收「要讀哪些檔案」—— 於是**過濾本身也能拿樣本驗**，
+#   而不是留一條只有在真出事那天才第一次執行的分支。
+# ⚠ 錨 `$` 不可省：`:80$` 與 `:8080` / `:8083` 必須分得開。
 acme_port_snapshot() {
   local port=$1
   shift
@@ -345,23 +345,23 @@ acme_port_snapshot() {
   acme_decode_proc_net "$@" 2>/dev/null | awk -v p="$port" '$1 ~ (":" p "$")' || true
 }
 
-# pebble 自己 HTTPS API 的证书，并把根装进**系统**信任库。
+# pebble 自己 HTTPS API 的證書，並把根裝進**系統**信任庫。
 #
-# ★ 现签，不进仓库：仓库里的测试证书迟早过期，
-#   而过期那天红的是「ACME 坏了」，要绕一圈才发现是证书到期。
+# ★ 現籤，不進儲存庫：儲存庫裡的測試證書遲早過期，
+#   而過期那天紅的是「ACME 壞了」，要繞一圈才發現是證書到期。
 #
-# ★ ★ ★ **必须是「根 + 叶」两级，不能拿一张自签的 CA 证书直接当服务端证书。**
-#   `tests/serve/run.sh` 里那张就是自签 + `CA:TRUE` 一张打天下，curl 收得下——
-#   **而 rustls 不收**：`rustls-platform-verifier` 当场判
+# ★ ★ ★ **必須是「根 + 葉」兩級，不能拿一張自籤的 CA 證書直接當伺服器端證書。**
+#   `tests/serve/run.sh` 裡那張就是自籤 + `CA:TRUE` 一張打天下，curl 收得下——
+#   **而 rustls 不收**：`rustls-platform-verifier` 當場判
 #   `invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`，
-#   现场表现是「建 ACME 账户失败：client error (Connect)」，看不出跟证书有关。
-#   ⚠ 这正是「判据只认得一种形状」的又一次：拿 curl 验一遍会全绿，
-#   而**真正要连上 pebble 的是产品里的 rustls 客户端**，不是 curl。
-#   ★ 顺带记一条：`extendedKeyUsage=serverAuth` 也不是装饰，rustls 会看它。
+#   現場表現是「建 ACME 帳戶失敗：client error (Connect)」，看不出跟證書有關。
+#   ⚠ 這正是「判據只認得一種形狀」的又一次：拿 curl 驗一遍會全綠，
+#   而**真正要連上 pebble 的是產品裡的 rustls 用戶端**，不是 curl。
+#   ★ 順帶記一條：`extendedKeyUsage=serverAuth` 也不是裝飾，rustls 會看它。
 #
-# ★ ★ 装进**系统**信任库，因为产品代码走的是平台信任库。
-#   ⚠ 这一步要 root。装不上要当场红：一个「没能装信任根」却继续跑的脚本，
-#   最后只会得到一句语焉不详的「CA 连不上」。
+# ★ ★ 裝進**系統**信任庫，因為產品程式碼走的是平台信任庫。
+#   ⚠ 這一步要 root。裝不上要當場紅：一個「沒能裝信任根」卻繼續跑的指令碼，
+#   最後只會得到一句語焉不詳的「CA 連不上」。
 acme_make_api_cert() {
   local scenario=$1
   openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
@@ -378,9 +378,9 @@ subjectAltName=DNS:localhost,IP:127.0.0.1
 basicConstraints=critical,CA:FALSE
 extendedKeyUsage=serverAuth
 EXT
-  # ⚠ 两步**分开写**，不要 `A && B || { 报错; }`。shellcheck 的 SC2015 就是冲它来的，
-  #   而本仓库在 G44 上已经被 `&&`/`||` 同优先级坑过一次真的假绿——
-  #   那次的教训不是「注意点」，是**别再写这个形状**。
+  # ⚠ 兩步**分開寫**，不要 `A && B || { 报错; }`。shellcheck 的 SC2015 就是衝它來的，
+  #   而本儲存庫在 G44 上已經被 `&&`/`||` 同優先級坑過一次真的假綠——
+  #   那次的教訓不是「注意點」，是**別再寫這個形狀**。
   openssl req -newkey rsa:2048 -nodes -sha256 \
     -keyout "$WORK/pebble.key" -out "$WORK/pebble.csr" -subj "/CN=localhost" \
     >/dev/null 2>&1 || {
@@ -401,13 +401,13 @@ EXT
   }
 }
 
-# 写 pebble 的配置。第五个参数是**可选**的一段额外 JSON（末尾自带逗号），
-# 续期场景用它塞 `profiles`（把证书寿命调到分钟级）。
+# 寫 pebble 的設定。第五個參數是**可選**的一段額外 JSON（末尾自帶逗號），
+# 續期場景用它塞 `profiles`（把證書壽命調到分鐘級）。
 #
-# ⚠ ⚠ 别改用 `certificateValidityPeriod`：**它在 pebble v2.10.1 里是死配置**——
-#   解析进结构体了，但 CA 只认 profile。实测：配 600 之后启动日志仍然是
+# ⚠ ⚠ 別改用 `certificateValidityPeriod`：**它在 pebble v2.10.1 裡是死設定**——
+#   解析進結構體了，但 CA 只認 profile。實測：配 600 之後啟動紀錄仍然是
 #   `Loaded profile "default" with certificate validity period of 7776000 seconds`。
-#   ★ 这一条是量出来的；照着字面意思读配置结构体会得出相反的结论。
+#   ★ 這一條是量出來的；照著字面意思讀設定結構體會得出相反的結論。
 acme_write_pebble_config() {
   local dir_port=$1 mgmt_port=$2 http_port=$3 tlsalpn_port=$4 extra=${5:-}
   cat > "$WORK/pebble.json" <<PEBBLECONF
@@ -429,11 +429,11 @@ acme_write_pebble_config() {
 PEBBLECONF
 }
 
-# ★ ★ `-defaultIPv6 ''` **不是可选的**：challtestsrv 默认同时回 A 与 AAAA（`::1`），
-#   而这里的枢衡绑在 127.0.0.1 上 —— pebble 走 v6 来验就连不上，
-#   而现场只有一句「CA 说验不过」。
-# ★ 它自带的挑战服务器（-http01/-https01/-tlsalpn01）**必须全部关掉**：
-#   应答挑战的人是枢衡，不是它。留着只会让「谁答的」变得说不清。
+# ★ ★ `-defaultIPv6 ''` **不是可選的**：challtestsrv 預設同時回 A 與 AAAA（`::1`），
+#   而這裡的樞衡綁在 127.0.0.1 上 —— pebble 走 v6 來驗就連不上，
+#   而現場只有一句「CA 說驗不過」。
+# ★ 它自帶的挑戰伺服器（-http01/-https01/-tlsalpn01）**必須全部關掉**：
+#   應答挑戰的人是樞衡，不是它。留著只會讓「誰答的」變得說不清。
 acme_start_challtestsrv() {
   local dns_port=$1 mgmt_port=$2
   pebble-challtestsrv \
@@ -446,32 +446,32 @@ acme_start_challtestsrv() {
   AUX_PIDS+=($!)
 }
 
-# ★ `PEBBLE_VA_NOSLEEP=1`：pebble 默认在验证前随机睡几秒（模拟真实 CA 的延迟）。
-#   门禁里那是纯粹的等待。
+# ★ `PEBBLE_VA_NOSLEEP=1`：pebble 預設在驗證前隨機睡幾秒（模擬真實 CA 的延遲）。
+#   門禁裡那是純粹的等待。
 #
-# ★ ★ **`PEBBLE_WFE_NONCEREJECT` 留在 pebble 自己的默认值 5（%），是有意的，
-#   而这个决定是**算出来的**，不是「跑几次没看见」。**
+# ★ ★ **`PEBBLE_WFE_NONCEREJECT` 留在 pebble 自己的預設值 5（%），是有意的，
+#   而這個決定是**算出來的**，不是「跑幾次沒看見」。**
 #
-#   它是 pebble 用来逼客户端实现 `badNonce` 重试的开关，而**真 CA 就是这么干的**
-#   （RFC 8555 §6.5 要求客户端拿一个新 nonce 重试）。关掉它，门禁就再也证不了这条路。
-#   ⚠ 但留着一个随机失败源，就必须先算清楚它多久会把门变成一次偶发红：
+#   它是 pebble 用來逼用戶端實作 `badNonce` 重試的開關，而**真 CA 就是這麼幹的**
+#   （RFC 8555 §6.5 要求用戶端拿一個新 nonce 重試）。關掉它，門禁就再也證不了這條路。
+#   ⚠ 但留著一個隨機失敗源，就必須先算清楚它多久會把門變成一次偶發紅：
 #
-#   · `instant-acme` 0.8.5 的重试是**有上限的**：`lib.rs` 的 `post()` 里
-#     `let mut retries = 3`，即「首次 + 2 次重试」，三次全被拒就把 400 返回给调用方。
-#     ★ 这一条是**读源码读出来的**，不是从行为猜的——猜出来的重试次数会让下面的估算
-#     整个建在沙子上。
-#   · 于是一次 POST 永久失败的概率是 p³，一轮签发大约十来次 POST。
-#   · 实测（本机）：`NONCE_REJECT=50` 跑 5 次，**4 次绿、1 次红**
-#     （红在建账户那一步，日志里是 `POST /sign-me-up` 连着三发）。
-#   · 按 p³ 缩放回默认的 5%：0.2 × (0.05/0.5)³ ≈ **两万分之一**量级。
-#     ⚠ 这是估算不是实测——真要实测 1e-4 得跑上万次，那个代价不值。
-#   要复现那次测量：`NONCE_REJECT=50 bash tests/acme/run.sh`。
+#   · `instant-acme` 0.8.5 的重試是**有上限的**：`lib.rs` 的 `post()` 裡
+#     `let mut retries = 3`，即「首次 + 2 次重試」，三次全被拒就把 400 回傳給呼叫方。
+#     ★ 這一條是**讀原始碼讀出來的**，不是從行為猜的——猜出來的重試次數會讓下面的估算
+#     整個建在沙子上。
+#   · 於是一次 POST 永久失敗的概率是 p³，一輪簽發大約十來次 POST。
+#   · 實測（本機）：`NONCE_REJECT=50` 跑 5 次，**4 次綠、1 次紅**
+#     （紅在建帳戶那一步，紀錄裡是 `POST /sign-me-up` 連著三發）。
+#   · 按 p³ 縮放回預設的 5%：0.2 × (0.05/0.5)³ ≈ **兩萬分之一**量級。
+#     ⚠ 這是估算不是實測——真要實測 1e-4 得跑上萬次，那個代價不值。
+#   要重現那次測量：`NONCE_REJECT=50 bash tests/acme/run.sh`。
 #
-# 第二个参数是可选的 `PEBBLE_AUTHZREUSE`（百分比）。续期场景把它设成 0，
-# ⚠ 否则 pebble 有 50% 的概率复用上一次的授权，于是**续期那一趟根本不走挑战**——
-#   一条「续期时 TXT 又写了一遍」的断言会变成掷硬币。
-# ⚠ ⚠ 0 也**不是**「永不复用」，而是 1/100（pebble 的差一，原文见 renew.sh 判据四）⇒
-#   那条断言不靠这个参数，而是按 CA 日志里这一趟走了哪一支来判。
+# 第二個參數是可選的 `PEBBLE_AUTHZREUSE`（百分比）。續期場景把它設成 0，
+# ⚠ 否則 pebble 有 50% 的概率重複使用上一次的授權，於是**續期那一趟根本不走挑戰**——
+#   一條「續期時 TXT 又寫了一遍」的斷言會變成擲硬幣。
+# ⚠ ⚠ 0 也**不是**「永不復用」，而是 1/100（pebble 的差一，原文見 renew.sh 判據四）⇒
+#   那條斷言不靠這個參數，而是按 CA 紀錄裡這一趟走了哪一支來判。
 acme_start_pebble() {
   local dns_port=$1 authz_reuse=${2:-}
   local -a env_args=(PEBBLE_VA_NOSLEEP=1 "PEBBLE_WFE_NONCEREJECT=${NONCE_REJECT:-5}")
@@ -484,7 +484,7 @@ acme_start_pebble() {
   AUX_PIDS+=($!)
 }
 
-# 取 pebble 的根证书（供 curl `--cacert` 用）。落在 `$WORK/pebble-root.pem`。
+# 取 pebble 的根證書（供 curl `--cacert` 用）。落在 `$WORK/pebble-root.pem`。
 acme_fetch_root() {
   local scenario=$1 mgmt_port=$2
   run_curl -fsS --max-time 10 "https://localhost:${mgmt_port}/roots/0" -o "$WORK/pebble-root.pem"
@@ -496,12 +496,12 @@ acme_fetch_root() {
 
 # ── DNS-01 的 exec hook（G57）────────────────────────────────────────────────
 #
-# ★ 调用约定是产品定的：`<程序> <set|clear> <记录名> <值>`。
-#   这里让它去改 challtestsrv 的记录，而 **challtestsrv 同时就是 pebble 用的那台权威 NS**
-#   （pebble 起来时带了 `-dnsserver`）——于是「写进去」与「CA 查得到」是同一份数据，
-#   不是两个互相假设的替身。
-# ⚠ 用 `printf '%s'` 拼 JSON 而不是 echo：值里有 base64url 的 `-` 与 `_`，
-#   而 echo 对反斜杠的处理随 shell 而变。
+# ★ 呼叫約定是產品定的：`<程序> <set|clear> <记录名> <值>`。
+#   這裡讓它去改 challtestsrv 的記錄，而 **challtestsrv 同時就是 pebble 用的那臺權威 NS**
+#   （pebble 起來時帶了 `-dnsserver`）——於是「寫進去」與「CA 查得到」是同一份資料，
+#   不是兩個互相假設的替身。
+# ⚠ 用 `printf '%s'` 拼 JSON 而不是 echo：值裡有 base64url 的 `-` 與 `_`，
+#   而 echo 對反斜槓的處理隨 shell 而變。
 acme_write_dns_hook() {
   local path=$1 cts_port=$2
   cat > "$path" <<'HOOKEOF'

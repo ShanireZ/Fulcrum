@@ -1,18 +1,18 @@
-//! keep-alive 空闲窗口的计时器：**每条连接一个，跨请求带着走**（G160）。
+//! keep-alive 空閒視窗的計時器：**每條連接一個，跨請求帶著走**（G160）。
 //!
-//! pingora 在「限时 d」下给每一次读请求头各包一个快计时器 ⇒ 每条请求一整套登记与注销
-//! （两次装箱、两次读钟、`Notify` 链表挂上又摘下），而 60 秒的计时器在请求不断的连接上从来不到期。
-//! 这里改成：读请求头之前把 pingora 切到不限时，自己用一个 [`Sleep`] 包住 `read_request()`；
-//! 它**到点时才复核**「这一次已经空闲了多久」，不满 d 就按余量重设 ⇒ 登记每连接每 d 至多一次，
-//! 稳态每条请求只读一次钟、poll 一个早已登记好的计时器。
+//! pingora 在「限時 d」下給每一次讀請求頭各包一個快計時器 ⇒ 每條請求一整套登記與登出
+//! （兩次裝箱、兩次讀鍾、`Notify` 鏈表掛上又摘下），而 60 秒的計時器在請求不斷的連接上從來不到期。
+//! 這裡改成：讀請求頭之前把 pingora 切到不限時，自己用一個 [`Sleep`] 包住 `read_request()`；
+//! 它**到點時才複核**「這一次已經空閒了多久」，不滿 d 就按餘量重設 ⇒ 登記每連接每 d 至多一次，
+//! 穩態每條請求唯讀一次鍾、poll 一個早已登記好的計時器。
 //!
-//! ⚠ **语义收紧一处**（owner 2026-10-08 拍「方案 P」）：pingora 是「每一次读各给 d」，
-//!   这里包不住它内部的每次读 ⇒ 变成「从开始等到请求头读完，**合计** d」。正常客户端没有区别；
-//!   空闲很久才慢慢发头、或逐段慢发头的客户端会被更早关掉（后者在旧口径下能无限拖住一条连接）。
+//! ⚠ **語義收緊一處**（owner 2026-10-08 拍「方案 P」）：pingora 是「每一次讀各給 d」，
+//!   這裡包不住它內部的每次讀 ⇒ 變成「從開始等到請求頭讀完，**合計** d」。正常用戶端沒有區別；
+//!   空閒很久才慢慢發頭、或逐段慢發頭的用戶端會被更早關掉（後者在舊口徑下能無限拖住一條連接）。
 //!
-//! 计时器经 pingora 的连接级 `user_context` 带到下一条请求：本条
-//! [`carry`] 进 [`HttpPersistentSettings`]，pingora 的 `apply_to_session` 交给下一条的
-//! `ServerSession`，[`read_request`] 再取出来。⚠ 那一格从此归它用。
+//! 計時器經 pingora 的連接級 `user_context` 帶到下一條請求：本條
+//! [`carry`] 進 [`HttpPersistentSettings`]，pingora 的 `apply_to_session` 交給下一條的
+//! `ServerSession`，[`read_request`] 再取出來。⚠ 那一格從此歸它用。
 
 use pingora_core::Result;
 use pingora_core::apps::HttpPersistentSettings;
@@ -23,23 +23,23 @@ use std::task::Poll;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep};
 
-/// 本模块要从连接上用到的几样，**仅此而已**；实现在 `lib.rs`。
+/// 本模組要從連接上用到的幾樣，**僅此而已**；實作在 `lib.rs`。
 ///
-/// ⚠ 有意不直接拿 `ServerSession`：漏斗之外的数据面拿不到裸 session（G110，
-/// `crates/fulcrum/tests/response_gate.rs` 门 1），而这里也用不着写响应。
-/// ⛔ 别往这里加写响应的方法 —— 那等于开一个不带 `Alt-Svc` 的出口。
+/// ⚠ 有意不直接拿 `ServerSession`：漏斗之外的資料面拿不到裸 session（G110，
+/// `crates/fulcrum/tests/response_gate.rs` 門 1），而這裡也用不著寫回應。
+/// ⛔ 別往這裡加寫回應的方法 —— 那等於開一個不帶 `Alt-Svc` 的出口。
 pub(crate) trait Conn {
-    /// pingora 的 keep-alive 状态：`None` 不续 · `Some(0)` 不限时 · `Some(秒)` 限时。
+    /// pingora 的 keep-alive 狀態：`None` 不續 · `Some(0)` 不限時 · `Some(秒)` 限時。
     fn keepalive(&self) -> Option<u64>;
     fn set_keepalive(&mut self, secs: Option<u64>);
-    /// 上一条请求经 `HttpPersistentSettings::set_user_context` 带过来的东西。
+    /// 上一條請求經 `HttpPersistentSettings::set_user_context` 帶過來的東西。
     fn take_carried(&mut self) -> Option<Box<dyn Any + Send + Sync>>;
-    /// 读 h1 请求头时要不要另建保留头名原样大小写的表（G163，fork 改动 18）；h2 / h3 上 no-op。
+    /// 讀 h1 請求頭時要不要另建保留頭名原樣大小寫的表（G163，fork 改動 18）；h2 / h3 上 no-op。
     fn set_preserve_header_case(&mut self, preserve: bool);
     fn read_request(&mut self) -> impl Future<Output = Result<bool>> + Send;
 }
 
-/// 跨请求带着走的那个计时器。
+/// 跨請求帶著走的那個計時器。
 pub(crate) struct IdleTimer {
     sleep: Pin<Box<Sleep>>,
 }
@@ -52,16 +52,16 @@ impl IdleTimer {
     }
 }
 
-/// 读请求头。进来时 pingora 若是「限时 d」，就换成本模块的计时器；
-/// 返回读的结果，以及要 [`carry`] 给下一条请求的计时器。
+/// 讀請求頭。進來時 pingora 若是「限時 d」，就換成本模組的計時器；
+/// 回傳讀的結果，以及要 [`carry`] 給下一條請求的計時器。
 ///
-/// 其他状态（不续 / 不限时 / h2 / h3）照旧直接读，带过来的计时器丢掉 ——
-/// 那几种状态下这条连接本来就不靠它关。
+/// 其他狀態（不續 / 不限時 / h2 / h3）照舊直接讀，帶過來的計時器丟掉 ——
+/// 那幾種狀態下這條連接本來就不靠它關。
 ///
-/// `preserve_case`（G163）：这条请求的头名要不要保留原样大小写 —— 只有原样转发给 h1 上游时才用得到，
-/// 调用方按端口定（端口上没有反代站点就不保留，见 `SharedRuntime::port_has_proxy`）。
-/// ★ 放进本函数的参数而不是让调用方另设一行：每条请求的会话都是新建的、缺省「保留」，
-///   漏设一行在线上看不出任何差别（只是每请求多两次分配）⇒ 让编译器逼着每个调用方表态。
+/// `preserve_case`（G163）：這條請求的頭名要不要保留原樣大小寫 —— 只有原樣轉發給 h1 上游時才用得到，
+/// 呼叫方按連接埠定（連接埠上沒有反代站台就不保留，見 `SharedRuntime::port_has_proxy`）。
+/// ★ 放進本函式的參數而不是讓呼叫方另設一行：每條請求的工作階段都是新建的、預設「保留」，
+///   漏設一行線上上看不出任何差別（只是每請求多兩次分配）⇒ 讓編譯器逼著每個呼叫方表態。
 pub(crate) async fn read_request<C: Conn>(
     conn: &mut C,
     preserve_case: bool,
@@ -76,13 +76,13 @@ pub(crate) async fn read_request<C: Conn>(
     }
 }
 
-/// 读完请求头之后定这条连接续不续、续多久（G161）：**pingora 判了「不续」就不续，枢衡只管时长**；
-/// 停机窗口内一律不续，让连接自己收敛而不是等被砍断。
+/// 讀完請求頭之後定這條連接續不續、續多久（G161）：**pingora 判了「不續」就不續，樞衡只管時長**；
+/// 停機視窗內一律不續，讓連接自己收斂而不是等被砍斷。
 ///
-/// ★ pingora 的判定在 `read_request` 里（`respect_keepalive`，再加 TE 与 CL 同在时关）：
-///   HTTP/1.0 没要求 keep-alive · `Connection: close` · TE 与 CL 同在（RFC 9112 §6.1，防请求走私）都是「不续」。
-/// ⚠ 这里曾无条件设成「续 `secs` 秒」，把头一类与第三类盖掉了（`Connection: close` 没受影响：
-///   pingora 的 `set_server_keepalive` 自己认它）。
+/// ★ pingora 的判定在 `read_request` 裡（`respect_keepalive`，再加 TE 與 CL 同在時關）：
+///   HTTP/1.0 沒要求 keep-alive · `Connection: close` · TE 與 CL 同在（RFC 9112 §6.1，防請求走私）都是「不續」。
+/// ⚠ 這裡曾無條件設成「續 `secs` 秒」，把頭一類與第三類蓋掉了（`Connection: close` 沒受影響：
+///   pingora 的 `set_server_keepalive` 自己認它）。
 pub(crate) fn settle_after_read<C: Conn>(conn: &mut C, shutting_down: bool, secs: u64) {
     if shutting_down || conn.keepalive().is_none() {
         conn.set_keepalive(None);
@@ -91,14 +91,14 @@ pub(crate) fn settle_after_read<C: Conn>(conn: &mut C, shutting_down: bool, secs
     }
 }
 
-/// 把计时器交给下一条请求（经 pingora 的 `HttpPersistentSettings`）。
+/// 把計時器交給下一條請求（經 pingora 的 `HttpPersistentSettings`）。
 pub(crate) fn carry(persistent: &mut HttpPersistentSettings, timer: Option<Box<IdleTimer>>) {
     if let Some(t) = timer {
         persistent.set_user_context(t);
     }
 }
 
-/// pingora 是「限时 d」就切成不限时（它便不再每次读各登记一个计时器），返回 d。
+/// pingora 是「限時 d」就切成不限時（它便不再每次讀各登記一個計時器），回傳 d。
 fn take_over<C: Conn>(conn: &mut C) -> Option<Duration> {
     match conn.keepalive() {
         Some(secs) if secs > 0 => {
@@ -118,14 +118,14 @@ async fn read_within<C: Conn>(
     let mut wait_start = None;
     let mut read = pin!(conn.read_request());
     let res = poll_fn(|cx| {
-        // ★ 先读：读一次就好了（下一条早已到了）就一下都不碰计时器 —— 与 pingora 原本的惰性相同。
+        // ★ 先讀：讀一次就好了（下一條早已到了）就一下都不碰計時器 —— 與 pingora 原本的惰性相同。
         if let Poll::Ready(r) = read.as_mut().poll(cx) {
             return Poll::Ready(r);
         }
         let start = match wait_start {
             Some(s) => s,
             None => {
-                // 第一次挂起 = 这一次开始等：只在这里读一次钟。
+                // 第一次掛起 = 這一次開始等：只在這裡讀一次鍾。
                 let s = Instant::now();
                 wait_start = Some(s);
                 if let Some(t) = timer.as_mut()
@@ -141,7 +141,7 @@ async fn read_within<C: Conn>(
             match t.sleep.as_mut().poll(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(()) => match on_fire(start, Instant::now(), d) {
-                    // 与 pingora 自己的 keep-alive 超时同一个返回：读不到请求头 ⇒ 连接关。
+                    // 與 pingora 自己的 keep-alive 超時同一個回傳：讀不到請求頭 ⇒ 連接關。
                     OnFire::Expire => return Poll::Ready(Ok(false)),
                     OnFire::Rearm(at) => t.sleep.as_mut().reset(at),
                 },
@@ -152,7 +152,7 @@ async fn read_within<C: Conn>(
     (res, timer)
 }
 
-/// 开始等时：带过来的到点若晚于「现在 + d」（d 变短了）就得重设，否则会关得比 d 晚。
+/// 開始等時：帶過來的到點若晚於「現在 + d」（d 變短了）就得重設，否則會關得比 d 晚。
 fn too_late(deadline: Instant, wait_start: Instant, d: Duration) -> bool {
     deadline > wait_start + d
 }
@@ -163,7 +163,7 @@ enum OnFire {
     Rearm(Instant),
 }
 
-/// 到点时：这一次空闲满 d 就关；没满（它是上一条请求时登记的）就重设到「这一次开始等 + d」。
+/// 到點時：這一次空閒滿 d 就關；沒滿（它是上一條請求時登記的）就重設到「這一次開始等 + d」。
 fn on_fire(wait_start: Instant, now: Instant, d: Duration) -> OnFire {
     if now.duration_since(wait_start) >= d {
         OnFire::Expire
@@ -183,19 +183,19 @@ mod tests {
 
     const D: Duration = Duration::from_secs(60);
     const REQ: &[u8] = b"GET / HTTP/1.1\r\nHost: a.example\r\n\r\n";
-    /// 暂停的 tokio 时间里计时器按毫秒取整 ⇒ 关的时刻允许晚这么一点。
+    /// 暫停的 tokio 時間裡計時器按毫秒取整 ⇒ 關的時刻允許晚這麼一點。
     const SLACK: Duration = Duration::from_millis(5);
 
     fn conn() -> (ServerSession, DuplexStream) {
         let (server, client) = duplex(64 * 1024);
         let mut s = ServerSession::new_http1(Box::new(server));
-        // 与 pingora `apps/mod.rs` 给新连接第一条请求设的一样。
+        // 與 pingora `apps/mod.rs` 給新連接第一條請求設的一樣。
         s.set_keepalive(Some(D.as_secs()));
         (s, client)
     }
 
-    /// 回一条空响应，再照 pingora `apps/mod.rs` 的循环 + 枢衡 `process_new_http` 的收尾，
-    /// 把连接交给下一条请求的 `ServerSession`。
+    /// 回一條空回應，再照 pingora `apps/mod.rs` 的循環 + 樞衡 `process_new_http` 的收尾，
+    /// 把連接交給下一條請求的 `ServerSession`。
     async fn next(mut s: ServerSession, timer: Option<Box<IdleTimer>>) -> ServerSession {
         s.set_keepalive(Some(D.as_secs()));
         let mut resp = ResponseHeader::build(200, None).unwrap();
@@ -212,14 +212,14 @@ mod tests {
         next
     }
 
-    /// 客户端在 `at`（从测试开始算）写 `bytes`；连接留着，⛔ 不关。
-    /// ⚠ 写失败不判：服务端按判据已经关了的话这一写本来就该失败，判据看的是服务端那一侧。
+    /// 用戶端在 `at`（從測試開始算）寫 `bytes`；連接留著，⛔ 不關。
+    /// ⚠ 寫失敗不判：伺服器端按判據已經關了的話這一寫本來就該失敗，判據看的是伺服器端那一側。
     async fn send_at(client: &mut DuplexStream, t0: Instant, at: Duration, bytes: &[u8]) {
         tokio::time::sleep_until(t0 + at).await;
         let _ = client.write_all(bytes).await;
     }
 
-    /// 外层上限：实现坏成「永远在续」时让测试红，⛔ 不让它在暂停的时间里一直续下去、把门禁挂住。
+    /// 外層上限：實作壞成「永遠在續」時讓測試紅，⛔ 不讓它在暫停的時間裡一直續下去、把門禁掛住。
     async fn bounded<F: Future>(f: F) -> F::Output {
         tokio::time::timeout(D * 10, f)
             .await
@@ -246,7 +246,7 @@ mod tests {
         assert!(!too_late(t0 + D, t0, D));
     }
 
-    /// ★ 接管之后 pingora 侧是不限时：它不再每次读各登记一个计时器（B1 省下的就是这一截）。
+    /// ★ 接管之後 pingora 側是不限時：它不再每次讀各登記一個計時器（B1 省下的就是這一截）。
     #[tokio::test]
     async fn 限时才接管_接管后pingora侧不限时() {
         let (mut s, _c) = conn();
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(s.get_keepalive(), None);
     }
 
-    /// G163：`preserve_case` 真的在读之前设到连接上（真 pingora 解析）—— 不保留时请求头没有那张表，名与值照旧查得到。
+    /// G163：`preserve_case` 真的在讀之前設到連接上（真 pingora 解析）—— 不保留時請求頭沒有那張表，名與值照舊查得到。
     #[tokio::test]
     async fn preserve_case_在读之前设到连接上() {
         for preserve in [true, false] {
@@ -280,7 +280,7 @@ mod tests {
         }
     }
 
-    /// 判据 1：新连接什么都不发 ⇒ 正好 d 之后关。
+    /// 判據 1：新連接什麼都不發 ⇒ 正好 d 之後關。
     #[tokio::test(start_paused = true)]
     async fn 空闲到d就关() {
         let t0 = Instant::now();
@@ -290,8 +290,8 @@ mod tests {
         at_about(Instant::now(), t0, D);
     }
 
-    /// 判据 2：计时器是第一条请求开始等时登记的（到点 t0 + 60）。第二条在 36 s 读完，
-    /// 第三次从 36 s 开始等 ⇒ 60 s 到点时只空闲了 24 s，⛔ 不能关，要到 96 s。
+    /// 判據 2：計時器是第一條請求開始等時登記的（到點 t0 + 60）。第二條在 36 s 讀完，
+    /// 第三次從 36 s 開始等 ⇒ 60 s 到點時只空閒了 24 s，⛔ 不能關，要到 96 s。
     #[tokio::test(start_paused = true)]
     async fn 到点复核_带过来的计时器先到点也不提前关() {
         let t0 = Instant::now();
@@ -316,7 +316,7 @@ mod tests {
         at_about(closed, t0, Duration::from_secs(36) + D);
     }
 
-    /// 判据 3：同一条连接上几条请求用的是**同一个**计时器，且一直没重设过（到点仍是第一次登记的那个）。
+    /// 判據 3：同一條連接上幾條請求用的是**同一個**計時器，且一直沒重設過（到點仍是第一次登記的那個）。
     #[tokio::test(start_paused = true)]
     async fn 跨请求是同一个计时器_只登记一次() {
         let t0 = Instant::now();
@@ -347,7 +347,7 @@ mod tests {
         assert!(seen.iter().all(|x| x.1 == t0 + D), "重设过：{seen:?}");
     }
 
-    /// 判据 4：带过来的到点比「这一次开始等 + d」还晚（d 变短了）⇒ 按新的 d 关，⛔ 不等旧的到点。
+    /// 判據 4：帶過來的到點比「這一次開始等 + d」還晚（d 變短了）⇒ 按新的 d 關，⛔ 不等舊的到點。
     #[tokio::test(start_paused = true)]
     async fn 带过来的到点太晚就重设() {
         let t0 = Instant::now();
@@ -370,7 +370,7 @@ mod tests {
         at_about(closed, t0, Duration::from_secs(2));
     }
 
-    /// 判据 5（新口径钉成断言）：请求头分两段、都在 d 内到 ⇒ 照常读完。
+    /// 判據 5（新口徑釘成斷言）：請求頭分兩段、都在 d 內到 ⇒ 照常讀完。
     #[tokio::test(start_paused = true)]
     async fn 请求头分段到_合计在d内照常读完() {
         let t0 = Instant::now();
@@ -386,8 +386,8 @@ mod tests {
         assert!(read);
     }
 
-    /// 判据 5 的另一半：空闲 54 s 才发前一段、后一段在开始等之后 61 s 才到 ⇒ 60 s 关。
-    /// ⚠ 这是**新口径**：pingora 的「每一次读各给 d」下，前一段读到后会重新给 60 s，这条连接不会关。
+    /// 判據 5 的另一半：空閒 54 s 才發前一段、後一段在開始等之後 61 s 才到 ⇒ 60 s 關。
+    /// ⚠ 這是**新口徑**：pingora 的「每一次讀各給 d」下，前一段讀到後會重新給 60 s，這條連接不會關。
     #[tokio::test(start_paused = true)]
     async fn 请求头从开始等到读完合计d_超过就关() {
         let t0 = Instant::now();
@@ -408,8 +408,8 @@ mod tests {
         at_about(closed, t0, D);
     }
 
-    /// 读一条原始请求（真 pingora 解析），再按 `process_new_http` 的收尾定续不续；
-    /// 返回 pingora 那一格：`None` = 不续。
+    /// 讀一條原始請求（真 pingora 解析），再按 `process_new_http` 的收尾定續不續；
+    /// 回傳 pingora 那一格：`None` = 不續。
     async fn verdict(raw: &[u8], shutting_down: bool) -> Option<u64> {
         let (mut s, mut client) = conn();
         client.write_all(raw).await.unwrap();
@@ -419,8 +419,8 @@ mod tests {
         s.get_keepalive()
     }
 
-    /// G161：pingora 判了「不续」的，枢衡 ⛔ 不能把它改回续 —— 三类各一条，各自出结果。
-    /// HTTP/1.0 没要求 keep-alive ⇒ 回完就关（RFC 9112 §9.3）。
+    /// G161：pingora 判了「不續」的，樞衡 ⛔ 不能把它改回續 —— 三類各一條，各自出結果。
+    /// HTTP/1.0 沒要求 keep-alive ⇒ 回完就關（RFC 9112 §9.3）。
     #[tokio::test]
     async fn http10没要求keepalive就不续() {
         assert_eq!(
@@ -429,7 +429,7 @@ mod tests {
         );
     }
 
-    /// TE 与 CL 同在 ⇒ 回完必须关（RFC 9112 §6.1，防请求走私）。
+    /// TE 與 CL 同在 ⇒ 回完必須關（RFC 9112 §6.1，防請求走私）。
     #[tokio::test]
     async fn te与cl同在就不续() {
         assert_eq!(
@@ -442,7 +442,7 @@ mod tests {
         );
     }
 
-    /// `Connection: close`（旧代码在这条上本来就对：pingora 的 `set_server_keepalive` 自己认它）。
+    /// `Connection: close`（舊程式碼在這條上本來就對：pingora 的 `set_server_keepalive` 自己認它）。
     #[tokio::test]
     async fn connection_close不续() {
         assert_eq!(
@@ -455,7 +455,7 @@ mod tests {
         );
     }
 
-    /// G161 的另一半：pingora 判「续」的，续多久由枢衡定 ⇒ 一个「什么都关」的实现在这里红。
+    /// G161 的另一半：pingora 判「續」的，續多久由樞衡定 ⇒ 一個「什麼都關」的實作在這裡紅。
     #[tokio::test]
     async fn pingora判续的续d() {
         let d = Some(D.as_secs());

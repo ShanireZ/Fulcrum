@@ -1,44 +1,44 @@
-//! 续期判定（G56）：**ARI 优先，回退「剩余寿命 1/3」；失败走指数退避 + 随机抖动**。
+//! 續期判定（G56）：**ARI 優先，退回「剩餘壽命 1/3」；失敗走指數退避 + 隨機抖動**。
 //!
-//! ★ ★ **整个模块是纯函数**：时间与抖动都从参数进来，一个 `SystemTime::now()` 都没有。
-//! 理由是「判据不能挂在会抖的量上」——续期策略最要紧的性质（6 天短证书不会被判成
-//! 「永远在续期」、退避真的在退、抖动真的在抖）只有在**可以指定时间**的前提下才测得出来。
+//! ★ ★ **整個模組是純函式**：時間與抖動都從參數進來，一個 `SystemTime::now()` 都沒有。
+//! 理由是「判據不能掛在會抖的量上」——續期策略最要緊的性質（6 天短證書不會被判成
+//! 「永遠在續期」、退避真的在退、抖動真的在抖）只有在**可以指定時間**的前提下才測得出來。
 //!
-//! # ★ 为什么不写死天数
+//! # ★ 為什麼不寫死天數
 //!
-//! **Let's Encrypt 正在推 6 天短寿命证书**。「到期前 30 天续」在那种证书上
-//! 等于**永远在续期**——每次检查都满足条件，于是每次检查都发一次签发请求，
-//! 而失败要消耗 CA 的速率配额。比例制对寿命免疫。
+//! **Let's Encrypt 正在推 6 天短壽命證書**。「到期前 30 天續」在那種證書上
+//! 等於**永遠在續期**——每次檢查都滿足條件，於是每次檢查都發一次簽發請求，
+//! 而失敗要消耗 CA 的速率配額。比例制對壽命免疫。
 //!
-//! # ★ ARI 还有比例制给不了的东西
+//! # ★ ARI 還有比例制給不了的東西
 //!
-//! CA 因安全事件需要**提前批量撤销重签**时，ARI（RFC 9773）是它通知你的唯一渠道。
-//! 不接就只能等出事——所以顺序是「先问 ARI，问不到才用比例」，不是「两者取其一」。
+//! CA 因安全事件需要**提前批量撤銷重籤**時，ARI（RFC 9773）是它通知你的唯一渠道。
+//! 不接就只能等出事——所以順序是「先問 ARI，問不到才用比例」，不是「兩者取其一」。
 
 use std::time::{Duration, SystemTime};
 
-/// CA 通过 ARI 给出的建议续期窗口。
+/// CA 通過 ARI 給出的建議續期視窗。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AriWindow {
     pub start: SystemTime,
     pub end: SystemTime,
 }
 
-/// 一张证书的续期状态。存在 `meta.json` 里——**它记的是证书里没有的东西**。
+/// 一張證書的續期狀態。存在 `meta.json` 裡——**它記的是證書裡沒有的東西**。
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RenewalState {
-    /// 连续失败次数。成功一次就归零。
+    /// 連續失敗次數。成功一次就歸零。
     pub failures: u32,
-    /// 上一次尝试的时刻（Unix 秒）。`None` = 还没试过。
+    /// 上一次嘗試的時刻（Unix 秒）。`None` = 還沒試過。
     pub last_attempt: Option<u64>,
 }
 
-/// 退避参数。★ 做成结构体而不是常量，是为了让测试能用小数值跑完整条曲线。
+/// 退避參數。★ 做成結構體而不是常數，是為了讓測試能用小數值跑完整條曲線。
 #[derive(Debug, Clone, Copy)]
 pub struct Backoff {
     pub base: Duration,
     pub cap: Duration,
-    /// 抖动幅度占该次退避的比例（0.0 = 不抖）。
+    /// 抖動幅度佔該次退避的比例（0.0 = 不抖）。
     pub jitter_ratio: f64,
 }
 
@@ -47,25 +47,25 @@ impl Default for Backoff {
         Backoff {
             base: Duration::from_secs(60),
             cap: Duration::from_secs(6 * 3600),
-            // ⚠ **抖动不是可选项**：同一台机上几十个域名同时到期时，
-            //   不抖动会把重试打成尖峰——而尖峰正好是 CA 速率限制针对的形状。
+            // ⚠ **抖動不是可選項**：同一臺機上幾十個網域同時到期時，
+            //   不抖動會把重試打成尖峰——而尖峰正好是 CA 速率限制針對的形狀。
             jitter_ratio: 0.5,
         }
     }
 }
 
 impl Backoff {
-    /// 第 `failures` 次失败之后要等多久。`jitter_unit` 取 `[0, 1)`，由调用方给。
+    /// 第 `failures` 次失敗之後要等多久。`jitter_unit` 取 `[0, 1)`，由呼叫方給。
     ///
-    /// ★ 抖动值从参数进来而不是在这里 `rand`：否则这个函数没法被确定性地测，
-    /// 而「时快时慢的反证等于没有反证」是本仓库的老纪律。
+    /// ★ 抖動值從參數進來而不是在這裡 `rand`：否則這個函式沒法被確定性地測，
+    /// 而「時快時慢的反證等於沒有反證」是本儲存庫的老紀律。
     pub fn delay(&self, failures: u32, jitter_unit: f64) -> Duration {
         if failures == 0 {
             return Duration::ZERO;
         }
-        // 2^(n-1) * base，封顶。★ 用 checked/saturating：failures 大到 40 时
-        //   `1u64 << 39` 秒是一万多年，乘出来会溢出——而溢出 panic 在续期路径上
-        //   等于把一次签发失败升级成进程崩溃。
+        // 2^(n-1) * base，封頂。★ 用 checked/saturating：failures 大到 40 時
+        //   `1u64 << 39` 秒是一萬多年，乘出來會溢出——而溢出 panic 在續期路徑上
+        //   等於把一次簽發失敗升級成處理程序崩潰。
         let shift = (failures - 1).min(32);
         let mult = 1u64 << shift;
         let raw = self
@@ -74,38 +74,38 @@ impl Backoff {
             .unwrap_or(self.cap)
             .min(self.cap);
         let j = jitter_unit.clamp(0.0, 1.0) * self.jitter_ratio;
-        // 抖动是**减法**：在 [raw*(1-j), raw] 之间。往小抖不会把重试推到更远的将来，
-        // 而往大抖会让「封顶」这件事失效。
+        // 抖動是**減法**：在 [raw*(1-j), raw] 之間。往小抖不會把重試推到更遠的將來，
+        // 而往大抖會讓「封頂」這件事失效。
         let secs = raw.as_secs_f64() * (1.0 - j);
         Duration::from_secs_f64(secs.max(0.0))
     }
 }
 
-/// 判定结果。
+/// 判定結果。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
-    /// 现在就该续。
+    /// 現在就該續。
     pub renew_now: bool,
-    /// 人读的理由——★ 它会进日志，所以必须说清楚「为什么是现在」。
+    /// 人讀的理由——★ 它會進紀錄，所以必須說清楚「為什麼是現在」。
     pub reason: String,
-    /// 下一次该在多久之后再检查。
+    /// 下一次該在多久之後再檢查。
     pub next_check: Duration,
 }
 
-/// 最长与最短的检查间隔。
+/// 最長與最短的檢查間隔。
 const MAX_CHECK: Duration = Duration::from_secs(12 * 3600);
 const MIN_CHECK: Duration = Duration::from_secs(60);
 
-/// 退避还要压多久。`None` = 现在可以试。
+/// 退避還要壓多久。`None` = 現在可以試。
 ///
-/// ★ ★ **它被抽出来，是因为它有两个调用点** —— 只长在其中一个上就是一半的实现。
-/// [`should_renew`] 只在「存储里已经有一张证书」时才被调用——于是一个**从来没签成过**
-/// 的域名（域名写错、80 端口不通、CAA 挡着）根本走不到这里：
-/// 它每一轮都直接去下单，退避形同虚设。
-/// ⚠ 后果不是「多试几次」：CA 的失败验证配额是**按账户**算的，
-/// 一个签不出来的域名会把整个账户的配额耗光，**连累同一台机器上别的域名也签不出来**。
-/// 那正是 G56 里退避存在的理由，却恰好在它最该生效的那一种情形上缺席。
-/// 由 ACME 门禁的反证跑抓到：日志里连着三轮都是「连续第 1 次失败」。
+/// ★ ★ **它被抽出來，是因為它有兩個呼叫點** —— 只長在其中一個上就是一半的實作。
+/// [`should_renew`] 只在「儲存裡已經有一張證書」時才被呼叫——於是一個**從來沒簽成過**
+/// 的網域（網域寫錯、80 連接埠不通、CAA 擋著）根本走不到這裡：
+/// 它每一輪都直接去下單，退避形同虛設。
+/// ⚠ 後果不是「多試幾次」：CA 的失敗驗證配額是**按帳戶**算的，
+/// 一個籤不出來的網域會把整個帳戶的配額耗光，**連累同一臺機器上別的網域也籤不出來**。
+/// 那正是 G56 裡退避存在的理由，卻恰好在它最該生效的那一種情形上缺席。
+/// 由 ACME 門禁的反證跑抓到：紀錄裡連著三輪都是「連續第 1 次失敗」。
 pub fn backoff_remaining(
     now: SystemTime,
     state: &RenewalState,
@@ -124,10 +124,10 @@ pub fn backoff_remaining(
     }
 }
 
-/// 该不该现在续期。
+/// 該不該現在續期。
 ///
-/// 顺序：**退避 → ARI → 比例**。退避排最前是因为它是**否决项**：
-/// 上一次失败之后还没到重试时刻，就算 ARI 说该续也不能续（那只会再撞一次速率限制）。
+/// 順序：**退避 → ARI → 比例**。退避排最前是因為它是**否決項**：
+/// 上一次失敗之後還沒到重試時刻，就算 ARI 說該續也不能續（那隻會再撞一次速率限制）。
 pub fn should_renew(
     now: SystemTime,
     not_before: SystemTime,
@@ -137,7 +137,7 @@ pub fn should_renew(
     backoff: Backoff,
     jitter_unit: f64,
 ) -> Decision {
-    // ── 1. 退避（否决项）───────────────────────────────────────────────────
+    // ── 1. 退避（否決項）───────────────────────────────────────────────────
     if let Some(remaining) = backoff_remaining(now, state, backoff, jitter_unit) {
         return Decision {
             renew_now: false,
@@ -150,7 +150,7 @@ pub fn should_renew(
         };
     }
 
-    // ── 2. ARI（CA 说话优先）───────────────────────────────────────────────
+    // ── 2. ARI（CA 說話優先）───────────────────────────────────────────────
     if let Some(w) = ari {
         if now >= w.start {
             return Decision {
@@ -167,7 +167,7 @@ pub fn should_renew(
         };
     }
 
-    // ── 3. 比例制：剩余寿命 <= 总寿命的 1/3 ────────────────────────────────
+    // ── 3. 比例制：剩餘壽命 <= 總壽命的 1/3 ────────────────────────────────
     let total = not_after
         .duration_since(not_before)
         .unwrap_or(Duration::ZERO);
@@ -218,24 +218,24 @@ mod tests {
     fn 九十天证书在剩余三十天时才续() {
         let nb = t(0);
         let na = t(90 * DAY);
-        // 剩 31 天：还不到 1/3（30 天）
+        // 剩 31 天：還不到 1/3（30 天）
         let d = should_renew(t(59 * DAY), nb, na, None, &fresh(), Backoff::default(), 0.0);
         assert!(!d.renew_now, "{}", d.reason);
-        // 剩 30 天：正好到线
+        // 剩 30 天：正好到線
         let d = should_renew(t(60 * DAY), nb, na, None, &fresh(), Backoff::default(), 0.0);
         assert!(d.renew_now, "{}", d.reason);
     }
 
     #[test]
     fn 六天短证书不会被判成永远在续期() {
-        // ★ ★ 这条是 G56 不写死天数的**全部理由**：
-        //   「到期前 30 天续」在 6 天寿命的证书上，从签发那一刻就成立。
+        // ★ ★ 這條是 G56 不寫死天數的**全部理由**：
+        //   「到期前 30 天續」在 6 天壽命的證書上，從簽發那一刻就成立。
         let nb = t(0);
         let na = t(6 * DAY);
-        // 第 1 天：剩 5 天 > 2 天（1/3），不该续
+        // 第 1 天：剩 5 天 > 2 天（1/3），不該續
         let d = should_renew(t(DAY), nb, na, None, &fresh(), Backoff::default(), 0.0);
         assert!(!d.renew_now, "刚签发就要续 = 永远在续期：{}", d.reason);
-        // 第 4 天：剩 2 天 = 1/3，该续
+        // 第 4 天：剩 2 天 = 1/3，該續
         let d = should_renew(t(4 * DAY), nb, na, None, &fresh(), Backoff::default(), 0.0);
         assert!(d.renew_now, "{}", d.reason);
     }
@@ -244,7 +244,7 @@ mod tests {
     fn ari_优先于比例制_两个方向都要对() {
         let nb = t(0);
         let na = t(90 * DAY);
-        // ① ARI 说「现在就续」，而比例制还没到 → 听 ARI
+        // ① ARI 說「現在就續」，而比例制還沒到 → 聽 ARI
         let ari = AriWindow {
             start: t(10 * DAY),
             end: t(20 * DAY),
@@ -261,8 +261,8 @@ mod tests {
         assert!(d.renew_now, "ARI 窗口内必须续：{}", d.reason);
         assert!(d.reason.contains("ARI"));
 
-        // ② ARI 说「还没到」，而比例制已经到了 → **也听 ARI**。
-        //    ★ 这一条容易写反：ARI 是 CA 的排期，它比我们的比例制更知道该什么时候续。
+        // ② ARI 說「還沒到」，而比例制已經到了 → **也聽 ARI**。
+        //    ★ 這一條容易寫反：ARI 是 CA 的排期，它比我們的比例制更知道該什麼時候續。
         let ari_late = AriWindow {
             start: t(80 * DAY),
             end: t(85 * DAY),
@@ -296,11 +296,11 @@ mod tests {
             cap: Duration::from_secs(3600),
             jitter_ratio: 0.0,
         };
-        // 第 3 次失败 → 等 4*60 = 240s；now = 1000 + 100 还没到
+        // 第 3 次失敗 → 等 4*60 = 240s；now = 1000 + 100 還沒到
         let d = should_renew(t(1100), nb, na, Some(ari), &state, bo, 0.0);
         assert!(!d.renew_now, "退避没到就不许续：{}", d.reason);
         assert!(d.reason.contains("退避"));
-        // 到了之后就放行
+        // 到了之後就放行
         let d = should_renew(t(1000 + 240), nb, na, Some(ari), &state, bo, 0.0);
         assert!(d.renew_now, "{}", d.reason);
     }
@@ -317,10 +317,10 @@ mod tests {
         assert_eq!(bo.delay(2, 0.0), Duration::from_secs(20));
         assert_eq!(bo.delay(3, 0.0), Duration::from_secs(40));
         assert_eq!(bo.delay(4, 0.0), Duration::from_secs(80));
-        // 封顶
+        // 封頂
         assert_eq!(bo.delay(5, 0.0), Duration::from_secs(100));
         assert_eq!(bo.delay(50, 0.0), Duration::from_secs(100));
-        // ★ 大失败次数不许溢出 panic：一次签发失败不该升级成进程崩溃
+        // ★ 大失敗次數不許溢出 panic：一次簽發失敗不該升級成處理程序崩潰
         assert_eq!(bo.delay(u32::MAX, 0.0), Duration::from_secs(100));
     }
 
@@ -337,9 +337,9 @@ mod tests {
         assert_eq!(none, Duration::from_secs(100));
         assert_eq!(half, Duration::from_secs(75)); // 100 * (1 - 0.25)
         assert_eq!(full, Duration::from_secs(50)); // 100 * (1 - 0.5)
-        // ★ 只往小抖：抖动不能把重试推到比封顶更远的将来
+        // ★ 只往小抖：抖動不能把重試推到比封頂更遠的將來
         assert!(full <= none && half <= none);
-        // ★ 而它必须真的在抖——ratio 为 0 时才允许恒定
+        // ★ 而它必須真的在抖——ratio 為 0 時才允許恆定
         let flat = Backoff {
             jitter_ratio: 0.0,
             ..bo
@@ -358,22 +358,22 @@ mod tests {
 
     #[test]
     fn 退避对从来没签成过的域名同样生效() {
-        // ★ ★ 这条守的是那个缺陷：退避原先只长在 `should_renew` 里，
-        //   而 `should_renew` **只在存储里已经有一张证书时**才被调用。
-        //   于是一个永远签不出来的域名（域名写错、80 不通、CAA 挡着）走的是另一条路，
-        //   每一轮都直接下单 —— 日志里连着三轮都是「连续第 1 次失败」。
+        // ★ ★ 這條守的是那個缺陷：退避原先只長在 `should_renew` 裡，
+        //   而 `should_renew` **只在儲存裡已經有一張證書時**才被呼叫。
+        //   於是一個永遠籤不出來的網域（網域寫錯、80 不通、CAA 擋著）走的是另一條路，
+        //   每一輪都直接下單 —— 紀錄裡連著三輪都是「連續第 1 次失敗」。
         let bo = Backoff::default(); // base 60s
         let st = RenewalState {
             failures: 3,
             last_attempt: Some(1000),
         };
-        // 第 3 次失败后要等 2^2 * 60 = 240s（jitter=0 时不打折）
+        // 第 3 次失敗後要等 2^2 * 60 = 240s（jitter=0 時不打折）
         let waiting = backoff_remaining(t(1000 + 10), &st, bo, 0.0);
         assert_eq!(waiting, Some(Duration::from_secs(230)));
-        // 等够了就放行
+        // 等夠了就放行
         assert_eq!(backoff_remaining(t(1000 + 240), &st, bo, 0.0), None);
-        // ★ 反向：没失败过的、以及失败过但没记下时刻的，都不该被压住——
-        //   否则一个刚加进配置的新域名会被一个不存在的退避挡在门外。
+        // ★ 反向：沒失敗過的、以及失敗過但沒記下時刻的，都不該被壓住——
+        //   否則一個剛加進設定的新網域會被一個不存在的退避擋在門外。
         assert_eq!(backoff_remaining(t(1000), &fresh(), bo, 0.0), None);
         let no_time = RenewalState {
             failures: 5,
@@ -384,8 +384,8 @@ mod tests {
 
     #[test]
     fn 退避真的在指数增长() {
-        // ★ 判据不是「有退避」，是**它随失败次数变长**。
-        //   原先那个缺陷的表现恰恰是它**不变**（永远停在第 1 次）。
+        // ★ 判據不是「有退避」，是**它隨失敗次數變長**。
+        //   原先那個缺陷的表現恰恰是它**不變**（永遠停在第 1 次）。
         let bo = Backoff::default();
         let w = |n: u32| {
             let st = RenewalState {
@@ -397,7 +397,7 @@ mod tests {
         assert!(w(1) < w(2), "{:?} 不小于 {:?}", w(1), w(2));
         assert!(w(2) < w(3));
         assert!(w(3) < w(4));
-        // 封顶之后不再涨（否则一次长期故障会把重试推到几万年后）。
+        // 封頂之後不再漲（否則一次長期故障會把重試推到幾萬年後）。
         assert_eq!(w(30), w(40));
     }
 
@@ -407,8 +407,8 @@ mod tests {
         let na = t(3650 * DAY); // 十年
         let d = should_renew(t(1), nb, na, None, &fresh(), Backoff::default(), 0.0);
         assert!(!d.renew_now);
-        // ★ 不能因为「离续期还有六年」就六年不检查一次：
-        //   ARI 随时可能出现，配置也随时可能变。
+        // ★ 不能因為「離續期還有六年」就六年不檢查一次：
+        //   ARI 隨時可能出現，設定也隨時可能變。
         assert!(d.next_check <= MAX_CHECK, "{:?}", d.next_check);
         assert!(d.next_check >= MIN_CHECK);
     }

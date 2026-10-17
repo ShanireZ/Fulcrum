@@ -33,11 +33,11 @@ def build_header(spec, dst_port):
         return b""
 
     if spec == "v1unknown":
-        # ★ 合法，且语义是「没有真实客户端」—— 上游 LB 的健康检查就长这样。
+        # ★ 合法，且語義是「沒有真實用戶端」—— 上游 LB 的健康檢查就長這樣。
         return b"PROXY UNKNOWN\r\n"
 
     if spec == "v2local":
-        # ver_cmd = 0x20（v2 + LOCAL），payload 长度 0。
+        # ver_cmd = 0x20（v2 + LOCAL），payload 長度 0。
         return V2_SIG + bytes([0x20, 0x11]) + struct.pack("!H", 0)
 
     kind, ip, sport = spec.split(":", 2)
@@ -86,20 +86,20 @@ def main():
         return 0
 
     try:
-        # ⚠ ⚠ PROXY 头**永远**走裸 socket，即使这条连接接下来要做 TLS ——
-        #   它按规格就在 TLS 之前，而这正是被测的那件事。
+        # ⚠ ⚠ PROXY 頭**永遠**走裸 socket，即使這條連接接下來要做 TLS ——
+        #   它按規格就在 TLS 之前，而這正是被測的那件事。
         if hdr and args.split:
             sock.sendall(hdr)
             time.sleep(0.05)
         elif hdr:
-            pass  # 与请求一起发，见下
+            pass  # 與請求一起發，見下
 
         if args.tls:
             if hdr and not args.split:
                 sock.sendall(hdr)
-                # ★ TLS 那条路做不到「头与 ClientHello 在同一个段里」——
-                #   ClientHello 是 ssl 库自己写的，我们插不进去。⇒ 只能先发头。
-                #   ⚠ 这一句写在这里，是为了别让读的人以为 TLS 那格也覆盖了合并发送。
+                # ★ TLS 那條路做不到「頭與 ClientHello 在同一個段裡」——
+                #   ClientHello 是 ssl 庫自己寫的，我們插不進去。⇒ 只能先發頭。
+                #   ⚠ 這一句寫在這裡，是為了別讓讀的人以為 TLS 那格也覆蓋了合並行送。
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
@@ -108,7 +108,7 @@ def main():
         else:
             stream = sock
             if hdr and not args.split:
-                stream.sendall(hdr + req)  # ★ ★ 一个段，这条路要 rewind 才对
+                stream.sendall(hdr + req)  # ★ ★ 一個段，這條路要 rewind 才對
             else:
                 stream.sendall(req)
 
@@ -129,7 +129,7 @@ def main():
             pass
 
     if not raw:
-        # ★ 一个字节都没回来 —— 那正是「清单内的来源不发头 ⇒ 关连接」的形状。
+        # ★ 一個位元組都沒回來 —— 那正是「清單內的來源不發頭 ⇒ 關連接」的形狀。
         print("CLOSED")
         return 0
 

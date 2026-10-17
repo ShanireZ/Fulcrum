@@ -1,47 +1,47 @@
-# 枢衡 · `respond` 上界诊断的被测配置（M3）。
+# 樞衡 · `respond` 上界診斷的被測設定（M3）。
 #
-# ⚠ ⚠ ★ **本文件有三个用途，改它要同时想到三处：**
-#   ① `bench/diag/respond-ceiling.sh` 的**被测**（量 `respond` 的上界）；
-#   ② `bench/case/reverse-proxy-throughput.sh` 的**源站**（§8 七类之二，四家反代
-#      都转发到它）；
-#   ③ `bench/case/short-connection-throughput.sh` 的**被测**（§8 七类之「高并发短连接」，
-#      枢衡那一家；另外三家用 `*-respond*` 那几份同形态的模板）。
-#   ★ 共用一份是有意的：三处的「枢衡 respond」于是**天然是同一份字节**，
-#     ⛔ 不靠人盯着几份文件对齐（与 `fulcrum-cache-{origin,disk}` 那对
-#     「删一行派生」同一个动机）。★ 于是 ① 与 ③ 只差「每个请求一条新连接」这一个变量
-#     —— ⚠ 那是诊断用的对照，⛔ 不许把两处读数并排引用成「建连代价是多少」
-#     （两趟不在同一次 oha 运行里，payload 是各自随机生成的两份同长字节）。
-#   ⚠ 下面那段「这不是 §8 七类里的一类」说的是用途 ①；用途 ② 里它是**源站**，
-#     被测是那四家反代；用途 ③ 里它**就是** §8 一类的被测 —— 三者都不与它冲突。
+# ⚠ ⚠ ★ **本檔案有三個用途，改它要同時想到三處：**
+#   ① `bench/diag/respond-ceiling.sh` 的**被測**（量 `respond` 的上界）；
+#   ② `bench/case/reverse-proxy-throughput.sh` 的**源站**（§8 七類之二，四家反代
+#      都轉發到它）；
+#   ③ `bench/case/short-connection-throughput.sh` 的**被測**（§8 七類之「高並行短連接」，
+#      樞衡那一家；另外三家用 `*-respond*` 那幾份同形態的範本）。
+#   ★ 共用一份是有意的：三處的「樞衡 respond」於是**天然是同一份位元組**，
+#     ⛔ 不靠人盯著幾份檔案對齊（與 `fulcrum-cache-{origin,disk}` 那對
+#     「刪一行派生」同一個動機）。★ 於是 ① 與 ③ 只差「每個請求一條新連接」這一個變數
+#     —— ⚠ 那是診斷用的對照，⛔ 不許把兩處讀數並排引用成「建連代價是多少」
+#     （兩趟不在同一次 oha 執行裡，payload 是各自隨機生成的兩份同長位元組）。
+#   ⚠ 下面那段「這不是 §8 七類裡的一類」說的是用途 ①；用途 ② 裡它是**源站**，
+#     被測是那四家反代；用途 ③ 裡它**就是** §8 一類的被測 —— 三者都不與它衝突。
 #
-# ★ ★ ★ **这不是 §8 七类里的一类。** 七类是「与三家对拍」，而这一份只有枢衡自己 ——
-#   它量的是「把响应推出去」这条路的上界，用来与同一趟里的 `file_server` 背靠背比。
-#   ⇒ 它的读数落 `diag/`，⛔ **不落 `raw/`**：`bench/verdict.sh` 把 `raw/` 下每个
-#   子目录都当成一类去判，只有一家读数会被判成 `VOID`，而那会把一个诊断上界
-#   摆成一个 §8 的类别。判据在 `tests/bench/gate.sh` 的 C17（两个方向都钉着）。
+# ★ ★ ★ **這不是 §8 七類裡的一類。** 七類是「與三家對拍」，而這一份只有樞衡自己 ——
+#   它量的是「把回應推出去」這條路的上界，用來與同一趟裡的 `file_server` 背靠背比。
+#   ⇒ 它的讀數落 `diag/`，⛔ **不落 `raw/`**：`bench/verdict.sh` 把 `raw/` 下每個
+#   子目錄都當成一類去判，只有一家讀數會被判成 `VOID`，而那會把一個診斷上界
+#   擺成一個 §8 的類別。判據在 `tests/bench/gate.sh` 的 C17（兩個方向都釘著）。
 #
-# ★ 与 [`fulcrum.Fulcrumfile`](fulcrum.Fulcrumfile) **逐条对齐**：同一个 worker 数、
-#   访问日志一律关、明文 HTTP/1.1、keep-alive 开、同一份 payload 字节。
-#   ⛔ 唯一有意不同的是终结指令：`file_server` → `respond`。
+# ★ 與 [`fulcrum.Fulcrumfile`](fulcrum.Fulcrumfile) **逐條對齊**：同一個 worker 數、
+#   訪問紀錄一律關、明文 HTTP/1.1、keep-alive 開、同一份 payload 位元組。
+#   ⛔ 唯一有意不同的是終結指令：`file_server` → `respond`。
 #
-# ⚠ ⚠ **一处已知的口径不对等，写在明处**：`respond` 与 `file_server` 写响应走的是
-#   **不同的路** —— `docs/architecture/dsl-reference.md` 原话：「`metrics` 与
-#   `respond` / `redir` 同病 —— 三者写响应走的是同一条**没有 encoder** 的路
-#   （`encode` 今天只接在 `file_server` 与转发那两处）」。
-#   ⇒ 本文件与它的对照组**都不配 `encode`**，且 payload 不可压缩
-#   ⇒ 这一格对两边都不起作用。⛔ 但引用差值时别把这句话丢掉。
+# ⚠ ⚠ **一處已知的口徑不對等，寫在明處**：`respond` 與 `file_server` 寫回應走的是
+#   **不同的路** —— `docs/architecture/dsl-reference.md` 原話：「`metrics` 與
+#   `respond` / `redir` 同病 —— 三者寫回應走的是同一條**沒有 encoder** 的路
+#   （`encode` 今天只接在 `file_server` 與轉發那兩處）」。
+#   ⇒ 本檔案與它的對照組**都不配 `encode`**，且 payload 不可壓縮
+#   ⇒ 這一格對兩邊都不起作用。⛔ 但引用差值時別把這句話丟掉。
 #
-# ⚠ ⚠ **正文只有内联形态**（`respond [matcher] <status> [body]`，⛔ 没有 file 形式，
-#   不像 HAProxy 那条 `http-request return … file <路径>`）⇒ 那份 payload 必须是
-#   **可打印的**（对拍那边取 base64 字母表：不含 `|`、`&`、反斜杠与引号）。
-#   ★ 「词法与编译吃得下 4096 字节的一个 token 且一个字节都不改」这条前提
-#   由 `crates/fulcrum-config/tests/compile_behaviour.rs` 里那条契约测试钉着
-#   （注入反证实测：把正文截成 16 字节 ⇒ 同一个二进制里 79 条通过、只有它一条红）。
+# ⚠ ⚠ **正文只有內聯形態**（`respond [matcher] <status> [body]`，⛔ 沒有 file 形式，
+#   不像 HAProxy 那條 `http-request return … file <路径>`）⇒ 那份 payload 必須是
+#   **可列印的**（對拍那邊取 base64 字母表：不含 `|`、`&`、反斜槓與引號）。
+#   ★ 「詞法與編譯吃得下 4096 位元組的一個 token 且一個位元組都不改」這條前提
+#   由 `crates/fulcrum-config/tests/compile_behaviour.rs` 裡那條契約測試釘著
+#   （注入反證實測：把正文截成 16 位元組 ⇒ 同一個二進位裡 79 條通過、只有它一條紅）。
 #
-# ⚠ 占位符由 bench/diag/respond-ceiling.sh 替换。
+# ⚠ 佔位符由 bench/diag/respond-ceiling.sh 替換。
 {
-    # ★ ★ L7 数据面的 worker 数（G140）。与对照组吃**同一个** `BENCH_WORKERS`
-    #   ⇒ 「两个变体 worker 数一致」这条对齐口径在这里落实。
+    # ★ ★ L7 資料面的 worker 數（G140）。與對照組吃**同一個** `BENCH_WORKERS`
+    #   ⇒ 「兩個變體 worker 數一致」這條對齊口徑在這裡落實。
     threads_l7 __WORKERS__
 }
 

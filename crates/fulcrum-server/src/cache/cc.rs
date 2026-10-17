@@ -1,125 +1,125 @@
-//! `Cache-Control` 头的解析（RFC 9111 §5.2）。**纯函数**。
+//! `Cache-Control` 頭的解析（RFC 9111 §5.2）。**純函式**。
 //!
-//! ★ ★ G97 拍的是「最小集 **+ 上游响应头里的全套 `Cache-Control` 指令**」，
-//! 所以这里把响应侧那一整张表都实现了，而不是只挑常见的几条。
+//! ★ ★ G97 拍的是「最小集 **+ 上游回應頭裡的全套 `Cache-Control` 指令**」，
+//! 所以這裡把回應側那一整張表都實作了，而不是隻挑常見的幾條。
 //!
-//! ⚠ ⚠ **两条最容易被写错、而且错了不会报错的规则：**
+//! ⚠ ⚠ **兩條最容易被寫錯、而且錯了不會回報錯誤的規則：**
 //!
-//! 1. **`no-cache` 有两种形态，含义完全不同**：不带参数 = 「可以存，但每次用之前
-//!    必须重验证」；带参数 `no-cache="Set-Cookie"` = 「可以存**也可以直接用**，
-//!    只是列出来的那几个头不许发给客户端」。★ 把后者当成前者，缓存等于没开；
-//!    把前者当成后者，**会把过期内容直接发出去**。
-//! 2. **`no-store` 与 `no-cache` 不是一回事**：`no-store` 是「一个字节都不许落地」。
+//! 1. **`no-cache` 有兩種形態，含義完全不同**：不帶參數 = 「可以存，但每次用之前
+//!    必須重驗證」；帶參數 `no-cache="Set-Cookie"` = 「可以存**也可以直接用**，
+//!    只是列出來的那幾個頭不許發給用戶端」。★ 把後者當成前者，快取等於沒開；
+//!    把前者當成後者，**會把過期內容直接發出去**。
+//! 2. **`no-store` 與 `no-cache` 不是一回事**：`no-store` 是「一個位元組都不許完成實作」。
 //!
-//! ⚠ **指令名大小写不敏感**，参数可以带引号，`=` 两边可以有空格 ——
-//! 这三条里漏掉任何一条，都会让一个**合法**的头被当成没有。
+//! ⚠ **指令名大小寫不敏感**，參數可以帶引號，`=` 兩邊可以有空格 ——
+//! 這三條裡漏掉任何一條，都會讓一個**合法**的頭被當成沒有。
 
 use serde::{Deserialize, Serialize};
 
-/// 响应侧 `Cache-Control` 的全套指令（RFC 9111 §5.2.2 + RFC 5861）。
+/// 回應側 `Cache-Control` 的全套指令（RFC 9111 §5.2.2 + RFC 5861）。
 ///
-/// ★ ★ **`Serialize`/`Deserialize` 是磁盘后端（批 H）要的**：一条缓存条目的
-/// 元数据里必须带着**存下来时**那份 `Cache-Control` —— 重验证与 `must-revalidate`
-/// 的判定都要用它。⚠ 不存而是「读的时候从头里再解析一遍」会有个坑：
-/// 我们发给客户端的头是**剥过**的（`no-cache="字段名"` 点名的那几个已经不在了），
-/// 于是再解析一遍得到的不是同一份。
-/// ★ 结构体级的 `#[serde(default)]`：少一个字段时给零值而不是整条解析失败 ——
-/// ⚠ 而**真正的**版本兼容靠 `disk::META_VERSION` 那个号，不靠这里的宽容。
+/// ★ ★ **`Serialize`/`Deserialize` 是磁碟後端（批 H）要的**：一條快取條目的
+/// 中繼資料裡必須帶著**存下來時**那份 `Cache-Control` —— 重驗證與 `must-revalidate`
+/// 的判定都要用它。⚠ 不存而是「讀的時候從頭裡再解析一遍」會有個坑：
+/// 我們發給用戶端的頭是**剝過**的（`no-cache="字段名"` 點名的那幾個已經不在了），
+/// 於是再解析一遍得到的不是同一份。
+/// ★ 結構體級的 `#[serde(default)]`：少一個欄位時給零值而不是整條解析失敗 ——
+/// ⚠ 而**真正的**版本相容靠 `disk::META_VERSION` 那個號，不靠這裡的寬容。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ResponseCc {
-    /// `no-store`：一个字节都不许落地。
+    /// `no-store`：一個位元組都不許完成實作。
     pub no_store: bool,
-    /// `no-cache` **不带参数**：可以存，但每次用之前必须重验证。
+    /// `no-cache` **不帶參數**：可以存，但每次用之前必須重驗證。
     pub no_cache: bool,
-    /// `no-cache="a, b"`：可以存也可以直接用，但这几个头不许发给客户端。
+    /// `no-cache="a, b"`：可以存也可以直接用，但這幾個頭不許發給用戶端。
     ///
-    /// ★ 与 `no_cache` **互斥地**记录 —— 它们是两条不同的规则，合成一个 bool
-    /// 就再也分不开了。
+    /// ★ 與 `no_cache` **互斥地**記錄 —— 它們是兩條不同的規則，合成一個 bool
+    /// 就再也分不開了。
     pub no_cache_fields: Vec<String>,
-    /// `private`：共享缓存（我们就是）不许存。
+    /// `private`：共享快取（我們就是）不許存。
     pub private: bool,
-    /// `private="a, b"`：可以存，但这几个头不许存。
+    /// `private="a, b"`：可以存，但這幾個頭不許存。
     pub private_fields: Vec<String>,
-    /// `public`：即使按默认规则不可缓存，也可以存。
+    /// `public`：即使按預設規則不可快取，也可以存。
     pub public: bool,
     /// `max-age=<秒>`。
     pub max_age: Option<u64>,
-    /// `s-maxage=<秒>` —— ★ **共享缓存优先用它**，它压过 `max-age`。
+    /// `s-maxage=<秒>` —— ★ **共享快取優先用它**，它壓過 `max-age`。
     pub s_maxage: Option<u64>,
-    /// `must-revalidate`：过期之后**不许**发陈内容。
+    /// `must-revalidate`：過期之後**不許**發陳內容。
     pub must_revalidate: bool,
-    /// `proxy-revalidate`：同上，但只约束共享缓存。
+    /// `proxy-revalidate`：同上，但只約束共享快取。
     pub proxy_revalidate: bool,
-    /// `immutable`：新鲜期内不必重验证。
+    /// `immutable`：新鮮期內不必重驗證。
     pub immutable: bool,
-    /// `no-transform`：不许改内容编码等。
+    /// `no-transform`：不許改內容編碼等。
     pub no_transform: bool,
-    /// `stale-while-revalidate=<秒>`（RFC 5861）。★ 这一批**解析但不施加**。
+    /// `stale-while-revalidate=<秒>`（RFC 5861）。★ 這一批**解析但不施加**。
     pub stale_while_revalidate: Option<u64>,
-    /// `stale-if-error=<秒>`（RFC 5861）。★ 这一批**解析但不施加**。
+    /// `stale-if-error=<秒>`（RFC 5861）。★ 這一批**解析但不施加**。
     pub stale_if_error: Option<u64>,
-    /// 解析到了至少一条我们认识的指令。
+    /// 解析到了至少一條我們認識的指令。
     ///
-    /// ★ 它与「头存在」不是一回事：`Cache-Control: ` 空值、或者一整头全是
-    /// 我们不认识的扩展指令时，这里是 `false`。判「上游有没有说过新鲜度」要用
-    /// [`Self::has_freshness`]，不是这一条。
+    /// ★ 它與「頭存在」不是一回事：`Cache-Control: ` 空值、或者一整頭全是
+    /// 我們不認識的擴充指令時，這裡是 `false`。判「上游有沒有說過新鮮度」要用
+    /// [`Self::has_freshness`]，不是這一條。
     pub any: bool,
 }
 
 impl ResponseCc {
-    /// 上游有没有**明确给出**新鲜度？（G96 的兜底判据用它。）
+    /// 上游有沒有**明確給出**新鮮度？（G96 的備援判據用它。）
     pub fn has_freshness(&self) -> bool {
         self.max_age.is_some() || self.s_maxage.is_some()
     }
 
-    /// 共享缓存该用哪个新鲜度秒数。★ `s-maxage` 压过 `max-age`（RFC 9111 §5.2.2.10）。
+    /// 共享快取該用哪個新鮮度秒數。★ `s-maxage` 壓過 `max-age`（RFC 9111 §5.2.2.10）。
     pub fn shared_max_age(&self) -> Option<u64> {
         self.s_maxage.or(self.max_age)
     }
 }
 
-/// 请求侧 `Cache-Control`（RFC 9111 §5.2.1）。
+/// 請求側 `Cache-Control`（RFC 9111 §5.2.1）。
 ///
-/// ★ 只做真正会改变行为的那几条。⚠ **`no-cache` 在请求侧的含义与响应侧相反**：
-/// 请求侧是「别给我缓存的，去问上游」。
+/// ★ 只做真正會改變行為的那幾條。⚠ **`no-cache` 在請求側的含義與回應側相反**：
+/// 請求側是「別給我快取的，去問上游」。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestCc {
-    /// `no-cache`：本次必须回源（或至少重验证）。
+    /// `no-cache`：本次必須回源（或至少重驗證）。
     pub no_cache: bool,
-    /// `no-store`：本次的请求与响应都不许落地。
+    /// `no-store`：本次的請求與回應都不許完成實作。
     pub no_store: bool,
-    /// `only-if-cached`：只要缓存里的；没有就回 **504**（RFC 9111 §5.2.1.7）。
+    /// `only-if-cached`：只要快取裡的；沒有就回 **504**（RFC 9111 §5.2.1.7）。
     pub only_if_cached: bool,
-    /// `max-age=<秒>`：客户端不接受比这更旧的。
+    /// `max-age=<秒>`：用戶端不接受比這更舊的。
     pub max_age: Option<u64>,
-    /// `min-fresh=<秒>`：客户端要求至少还能新鲜这么久。
+    /// `min-fresh=<秒>`：用戶端要求至少還能新鮮這麼久。
     pub min_fresh: Option<u64>,
-    /// `max-stale` / `max-stale=<秒>`：客户端接受过期多久的。
+    /// `max-stale` / `max-stale=<秒>`：用戶端接受過期多久的。
     /// `Some(None)` = 不限。
     #[allow(clippy::option_option)]
     pub max_stale: Option<Option<u64>>,
 }
 
-/// 把一个 `Cache-Control` 头切成 `(指令名小写, 参数)`。
+/// 把一個 `Cache-Control` 頭切成 `(指令名小写, 参数)`。
 ///
-/// ⚠ ⚠ 手写而不是 `split(',')`：**参数可以带引号，而引号里可以有逗号**
-/// （`no-cache="Set-Cookie, X-Foo"` 是一条指令，不是两条）。
-/// ★ 直接按逗号切会把它切成 `no-cache="Set-Cookie` 与 `X-Foo"` ——
-/// 前者的参数少一半、后者是个不认识的指令，**而两者都不会报错**。
+/// ⚠ ⚠ 手寫而不是 `split(',')`：**參數可以帶引號，而引號裡可以有逗號**
+/// （`no-cache="Set-Cookie, X-Foo"` 是一條指令，不是兩條）。
+/// ★ 直接按逗號切會把它切成 `no-cache="Set-Cookie` 與 `X-Foo"` ——
+/// 前者的參數少一半、後者是個不認識的指令，**而兩者都不會回報錯誤**。
 fn directives(header: &str) -> Vec<(String, Option<String>)> {
     let b = header.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        // 跳过分隔符与空白
+        // 跳過分隔符與空白
         while i < b.len() && (b[i] == b',' || b[i].is_ascii_whitespace()) {
             i += 1;
         }
         if i >= b.len() {
             break;
         }
-        // 指令名：到 `=` 或 `,` 为止
+        // 指令名：到 `=` 或 `,` 為止
         let name_start = i;
         while i < b.len() && b[i] != b'=' && b[i] != b',' {
             i += 1;
@@ -132,7 +132,7 @@ fn directives(header: &str) -> Vec<(String, Option<String>)> {
                 i += 1;
             }
             if i < b.len() && b[i] == b'"' {
-                // 引号串：读到下一个未转义的引号。
+                // 引號串：讀到下一個未轉義的引號。
                 i += 1;
                 let vs = i;
                 let mut buf = String::new();
@@ -150,7 +150,7 @@ fn directives(header: &str) -> Vec<(String, Option<String>)> {
                 }
                 let _ = vs;
                 if i < b.len() {
-                    i += 1; // 吃掉收尾引号
+                    i += 1; // 吃掉收尾引號
                 }
                 value = Some(buf);
             } else {
@@ -168,7 +168,7 @@ fn directives(header: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// 逗号分隔的字段名列表（`no-cache="a, b"` 的参数）。全部转小写。
+/// 逗號分隔的欄位名列表（`no-cache="a, b"` 的參數）。全部轉小寫。
 fn field_list(v: &str) -> Vec<String> {
     v.split(',')
         .map(|s| s.trim().trim_matches('"').to_ascii_lowercase())
@@ -177,13 +177,13 @@ fn field_list(v: &str) -> Vec<String> {
 }
 
 fn secs(v: &Option<String>) -> Option<u64> {
-    // ⚠ RFC 9111 §5.2：解析不出来的 delta-seconds **当成一个很大的值**是错的，
-    //   而当成「这条指令不存在」也是错的。这里取「这条指令不存在」——
-    //   ★ 因为另一侧（当成很大）会让一个写坏的 `max-age=abc` 变成"永远新鲜"。
+    // ⚠ RFC 9111 §5.2：解析不出來的 delta-seconds **當成一個很大的值**是錯的，
+    //   而當成「這條指令不存在」也是錯的。這裡取「這條指令不存在」——
+    //   ★ 因為另一側（當成很大）會讓一個寫壞的 `max-age=abc` 變成"永遠新鮮"。
     v.as_ref()?.parse::<u64>().ok()
 }
 
-/// 解析响应侧的 `Cache-Control`。
+/// 解析回應側的 `Cache-Control`。
 pub fn parse_response(header: &str) -> ResponseCc {
     let mut cc = ResponseCc::default();
     for (name, value) in directives(header) {
@@ -191,7 +191,7 @@ pub fn parse_response(header: &str) -> ResponseCc {
         match name.as_str() {
             "no-store" => cc.no_store = true,
             "no-cache" => match &value {
-                // ★ ★ 带参数与不带参数是**两条不同的规则**，见本文件顶部。
+                // ★ ★ 帶參數與不帶參數是**兩條不同的規則**，見本檔案頂部。
                 Some(v) if !v.is_empty() => cc.no_cache_fields = field_list(v),
                 _ => cc.no_cache = true,
             },
@@ -208,15 +208,15 @@ pub fn parse_response(header: &str) -> ResponseCc {
             "no-transform" => cc.no_transform = true,
             "stale-while-revalidate" => cc.stale_while_revalidate = secs(&value),
             "stale-if-error" => cc.stale_if_error = secs(&value),
-            // ⚠ 不认识的扩展指令**忽略**（RFC 9111 §5.2.3 就是这么说的），
-            //   但不把 `any` 撤回去 —— 「头里有东西」与「我们认得它」是两件事。
+            // ⚠ 不認識的擴充指令**忽略**（RFC 9111 §5.2.3 就是這麼說的），
+            //   但不把 `any` 撤回去 —— 「頭裡有東西」與「我們認得它」是兩件事。
             _ => {}
         }
     }
     cc
 }
 
-/// 解析请求侧的 `Cache-Control`。
+/// 解析請求側的 `Cache-Control`。
 pub fn parse_request(header: &str) -> RequestCc {
     let mut cc = RequestCc::default();
     for (name, value) in directives(header) {
@@ -249,10 +249,10 @@ mod tests {
         assert!(!cc.has_freshness());
     }
 
-    // ★ ★ ★ 本文件顶部那条第 1 号规则：`no-cache` 的两种形态。
-    //   ⚠ 合成一个 bool 之后这两条就再也分不开了 ——
-    //   而把带参数的当成不带参数的，等于缓存完全没开；
-    //   反过来，会把过期内容直接发给客户端。
+    // ★ ★ ★ 本檔案頂部那條第 1 號規則：`no-cache` 的兩種形態。
+    //   ⚠ 合成一個 bool 之後這兩條就再也分不開了 ——
+    //   而把帶參數的當成不帶參數的，等於快取完全沒開；
+    //   反過來，會把過期內容直接發給用戶端。
     #[test]
     fn no_cache_带参数与不带参数是两条不同的规则() {
         let bare = parse_response("no-cache");
@@ -267,8 +267,8 @@ mod tests {
         assert_eq!(qualified.no_cache_fields, ["set-cookie"]);
     }
 
-    // ★ ★ ★ 引号里的逗号。按逗号切会把这一条切成两条，而**两半都不报错**：
-    //   前半参数少一个字段、后半是个不认识的指令 —— 于是 X-Foo 被原样发出去。
+    // ★ ★ ★ 引號裡的逗號。按逗號切會把這一條切成兩條，而**兩半都不回報錯誤**：
+    //   前半參數少一個欄位、後半是個不認識的指令 —— 於是 X-Foo 被原樣發出去。
     #[test]
     fn 引号里的逗号不是分隔符() {
         let cc = parse_response("no-cache=\"Set-Cookie, X-Foo\", max-age=60");
@@ -284,9 +284,9 @@ mod tests {
         assert_eq!(q.private_fields, ["authorization"]);
     }
 
-    // ★ ★ 共享缓存用 s-maxage，它压过 max-age（RFC 9111 §5.2.2.10）。
-    //   ⚠ 取错的话，一个「浏览器 60s、CDN 1 天」的配置会被我们按 60s 用 ——
-    //   功能正常，只是缓存几乎不命中，而没有任何东西会说为什么。
+    // ★ ★ 共享快取用 s-maxage，它壓過 max-age（RFC 9111 §5.2.2.10）。
+    //   ⚠ 取錯的話，一個「瀏覽器 60s、CDN 1 天」的設定會被我們按 60s 用 ——
+    //   功能正常，只是快取幾乎不命中，而沒有任何東西會說為什麼。
     #[test]
     fn s_maxage_压过_max_age() {
         let cc = parse_response("max-age=60, s-maxage=86400");
@@ -322,9 +322,9 @@ mod tests {
         );
     }
 
-    // ★ ★ 写坏的 delta-seconds 当成「这条指令不存在」，**不是**当成很大的值。
-    //   ⚠ 另一侧会让 `max-age=abc` 变成"永远新鲜" —— 一条打错的配置换来
-    //   一个永不更新的页面，而现场看不出与缓存有关。
+    // ★ ★ 寫壞的 delta-seconds 當成「這條指令不存在」，**不是**當成很大的值。
+    //   ⚠ 另一側會讓 `max-age=abc` 變成"永遠新鮮" —— 一條打錯的設定換來
+    //   一個永不更新的頁面，而現場看不出與快取有關。
     #[test]
     fn 写坏的秒数当成这条指令不存在() {
         let cc = parse_response("max-age=abc");
@@ -349,7 +349,7 @@ mod tests {
         }
     }
 
-    // ── 请求侧 ────────────────────────────────────────────────────────────
+    // ── 請求側 ────────────────────────────────────────────────────────────
     #[test]
     fn 请求侧那几条() {
         let cc = parse_request("no-cache, max-age=0");
@@ -359,13 +359,13 @@ mod tests {
         let cc = parse_request("only-if-cached");
         assert!(cc.only_if_cached);
 
-        // `max-stale` 不带参数 = 不限。
+        // `max-stale` 不帶參數 = 不限。
         assert_eq!(parse_request("max-stale").max_stale, Some(None));
         assert_eq!(parse_request("max-stale=60").max_stale, Some(Some(60)));
         assert_eq!(parse_request("min-fresh=30").min_fresh, Some(30));
     }
 
-    // ⚠ 请求侧的 `no-cache` 与响应侧含义相反 —— 钉一条免得两边共用一个解析器。
+    // ⚠ 請求側的 `no-cache` 與回應側含義相反 —— 釘一條免得兩邊共用一個解析器。
     #[test]
     fn 请求侧的_no_cache_不带字段名语义() {
         let cc = parse_request("no-cache=\"Set-Cookie\"");

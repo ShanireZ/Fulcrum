@@ -761,7 +761,7 @@ impl AsyncRead for Stream {
         } else {
             Pin::new(&mut self.stream_mut()).poll_read(cx, buf)
         };
-        // ★ 枢衡改动 16 ①：这里（及下面三处写）原来每次都记一笔等待计时，见 `AccumulatedDuration`。
+        // ★ 樞衡改動 16 ①：這裡（及下面三處寫）原來每次都記一筆等待計時，見 `AccumulatedDuration`。
         self.rx_ts = self.stream().get_ref().rx_ts;
         result
     }
@@ -809,18 +809,18 @@ impl AsyncWrite for Stream {
     }
 }
 
-/// ★ 枢衡改动 16 ①（G157）：上游在每次 `poll_read` / `poll_write` / `poll_flush` /
-/// `poll_write_vectored` 之后都记一笔等待计时（等待开始、结束各读一次时钟），只为
-/// `get_read_pending_time` / `get_write_pending_time`。枢衡与本 fork 的 8 个 crate 里**没有任何读者**
-/// ⇒ 那四处调用删掉了，这里的结构与两个 getter 原样留着（少改上游的行），`total` 恒为零。
-/// 判据：本文件 `mod tests` 的 `枢衡改动16_读等待不再计时`。
+/// ★ 樞衡改動 16 ①（G157）：上游在每次 `poll_read` / `poll_write` / `poll_flush` /
+/// `poll_write_vectored` 之後都記一筆等待計時（等待開始、結束各讀一次時鐘），只為
+/// `get_read_pending_time` / `get_write_pending_time`。樞衡與本 fork 的 8 個 crate 裡**沒有任何讀者**
+/// ⇒ 那四處呼叫刪掉了，這裡的結構與兩個 getter 原樣留著（少改上游的行），`total` 恆為零。
+/// 判據：本檔案 `mod tests` 的 `枢衡改动16_读等待不再计时`。
 #[derive(Debug)]
 struct AccumulatedDuration {
     total: Duration,
     last_start: Option<Instant>,
 }
 
-#[allow(dead_code)] // ★ 枢衡改动 16 ①：除 `new` 外都没有调用者了，见上。
+#[allow(dead_code)] // ★ 樞衡改動 16 ①：除 `new` 外都沒有呼叫者了，見上。
 impl AccumulatedDuration {
     fn new() -> Self {
         AccumulatedDuration {
@@ -1044,10 +1044,10 @@ mod tests {
         assert_eq!(buffer, message[2..]);
     }
 
-    /// ★ 枢衡改动 16 ① 的判据（G157）：一次**真的等过**的读之后，读等待时间仍是零。
-    /// 上游会把那段等待（这里约 50 ms）记进 `get_read_pending_time()` ⇒ 改动被 rebase 合掉时这里红。
-    /// 写那一侧（`poll_write` / `poll_flush` / `poll_write_vectored`）与读同一处改动、一起删，
-    /// 写挂起要先灌满对端缓冲才造得出来 ⇒ 只钉读这一侧。
+    /// ★ 樞衡改動 16 ① 的判據（G157）：一次**真的等過**的讀之後，讀等待時間仍是零。
+    /// 上游會把那段等待（這裡約 50 ms）記進 `get_read_pending_time()` ⇒ 改動被 rebase 合掉時這裡紅。
+    /// 寫那一側（`poll_write` / `poll_flush` / `poll_write_vectored`）與讀同一處改動、一起刪，
+    /// 寫掛起要先灌滿對端緩衝才造得出來 ⇒ 只釘讀這一側。
     #[tokio::test]
     async fn 枢衡改动16_读等待不再计时() {
         let (ours, mut theirs) = UnixStream::pair().unwrap();
@@ -1061,7 +1061,7 @@ mod tests {
         let started = Instant::now();
         stream.read_exact(&mut buf).await.unwrap();
         let _theirs = writer.await.unwrap();
-        // 自证：这次读确实挂起过（否则下面的零说明不了任何事）。
+        // 自證：這次讀確實掛起過（否則下面的零說明不了任何事）。
         assert!(
             started.elapsed() >= Duration::from_millis(40),
             "这次读没有等 —— 判据失效"

@@ -1,7 +1,7 @@
 ---
-type: 项目治理
+type: 專案治理
 title: 治理
-description: 谁说了算、拍过哪些板、还欠哪些板、按什么路线走、以及在这个项目上工作的纪律。
+description: 誰說了算、拍過哪些板、還欠哪些板、按什麼路線走、以及在這個專案上工作的紀律。
 resource: ../../PLAN.md
 tags: [治理, 索引]
 status: stable
@@ -14,9 +14,9 @@ sources:
     title: PLAN.md §7 §10 §11
 ---
 
-* [唯一权威与本 bundle 的定位](/governance/source-of-truth.md) - ★ **先读这篇**。`PLAN.md` 是权威；架构一节是本 bundle 唯一带真内容的例外
-* [决策日志](/governance/decision-log.md) - §10 的导航；★ owner 推翻 AI 建议的那些决定；三条不可回头的硬约束
-* [待定清单](/governance/open-questions.md) - 仍然开着的那些；★ 待定项不是需求，没拍板之前不得据以实现
-* [兼容性分类法](/governance/compatibility.md) - 五个对外面各自「什么算 breaking」；★ 分类法今天生效（估价），承诺 M4 起生效（约束）
-* [实施路线](/governance/roadmap.md) - M0–M4；★ 五个退出条件全是外部可核验的事实，不是「功能做完了」
-* [工作方式](/governance/working-agreement.md) - 决策不得静默重开、性能不得无据宣称、协议栈不得手写
+* [唯一權威與本 bundle 的定位](/governance/source-of-truth.md) - ★ **先讀這篇**。`PLAN.md` 是權威；架構一節是本 bundle 唯一帶真內容的例外
+* [決策紀錄](/governance/decision-log.md) - §10 的導覽；★ owner 推翻 AI 建議的那些決定；三條不可回頭的硬約束
+* [待定清單](/governance/open-questions.md) - 仍然開著的那些；★ 待定項不是需求，沒拍板之前不得據以實作
+* [相容性分類法](/governance/compatibility.md) - 五個對外面各自「什麼算 breaking」；★ 分類法今天生效（估價），承諾 M4 起生效（約束）
+* [實施路線](/governance/roadmap.md) - M0–M4；★ 五個退出條件全是外部可核驗的事實，不是「功能做完了」
+* [工作方式](/governance/working-agreement.md) - 決策不得靜默重開、效能不得無據宣稱、協定棧不得手寫

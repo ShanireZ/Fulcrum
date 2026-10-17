@@ -6,31 +6,31 @@ publish = false
 description = "枢衡的 TLS 层：证书存储（G55）、按 SNI 的动态证书解析（§5.1 第 1 条）、续期判定（G56）"
 
 [dependencies]
-# ★ 只为一件事：主机名通配的语义（D18 / G66）必须与站点索引**共用同一份实现**。
-#   它是纯逻辑（只带 serde），不引入任何供应链面。
+# ★ 只為一件事：主機名通配的語義（D18 / G66）必須與站台索引**共用同一份實作**。
+#   它是純邏輯（只帶 serde），不引入任何供應鏈面。
 fulcrum-config = { path = "../fulcrum-config" }
-# ★ ★ ★ **（G104）：从 `pingora-rustls` 换成 `pingora-boringssl`。**
-#   BoringSSL 的类型**只经这一个 crate 拿**，不直接依赖 `boring`。
-#   理由与「只经 `pingora-rustls` 拿 rustls」完全一样，而且更硬：
-#   ⚠ ⚠ `boring` 的版本必须与 `quiche` 解到**同一个**（G103/G104），
-#   而**多一处版本声明就多一个把它们劈成两份的机会** ——
-#   劈开之后 `SslContextBuilder` 同名却是两个类型，编译期一堆看不懂的类型不匹配。
+# ★ ★ ★ **（G104）：從 `pingora-rustls` 換成 `pingora-boringssl`。**
+#   BoringSSL 的類型**只經這一個 crate 拿**，不直接依賴 `boring`。
+#   理由與「只經 `pingora-rustls` 拿 rustls」完全一樣，而且更硬：
+#   ⚠ ⚠ `boring` 的版本必須與 `quiche` 解到**同一個**（G103/G104），
+#   而**多一處版本宣告就多一個把它們劈成兩份的機會** ——
+#   劈開之後 `SslContextBuilder` 同名卻是兩個類型，編譯期一堆看不懂的類型不匹配。
 pingora-boringssl = { workspace = true }
-# 从 DER 里读证书的有效期与 SAN。
-# ★ ★ **G104 之后它留着不是没改干净**：换掉它等于同时换掉「我们对证书的理解」
-#   （SAN 取法、时间边界、非 DNS 类型 SAN 怎么处理），而这一批换的是 TLS 后端。
-#   两件事分开做，红了才分得清是哪一件。
+# 從 DER 裡讀證書的有效期與 SAN。
+# ★ ★ **G104 之後它留著不是沒改乾淨**：換掉它等於同時換掉「我們對證書的理解」
+#   （SAN 取法、時間邊界、非 DNS 類型 SAN 怎麼處理），而這一批換的是 TLS 後端。
+#   兩件事分開做，紅了才分得清是哪一件。
 x509-parser = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-# `flock(2)`：跨进程串行化同一域名的签发（G55 第 2 条）。
+# `flock(2)`：跨處理程序串行化同一網域的簽發（G55 第 2 條）。
 libc = { workspace = true }
 
 [dev-dependencies]
-# 只给判据用：`default_sni` 那几条要真的往表里装证书，而**造一张真证书**是唯一的装法
+# 只給判據用：`default_sni` 那幾條要真的往表裡裝證書，而**造一張真證書**是唯一的裝法
 # （`CertKey` 收的是 `X509` + `PKey`）。
-# ⚠ 判据里的证书**一律现签**，不提交进仓库：提交的那张迟早过期，而过期那天红的是
-#   「TLS 坏了」，要绕一圈才发现是证书到期（`tests/serve/run.sh` 那段同理）。
-# ★ 新增 0 个包：rcgen 早就在依赖图里（instant-acme 拉的，见根清单）。
+# ⚠ 判據裡的證書**一律現籤**，不提交進儲存庫：提交的那張遲早過期，而過期那天紅的是
+#   「TLS 壞了」，要繞一圈才發現是證書到期（`tests/serve/run.sh` 那段同理）。
+# ★ 新增 0 個包：rcgen 早就在依賴圖裡（instant-acme 拉的，見根清單）。
 rcgen = { workspace = true }

@@ -1,30 +1,30 @@
-//! musl + BoringSSL 静态链接探针（G103/G104 的未验前置，`PLAN.md` §10）。
+//! musl + BoringSSL 靜態連結探針（G103/G104 的未驗前置，`PLAN.md` §10）。
 //!
-//! ★ ★ ★ **这份探针要答的不是「能不能链接」，是「链上之后跑不跑」。**
-//! 一个静态链接成功、启动就崩的二进制与一个链接失败的二进制，对 G103 是同一个结论；
-//! 而它们在 `cargo build` 那一层长得完全不一样 —— 前者**是绿的**。
-//! ⚠ musl 上最爱被引用的那一类失效正是这种形状：**线程栈比 glibc 小得多**，
-//! 链接、启动、`main` 全都好好的，**直到握手真的在工作线程上跑起来**。
-//! ⇒ 握手因此**故意跑在 `std::thread::spawn` 起的线程上**，不是主线程 ——
-//! 主线程那一份是进程栈（8 MB 量级），测它等于测了一个产品不会走的路径，
-//! 而产品里的握手同样发生在 tokio 的工作线程上。
+//! ★ ★ ★ **這份探針要答的不是「能不能連結」，是「鏈上之後跑不跑」。**
+//! 一個靜態連結成功、啟動就崩的二進位與一個連結失敗的二進位，對 G103 是同一個結論；
+//! 而它們在 `cargo build` 那一層長得完全不一樣 —— 前者**是綠的**。
+//! ⚠ musl 上最愛被引用的那一類失效正是這種形狀：**執行緒棧比 glibc 小得多**，
+//! 連結、啟動、`main` 全都好好的，**直到握手真的在工作執行緒上跑起來**。
+//! ⇒ 握手因此**故意跑在 `std::thread::spawn` 起的執行緒上**，不是主執行緒 ——
+//! 主執行緒那一份是處理程序棧（8 MB 量級），測它等於測了一個產品不會走的路徑，
+//! 而產品裡的握手同樣發生在 tokio 的工作執行緒上。
 //!
-//! ★ ★ **而「musl 默认线程栈 128 KB」这句话对 Rust 程序并不直接成立** ——
-//! Rust 的 `std::thread` 不用 libc 的默认值，它自己指定栈大小。
-//! ⇒ 与其引用一个二手数字，**探针把这条线程真实的栈大小量出来印在日志里**
-//! （`pthread_getattr_np`）。★ 一个量出来的数字与一句引用来的话，在读者那里分量不同。
+//! ★ ★ **而「musl 預設執行緒棧 128 KB」這句話對 Rust 處理程序並不直接成立** ——
+//! Rust 的 `std::thread` 不用 libc 的預設值，它自己指定棧大小。
+//! ⇒ 與其引用一個二手數字，**探針把這條執行緒真實的棧大小量出來印在紀錄裡**
+//! （`pthread_getattr_np`）。★ 一個量出來的數字與一句引用來的話，在讀者那裡分量不同。
 //!
-//! 四条判据（都要过，缺一条这份探针就没答完题）：
+//! 四條判據（都要過，缺一條這份探針就沒答完題）：
 //!
-//! | | 判据 | 为什么它单独存在 |
+//! | | 判據 | 為什麼它單獨存在 |
 //! |---|---|---|
-//! | A | `boring-sys` 能在 musl 目标上把 BoringSSL 编出来 | D11 取 quiche 的前提 |
-//! | B | 产物是**完全静态**的（没有解释器、没有动态段）| §5 的分发口径 = 单静态二进制（G13）|
-//! | C | 在 musl 上真的跑完一次 QUIC 握手并**收发一次应用数据** | 分开写：握手证密钥交换，数据证 1-RTT AEAD |
-//! | D | `set_select_certificate_callback` **真的被调用了** | ★ G104 整条决策就压在这一个回调上 |
+//! | A | `boring-sys` 能在 musl 目標上把 BoringSSL 編出來 | D11 取 quiche 的前提 |
+//! | B | 產物是**完全靜態**的（沒有解釋器、沒有動態段）| §5 的散布口徑 = 單靜態二進位（G13）|
+//! | C | 在 musl 上真的跑完一次 QUIC 握手並**收發一次應用資料** | 分開寫：握手證金鑰交換，資料證 1-RTT AEAD |
+//! | D | `set_select_certificate_callback` **真的被呼叫了** | ★ G104 整條決策就壓在這一個回呼上 |
 //!
-//! ⚠ B 由 `probe.sh` 判（那是二进制的属性，不是程序自己能诚实回答的）；
-//!   A/C/D 由本程序判，各自打一行 `✓`，任何一条不成立就非零退出。
+//! ⚠ B 由 `probe.sh` 判（那是二進位的屬性，不是處理程序自己能誠實回答的）；
+//!   A/C/D 由本處理程序判，各自打一行 `✓`，任何一條不成立就非零退出。
 //!
 //! 用法：`musl-boringssl-probe <cert.pem> <key.pem>`
 
@@ -32,8 +32,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use boring::ssl::{SelectCertError, SslContextBuilder, SslFiletype, SslMethod};
 
-/// 回调被调用的次数。★ 用计数而不是布尔：**「一次」与「很多次」是两件不同的事**，
-/// 而一个只会翻成 true 的旗子把它们读成同一个值。
+/// 回呼被呼叫的次數。★ 用計數而不是布爾：**「一次」與「很多次」是兩件不同的事**，
+/// 而一個只會翻成 true 的旗子把它們讀成同一個值。
 static CALLBACK_HITS: AtomicUsize = AtomicUsize::new(0);
 
 const ALPN: &[&[u8]] = &[b"h3"];
@@ -50,10 +50,10 @@ fn main() {
         quiche::PROTOCOL_VERSION
     );
 
-    // ★ 握手跑在一个**新起的线程**上，而不是主线程 —— 产品里的握手同样发生在
-    //   tokio 的工作线程上，主线程那一份是进程栈（8 MB 量级）。
-    //   ⚠ 这条线程的栈**由 Rust 自己定**，不是 libc 的默认值 —— 具体多少见
-    //   `handshake()` 开头量出来的那一行，别在这里写死一个数。
+    // ★ 握手跑在一個**新起的執行緒**上，而不是主執行緒 —— 產品裡的握手同樣發生在
+    //   tokio 的工作執行緒上，主執行緒那一份是處理程序棧（8 MB 量級）。
+    //   ⚠ 這條執行緒的棧**由 Rust 自己定**，不是 libc 的預設值 —— 具體多少見
+    //   `handshake()` 開頭量出來的那一行，別在這裡寫死一個數。
     let handle = std::thread::Builder::new()
         .name("handshake".into())
         .spawn(move || handshake(&cert, &key))
@@ -61,8 +61,8 @@ fn main() {
 
     let outcome = match handle.join() {
         Ok(r) => r,
-        // ★ 栈爆掉在这里的形状是线程 panic（或者整个进程被 SIGSEGV 带走 ——
-        //   后者连这行都印不出来，那正是 probe.sh 还要看退出码的原因）。
+        // ★ 棧爆掉在這裡的形狀是執行緒 panic（或者整個處理程序被 SIGSEGV 帶走 ——
+        //   後者連這行都印不出來，那正是 probe.sh 還要看結束代碼的原因）。
         Err(_) => {
             eprintln!("✗ 握手线程 panic 了 —— 上面那行印出来的栈大小是第一个要看的");
             std::process::exit(1);
@@ -76,9 +76,9 @@ fn main() {
 
     let hits = CALLBACK_HITS.load(Ordering::SeqCst);
     if hits == 0 {
-        // ★ ★ 这一条是**反向**的那半边，必须单独判：握手可以在回调从未被调用的
-        //   情况下完全成功（BoringSSL 会直接用 context 上那张证书）。
-        //   ⇒ 「握手通过」证不了 G104，只有「回调真的进来过」才证得了。
+        // ★ ★ 這一條是**反向**的那半邊，必須單獨判：握手可以在回呼從未被呼叫的
+        //   情況下完全成功（BoringSSL 會直接用 context 上那張證書）。
+        //   ⇒ 「握手通過」證不了 G104，只有「回呼真的進來過」才證得了。
         eprintln!("✗ D：握手成功了，但 set_select_certificate_callback 一次都没被调用");
         eprintln!("   ⇒ G104 压着的那个机制没有被这次握手验到，不许当它验过了");
         std::process::exit(1);
@@ -93,11 +93,11 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
-/// 量出**当前线程**的栈大小。拿不到就回 `None` —— ★ 拿不到要说「拿不到」，
-/// 不许回一个看起来很正常的默认值：那样这行日志在两种情况下读数相同。
+/// 量出**當前執行緒**的棧大小。拿不到就回 `None` —— ★ 拿不到要說「拿不到」，
+/// 不許回一個看起來很正常的預設值：那樣這行紀錄在兩種情況下讀數相同。
 fn current_stack_bytes() -> Option<usize> {
-    // SAFETY: 全程只碰本函数栈上的 attr；两个调用都按 musl / glibc 的契约配对
-    // （`pthread_getattr_np` 成功后必须 `pthread_attr_destroy`）。
+    // SAFETY: 全程只碰本函式棧上的 attr；兩個呼叫都按 musl / glibc 的契約配對
+    // （`pthread_getattr_np` 成功後必須 `pthread_attr_destroy`）。
     unsafe {
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
         if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
@@ -111,7 +111,7 @@ fn current_stack_bytes() -> Option<usize> {
     }
 }
 
-/// 在内存里对跑一次 QUIC 握手 + 一次应用数据往返。全程不碰网络（quiche 是 sans-IO）。
+/// 在記憶體裡對跑一次 QUIC 握手 + 一次應用資料往返。全程不碰網路（quiche 是 sans-IO）。
 fn handshake(cert: &str, key: &str) -> Result<(), String> {
     match current_stack_bytes() {
         Some(n) => println!("[probe] 握手线程的栈：{n} 字节（{} KB）", n / 1024),
@@ -145,7 +145,7 @@ fn handshake(cert: &str, key: &str) -> Result<(), String> {
     )
     .map_err(|e| format!("quiche::accept：{e}"))?;
 
-    // ── 判据 C 的前半：握手 ──────────────────────────────────────────────
+    // ── 判據 C 的前半：握手 ──────────────────────────────────────────────
     pump(&mut client, &mut server, client_addr, server_addr)?;
 
     if !client.is_established() || !server.is_established() {
@@ -160,16 +160,16 @@ fn handshake(cert: &str, key: &str) -> Result<(), String> {
     if alpn != b"h3" {
         return Err(format!("C：ALPN 协商到的是 {alpn:?}，不是 h3"));
     }
-    // ★ 不要写死「在 musl 上走完」—— 它在 glibc 上跑起来也照样这么印 ——
-    //   一句在两种情况下读数相同的话，分不出这两种情况。改成印真的目标三元组。
+    // ★ 不要寫死「在 musl 上走完」—— 它在 glibc 上跑起來也照樣這麼印 ——
+    //   一句在兩種情況下讀數相同的話，分不出這兩種情況。改成印真的目標三元組。
     println!(
         "✓ C1：QUIC 握手在 {} 上走完，ALPN = h3",
         env!("PROBE_TARGET")
     );
 
-    // ── 判据 C 的后半：1-RTT 应用数据 ───────────────────────────────────
-    // ★ 分开判是因为它们证的不是同一件事：握手证的是密钥交换与证书链，
-    //   而应用数据走的是 1-RTT AEAD —— BoringSSL 里另一段代码。
+    // ── 判據 C 的後半：1-RTT 應用資料 ───────────────────────────────────
+    // ★ 分開判是因為它們證的不是同一件事：握手證的是金鑰交換與證書鏈，
+    //   而應用資料走的是 1-RTT AEAD —— BoringSSL 裡另一段程式碼。
     const PAYLOAD: &[u8] = b"fulcrum musl boringssl probe";
     client
         .stream_send(4, PAYLOAD, true)
@@ -196,10 +196,10 @@ fn handshake(cert: &str, key: &str) -> Result<(), String> {
 }
 
 fn server_config(cert: &str, key: &str) -> Result<quiche::Config, String> {
-    // ★ ★ **这里就是 G104 那条决策的落点**：证书不是通过 quiche 自己的
-    //   `load_cert_chain_from_pem_file` 装的，而是我们自己造一个
-    //   `SslContextBuilder`、挂上回调、再交给 quiche。
-    //   走前者的话这份探针会绿，而 G104 的机制一个字都没被碰到。
+    // ★ ★ **這裡就是 G104 那條決策的落點**：證書不是通過 quiche 自己的
+    //   `load_cert_chain_from_pem_file` 裝的，而是我們自己造一個
+    //   `SslContextBuilder`、掛上回呼、再交給 quiche。
+    //   走前者的話這份探針會綠，而 G104 的機制一個字都沒被碰到。
     let mut builder = SslContextBuilder::new(SslMethod::tls())
         .map_err(|e| format!("造不出 SslContextBuilder：{e}"))?;
 
@@ -210,8 +210,8 @@ fn server_config(cert: &str, key: &str) -> Result<quiche::Config, String> {
         .set_private_key_file(key, SslFiletype::PEM)
         .map_err(|e| format!("装不上私钥 {key}：{e}"))?;
 
-    // 判据 D。★ 回调里**读一下 SNI 再放行** —— 空跑一个 `Ok(())` 也能让计数涨，
-    //   但那证不了「拿得到 ClientHello 的内容」，而按 SNI 动态挑证书要的正是这个。
+    // 判據 D。★ 回呼裡**讀一下 SNI 再放行** —— 空跑一個 `Ok(())` 也能讓計數漲，
+    //   但那證不了「拿得到 ClientHello 的內容」，而按 SNI 動態挑證書要的正是這個。
     builder.set_select_certificate_callback(|hello| {
         CALLBACK_HITS.fetch_add(1, Ordering::SeqCst);
         let sni = hello
@@ -219,7 +219,7 @@ fn server_config(cert: &str, key: &str) -> Result<quiche::Config, String> {
             .unwrap_or("<无 SNI>");
         println!("[probe]   回调进来了，ClientHello 里的 SNI = {sni}");
         if sni == "<无 SNI>" {
-            // 探针的客户端一定发 SNI；收不到说明我们读错了地方。
+            // 探針的用戶端一定發 SNI；收不到說明我們讀錯了地方。
             return Err(SelectCertError::ERROR);
         }
         Ok(())
@@ -234,7 +234,7 @@ fn server_config(cert: &str, key: &str) -> Result<quiche::Config, String> {
 fn client_config() -> Result<quiche::Config, String> {
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)
         .map_err(|e| format!("quiche::Config::new：{e}"))?;
-    // 自签证书，探针不验链 —— 验的是 BoringSSL 跑不跑，不是 PKI。
+    // 自簽證書，探針不驗鏈 —— 驗的是 BoringSSL 跑不跑，不是 PKI。
     config.verify_peer(false);
     tune(&mut config)?;
     Ok(config)
@@ -255,10 +255,10 @@ fn tune(config: &mut quiche::Config) -> Result<(), String> {
     Ok(())
 }
 
-/// 把两端的数据报来回搬，直到双方都没话说。
+/// 把兩端的資料報來回搬，直到雙方都沒話說。
 ///
-/// ★ 上界是**有的**：一个不收敛的握手在这里的形状是死循环，而死循环在门禁里
-///   与「跑得慢」分不开。给它一个明确的上界，超了就是一条会说话的失败。
+/// ★ 上界是**有的**：一個不收斂的握手在這裡的形狀是死循環，而死循環在門禁裡
+///   與「跑得慢」分不開。給它一個明確的上界，超了就是一條會說話的失敗。
 fn pump(
     client: &mut quiche::Connection,
     server: &mut quiche::Connection,
@@ -278,7 +278,7 @@ fn pump(
     Err("pump：64 轮之后两端还在互相发包，握手没有收敛".into())
 }
 
-/// 把 `from` 攒着的数据报全部交给 `to`，返回搬了几个。
+/// 把 `from` 攢著的資料報全部交給 `to`，回傳搬了幾個。
 fn flush(
     from: &mut quiche::Connection,
     to: &mut quiche::Connection,

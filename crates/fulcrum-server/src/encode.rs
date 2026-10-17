@@ -1,73 +1,73 @@
-//! 响应压缩（**M2 批 I**，`encode` 指令接线；G99–G102）。
+//! 回應壓縮（**M2 批 I**，`encode` 指令串接；G99–G102）。
 //!
-//! ## ★ 用的是 fork 里那份，不是自研（**G100**）
+//! ## ★ 用的是 fork 裡那份，不是自研（**G100**）
 //!
-//! `brotli` / `flate2` / `zstd` 本来就是 `pingora-core` 的**非可选**依赖，
-//! 压缩那 1365 行也未被 feature 门控 —— **它们今天就已经在二进制里** ⇒ 接线**新增 0 个包**。
-//! ⚠ 与 G82「缓存层完全自研」不矛盾，因为成本结构是反的：那次自研是为了不把
-//! 8707 行 + 7 个新包吃进 fork，而这一份已经在里面了。
+//! `brotli` / `flate2` / `zstd` 本來就是 `pingora-core` 的**非可選**依賴，
+//! 壓縮那 1365 行也未被 feature 門控 —— **它們今天就已經在二進位裡** ⇒ 串接**新增 0 個包**。
+//! ⚠ 與 G82「快取層完全自研」不矛盾，因為成本結構是反的：那次自研是為了不把
+//! 8707 行 + 7 個新包吃進 fork，而這一份已經在裡面了。
 //!
-//! ★ 它已经做对的几件容易漏的事（读的是源码）：按 RFC 9110 补 `Vary: Accept-Encoding`、
-//! 把强 ETag 弱化成 `W/"…"`、`101` 不转换、无体不转换、`Content-Type` 含 `zip` 的不压、
-//! 体小于 20 字节不压。
+//! ★ 它已經做對的幾件容易漏的事（讀的是原始碼）：按 RFC 9110 補 `Vary: Accept-Encoding`、
+//! 把強 ETag 弱化成 `W/"…"`、`101` 不轉換、無體不轉換、`Content-Type` 含 `zip` 的不壓、
+//! 體小於 20 位元組不壓。
 //!
-//! ## ⚠ ⚠ 两条**上游的**已知局限，写在明处
+//! ## ⚠ ⚠ 兩條**上游的**已知侷限，寫在明處
 //!
-//! 1. **`Accept-Encoding` 的 `q` 值被忽略**（上游源码里就写着 `// TODO: support q value`）。
-//!    ⇒ `Accept-Encoding: gzip;q=0, br` 会被当成「首选 gzip」，而客户端其实**拒绝**了 gzip。
-//!    ★ 这一条本模块**没有替它修**：修了会让「我们算的」与「它压的」分家，
-//!    而分家的表现比这条局限本身更坏（见下面 [`preferred_encoding`] 那段）。
-//! 2. **只按客户端的第一顺位挑，不回落到我们的次选**。配的是 `encode gzip`
-//!    而客户端发 `br, gzip` 时，它选 br、发现 br 被禁用（level 0），于是**整个不压**。
-//!    ⇒ 少压一次，不会压错 —— 代价方向是安全的。
+//! 1. **`Accept-Encoding` 的 `q` 值被忽略**（上游原始碼裡就寫著 `// TODO: support q value`）。
+//!    ⇒ `Accept-Encoding: gzip;q=0, br` 會被當成「首選 gzip」，而用戶端其實**拒絕**了 gzip。
+//!    ★ 這一條本模組**沒有替它修**：修了會讓「我們算的」與「它壓的」分家，
+//!    而分家的表現比這條侷限本身更壞（見下面 [`preferred_encoding`] 那段）。
+//! 2. **只按用戶端的第一順位挑，不回落到我們的次選**。配的是 `encode gzip`
+//!    而用戶端發 `br, gzip` 時，它選 br、發現 br 被禁用（level 0），於是**整個不壓**。
+//!    ⇒ 少壓一次，不會壓錯 —— 代價方向是安全的。
 
 use fulcrum_runtime::Routed;
 use pingora_core::protocols::http::compression::{Algorithm, ResponseCompressionCtx};
 use pingora_http::{RequestHeader, ResponseHeader};
 
-/// 每种算法各自的默认压缩级别。
+/// 每種演算法各自的預設壓縮級別。
 ///
-/// ★ ★ **有意不是「一个数配三种」**，而上游的 `ResponseCompressionCtx::new` 恰恰是那样：
-/// 它把同一个 `compression_level` 塞给三种算法。⚠ 那个数在三种算法上**根本不可比** ——
-/// brotli 的 11 与 gzip 的 11（其实 gzip 只到 9）不是同一件事，
-/// 而 brotli 高质量档在动态内容上慢到不能用。
-/// ⇒ 这里逐个 `adjust_algorithm_level` 覆盖成各自领域里的常用值。
+/// ★ ★ **有意不是「一個數配三種」**，而上游的 `ResponseCompressionCtx::new` 恰恰是那樣：
+/// 它把同一個 `compression_level` 塞給三種演算法。⚠ 那個數在三種演算法上**根本不可比** ——
+/// brotli 的 11 與 gzip 的 11（其實 gzip 只到 9）不是同一件事，
+/// 而 brotli 高品質檔在動態內容上慢到不能用。
+/// ⇒ 這裡逐個 `adjust_algorithm_level` 覆蓋成各自領域裡的常用值。
 const GZIP_LEVEL: u32 = 6;
 const ZSTD_LEVEL: u32 = 3;
 const BROTLI_LEVEL: u32 = 5;
 
-/// 我们认得的三种编码。★ 与配置层 `ArgType::Enum(&["gzip", "zstd", "br"])` 逐字对应 ——
-/// ⚠ 两处分家的表现是「配置里写得下、运行时不认」，而那不会有任何报错。
+/// 我們認得的三種編碼。★ 與設定層 `ArgType::Enum(&["gzip", "zstd", "br"])` 逐字對應 ——
+/// ⚠ 兩處分家的表現是「設定裡寫得下、執行環境不認」，而那不會有任何回報錯誤。
 pub const KNOWN: &[&str] = &["gzip", "zstd", "br"];
 
-/// 没压（或压不了）时，缓存次级键上用的那个值。
+/// 沒壓（或壓不了）時，快取次級鍵上用的那個值。
 pub const IDENTITY: &str = "identity";
 
-/// 一次响应的压缩上下文。
+/// 一次回應的壓縮上下文。
 pub struct Encoder(ResponseCompressionCtx);
 
 impl Encoder {
-    /// 按这条链上 `encode` 要求的算法建一个。链上没写 `encode` ⇒ `None`。
+    /// 按這條鏈上 `encode` 要求的演算法建一個。鏈上沒寫 `encode` ⇒ `None`。
     ///
-    /// ⚠ `decompress_enable = false`：我们不替上游解压。一个已经压好的上游响应，
-    /// 客户端认就原样转、不认就……上游的事。★ 打开它等于**默默改写别人的字节**，
-    /// 而那是一条没人要求过的行为。
-    /// ⚠ `preserve_etag = false`（**G102**）：压完把强 ETag 弱化成 `W/"…"`。
+    /// ⚠ `decompress_enable = false`：我們不替上游解壓。一個已經壓好的上游回應，
+    /// 用戶端認就原樣轉、不認就……上游的事。★ 打開它等於**默默改寫別人的位元組**，
+    /// 而那是一條沒人要求過的行為。
+    /// ⚠ `preserve_etag = false`（**G102**）：壓完把強 ETag 弱化成 `W/"…"`。
     pub fn new(requested: &[String], req: &RequestHeader) -> Option<Encoder> {
         if requested.is_empty() {
             return None;
         }
-        // ★ 先全关（level 0 = 禁用），再把配置点名的那几种打开 ——
-        //   ⚠ 反过来写（先全开再关掉没点名的）在加第四种算法时会**默认放行**它，
-        //   而「配置里没写却生效了」是本仓库反复点名的那一类。
+        // ★ 先全關（level 0 = 禁用），再把設定點名的那幾種打開 ——
+        //   ⚠ 反過來寫（先全開再關掉沒點名的）在加第四種演算法時會**預設放行**它，
+        //   而「設定裡沒寫卻生效了」是本儲存庫反覆點名的那一類。
         let mut ctx = ResponseCompressionCtx::new(0, false, false);
         for name in requested {
             let (algo, level) = match name.as_str() {
                 "gzip" => (Algorithm::Gzip, GZIP_LEVEL),
                 "zstd" => (Algorithm::Zstd, ZSTD_LEVEL),
                 "br" => (Algorithm::Brotli, BROTLI_LEVEL),
-                // ⚠ 走不到：配置层已经用 Enum 拦过。留着不 panic —— 一个
-                //   「配置里多了一种编码」的将来，不该让数据面倒下。
+                // ⚠ 走不到：設定層已經用 Enum 攔過。留著不 panic —— 一個
+                //   「設定裡多了一種編碼」的將來，不該讓資料面倒下。
                 _ => continue,
             };
             ctx.adjust_algorithm_level(algo, level);
@@ -76,69 +76,69 @@ impl Encoder {
         Some(Encoder(ctx))
     }
 
-    /// 响应头进来一次（会补 `Vary`、弱化 ETag、去掉 `Content-Length` 与 `Accept-Ranges`）。
+    /// 回應頭進來一次（會補 `Vary`、弱化 ETag、去掉 `Content-Length` 與 `Accept-Ranges`）。
     pub fn header_filter(&mut self, resp: &mut ResponseHeader, no_body: bool) {
         self.0.response_header_filter(resp, no_body);
     }
 
-    /// 体的每一块进来一次。返回 `None` = 这一块不用替换（没在压）。
+    /// 體的每一塊進來一次。回傳 `None` = 這一塊不用替換（沒在壓）。
     pub fn body_filter(&mut self, data: Option<&bytes::Bytes>, end: bool) -> Option<bytes::Bytes> {
         self.0.response_body_filter(data, end)
     }
 }
 
-/// **这次请求最终会拿到哪种编码** —— 缓存次级键就用它（**G101**）。
+/// **這次請求最終會拿到哪種編碼** —— 快取次級鍵就用它（**G101**）。
 ///
-/// # ★ ★ ★ 为什么缓存的次级键不能直接用 `Accept-Encoding` 的原值
+/// # ★ ★ ★ 為什麼快取的次級鍵不能直接用 `Accept-Encoding` 的原值
 ///
-/// G101 拍的是「压完再存」，于是缓存里存的是**压缩后**的字节，
-/// 而 pingora 会照 RFC 9110 给这种响应补上 `Vary: Accept-Encoding` ——
-/// ⇒ 缓存按这个头分身。⚠ 而浏览器发的是 `gzip, deflate, br, zstd` 的**各种顺序与写法**：
-/// 拿原值当次级键，同一条 URL 会存出几十份**内容完全相同**的条目，
-/// 而现场表现是「缓存命中率莫名其妙地低、磁盘莫名其妙地满」。
+/// G101 拍的是「壓完再存」，於是快取裡存的是**壓縮後**的位元組，
+/// 而 pingora 會照 RFC 9110 給這種回應補上 `Vary: Accept-Encoding` ——
+/// ⇒ 快取按這個頭分身。⚠ 而瀏覽器發的是 `gzip, deflate, br, zstd` 的**各種順序與寫法**：
+/// 拿原值當次級鍵，同一條 URL 會存出幾十份**內容完全相同**的條目，
+/// 而現場表現是「快取命中率莫名其妙地低、磁碟莫名其妙地滿」。
 ///
-/// ⇒ 归一化成「我们实际会发的那一种」，取值只剩 `gzip` / `zstd` / `br` / `identity` 四个。
-/// ★ nginx 与 Varnish 都是这么干的。
+/// ⇒ 歸一化成「我們實際會發的那一種」，取值只剩 `gzip` / `zstd` / `br` / `identity` 四個。
+/// ★ nginx 與 Varnish 都是這麼幹的。
 ///
-/// # ⚠ ⚠ 正确性建在哪一条上（而**不是**建在「它与上游的挑法一致」上）
+/// # ⚠ ⚠ 正確性建在哪一條上（而**不是**建在「它與上游的挑法一致」上）
 ///
-/// 这个函数**不试图预测** `decide_action` 会怎么选 —— 那是一个会分家的模型，
-/// 而分家的模型比没有模型更危险。它要的只有一条：
+/// 這個函式**不試圖預測** `decide_action` 會怎麼選 —— 那是一個會分家的模型，
+/// 而分家的模型比沒有模型更危險。它要的只有一條：
 ///
-/// > **存与查用的是同一个函数，且它只看请求。**
+/// > **存與查用的是同一個函式，且它只看請求。**
 ///
-/// 于是「映射到同一个次级键的两个请求」必然有同一个首选算法，
-/// 也就必然都接受存进去的那份编码。★ 而条目自己带着 `Content-Encoding` 头，
-/// 所以发出去的东西永远是自描述的。
+/// 於是「映射到同一個次級鍵的兩個請求」必然有同一個首選演算法，
+/// 也就必然都接受存進去的那份編碼。★ 而條目自己帶著 `Content-Encoding` 頭，
+/// 所以發出去的東西永遠是自描述的。
 ///
-/// ⚠ 一处**已知的、可接受的**浪费：上游响应不可压时（图片、`Content-Encoding` 已存在、
-/// 体太小），我们照样把 identity 的字节存在 `gzip` 这个次级键下。
-/// ⇒ 一个只发 `identity` 的客户端会算出 `identity` 而未命中，于是同样的内容存第二份。
-/// ★ 那是**浪费不是错误**，而换来的是这个函数只看请求、因此不可能与存的时候分家。
+/// ⚠ 一處**已知的、可接受的**浪費：上游回應不可壓時（圖片、`Content-Encoding` 已存在、
+/// 體太小），我們照樣把 identity 的位元組存在 `gzip` 這個次級鍵下。
+/// ⇒ 一個只發 `identity` 的用戶端會算出 `identity` 而未命中，於是同樣的內容存第二份。
+/// ★ 那是**浪費不是錯誤**，而換來的是這個函式只看請求、因此不可能與存的時候分家。
 pub fn preferred_encoding(accept_encoding: Option<&str>, enabled: &[String]) -> &'static str {
     let Some(raw) = accept_encoding else {
         return IDENTITY;
     };
     for token in raw.split(',') {
-        // ⚠ 只取分号前那一段：`gzip;q=0.8` 的算法名是 `gzip`。
-        //   ★ 而 `q` 值本身**有意不看** —— 上游的解析器也不看（源码里写着 TODO），
-        //   替它「修好」会让我们算的与它压的分家，见模块顶部第 1 条。
+        // ⚠ 只取分號前那一段：`gzip;q=0.8` 的演算法名是 `gzip`。
+        //   ★ 而 `q` 值本身**有意不看** —— 上游的解析器也不看（原始碼裡寫著 TODO），
+        //   替它「修好」會讓我們算的與它壓的分家，見模組頂部第 1 條。
         let name = token.split(';').next().unwrap_or("").trim();
         if name.is_empty() {
             continue;
         }
-        // `*` ⇒ 上游判 `Noop`（不压），我们跟着算 identity。
+        // `*` ⇒ 上游判 `Noop`（不壓），我們跟著算 identity。
         if name == "*" {
             return IDENTITY;
         }
         let lower = name.to_ascii_lowercase();
         if !KNOWN.contains(&lower.as_str()) {
-            // 不认识的编码：上游会跳过它继续往后看，我们也跳过。
+            // 不認識的編碼：上游會跳過它繼續往後看，我們也跳過。
             continue;
         }
-        // ★ ★ 认得但**没被配置打开** ⇒ 上游会选中它、发现 level 0、于是整个不压
-        //   （模块顶部第 2 条）。⇒ 这里必须跟着返回 identity，而不是继续找下一个 ——
-        //   ⚠ 「继续找下一个」正是那个会与上游分家的模型。
+        // ★ ★ 認得但**沒被設定打開** ⇒ 上游會選中它、發現 level 0、於是整個不壓
+        //   （模組頂部第 2 條）。⇒ 這裡必須跟著回傳 identity，而不是繼續找下一個 ——
+        //   ⚠ 「繼續找下一個」正是那個會與上游分家的模型。
         if !enabled.iter().any(|e| e == &lower) {
             return IDENTITY;
         }
@@ -152,17 +152,17 @@ pub fn preferred_encoding(accept_encoding: Option<&str>, enabled: &[String]) -> 
     IDENTITY
 }
 
-/// 这条链要不要压。★ 与 `Routed.cache` 同一条路子：中间件只记一笔，数据面决定怎么裹。
+/// 這條鏈要不要壓。★ 與 `Routed.cache` 同一條路子：中介軟體只記一筆，資料面決定怎麼裹。
 pub fn wanted<'r>(routed: &'r Routed<'_>) -> &'r [String] {
     &routed.requested_encodings
 }
 
-/// 这个状态码**按定义就没有体**（RFC 9110 §6.4.1 / §15.4.5）。
+/// 這個狀態碼**按定義就沒有體**（RFC 9110 §6.4.1 / §15.4.5）。
 ///
-/// ⚠ ⚠ 它必须传给 `header_filter` 的 `no_body`，否则压缩层会给一个
-/// **没有体**的响应加上 `Transfer-Encoding: chunked` 并抹掉 `Content-Length` ——
-/// ★ 而 304 恰恰是缓存重验证路径上最常见的那个状态码。
-/// ⚠ 上游那份只自己挡了 1xx，204/304 得由调用方挡。
+/// ⚠ ⚠ 它必須傳給 `header_filter` 的 `no_body`，否則壓縮層會給一個
+/// **沒有體**的回應加上 `Transfer-Encoding: chunked` 並抹掉 `Content-Length` ——
+/// ★ 而 304 恰恰是快取重驗證路徑上最常見的那個狀態碼。
+/// ⚠ 上游那份只自己擋了 1xx，204/304 得由呼叫方擋。
 pub fn status_has_no_body(status: u16) -> bool {
     status == 204 || status == 304 || (100..200).contains(&status)
 }
@@ -181,9 +181,9 @@ mod tests {
         assert_eq!(preferred_encoding(Some(""), &all()), IDENTITY);
     }
 
-    // ★ ★ ★ 归一化的**全部意义**：多种写法必须收敛到同一个键。
-    //   ⚠ 少了它，同一条 URL 会按 `Accept-Encoding` 的原值存出几十份内容相同的条目，
-    //   而现场表现是「命中率莫名其妙地低、磁盘莫名其妙地满」。
+    // ★ ★ ★ 歸一化的**全部意義**：多種寫法必須收斂到同一個鍵。
+    //   ⚠ 少了它，同一條 URL 會按 `Accept-Encoding` 的原值存出幾十份內容相同的條目，
+    //   而現場表現是「命中率莫名其妙地低、磁碟莫名其妙地滿」。
     #[test]
     fn 多种写法收敛到同一个键() {
         let e = all();
@@ -192,13 +192,13 @@ mod tests {
             "gzip, deflate",
             "gzip;q=1.0, identity;q=0.5",
             " GZIP , br ",
-            "deflate, gzip, br", // deflate 不认识 ⇒ 跳过，首个认得的是 gzip
+            "deflate, gzip, br", // deflate 不認識 ⇒ 跳過，首個認得的是 gzip
         ] {
             assert_eq!(preferred_encoding(Some(raw), &e), "gzip", "raw = {raw:?}");
         }
     }
 
-    // ★ 首选是谁就是谁 —— 顺序**是**语义的一部分。
+    // ★ 首選是誰就是誰 —— 順序**是**語義的一部分。
     #[test]
     fn 按客户端的首选算() {
         let e = all();
@@ -207,25 +207,25 @@ mod tests {
         assert_eq!(preferred_encoding(Some("zstd, br, gzip"), &e), "zstd");
     }
 
-    // ★ ★ 认得但没开 ⇒ identity，**不继续往后找**。
-    //   ⚠ 这一条是与上游对齐的关键：上游选中首选之后发现它被禁用就整个不压，
-    //   而一个「继续找下一个」的实现会算出 gzip、上游却发 identity ⇒ 两边分家。
+    // ★ ★ 認得但沒開 ⇒ identity，**不繼續往後找**。
+    //   ⚠ 這一條是與上游對齊的關鍵：上游選中首選之後發現它被禁用就整個不壓，
+    //   而一個「繼續找下一個」的實作會算出 gzip、上游卻發 identity ⇒ 兩邊分家。
     #[test]
     fn 认得但没开就是_identity_而不是往后找() {
         let only_gzip = vec!["gzip".to_string()];
         assert_eq!(preferred_encoding(Some("br, gzip"), &only_gzip), IDENTITY);
-        // 反向：首选就是开着的那个 ⇒ 正常返回。
+        // 反向：首選就是開著的那個 ⇒ 正常回傳。
         assert_eq!(preferred_encoding(Some("gzip, br"), &only_gzip), "gzip");
     }
 
-    // `*` ⇒ 上游判 Noop，我们跟着算 identity。
+    // `*` ⇒ 上游判 Noop，我們跟著算 identity。
     #[test]
     fn 星号是_identity() {
         assert_eq!(preferred_encoding(Some("*"), &all()), IDENTITY);
         assert_eq!(preferred_encoding(Some("*, gzip"), &all()), IDENTITY);
     }
 
-    // 一种都不认识 ⇒ identity。
+    // 一種都不認識 ⇒ identity。
     #[test]
     fn 全是不认识的编码就是_identity() {
         assert_eq!(
@@ -234,15 +234,15 @@ mod tests {
         );
     }
 
-    // ⚠ 空配置（没写 `encode`）⇒ 永远 identity。★ 它保证「没配压缩的站点」
-    //   的缓存次级键与批 G 时代**一模一样**，换句话说：本批不动没配 encode 的人。
+    // ⚠ 空設定（沒寫 `encode`）⇒ 永遠 identity。★ 它保證「沒配壓縮的站台」
+    //   的快取次級鍵與批 G 時代**一模一樣**，換句話說：本批不動沒配 encode 的人。
     #[test]
     fn 没配_encode_时永远是_identity() {
         assert_eq!(preferred_encoding(Some("gzip, br"), &[]), IDENTITY);
     }
 
-    // ★ 这条钉的是「配置层认的那三个字」与「运行时认的那三个字」不许分家。
-    //   ⚠ 分家的表现是「配置里写得下、运行时不认」，而那不会有任何报错。
+    // ★ 這條釘的是「設定層認的那三個字」與「執行環境認的那三個字」不許分家。
+    //   ⚠ 分家的表現是「設定裡寫得下、執行環境不認」，而那不會有任何回報錯誤。
     #[test]
     fn 认得的编码与配置层那张表逐字相同() {
         assert_eq!(KNOWN, ["gzip", "zstd", "br"]);

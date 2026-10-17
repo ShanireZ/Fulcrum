@@ -1,40 +1,40 @@
 #!/usr/bin/env bash
-# M1 的 systemd 场景驱动：把产物放进一个**以 systemd 为 PID 1** 的容器里跑。
+# M1 的 systemd 場景驅動：把產物放進一個**以 systemd 為 PID 1** 的容器裡跑。
 #
-#   bash tests/m1/systemd-run.sh                   # 构建 + 四个场景
-#   M1_SKIP_BUILD=1  bash tests/m1/systemd-run.sh  # 跳过构建（由 docker-run.sh 调用时用）
-#   M1_ONLY=product  bash tests/m1/systemd-run.sh  # 只跑**产品二进制**场景
-#   M1_ONLY=main     bash tests/m1/systemd-run.sh  # 只跑 spike 主场景（机制那一层）
-#   M1_ONLY=rev      bash tests/m1/systemd-run.sh  # 只跑 ExitType=main 反证场景
-#   M1_ONLY=handover bash tests/m1/systemd-run.sh  # 只跑「被否掉的 MainPID 交接」场景
-#   M1_KEEP=1        bash tests/m1/systemd-run.sh  # 失败后**不删容器**，留着进去看现场
+#   bash tests/m1/systemd-run.sh                   # 建置 + 四個場景
+#   M1_SKIP_BUILD=1  bash tests/m1/systemd-run.sh  # 跳過建置（由 docker-run.sh 呼叫時用）
+#   M1_ONLY=product  bash tests/m1/systemd-run.sh  # 只跑**產品二進位**場景
+#   M1_ONLY=main     bash tests/m1/systemd-run.sh  # 只跑 spike 主場景（機制那一層）
+#   M1_ONLY=rev      bash tests/m1/systemd-run.sh  # 只跑 ExitType=main 反證場景
+#   M1_ONLY=handover bash tests/m1/systemd-run.sh  # 只跑「被否掉的 MainPID 交接」場景
+#   M1_KEEP=1        bash tests/m1/systemd-run.sh  # 失敗後**不刪容器**，留著進去看現場
 #
-# 四个场景的分工：
-#   product.sh          ★ **产品二进制**在 systemd 下起得来、换得了代、停得干净（G78）
-#   run.sh              spike：机制那一层（fd 移交、CLOEXEC、升级 socket 不泄漏）
-#   exit-type-main.sh   去掉 ExitType=cgroup 会怎样 —— 证明那一行确实在干活
-#   mainpid-handover.sh G31 推断的那条路会怎样 —— 证明它为什么被否掉
+# 四個場景的分工：
+#   product.sh          ★ **產品二進位**在 systemd 下起得來、換得了代、停得乾淨（G78）
+#   run.sh              spike：機制那一層（fd 移交、CLOEXEC、升級 socket 不洩漏）
+#   exit-type-main.sh   去掉 ExitType=cgroup 會怎樣 —— 證明那一行確實在幹活
+#   mainpid-handover.sh G31 推斷的那條路會怎樣 —— 證明它為什麼被否掉
 #
-# ★ ★ ★ **为什么产品那一个是才有的**：在它之前，这里三个场景跑的全是
-#   spike 二进制，而 spike 把 sd_notify / pid 文件 / SIGUSR2 换代**自己实现了一遍**。
-#   于是三个场景全绿，产品二进制却 `systemctl start` 超时失败（实测）。
-#   > **夹具喂给门的那个二进制，本身也是夹具的一部分。**
+# ★ ★ ★ **為什麼產品那一個是才有的**：在它之前，這裡三個場景跑的全是
+#   spike 二進位，而 spike 把 sd_notify / pid 檔案 / SIGUSR2 換代**自己實作了一遍**。
+#   於是三個場景全綠，產品二進位卻 `systemctl start` 超時失敗（實測）。
+#   > **夾具餵給門的那個二進位，本身也是夾具的一部分。**
 #
-# ★ 为什么必须是另一个容器：M0 那套跑在构建镜像里（rust 工具链，PID 1 是 bash）。
-#   本场景要验的东西**只存在于 systemd 里**——MainPID、cgroup 生命周期、KillMode。
-#   同一个容器同时做这两件事，会让每次改测试宿主都触发一次全量重编译。
+# ★ 為什麼必須是另一個容器：M0 那套跑在建置鏡像裡（rust 工具鏈，PID 1 是 bash）。
+#   本場景要驗的東西**只存在於 systemd 裡**——MainPID、cgroup 生命週期、KillMode。
+#   同一個容器同時做這兩件事，會讓每次改測試宿主都觸發一次全量重編譯。
 set -euo pipefail
 
 REPO_UNIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# 卷名的推导与门禁互斥锁：与 tests/m0/docker-run.sh 共用同一份，不在这里重算。
+# 卷名的推導與門禁互斥鎖：與 tests/m0/docker-run.sh 共用同一份，不在這裡重算。
 VOL_LOCK_LIB="$REPO_UNIX/tests/lib/vol-lock.sh"
 # shellcheck source=tests/lib/vol-lock.sh
 . "$VOL_LOCK_LIB"
 
-# ── 构建 ────────────────────────────────────────────────────────────────────
-# ★ 不自己写一份构建逻辑：行尾检查、构建镜像的内容哈希重建、缓存卷，全都在 docker-run.sh 里，
-#   抄一份过来必然分头长歪（本仓库已经在 lifecycle.sh 上吃过一次）。
+# ── 建置 ────────────────────────────────────────────────────────────────────
+# ★ 不自己寫一份建置邏輯：行尾檢查、建置鏡像的內容雜湊重建、快取卷，全都在 docker-run.sh 裡，
+#   抄一份過來必然分頭長歪（本儲存庫已經在 lifecycle.sh 上吃過一次）。
 if [ "${M1_SKIP_BUILD:-0}" != "1" ]; then
   echo "[m1] 先构建（复用 tests/m0/docker-run.sh 的构建路径）"
   BUILD_ONLY=1 bash "$REPO_UNIX/tests/m0/docker-run.sh"
@@ -48,15 +48,15 @@ else
 fi
 DOCKER_CTX="${REPO_HOST}/docker"
 
-# ── 产物在哪个 target 卷里 ───────────────────────────────────────────────────
+# ── 產物在哪個 target 卷裡 ───────────────────────────────────────────────────
 #
-# ★ ★ **不自己重算一遍卷名。** docker-run.sh 用 `docker/Dockerfile.build` 的内容哈希
-#   做卷名后缀，这里改成**从构建镜像的 label 上读回来**——同一个事实只有一个来源，
-#   于是不可能算出两个不同的值。
+# ★ ★ **不自己重算一遍卷名。** docker-run.sh 用 `docker/Dockerfile.build` 的內容雜湊
+#   做卷名後綴，這裡改成**從建置鏡像的 label 上讀回來**——同一個事實只有一個來源，
+#   於是不可能算出兩個不同的值。
 #
-# ★ 并且当场核对它与**当前** Dockerfile 是否一致：不一致说明构建没跑或跑的是旧镜像，
-#   此时若照旧挂上去，跑的就是**上一个工具链编出来的二进制**，而且会报绿。
-#   ——「拿不到就强制重建」在 docker-run.sh 里；这里拿不到就**判红**，因为这里不负责构建。
+# ★ 並且當場核對它與**當前** Dockerfile 是否一致：不一致說明建置沒跑或跑的是舊鏡像，
+#   此時若照舊掛上去，跑的就是**上一個工具鏈編出來的二進位**，而且會報綠。
+#   ——「拿不到就強制重建」在 docker-run.sh 裡；這裡拿不到就**判紅**，因為這裡不負責建置。
 BUILD_IMAGE=${IMAGE:-fulcrum-build:local}
 LABEL_KEY="cool.cnb.fulcrum.dockerfile-sha256"
 IMAGE_SHA=$(docker image inspect "$BUILD_IMAGE" --format "{{index .Config.Labels \"$LABEL_KEY\"}}" 2>/dev/null || true)
@@ -73,45 +73,45 @@ if command -v sha256sum >/dev/null 2>&1; then
     exit 1
   }
 fi
-# ★ ★ 卷名还带着**这棵工作树**的短哈希（理由写在 tests/lib/vol-lock.sh 顶部：
-#   一台机器上有好几棵工作树，而它们曾经共用同一个 /w/target）。
-#   ⚠ 这里同样**不自己拼字符串** —— 拼一遍就是给下一次改名埋一处安静的分叉，
-#     而分叉的表现是本格挂上一个自动新建的**空卷**，然后抱怨找不到产品二进制。
+# ★ ★ 卷名還帶著**這棵工作樹**的短雜湊（理由寫在 tests/lib/vol-lock.sh 頂部：
+#   一臺機器上有好幾棵工作樹，而它們曾經共用同一個 /w/target）。
+#   ⚠ 這裡同樣**不自己拼字串** —— 拼一遍就是給下一次改名埋一處安靜的分叉，
+#     而分叉的表現是本格掛上一個自動新建的**空卷**，然後抱怨找不到產品二進位。
 TARGET_VOL="$(fulcrum_target_vol "$IMAGE_SHA" "$REPO_UNIX")"
 
-# ★ ★ ★ **卷必须已经在了，不在就当场红。** 上面那段注释说「分叉的表现是本格挂上一个
-#   自动新建的空卷」——它防住了「自己拼字符串」那条成因，却没防住**卷压根不存在**：
-#   `docker run -v <名字>:<路径>` 对不存在的命名卷是**静默新建一个空卷**，不报错。
-#   ⇒ 症状是本格挂上空的 `/w/target`、抱怨找不到产品二进制，而真正的原因
-#     （谁也没构建过）要绕一大圈才看得出来；更坏的是那个空卷**没有 label**，
-#     于是它此后在回收提示里永远落进「不明」那一半，只进不出。
-# ⛔ **不改成「不在就自己建」**：空卷意味着没有产品二进制，建了也只是把失败推到更晚，
-#   而那时错误信息指向的是别的东西。⇒ 与 `tests/bench/run.sh` 同形：说清楚，然后退出。
-# ★ 这里不负责构建（同上面 IMAGE_SHA 那两条的理由），所以给的是「先跑哪一格」而不是代跑。
+# ★ ★ ★ **卷必須已經在了，不在就當場紅。** 上面那段註解說「分叉的表現是本格掛上一個
+#   自動新建的空卷」——它防住了「自己拼字串」那條成因，卻沒防住**卷壓根不存在**：
+#   `docker run -v <名字>:<路径>` 對不存在的命名卷是**靜默新建一個空卷**，不回報錯誤。
+#   ⇒ 症狀是本格掛上空的 `/w/target`、抱怨找不到產品二進位，而真正的原因
+#     （誰也沒建置過）要繞一大圈才看得出來；更壞的是那個空卷**沒有 label**，
+#     於是它此後在回收提示裡永遠落進「不明」那一半，只進不出。
+# ⛔ **不改成「不在就自己建」**：空卷意味著沒有產品二進位，建了也只是把失敗推到更晚，
+#   而那時錯誤資訊指向的是別的東西。⇒ 與 `tests/bench/run.sh` 同形：說清楚，然後退出。
+# ★ 這裡不負責建置（同上面 IMAGE_SHA 那兩條的理由），所以給的是「先跑哪一格」而不是代跑。
 if ! docker volume inspect "$TARGET_VOL" >/dev/null 2>&1; then
   echo "M1 GATE FAILED: 找不到目标卷 $TARGET_VOL —— 先跑一次构建那一格" >&2
   echo "  \`bash tests/m0/docker-run.sh\`（或去掉 M1_SKIP_BUILD 让本脚本自己构建）。" >&2
   exit 1
 fi
 
-# ★ 与 M0 同一把锁（锁名＝卷名）：本格与 M0 挂的是同一个卷，并发跑一样会互相踩。
-# ⚠ 由 docker-run.sh 调进来时它已经持锁，靠导出的 FULCRUM_GATE_LOCK_HELD 直接放行；
-#   上面那次 `BUILD_ONLY=1 docker-run.sh` 也是它自己取自己放，所以取锁必须排在构建之后。
+# ★ 與 M0 同一把鎖（鎖名＝卷名）：本格與 M0 掛的是同一個卷，並行跑一樣會互相踩。
+# ⚠ 由 docker-run.sh 調進來時它已經持鎖，靠匯出的 FULCRUM_GATE_LOCK_HELD 直接放行；
+#   上面那次 `BUILD_ONLY=1 docker-run.sh` 也是它自己取自己放，所以取鎖必須排在建置之後。
 fulcrum_lock_acquire "$TARGET_VOL" "$REPO_UNIX" || exit 1
 
-# ── 测试宿主镜像（systemd）─────────────────────────────────────────────────
+# ── 測試宿主鏡像（systemd）─────────────────────────────────────────────────
 #
-# 与构建镜像同一条纪律：**内容变了就重做**，而不是「在就用」。
-# 理由见 docker/Dockerfile.systemd 顶部——systemd 的版本是本 spike 结论的一部分。
+# 與建置鏡像同一條紀律：**內容變了就重做**，而不是「在就用」。
+# 理由見 docker/Dockerfile.systemd 頂部——systemd 的版本是本 spike 結論的一部分。
 SYSTEMD_IMAGE=${SYSTEMD_IMAGE:-fulcrum-systemd:local}
 SYSTEMD_DOCKERFILE="${REPO_UNIX}/docker/Dockerfile.systemd"
 if command -v sha256sum >/dev/null 2>&1; then
   SYSTEMD_SHA=$(sha256sum "$SYSTEMD_DOCKERFILE" | cut -d' ' -f1)
 elif command -v git >/dev/null 2>&1; then
-  # ⚠ ⚠ ★ `--stdin`：本脚本由 `tests/m0/docker-run.sh` 在它 `export MSYS_NO_PATHCONV=1`
-  #   **之后**调起 ⇒ 继承那个变量 ⇒ 原生 git.exe 拿到未转换的 `/d/...` 会报
-  #   `fatal: could not open '/d/…' for reading`。argv 里不放路径就没这回事。
-  #   （`docker-run.sh` 第 42 行那条位置硬要求说的是同一件事；同源写法见 `tests/lib/vol-lock.sh:168`。）
+  # ⚠ ⚠ ★ `--stdin`：本指令碼由 `tests/m0/docker-run.sh` 在它 `export MSYS_NO_PATHCONV=1`
+  #   **之後**調起 ⇒ 繼承那個變數 ⇒ 原生 git.exe 拿到未轉換的 `/d/...` 會報
+  #   `fatal: could not open '/d/…' for reading`。argv 裡不放路徑就沒這回事。
+  #   （`docker-run.sh` 第 42 行那條位置硬要求說的是同一件事；同源寫法見 `tests/lib/vol-lock.sh:168`。）
   SYSTEMD_SHA="githash-$(git hash-object --stdin < "$SYSTEMD_DOCKERFILE")"
 else
   SYSTEMD_SHA=""
@@ -124,27 +124,27 @@ if [ -z "$SYSTEMD_SHA" ] || [ "$CUR_SHA" != "$SYSTEMD_SHA" ]; then
     -f "${DOCKER_CTX}/Dockerfile.systemd" "$DOCKER_CTX"
 fi
 
-# ── 跑一个场景 ──────────────────────────────────────────────────────────────
+# ── 跑一個場景 ──────────────────────────────────────────────────────────────
 #
-# ★ **每个场景一个全新容器。** 比「一个容器跑两遍再清理」强得多：M0 那边正是因为
-#   上一个场景留下了进程，下一个场景的基线探测对着残留进程报了绿（实际发生过）。
-#   systemd 的状态（failed 计数、drop-in、journal）更难清干净，所以这里直接不复用。
+# ★ **每個場景一個全新容器。** 比「一個容器跑兩遍再清理」強得多：M0 那邊正是因為
+#   上一個場景留下了處理程序，下一個場景的基線探測對著殘留處理程序報了綠（實際發生過）。
+#   systemd 的狀態（failed 計數、drop-in、journal）更難清乾淨，所以這裡直接不復用。
 run_scenario() {
   local name=$1 script=$2 rc=0
-  # ★ 必须另起一句：`local` 的**所有参数在赋值发生之前就已经展开完了**，
-  #   写成 `local name=$1 cname="…${name}"` 时 `${name}` 取的是赋值前的值（这里是未定义，
-  #   `set -u` 当场炸）。这条第一次跑就咬了一口。
+  # ★ 必須另起一句：`local` 的**所有參數在賦值發生之前就已經展開完了**，
+  #   寫成 `local name=$1 cname="…${name}"` 時 `${name}` 取的是賦值前的值（這裡是未定義，
+  #   `set -u` 當場炸）。這條第一次跑就咬了一口。
   local cname="fulcrum-m1-${name}"
   echo
   echo "════════ 场景 ${name}：${script} ════════"
   docker rm -f "$cname" >/dev/null 2>&1 || true
 
-  # --privileged + 私有 cgroup namespace 是 systemd 在容器里跑起来的最低要求。
-  # ★ ★ **千万不要再把宿主机的 /sys/fs/cgroup 挂进来。** 实测：那样做会让
-  #   容器内的 cgroup 视图与它自己的 namespace 对不上，journald 直接起不来
-  #   （"Failed to acquire cgroup root path"），而**更糟的是 MAINPID= 交接会被静默丢弃**
-  #   ——systemd 无法把发信进程解析到某个 unit 上。⚠ 它很容易被误读成「systemd 不接受交接」
-  #   这个完全错误的结论。privileged 下 docker 自己会把正确的 cgroup2 视图挂成 rw。
+  # --privileged + 私有 cgroup namespace 是 systemd 在容器裡跑起來的最低要求。
+  # ★ ★ **千萬不要再把宿主機的 /sys/fs/cgroup 掛進來。** 實測：那樣做會讓
+  #   容器內的 cgroup 視圖與它自己的 namespace 對不上，journald 直接起不來
+  #   （"Failed to acquire cgroup root path"），而**更糟的是 MAINPID= 交接會被靜默丟棄**
+  #   ——systemd 無法把發信處理程序解析到某個 unit 上。⚠ 它很容易被誤讀成「systemd 不接受交接」
+  #   這個完全錯誤的結論。privileged 下 docker 自己會把正確的 cgroup2 視圖掛成 rw。
   docker run -d --name "$cname" \
     --privileged --cgroupns=private \
     --tmpfs /run --tmpfs /run/lock \
@@ -152,7 +152,7 @@ run_scenario() {
     -v "${TARGET_VOL}:/w/target" \
     "$SYSTEMD_IMAGE" >/dev/null
 
-  # 等 systemd 起来。★ 不用 sleep：等它自己说话。
+  # 等 systemd 起來。★ 不用 sleep：等它自己說話。
   local booted=""
   for _ in $(seq 1 60); do
     booted=$(docker exec "$cname" systemctl is-system-running 2>/dev/null || true)
@@ -169,18 +169,18 @@ run_scenario() {
       ;;
   esac
   if [ "$booted" = "degraded" ]; then
-    # ★ degraded 要把是谁挂了打出来。容器里有几个 unit 起不来是正常的，
-    #   但「正常的 degraded」和「真的有东西坏了」必须能分开看。
+    # ★ degraded 要把是誰掛了打出來。容器裡有幾個 unit 起不來是正常的，
+    #   但「正常的 degraded」和「真的有東西壞了」必須能分開看。
     echo "  systemd 状态 degraded，失败的 unit："
     docker exec "$cname" systemctl list-units --state=failed --no-pager --no-legend | sed 's/^/      /'
   fi
   docker exec "$cname" cat /etc/fulcrum-systemd-image | sed 's/^/  /'
 
-  # ★ 装**全部** unit 文件，而不是点名一个：场景与 unit 是一对一的
-  #   （spike 三个用 fulcrum-m1.service，产品那个用 fulcrum-prod.service），
-  #   点名的写法会在加第四个场景时安静地少装一个 —— 而症状是「unit 没被加载」，
-  #   看起来像 systemd 的问题。⚠ 装了不等于启动：没有 `systemctl enable`，
-  #   `[Install]` 段不生效，每个场景只 start 自己那一个。
+  # ★ 裝**全部** unit 檔案，而不是點名一個：場景與 unit 是一對一的
+  #   （spike 三個用 fulcrum-m1.service，產品那個用 fulcrum-prod.service），
+  #   點名的寫法會在加第四個場景時安靜地少裝一個 —— 而症狀是「unit 沒被載入」，
+  #   看起來像 systemd 的問題。⚠ 裝了不等於啟動：沒有 `systemctl enable`，
+  #   `[Install]` 段不生效，每個場景只 start 自己那一個。
   docker exec "$cname" bash -c \
     'install -m 0644 /w/tests/m1/*.service /etc/systemd/system/ && systemctl daemon-reload'
 
@@ -202,11 +202,11 @@ case "${M1_ONLY:-all}" in
   rev) run_scenario exit-type-main exit-type-main.sh || FAILED=1 ;;
   handover) run_scenario mainpid-handover mainpid-handover.sh || FAILED=1 ;;
   *)
-    # ★ 四个场景全都跑完再汇总，**即使前面已经红了**：
-    #   产品场景是「产品真的能被托管吗」，spike 主场景是「机制成立吗」，
-    #   另两个是「不这么做会怎样」。只看一个红，分不清是机制没生效、
-    #   是产品没接上、还是判据本身分不清好坏。
-    # ★ 产品排第一：它坏了最要紧，也最可能是刚改出来的。
+    # ★ 四個場景全都跑完再彙總，**即使前面已經紅了**：
+    #   產品場景是「產品真的能被託管嗎」，spike 主場景是「機制成立嗎」，
+    #   另兩個是「不這麼做會怎樣」。只看一個紅，分不清是機制沒生效、
+    #   是產品沒接上、還是判據本身分不清好壞。
+    # ★ 產品排第一：它壞了最要緊，也最可能是剛改出來的。
     run_scenario product product.sh || FAILED=1
     run_scenario main run.sh || FAILED=1
     run_scenario exit-type-main exit-type-main.sh || FAILED=1

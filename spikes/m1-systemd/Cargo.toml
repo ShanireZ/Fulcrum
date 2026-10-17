@@ -6,15 +6,15 @@ publish = false
 description = "M1 第一个 spike：systemd Type=notify 前台运行下的 MainPID 交接与零停机升级（G31 强制）"
 
 [dependencies]
-# ★ 复用 M0 的三类流量服务，不复制。理由见 spikes/m0-seam/src/lib.rs 顶部。
+# ★ 重複使用 M0 的三類流量服務，不復制。理由見 spikes/m0-seam/src/lib.rs 頂部。
 m0-seam = { path = "../m0-seam" }
 pingora-core = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
-# G31 指定：sd-notify 是纯 Rust、可 musl 静态链接，满足 G13。
+# G31 指定：sd-notify 是純 Rust、可 musl 靜態連結，滿足 G13。
 sd-notify = { workspace = true }
-# 只用一个函数：给自己发 SIGQUIT（std 没有 kill）。sd-notify 本就依赖它。
+# 只用一個函式：給自己發 SIGQUIT（std 沒有 kill）。sd-notify 本就依賴它。
 libc = { workspace = true }
 
 [[bin]]

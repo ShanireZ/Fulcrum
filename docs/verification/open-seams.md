@@ -1,9 +1,9 @@
 ---
-type: 验证记录
-title: 尚未验证的接缝
-description: 还有哪些技术假设没被代码证明；已解除的那些只留结论。
+type: 驗證記錄
+title: 尚未驗證的接縫
+description: 還有哪些技術假設沒被程式碼證明；已解除的那些只留結論。
 resource: ../../PLAN.md
-tags: [验证, 风险, 必读, 易错]
+tags: [驗證, 風險, 必讀, 易錯]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -11,84 +11,84 @@ generated:
 sources:
   - id: plan-9
     resource: /references/plan.md
-    title: PLAN.md §9 主要风险
+    title: PLAN.md §9 主要風險
   - id: plan-51
     resource: /references/plan.md
-    title: PLAN.md §5.1 G6 附带的三条硬约束
+    title: PLAN.md §5.1 G6 附帶的三條硬約束
   - id: plan-11
     resource: /references/plan.md
-    title: PLAN.md §11 待定清单
+    title: PLAN.md §11 待定清單
 ---
 
-**本页记的是尚未被代码证明的技术假设**，每一条的目标都是变成「已验证」或「此路不通」。
+**本頁記的是尚未被程式碼證明的技術假設**，每一條的目標都是變成「已驗證」或「此路不通」。
 
-# ⏳ 还开着的
+# ⏳ 還開著的
 
-| 接缝 | 已知事实 | 待验证 |
+| 接縫 | 已知事實 | 待驗證 |
 |---|---|---|
-| **构建镜像编不出 musl 产物** | 实测：Debian trixie 只有 `musl-gcc`（C），没有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ✅ **已由 G131 结案**（曾挂号 D21）：口径 = Alpine 原生 + qemu 跑 aarch64。✅ qemu 那一趟的耗时已量到：`ShanireHomePC` 2026-09-05 冷建 **18m07s**、`ShanirePCX` 2026-09-06 冷建 **34m05s**（⚠ 近两倍，**机器本地**，⛔ 别互相照抄）。✅ **曾挂号 D24 的「何时跑 aarch64」已由 `G144` 结案 = 候选 ②**：只在 `Cargo.lock` 或那三张钉 rustc 的 Dockerfile 变化时跑。⚠ binfmt 是**机器本地状态**，两台开发机现在都装了 |
-| **产物里真的链接了哪几套 TLS** | 依赖图里只有一套（`cargo tree -e all --target all` 为空） | ✅ **已由 G138 结案**（曾挂号 D23）：判据挂在 musl 静态产物上，`tests/ci/tls-linkage.sh` 取数 + `tests/musl/product.sh` 判**符号表**。⛔ 不判 `strings` —— `rustls` 那 4 次全来自纯类型 crate `rustls_pki_types`，靠 Rust v0 名字修饰的长度前缀（`_6rustls` ≠ `_16rustls_pki_types`）才分得开 |
+| **建置鏡像編不出 musl 產物** | 實測：Debian trixie 只有 `musl-gcc`（C），沒有 `musl-g++`，而 BoringSSL 的 `ssl/` 是 C++ | ✅ **已由 G131 結案**（曾掛號 D21）：口徑 = Alpine 原生 + qemu 跑 aarch64。✅ qemu 那一趟的耗時已量到：`ShanireHomePC` 2026-09-05 冷建 **18m07s**、`ShanirePCX` 2026-09-06 冷建 **34m05s**（⚠ 近兩倍，**機器本機**，⛔ 別互相照抄）。✅ **曾掛號 D24 的「何時跑 aarch64」已由 `G144` 結案 = 候選 ②**：只在 `Cargo.lock` 或那三張釘 rustc 的 Dockerfile 變化時跑。⚠ binfmt 是**機器本機狀態**，兩臺開發機現在都裝了 |
+| **產物裡真的連結了哪幾套 TLS** | 依賴圖裡只有一套（`cargo tree -e all --target all` 為空） | ✅ **已由 G138 結案**（曾掛號 D23）：判據掛在 musl 靜態產物上，`tests/ci/tls-linkage.sh` 取數 + `tests/musl/product.sh` 判**符號表**。⛔ 不判 `strings` —— `rustls` 那 4 次全來自純類型 crate `rustls_pki_types`，靠 Rust v0 名字修飾的長度前綴（`_6rustls` ≠ `_16rustls_pki_types`）才分得開 |
 
 # ✅ 已解除的
 
-| 接缝 | 结论 |
+| 接縫 | 結論 |
 |---|---|
-| 自建 Service 挂载 · socket 移交（认领路径） | ✅ M0 实测：三类服务并挂，自建 TCP/UDP 监听器的 fd 经 `SCM_RIGHTS` 传到第二代 → [M0 接缝验证](/verification/m0-seam.md) |
-| 未被认领的继承 fd 会怎样 | ✅ **已修**（2026-09-24，pingora 0.9.0 的 `f82478a` + 枢衡与 spike 的每个自建服务都实现了 `listen_addresses()`）。常设判据 [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) 从「复现坏行为」反写成「验修复」：第二代关掉那个 fd、老一代退出后端口拒连、不再传给第三代；反证实测：任一服务返回 `None` ⇒ 它当场红。见下 |
-| **`bind()` 攥着全局 `ListenFds` 锁**（vendor 0.8.1 时） | ✅ **2026-09-24 随 rebase 到 0.9.0 解除**：上游 `1d9371191` 把 `ListenFds` 换成 `parking_lot::Mutex` + 按地址的异步锁（`flurry` 随之进依赖图，过了供应链门）。⚠ 锁换成同步锁之后守卫不许跨 `.await` ⇒ 产品三处 + spike 三处取用改成短持锁 |
-| **`listen_addresses()` 的接线** | ✅ **2026-09-24 接上**：`fulcrum-server` 的 L4 TCP / L4 UDP / QUIC 三个自建服务返回各自的 **fd 表键**（⛔ 不是 bind 地址 —— 那会让新一代先关掉自己要继承的 fd），由单测 `*_服务声明的正是它的_fd_表键` 钉住（先红后绿）。⚠ 它带默认实现（返回 `None` = 关掉**整个进程**的清理），**漏实现不会有任何编译错误** —— 这正是要单测的原因 |
-| 移交来的监听 fd 没有 `FD_CLOEXEC` | ✅ 由 **G38** 在 fork 里修掉（包 `OwnedFd` + `MSG_CMSG_CLOEXEC`），并已投上游（[pingora#959](https://github.com/cloudflare/pingora/issues/959) → [#960](https://github.com/cloudflare/pingora/pull/960)）。★ 上游走批量重放，**「PR 被 close」是成功不是拒绝** —— 看改动有没有进 `main`。✅ **上游 0.9.0 已含（`b2b35fd`），fork 里那处改动 2026-09-24 归零**；M1 `[7/9]` 的三条断言照旧留着（上游单测看不到 fork+exec 的逐代累加）|
-| 两个入口能否共用同一份挑证书实现 | ✅ **不是被验证通过，是被取消了前提**：G104 换到 BoringSSL 之后共用的不再是 `ResolvesServerCert`，而是同一个 `select_certificate_callback` → [TLS](/architecture/tls.md) |
-| BoringSSL 与 musl 静态链接 | ✅ 已通过 → [musl + BoringSSL 静态链接](/verification/musl-boringssl.md)。⚠ 卡点不在 musl 也不在 BoringSSL，在构建宿主 —— 换来了上面那条构建宿主口径（曾挂号 D21，✅ 已由 G131 结案）|
-| systemd 下的零停机升级 | ✅ 由 M1 通过，★ 但推翻了 G31 的一半 → [M1 spike #1](/verification/m1-systemd.md) |
-| 升级窗口内 QUIC 连接归属 | ✅ 由 **G109** 解除：按 DCID 跨进程转交，判据 [`tests/quic-relay/run.sh`](../../tests/quic-relay/run.sh)，见下 |
-| L4 UDP 在升级窗口内的数据报分流 | ✅ 收到停机信号就不再 `recv_from`；⚠ **窗口被缩小不是被消灭** —— 在那之前两代都在收 |
-| `pingora-cache` 的抽象边界 | ✅ 已核实（`MemCache` 是唯一的 `Storage` 实现），⚠ 而同日 **G82** 决定缓存层完全自研 ⇒ 这条不再通向任何东西 |
+| 自建 Service 掛載 · socket 移交（認領路徑） | ✅ M0 實測：三類服務並掛，自建 TCP/UDP 監聽器的 fd 經 `SCM_RIGHTS` 傳到第二代 → [M0 接縫驗證](/verification/m0-seam.md) |
+| 未被認領的繼承 fd 會怎樣 | ✅ **已修**（2026-09-24，pingora 0.9.0 的 `f82478a` + 樞衡與 spike 的每個自建服務都實作了 `listen_addresses()`）。常設判據 [`tests/m0/unclaimed.sh`](../../tests/m0/unclaimed.sh) 從「重現壞行為」反寫成「驗修復」：第二代關掉那個 fd、老一代退出後連接埠拒連、不再傳給第三代；反證實測：任一服務回傳 `None` ⇒ 它當場紅。見下 |
+| **`bind()` 攥著全域 `ListenFds` 鎖**（vendor 0.8.1 時） | ✅ **2026-09-24 隨 rebase 到 0.9.0 解除**：上游 `1d9371191` 把 `ListenFds` 換成 `parking_lot::Mutex` + 按位址的非同步鎖（`flurry` 隨之進依賴圖，過了供應鏈門）。⚠ 鎖換成同步鎖之後守衛不許跨 `.await` ⇒ 產品三處 + spike 三處取用改成短持鎖 |
+| **`listen_addresses()` 的串接** | ✅ **2026-09-24 接上**：`fulcrum-server` 的 L4 TCP / L4 UDP / QUIC 三個自建服務回傳各自的 **fd 表鍵**（⛔ 不是 bind 位址 —— 那會讓新一代先關掉自己要繼承的 fd），由單測 `*_服务声明的正是它的_fd_表键` 釘住（先紅後綠）。⚠ 它帶預設實作（回傳 `None` = 關掉**整個處理程序**的清理），**漏實作不會有任何編譯錯誤** —— 這正是要單測的原因 |
+| 移交來的監聽 fd 沒有 `FD_CLOEXEC` | ✅ 由 **G38** 在 fork 裡修掉（包 `OwnedFd` + `MSG_CMSG_CLOEXEC`），並已投上游（[pingora#959](https://github.com/cloudflare/pingora/issues/959) → [#960](https://github.com/cloudflare/pingora/pull/960)）。★ 上游走批量重放，**「PR 被 close」是成功不是拒絕** —— 看改動有沒有進 `main`。✅ **上游 0.9.0 已含（`b2b35fd`），fork 裡那處改動 2026-09-24 歸零**；M1 `[7/9]` 的三條斷言照舊留著（上游單測看不到 fork+exec 的逐代累加）|
+| 兩個入口能否共用同一份挑證書實作 | ✅ **不是被驗證通過，是被取消了前提**：G104 換到 BoringSSL 之後共用的不再是 `ResolvesServerCert`，而是同一個 `select_certificate_callback` → [TLS](/architecture/tls.md) |
+| BoringSSL 與 musl 靜態連結 | ✅ 已通過 → [musl + BoringSSL 靜態連結](/verification/musl-boringssl.md)。⚠ 卡點不在 musl 也不在 BoringSSL，在建置宿主 —— 換來了上面那條建置宿主口徑（曾掛號 D21，✅ 已由 G131 結案）|
+| systemd 下的零停機升級 | ✅ 由 M1 通過，★ 但推翻了 G31 的一半 → [M1 spike #1](/verification/m1-systemd.md) |
+| 升級視窗內 QUIC 連接歸屬 | ✅ 由 **G109** 解除：按 DCID 跨處理程序轉交，判據 [`tests/quic-relay/run.sh`](../../tests/quic-relay/run.sh)，見下 |
+| L4 UDP 在升級視窗內的資料報分流 | ✅ 收到停機信號就不再 `recv_from`；⚠ **視窗被縮小不是被消滅** —— 在那之前兩代都在收 |
+| `pingora-cache` 的抽象邊界 | ✅ 已核實（`MemCache` 是唯一的 `Storage` 實作），⚠ 而同日 **G82** 決定快取層完全自研 ⇒ 這條不再通向任何東西 |
 
-# 三条要带走的结论
+# 三條要帶走的結論
 
-## 未被认领的 fd 会保持 LISTEN 并把连接吞掉，而它只在老一代退出之后才显形
+## 未被認領的 fd 會保持 LISTEN 並把連接吞掉，而它只在老一代退出之後才顯形
 
-> ✅ **2026-09-24 起这是已修掉的行为**（pingora 0.9.0 + 各服务声明 `listen_addresses()`）：新一代会关掉它，
-> 老一代退出后端口拒连。下面是 0.8.1 时的现象与教训，留作出处 —— ★「先等第一代退出再探」这条判据写法照旧有效。
+> ✅ **2026-09-24 起這是已修掉的行為**（pingora 0.9.0 + 各服務宣告 `listen_addresses()`）：新一代會關掉它，
+> 老一代退出後連接埠拒連。下面是 0.8.1 時的現象與教訓，留作出處 —— ★「先等第一代退出再探」這條判據寫法照舊有效。
 
-第二代不挂某个监听器时，那个 fd 仍被继承、仍在 LISTEN：TCP 三次握手**照常成功**，请求
-发出去之后**超时无回应**，并且逐代传递。
+第二代不掛某個監聽器時，那個 fd 仍被繼承、仍在 LISTEN：TCP 三次握手**照常成功**，請求
+發出去之後**超時無回應**，並且逐代傳遞。
 
-★ ★ ★ **连接层看起来完全健康** —— 任何只探「端口通不通」的健康检查都会说它是好的。
+★ ★ ★ **連接層看起來完全健康** —— 任何只探「連接埠通不通」的健康檢查都會說它是好的。
 
-★ 而 pingora 把 fd 发给新一代之后会硬等 `CLOSE_TIMEOUT` 才广播停机，这段时间里两代都持有
-同一个监听 socket、老一代照常 accept ⇒ **升级后立刻做的健康检查会是绿的**，问题要等老进程
-走干净才暴露，而那时告警已经和「升级」这个动作脱钩了。
-⇒ 判据因此写成「先等第一代退出，再探」，而不是「升级后 sleep 几秒再探」。
+★ 而 pingora 把 fd 發給新一代之後會硬等 `CLOSE_TIMEOUT` 才廣播停機，這段時間裡兩代都持有
+同一個監聽 socket、老一代照常 accept ⇒ **升級後立刻做的健康檢查會是綠的**，問題要等老處理程序
+走乾淨才暴露，而那時告警已經和「升級」這個動作脫鉤了。
+⇒ 判據因此寫成「先等第一代退出，再探」，而不是「升級後 sleep 幾秒再探」。
 
-## 「把数据报丢了」与「替我们把对端连接杀了」可能在同一个函数签名上长得一模一样
+## 「把資料報丟了」與「替我們把對端連接殺了」可能在同一個函式簽名上長得一模一樣
 
-quinn 的 `Endpoint::handle()` 对认不出的 DCID **回 stateless reset** —— 语义是告诉对端这条
-连接已经不存在。换代窗口里，老一代的在飞连接只要有一个数据报落到新一代手里，客户端就会
-**真的把它拆掉**，不是丢包重传能扛过去的那种。而这个函数返回的是 `Option<DatagramEvent>`：
-只读类型签名推出来的方向是错的。
+quinn 的 `Endpoint::handle()` 對認不出的 DCID **回 stateless reset** —— 語義是告訴對端這條
+連接已經不存在。換代視窗裡，老一代的在飛連接只要有一個資料報落到新一代手裡，用戶端就會
+**真的把它拆掉**，不是丟包重傳能扛過去的那種。而這個函式回傳的是 `Option<DatagramEvent>`：
+唯讀類型簽名推出來的方向是錯的。
 
-⇒ 这条事实是 G103 取 `quiche` 的依据之一，完整对照见
-[HTTP/3 库选型事实表](/platform/http3-libraries.md)。
+⇒ 這條事實是 G103 取 `quiche` 的依據之一，完整對照見
+[HTTP/3 庫選型事實表](/platform/http3-libraries.md)。
 
-## 一条只写在验证记录里的前置，不会在开工时被读到
+## 一條只寫在驗證記錄裡的前置，不會在開工時被讀到
 
-读待办的人看不见它，而读这一页的人已经在做别的事了。
-⇒ 本页往后新增的每一条「最晚要在 X 之前验」，都要同时在 `PLAN.md` §11 挂一个 D 号。
+讀待辦的人看不見它，而讀這一頁的人已經在做別的事了。
+⇒ 本頁往後新增的每一條「最晚要在 X 之前驗」，都要同時在 `PLAN.md` §11 掛一個 D 號。
 
-同族的还有另外两条：**「被验证通过」与「被取消了前提」在结论里长得一模一样，而它们对判据的
-要求相反** —— 后者意味着没有任何判据需要为它存在，再写一条门那条门会永远绿；以及
-**一个 spike 证明的是「这条路走得通」，不是「产品走在这条路上」**，而这个差别在门里看不见，
-因为门测的就是 spike。
+同族的還有另外兩條：**「被驗證通過」與「被取消了前提」在結論里長得一模一樣，而它們對判據的
+要求相反** —— 後者意味著沒有任何判據需要為它存在，再寫一條門那條門會永遠綠；以及
+**一個 spike 證明的是「這條路走得通」，不是「產品走在這條路上」**，而這個差別在門裡看不見，
+因為門測的就是 spike。
 
-# 一条方法论
+# 一條方法論
 
-**先读源码得到推断，再用真流量把推断坐实 —— 推断不是证据。**
-M0 从类型签名推出「UDP 在结构上没有障碍」，仍然写了 spike；而 spike 除了确认推断，
-还额外捞出了升级窗口内数据报分流这条风险，那是纯读源码看不出来的。
+**先讀原始碼得到推斷，再用真流量把推斷坐實 —— 推斷不是證據。**
+M0 從類型簽名推出「UDP 在結構上沒有障礙」，仍然寫了 spike；而 spike 除了確認推斷，
+還額外撈出了升級視窗內資料報分流這條風險，那是純讀原始碼看不出來的。
 
-# 相关
+# 相關
 
-[M0 接缝验证](/verification/m0-seam.md) · [待定清单](/governance/open-questions.md) ·
-[数据路径](/architecture/data-path.md) · [TLS](/architecture/tls.md)
+[M0 接縫驗證](/verification/m0-seam.md) · [待定清單](/governance/open-questions.md) ·
+[資料路徑](/architecture/data-path.md) · [TLS](/architecture/tls.md)

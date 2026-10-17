@@ -322,9 +322,9 @@ impl Session {
         }
     }
 
-    /// 枢衡改动 18（G163）：h1 读请求头时要不要保留头名的原样大小写，见
+    /// 樞衡改動 18（G163）：h1 讀請求頭時要不要保留頭名的原樣大小寫，見
     /// [`HttpSession::set_preserve_header_case`](super::v1::server::HttpSession::set_preserve_header_case)。
-    /// h2 / 子请求 / 自定义本来就不建那张表 ⇒ no-op。
+    /// h2 / 子請求 / 自定義本來就不建那張表 ⇒ no-op。
     pub fn set_preserve_header_case(&mut self, preserve: bool) {
         if let Self::H1(s) = self {
             s.set_preserve_header_case(preserve);

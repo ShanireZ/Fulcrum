@@ -1,9 +1,9 @@
 ---
-type: 技术基线
+type: 技術基線
 title: 部署
-description: 怎么把枢衡装到一台真机器上并交给 systemd 托管；停机时长怎么算；变更与回滚走哪条路。
+description: 怎麼把樞衡裝到一臺真機器上並交給 systemd 託管；停機時長怎麼算；變更與回復走哪條路。
 resource: ../../tests/m1/fulcrum-prod.service
-tags: [运维, 部署, systemd]
+tags: [維運, 部署, systemd]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -11,25 +11,25 @@ generated:
 sources:
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G31 / G33 / G34 / G37（进程模型与托管）、G78（产品侧接线）
+    title: PLAN.md §10 G31 / G33 / G34 / G37（處理程序模型與託管）、G78（產品側串接）
   - id: process-model
     resource: /architecture/process-model.md
-    title: 进程与组件边界 —— 托管形状与升级窗口的实测结论
+    title: 處理程序與元件邊界 —— 託管形狀與升級視窗的實測結論
 ---
 
-★ 本页属**技术基线**，带真内容。它**服从** [`PLAN.md`](../../PLAN.md)；冲突时以 `PLAN.md` 为准。
+★ 本頁屬**技術基線**，帶真內容。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
 
-# 一句话
+# 一句話
 
-**一个静态二进制 + 一份 `Fulcrumfile` + 一个 systemd unit。** 没有别的组件。
+**一個靜態二進位 + 一份 `Fulcrumfile` + 一個 systemd unit。** 沒有別的元件。
 
-# unit 文件
+# unit 檔案
 
-下面这份是**可以照抄的形状**，与门禁里跑的那份
-（[`tests/m1/fulcrum-prod.service`](../../tests/m1/fulcrum-prod.service)）逐项相同，
-**只差一处，而那一处是有意的**：这里多一个 `--bind-host [::]`，理由见下面那段 ⚠ ⚠。
-★ 其余逐项相同不是巧合：门禁里跑的形状与文档里写的形状分家的话，
-文档这一份没有任何东西在看着它。
+下面這份是**可以照抄的形狀**，與門禁裡跑的那份
+（[`tests/m1/fulcrum-prod.service`](../../tests/m1/fulcrum-prod.service)）逐項相同，
+**只差一處，而那一處是有意的**：這裡多一個 `--bind-host [::]`，理由見下面那段 ⚠ ⚠。
+★ 其餘逐項相同不是巧合：門禁裡跑的形狀與文件裡寫的形狀分家的話，
+文件這一份沒有任何東西在看著它。
 
 ```ini
 [Unit]
@@ -39,18 +39,18 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-# ★ 让 unit 活过换代的是这一行，不是 MainPID 交接（G37；交接会毁掉优雅停机）。
+# ★ 讓 unit 活過換代的是這一行，不是 MainPID 交接（G37；交接會毀掉優雅停機）。
 ExitType=cgroup
 NotifyAccess=main
 
 User=fulcrum
 Group=fulcrum
-# 绑 80/443 需要它；不要给 CAP_NET_ADMIN 之类用不到的能力。
+# 綁 80/443 需要它；不要給 CAP_NET_ADMIN 之類用不到的能力。
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 ExecStart=/usr/local/bin/fulcrum serve /etc/fulcrum/Fulcrumfile --bind-host [::]
-# ⚠ **不能用 $MAINPID**：ExitType=cgroup 下它在首次换代后归零。
+# ⚠ **不能用 $MAINPID**：ExitType=cgroup 下它在首次換代後歸零。
 ExecReload=/bin/sh -c 'kill -USR2 "$(cat /run/fulcrum/fulcrum.pid)"'
 
 ConfigurationDirectory=fulcrum
@@ -59,7 +59,7 @@ RuntimeDirectory=fulcrum
 RuntimeDirectoryPreserve=yes
 
 KillMode=control-group
-# ★ 见下面「停机要花多久」——这个数不是拍脑袋的。
+# ★ 見下面「停機要花多久」——這個數不是拍腦袋的。
 TimeoutStopSec=60
 Restart=always
 
@@ -69,179 +69,179 @@ Environment=RUST_LOG=info
 WantedBy=multi-user.target
 ```
 
-| 目录 | 放什么 | 谁建 |
+| 目錄 | 放什麼 | 誰建 |
 |---|---|---|
 | `/etc/fulcrum` | `Fulcrumfile` | `ConfigurationDirectory=` |
-| `/var/lib/fulcrum` | 证书存储（`certs/`）、ACME 账号 | `StateDirectory=` |
-| `/run/fulcrum` | pid 文件、升级 socket、管理面 socket | `RuntimeDirectory=` |
+| `/var/lib/fulcrum` | 證書儲存（`certs/`）、ACME 帳號 | `StateDirectory=` |
+| `/run/fulcrum` | pid 檔案、升級 socket、管理面 socket | `RuntimeDirectory=` |
 
-⚠ ⚠ **`--bind-host [::]` 不是可选项 —— 只要域名有 AAAA 记录。**
+⚠ ⚠ **`--bind-host [::]` 不是可選項 —— 只要網域有 AAAA 記錄。**
 
-`fulcrum serve` 的默认是 `0.0.0.0`，**只监听 IPv4**。而 **Let's Encrypt 在域名有 AAAA 时
-优先走 IPv6 验证** ⇒ 少了这一行，现场表现是「**证书签不下来**」，而它看起来像 ACME 的问题。
+`fulcrum serve` 的預設是 `0.0.0.0`，**只監聽 IPv4**。而 **Let's Encrypt 在網域有 AAAA 時
+優先走 IPv6 驗證** ⇒ 少了這一行，現場表現是「**證書籤不下來**」，而它看起來像 ACME 的問題。
 
-> ★  上线彩排实测（ubuntu:24.04）：默认值下 `curl http://[::1]/` 返回 `000`（连不上）；
-> 换成 `--bind-host '[::]'` 之后 `ss` 显示 `*:80`，IPv4 与 IPv6 都回 200 ——
-> Linux `bindv6only=0` 的默认行为，pingora 侧没有设 `IPV6_V6ONLY`，所以一个 `[::]` 就是双栈。
+> ★  上線演練實測（ubuntu:24.04）：預設值下 `curl http://[::1]/` 回傳 `000`（連不上）；
+> 換成 `--bind-host '[::]'` 之後 `ss` 顯示 `*:80`，IPv4 與 IPv6 都回 200 ——
+> Linux `bindv6only=0` 的預設行為，pingora 側沒有設 `IPV6_V6ONLY`，所以一個 `[::]` 就是雙棧。
 >
-> ★ ★ **门禁抓不到它**：那里所有夹具都在 `127.0.0.1` 上说话，
-> **从来没有一条判据问过「IPv6 上有没有人接」**。⇒ 门禁那份 unit 也就没有这一行，
-> 两份因此差这一处；这是**记录在案的有意差异**，不是漂移。
+> ★ ★ **門禁抓不到它**：那裡所有夾具都在 `127.0.0.1` 上說話，
+> **從來沒有一條判據問過「IPv6 上有沒有人接」**。⇒ 門禁那份 unit 也就沒有這一行，
+> 兩份因此差這一處；這是**記錄在案的有意差異**，不是漂移。
 
-⚠ `RuntimeDirectoryPreserve=yes` 是**保险**：`RuntimeDirectory=` 默认在 unit 停止时
-被删掉，而 `ExitType=cgroup` 之下换代时 unit 并不停止。
-★ **没有实测过「去掉它会怎样」**——门禁里那份 unit 一直带着它。留着它成本为零。
+⚠ `RuntimeDirectoryPreserve=yes` 是**保險**：`RuntimeDirectory=` 預設在 unit 停止時
+被刪掉，而 `ExitType=cgroup` 之下換代時 unit 並不停止。
+★ **沒有實測過「去掉它會怎樣」**——門禁裡那份 unit 一直帶著它。留著它成本為零。
 
-⚠ ⚠ **`User=` / `AmbientCapabilities` 这两行门禁没有跑过** —— ✅ **owner 拍板：
-就这么办，第一次真机部署时当成待验证项**（不为它单造一个门）。
+⚠ ⚠ **`User=` / `AmbientCapabilities` 這兩行門禁沒有跑過** —— ✅ **owner 拍板：
+就這麼辦，第一次真機部署時當成待驗證項**（不為它單造一個門）。
 
-容器里的场景是以 root、不带 `User=` 跑的，所以这两行只是按 G33（特权丢弃交给 systemd）
-写下的形状，**没有任何一次运行证明过它**。第一次真机部署时**逐条验这三件**：
+容器裡的場景是以 root、不帶 `User=` 跑的，所以這兩行只是按 G33（特權丟棄交給 systemd）
+寫下的形狀，**沒有任何一次執行證明過它**。第一次真機部署時**逐條驗這三件**：
 
-1. `systemctl start` 之后进程真的是以 `fulcrum` 身份跑的（`ps -o user= -p $(cat /run/fulcrum/fulcrum.pid)`）；
-2. 80 / 443 真的绑得上（`AmbientCapabilities=CAP_NET_BIND_SERVICE` 生效）；
-3. ★ **`/var/lib/fulcrum` 下证书的属主与权限** —— ACME 要能写进去，
-   而 `StateDirectory=` 建目录时用的是 `User=`/`Group=`。
-   ⚠ 这一条最容易出事，而它的现场表现是「证书签不下来」，看起来像 ACME 的问题。
+1. `systemctl start` 之後處理程序真的是以 `fulcrum` 身分跑的（`ps -o user= -p $(cat /run/fulcrum/fulcrum.pid)`）；
+2. 80 / 443 真的綁得上（`AmbientCapabilities=CAP_NET_BIND_SERVICE` 生效）；
+3. ★ **`/var/lib/fulcrum` 下證書的屬主與權限** —— ACME 要能寫進去，
+   而 `StateDirectory=` 建目錄時用的是 `User=`/`Group=`。
+   ⚠ 這一條最容易出事，而它的現場表現是「證書籤不下來」，看起來像 ACME 的問題。
 
-> ★ 为什么不为它造一个门：门禁容器里没有 `User=` 的对端（要建用户、要真绑 80/443、
-> 还要一套证书目录的属主断言），而这三件在**真机上一条命令就验完了**。
-> 这与 G57 那条「我们对 CF/DNSPod 的理解是对的只能靠真域名证」是同一类取舍：
-> **有些判据的对端只存在于生产环境，硬在门禁里造一个替身等于没有判据。**
+> ★ 為什麼不為它造一個門：門禁容器裡沒有 `User=` 的對端（要建使用者、要真綁 80/443、
+> 還要一套證書目錄的屬主斷言），而這三件在**真機上一條命令就驗完了**。
+> 這與 G57 那條「我們對 CF/DNSPod 的理解是對的只能靠真網域證」是同一類取捨：
+> **有些判據的對端只存在於生產環境，硬在門禁裡造一個替身等於沒有判據。**
 
-# ⚠ ⚠ ⚠ 在中国大陆的机器上：未备案的域名，**明文 HTTP 会被运营商截走**
+# ⚠ ⚠ ⚠ 在中國大陸的機器上：未備案的網域，**明文 HTTP 會被營運商截走**
 
-在 `example.com`（腾讯云，域名尚未备案）实测到的形状，逐条记下来 ——
-★ 它不是枢衡的缺陷，但**它决定了这台机器上哪条 ACME 挑战路能用**：
+在 `example.com`（騰訊雲，網域尚未備案）實測到的形狀，逐條記下來 ——
+★ 它不是樞衡的缺陷，但**它決定了這臺機器上哪條 ACME 挑戰路能用**：
 
-| 打法 | 结果 | 说明 |
+| 打法 | 結果 | 說明 |
 |---|---|---|
-| `http://<公网 IP>/`（不带域名）| **421** | ★ 这是**枢衡自己**回的（无站点匹配，G63）—— 80 端口通、请求到得了机器 |
-| 同一个 IP，但带 `Host: example.com` | **302 → 云厂商的 webblock 页** | 拦截挂在**明文 Host 头**上 |
-| 机器上回环打自己 | **308** | 枢衡的跳转本身完全正常 |
+| `http://<公网 IP>/`（不帶網域）| **421** | ★ 這是**樞衡自己**回的（無站台匹配，G63）—— 80 連接埠通、請求到得了機器 |
+| 同一個 IP，但帶 `Host: example.com` | **302 → 雲廠商的 webblock 頁** | 攔截掛在**明文 Host 頭**上 |
+| 機器上回環打自己 | **308** | 樞衡的跳轉本身完全正常 |
 
-⇒ 三条后果：
+⇒ 三條後果：
 
-1. **自动 HTTP 重定向对公网用户不生效** —— 机器上是对的，中间被截了。
-2. ⚠ ⚠ **HTTP-01（G54 的「备」）在这种机器上是死的**：CA 的验证请求同样带 Host 头，
-   同样会撞上拦截页。**能签下来全靠 TLS-ALPN-01（主）与 DNS-01（通配符）**。
-   ★ 换句话说：在未备案的大陆机器上，G54 那个「主/备」实际只剩主。
-3. 443 不受影响（SNI 没被拦），所以在此之前一切看起来都正常 ——
-   ★ **这正是它难查的地方**：证书签得下来、站点跑得好，只有明文那一跳是坏的。
+1. **自動 HTTP 重定向對公用網路使用者不生效** —— 機器上是對的，中間被截了。
+2. ⚠ ⚠ **HTTP-01（G54 的「備」）在這種機器上是死的**：CA 的驗證請求同樣帶 Host 頭，
+   同樣會撞上攔截頁。**能簽下來全靠 TLS-ALPN-01（主）與 DNS-01（通配符）**。
+   ★ 換句話說：在未備案的大陸機器上，G54 那個「主/備」實際只剩主。
+3. 443 不受影響（SNI 沒被攔），所以在此之前一切看起來都正常 ——
+   ★ **這正是它難查的地方**：證書籤得下來、站台跑得好，只有明文那一跳是壞的。
 
-> ★ 排查口径：**先用 IP 直连打一次 80**。回 421 就说明枢衡在正常工作，
-> 问题在链路上；回别的（尤其是跳到某个 `webblock` / `notice` 页）就是被截了。
+> ★ 排查口徑：**先用 IP 直連打一次 80**。回 421 就說明樞衡在正常工作，
+> 問題在連線路徑上；回別的（尤其是跳到某個 `webblock` / `notice` 頁）就是被截了。
 
-# ⚠ ⚠ ⚠ `Restart=` 为什么必须是 `always`，不能是 `on-failure`
+# ⚠ ⚠ ⚠ `Restart=` 為什麼必須是 `always`，不能是 `on-failure`
 
-**因为换代时死掉的是新一代，而老一代是正常退出的。**
+**因為換代時死掉的是新一代，而老一代是正常退出的。**
 
-在 `example.com` 上真的踩了一次：一次 `systemctl reload` 之后，
-新一代在**装载阶段** panic 了，而老一代此时已经交出监听 fd、排空、正常退出（exit 0）。
+在 `example.com` 上真的踩了一次：一次 `systemctl reload` 之後，
+新一代在**裝載階段** panic 了，而老一代此時已經交出監聽 fd、排空、正常退出（exit 0）。
 systemd 看到的整件事因此是——
 
 ```text
 fulcrum.service: Deactivated successfully.
 ```
 
-⇒ **`Restart=on-failure` 一动不动**，服务就那么停着，直到有人手动 `systemctl start`。
-★ 现场最难受的一点：`systemctl status` 说的是「成功」，而站点是死的。
+⇒ **`Restart=on-failure` 一動不動**，服務就那麼停著，直到有人手動 `systemctl start`。
+★ 現場最難受的一點：`systemctl status` 說的是「成功」，而站台是死的。
 
-| 配置 | 换代时新一代崩掉 | 手动 `systemctl stop` |
+| 設定 | 換代時新一代崩掉 | 手動 `systemctl stop` |
 |---|---|---|
-| `Restart=on-failure` | ❌ **不拉起**（unit 以成功收场）| 不拉起 ✅ |
-| `Restart=always` | ✅ 拉起 | 不拉起 ✅（显式 stop 从不触发 restart）|
+| `Restart=on-failure` | ❌ **不拉起**（unit 以成功收場）| 不拉起 ✅ |
+| `Restart=always` | ✅ 拉起 | 不拉起 ✅（顯式 stop 從不觸發 restart）|
 
-⚠ `always` 不会让「停机」变得拉不住：systemd 对**显式 stop** 从不重启。
-它救的是「没人打算让它停，而它停了」这一类 —— 而换代恰恰是这一类里最常见的那种。
+⚠ `always` 不會讓「停機」變得拉不住：systemd 對**顯式 stop** 從不重新啟動。
+它救的是「沒人打算讓它停，而它停了」這一類 —— 而換代恰恰是這一類裡最常見的那種。
 
-★ 这一条与 G37（`ExitType=cgroup`）是绑在一起的：正因为 unit 的生死看的是整个 cgroup，
-「老的走了、新的没起来」才会被算成一次**干净的收场**。
+★ 這一條與 G37（`ExitType=cgroup`）是綁在一起的：正因為 unit 的生死看的是整個 cgroup，
+「老的走了、新的沒起來」才會被算成一次**乾淨的收場**。
 
-# ★ ★ 停机要花多久（`TimeoutStopSec` 怎么定）
+# ★ ★ 停機要花多久（`TimeoutStopSec` 怎麼定）
 
 ```text
 systemctl stop 的耗时 ≈ grace_period + graceful_shutdown_timeout
                        ↑ 排空窗口        ↑ 等各 runtime 退出
 ```
 
-| 项 | 默认 | 怎么改 |
+| 項 | 預設 | 怎麼改 |
 |---|---|---|
-| 排空窗口 | **30s** | DSL 全局块里写 `grace_period <时长>` |
-| 收尾 | **5s** | 不可配（常量，见 `process.rs`）|
-| **合计** | **35s** | ⇒ `TimeoutStopSec` 取 **60** 即可 |
+| 排空視窗 | **30s** | DSL 全域塊裡寫 `grace_period <时长>` |
+| 收尾 | **5s** | 不可配（常數，見 `process.rs`）|
+| **合計** | **35s** | ⇒ `TimeoutStopSec` 取 **60** 即可 |
 
-★ **不必自己算**：进程启动时会把这个数打进日志 ——
+★ **不必自己算**：處理程序啟動時會把這個數打進紀錄 ——
 
 ```text
 停机预算约 35s（排空 + 收尾）—— systemd unit 的 TimeoutStopSec 要大于它；换代时老一代另需最多 5s 送 fd
 ```
 
-⇒ **配了 `grace_period 120s` 就照着日志里的新数字把 `TimeoutStopSec` 提上去。**
+⇒ **配了 `grace_period 120s` 就照著紀錄裡的新數字把 `TimeoutStopSec` 提上去。**
 
-⚠ 这个和**在 2026-09-24 之前是少算的**：pingora 0.8.1 等完各 runtime 之后还要再 `sleep` 一次收尾时长，
-真实最长是 40 秒。rebase 到 0.9.0 之后（上游 `6f15714` 删了那次 sleep）和才与实际相符 ——
-M1 产品场景实测 `systemctl stop` **30 秒**（预算 35）。`TimeoutStopSec=60` 在两种情况下都够。
+⚠ 這個和**在 2026-09-24 之前是少算的**：pingora 0.8.1 等完各 runtime 之後還要再 `sleep` 一次收尾時長，
+真實最長是 40 秒。rebase 到 0.9.0 之後（上游 `6f15714` 刪了那次 sleep）和才與實際相符 ——
+M1 產品場景實測 `systemctl stop` **30 秒**（預算 35）。`TimeoutStopSec=60` 在兩種情況下都夠。
 
-> ⚠ ⚠ **`TimeoutStopSec` 小于停机预算的后果不是「慢一点」，是硬杀连接。**
-> systemd 到点就 SIGTERM → SIGKILL，而**一旦某一代开始排空，它就收不到任何
-> 可捕获的信号了** —— 补一刀没用，只能等它自己走完。现场形态是
+> ⚠ ⚠ **`TimeoutStopSec` 小於停機預算的後果不是「慢一點」，是硬殺連接。**
+> systemd 到點就 SIGTERM → SIGKILL，而**一旦某一代開始排空，它就收不到任何
+> 可捕獲的信號了** —— 補一刀沒用，只能等它自己走完。現場形態是
 > `State 'stop-sigterm' timed out. Killing.` → `code=killed, status=9/KILL`，
-> unit 以 `failed (signal)` 收场。
+> unit 以 `failed (signal)` 收場。
 
-# 改配置：两条路，各管一半
+# 改設定：兩條路，各管一半
 
-| 路 | 命令 | 能改什么 | 代价 |
+| 路 | 命令 | 能改什麼 | 代價 |
 |---|---|---|---|
-| 全量原子 load（G8）| `curl --unix-socket /run/fulcrum/admin.sock -X POST --data-binary @cfg.json "http://localhost/load?overrides=clear"` | 路由、上游、头、证书来源…… | 进程不换代，**改不了监听端口集**（端口变了回 **409**）；`overrides` **必填**、走查询串（G120）：发布流水线用 `clear`（回到期望状态），事故处理中想保留刚打的补丁就用 `?overrides=keep` |
-| 换代（G37）| `systemctl reload fulcrum` | **一切**，含监听端口集 | 起一个新进程，老的排空后退出；零停机 |
+| 全量原子 load（G8）| `curl --unix-socket /run/fulcrum/admin.sock -X POST --data-binary @cfg.json "http://localhost/load?overrides=clear"` | 路由、上游、頭、證書來源…… | 處理程序不換代，**改不了監聽連接埠集**（連接埠變了回 **409**）；`overrides` **必填**、走查詢串（G120）：發佈流水線用 `clear`（回到期望狀態），事故處理中想保留剛打的補丁就用 `?overrides=keep` |
+| 換代（G37）| `systemctl reload fulcrum` | **一切**，含監聽連接埠集 | 起一個新處理程序，老的排空後退出；零停機 |
 
-★ `systemctl reload` 会让下一代**重新读一遍 `/etc/fulcrum/Fulcrumfile`**——
-所以「改文件 + reload」就是标准的变更流程，**回滚就是把文件改回去再 reload 一次**。
-两个方向都由 [`tests/m1/product.sh`](../../tests/m1/product.sh) 的 `[4/9]`/`[6/9]` 钉着。
+★ `systemctl reload` 會讓下一代**重新讀一遍 `/etc/fulcrum/Fulcrumfile`**——
+所以「改檔案 + reload」就是標準的變更流程，**回復就是把檔案改回去再 reload 一次**。
+兩個方向都由 [`tests/m1/product.sh`](../../tests/m1/product.sh) 的 `[4/9]`/`[6/9]` 釘著。
 
-⚠ **换代不是免费的**：老一代要先等 `CLOSE_TIMEOUT`（5s，pingora 写死）送 fd，
-再走满 `grace_period`。所以两次 reload 之间至少留出这么久，否则会积起好几代同时排空。
+⚠ **換代不是免費的**：老一代要先等 `CLOSE_TIMEOUT`（5s，pingora 寫死）送 fd，
+再走滿 `grace_period`。所以兩次 reload 之間至少留出這麼久，否則會積起好幾代同時排空。
 
-> ★ ★ ★ **`systemctl reload` 之后的几秒内，两份配置都在服务** —— 这一条要知道。
+> ★ ★ ★ **`systemctl reload` 之後的幾秒內，兩份設定都在服務** —— 這一條要知道。
 >
-> 老一代把监听 fd 交给新一代之后，**还要再 accept `CLOSE_TIMEOUT`（5 秒）**：
-> 那段时间里新旧两代**在同一个监听 socket 上一起 accept**，内核在两者之间分发连接。
-> ⇒ reload 刚返回就发一个请求，它可能落在老一代身上、拿到**旧配置**的响应。
+> 老一代把監聽 fd 交給新一代之後，**還要再 accept `CLOSE_TIMEOUT`（5 秒）**：
+> 那段時間裡新舊兩代**在同一個監聽 socket 上一起 accept**，核心在兩者之間散布連接。
+> ⇒ reload 剛回傳就發一個請求，它可能落在老一代身上、拿到**舊設定**的回應。
 >
-> ⚠ 这不是缺陷，是优雅换代的固有性质（nginx 同）。但它意味着：
-> **验证一次变更是否生效，要「等它收敛」，不能只打一发**。
->  CI 上真的因此红过一次 —— 本机十次都落在新一代，CI 第一次就落在了老一代。
-> 判据形态见 [`tests/m1/product.sh`](../../tests/m1/product.sh) 的 `wait_body`。
+> ⚠ 這不是缺陷，是優雅換代的固有性質（nginx 同）。但它意味著：
+> **驗證一次變更是否生效，要「等它收斂」，不能只打一發**。
+>  CI 上真的因此紅過一次 —— 本機十次都落在新一代，CI 第一次就落在了老一代。
+> 判據形態見 [`tests/m1/product.sh`](../../tests/m1/product.sh) 的 `wait_body`。
 
-# 强制续期一张证书
+# 強制續期一張證書
 
 ```bash
-# 越过「还不到时候」，但**不越过退避**
+# 越過「還不到時候」，但**不越過退避**
 curl --unix-socket /run/fulcrum/admin.sock -X POST      --data '{"domain":"*.example.com"}' http://localhost/renew
 
-# ★ 根因已经修好（凭据补上了 / DNS 通了 / 防火墙开了），想立刻重试：
+# ★ 根因已經修好（憑證補上了 / DNS 通了 / 防火牆開了），想立刻重試：
 curl --unix-socket /run/fulcrum/admin.sock -X POST      --data '{"domain":"*.example.com","force":true}' http://localhost/renew
 ```
 
-| | 越过「还不到时候」 | 越过退避 |
+| | 越過「還不到時候」 | 越過退避 |
 |---|---|---|
-| 默认 | ✅ | ❌ |
-| `"force": true` | ✅ | ✅ **并把失败计数清零** |
+| 預設 | ✅ | ❌ |
+| `"force": true` | ✅ | ✅ **並把失敗計數清零** |
 
-⚠ ⚠ **默认那一档不越过退避是有意的**：CA 的失败验证配额按**账户**算，
-一个签不出来的域名反复重试能把整个账户的配额耗光，**连累同一台机器上别的域名**。
-⇒ `force` 是给「根因已经修好」用的，不是重试按钮。
+⚠ ⚠ **預設那一檔不越過退避是有意的**：CA 的失敗驗證配額按**帳戶**算，
+一個籤不出來的網域反覆重試能把整個帳戶的配額耗光，**連累同一臺機器上別的網域**。
+⇒ `force` 是給「根因已經修好」用的，不是重試按鈕。
 
-> ★ 在 `example.com` 上实测出这一档的必要性：DNSPod 凭据缺失让通配符
-> 连失败 9 次、退避涨到 3 小时；**凭据补好之后**想立刻重试，在它之前唯一的办法是
-> 去删 `meta.json` 里的失败计数 —— 而让运维手改盘上的状态文件，
-> 等于把「标准动作」定义成危险动作（删错一个文件就是删掉证书）。
-> ⚠ 每一次清掉非零计数都会打一条 **warn**：它是运维动作，不该悄悄发生。
+> ★ 在 `example.com` 上實測出這一檔的必要性：DNSPod 憑證缺失讓通配符
+> 連失敗 9 次、退避漲到 3 小時；**憑證補好之後**想立刻重試，在它之前唯一的辦法是
+> 去刪 `meta.json` 裡的失敗計數 —— 而讓維運手改盤上的狀態檔案，
+> 等於把「標準動作」定義成危險動作（刪錯一個檔案就是刪掉證書）。
+> ⚠ 每一次清掉非零計數都會打一條 **warn**：它是維運動作，不該悄悄發生。
 
-# 升级二进制
+# 升級二進位
 
-换二进制走的是**同一条路**：把新文件 `mv` 到 `/usr/local/bin/fulcrum`，然后 `systemctl reload`。
+換二進位走的是**同一條路**：把新檔案 `mv` 到 `/usr/local/bin/fulcrum`，然後 `systemctl reload`。
 
 ```bash
 install -m 0755 fulcrum.new /usr/local/bin/fulcrum.tmp
@@ -249,66 +249,66 @@ mv /usr/local/bin/fulcrum.tmp /usr/local/bin/fulcrum
 systemctl reload fulcrum
 ```
 
-⚠ **必须是 `mv`（rename），不能直接往原文件里写**：往一个正在跑的可执行文件里写会
-`ETXTBSY`。而 rename **换的是 inode**，于是老进程的 `/proc/self/exe` 立刻变成
+⚠ **必須是 `mv`（rename），不能直接往原檔案裡寫**：往一個正在跑的執行檔裡寫會
+`ETXTBSY`。而 rename **換的是 inode**，於是老處理程序的 `/proc/self/exe` 立刻變成
 `/usr/local/bin/fulcrum (deleted)`。
 
-> ★ ★ ★ **这条曾经是一个真缺陷**（实测出并当天修掉）：
-> `std::env::current_exe()` **原样返回那个带 `(deleted)` 后缀的路径**，
-> 拿它去 exec 必然 `ENOENT`。现场是
+> ★ ★ ★ **這條曾經是一個真缺陷**（實測出並當天修掉）：
+> `std::env::current_exe()` **原樣回傳那個帶 `(deleted)` 後綴的路徑**，
+> 拿它去 exec 必然 `ENOENT`。現場是
 > `拉起下一代失败，本次换代放弃，本代继续服务：No such file or directory`——
-> 服务没断（那条保险起了作用），但**升级没发生**，
-> ⚠ 而 `systemctl reload` **返回的是成功**。
-> ⇒ 现在的实现在 `current_exe()` 指向的文件已不存在时回落到 `argv[0]`（nginx 也走这条），
-> 由 [`tests/m1/product.sh`](../../tests/m1/product.sh) 的 `[7/9]` 按 **inode** 钉住。
+> 服務沒斷（那條保險起了作用），但**升級沒發生**，
+> ⚠ 而 `systemctl reload` **回傳的是成功**。
+> ⇒ 現在的實作在 `current_exe()` 指向的檔案已不存在時回落到 `argv[0]`（nginx 也走這條），
+> 由 [`tests/m1/product.sh`](../../tests/m1/product.sh) 的 `[7/9]` 按 **inode** 釘住。
 
-⚠ 不要用 `systemctl restart` 换二进制：那是一次真正的停机（排空 + 重新绑端口）。
+⚠ 不要用 `systemctl restart` 換二進位：那是一次真正的停機（排空 + 重新綁連接埠）。
 
-## ⚠ ⚠ ★ 跨过 `G140` 那一次升级：线程数缺省会变，而且**顺序是单向的**
+## ⚠ ⚠ ★ 跨過 `G140` 那一次升級：執行緒數預設會變，而且**順序是單向的**
 
-`G140`（2026-09-05）给 DSL 全局块加了 `threads_l7` / `threads_l4` / `threads_admin`，
-并让 `G35` 的角色缺省**真的生效** ⇒ **L7 那一格从写死的 1 变成 CPU 核数**。
-⚠ 这是一次**真实的行为变更**：资源占用与延迟分布都会变。
+`G140`（2026-09-05）給 DSL 全域塊加了 `threads_l7` / `threads_l4` / `threads_admin`，
+並讓 `G35` 的角色預設**真的生效** ⇒ **L7 那一格從寫死的 1 變成 CPU 核數**。
+⚠ 這是一次**真實的行為變更**：資源佔用與延遲分佈都會變。
 
-⛔ ⛔ **它不是「重启就会变」，是「换了新二进制才会变」** —— 旧二进制**根本不认识**
-这三个键。⇒ 由此得出一条**顺序不能反**的纪律：
+⛔ ⛔ **它不是「重新啟動就會變」，是「換了新二進位才會變」** —— 舊二進位**根本不認識**
+這三個鍵。⇒ 由此得出一條**順序不能反**的紀律：
 
-| 什么时候写 `threads_l7 1` | 结果 |
+| 什麼時候寫 `threads_l7 1` | 結果 |
 |---|---|
-| **在换二进制之前**写进配置 | ⛔ **旧二进制当场判错、配置加载失败** |
-| 与新二进制**同时**或**之后**写 | ✅ 正常 |
+| **在換二進位之前**寫進設定 | ⛔ **舊二進位當場判錯、設定載入失敗** |
+| 與新二進位**同時**或**之後**寫 | ✅ 正常 |
 
-★ 这不是推断，是 2026-09-06 在生产机上用 `fulcrum validate` 拿**一份独立的最小配置**
-实测出来的（⛔ 没有碰生产配置本身）：旧二进制回
+★ 這不是推斷，是 2026-09-06 在生產機上用 `fulcrum validate` 拿**一份獨立的最小設定**
+實測出來的（⛔ 沒有碰生產設定本身）：舊二進位回
 `threads_l7 ^^^^^^^^^^ 全局选项块里没有这一项` / `1 个错误`，
-而同一份配置去掉那一行则正常通过。
+而同一份設定去掉那一行則正常通過。
 
-⇒ **换二进制那一次，要么接受新缺省，要么在同一步里把 `threads_l7` 显式写死。**
-⚠ 而「接受新缺省」意味着线程数跟着那台机器的核数走 —— 2026-09-06 实测生产机是
-**2 核**，⇒ 那一跳是 1 → 2。⛔ 别把这个数抄到别的机器上，它按核数走。
+⇒ **換二進位那一次，要麼接受新預設，要麼在同一步裡把 `threads_l7` 顯式寫死。**
+⚠ 而「接受新預設」意味著執行緒數跟著那臺機器的核數走 —— 2026-09-06 實測生產機是
+**2 核**，⇒ 那一跳是 1 → 2。⛔ 別把這個數抄到別的機器上，它按核數走。
 
-⚠ ⚠ ★ **那三个角色初值今天还不是结论** —— 定它们的判据正是 M3 对拍要产出的数据
-（`PLAN.md` §7 M3 逐字写着这一条）。⇒ 在有对拍数据之前，**把它显式钉成 1 是保守选择**，
-它让变更时机受控，而不是由「谁下一次换二进制」决定。
+⚠ ⚠ ★ **那三個角色初值今天還不是結論** —— 定它們的判據正是 M3 對拍要產出的資料
+（`PLAN.md` §7 M3 逐字寫著這一條）。⇒ 在有對拍資料之前，**把它顯式釘成 1 是保守選擇**，
+它讓變更時機受控，而不是由「誰下一次換二進位」決定。
 
-# 上线前的检查清单
+# 上線前的檢查清單
 
-1. `fulcrum validate /etc/fulcrum/Fulcrumfile` —— 四层校验一次跑完（诊断 / 结构化配置 / 运行时图 / TLS 装载）。
-2. `fulcrum plan /etc/fulcrum/Fulcrumfile` —— 看每条指令实际跑在第几步、哪些路由走了回落。
-   ⚠ 它还会列出**配置里用到了但运行时还没接线**的能力，那些是真的不生效。
-3. ★ `ss -ltnp | grep fulcrum` —— 域名有 AAAA 时，80/443 必须显示成 `*:80` / `*:443`
-   而不是 `0.0.0.0:80`。**是 `0.0.0.0` 就说明 unit 少了 `--bind-host [::]`**，
-   而它的症状会晚几分钟才出现，且长得像 ACME 的问题。
-4. `systemctl start fulcrum && systemctl status fulcrum` —— 应当在一秒内 `active (running)`。
-   ⚠ 若它卡住直到超时失败，看 journal 里有没有 `sd_notify 已发出：READY=1`。
-5. `cat /run/fulcrum/fulcrum.pid` —— 应当等于 `MainPID`。**`ExecReload` 整条路建在它上面。**
-6. `systemctl reload fulcrum` 一次，确认 pid 文件里的数变了、流量没断。
-7. ★ **只在换二进制那一次**：先确认这台机器上现在跑的那版**认不认识 `threads_l7`**
-   （`fulcrum validate` 一份只含该键的最小配置即可，⛔ 别拿生产配置试）。
-   认不识 ⇒ 那一步会跨过 `G140`，线程数缺省要变 —— 顺序与取舍见上面「跨过 G140 那一次升级」。
+1. `fulcrum validate /etc/fulcrum/Fulcrumfile` —— 四層檢核一次跑完（診斷 / 結構化設定 / 執行環境圖 / TLS 裝載）。
+2. `fulcrum plan /etc/fulcrum/Fulcrumfile` —— 看每條指令實際跑在第幾步、哪些路由走了回落。
+   ⚠ 它還會列出**設定裡用到了但執行環境還沒串接**的能力，那些是真的不生效。
+3. ★ `ss -ltnp | grep fulcrum` —— 網域有 AAAA 時，80/443 必須顯示成 `*:80` / `*:443`
+   而不是 `0.0.0.0:80`。**是 `0.0.0.0` 就說明 unit 少了 `--bind-host [::]`**，
+   而它的症狀會晚幾分鐘才出現，且長得像 ACME 的問題。
+4. `systemctl start fulcrum && systemctl status fulcrum` —— 應當在一秒內 `active (running)`。
+   ⚠ 若它卡住直到超時失敗，看 journal 裡有沒有 `sd_notify 已发出：READY=1`。
+5. `cat /run/fulcrum/fulcrum.pid` —— 應當等於 `MainPID`。**`ExecReload` 整條路建在它上面。**
+6. `systemctl reload fulcrum` 一次，確認 pid 檔案裡的數變了、流量沒斷。
+7. ★ **只在換二進位那一次**：先確認這臺機器上現在跑的那版**認不認識 `threads_l7`**
+   （`fulcrum validate` 一份只含該鍵的最小設定即可，⛔ 別拿生產設定試）。
+   認不識 ⇒ 那一步會跨過 `G140`，執行緒數預設要變 —— 順序與取捨見上面「跨過 G140 那一次升級」。
 
-# 相关
+# 相關
 
-- [进程与组件边界](/architecture/process-model.md) —— 托管形状是怎么定下来的，以及两次被实测推翻的推断
-- [管理面](/architecture/control-plane.md) —— `POST /load` 的契约与 409 的理由
-- [构建与验证](/platform/build-and-test.md) —— 怎么在本机跑出这个二进制
+- [處理程序與元件邊界](/architecture/process-model.md) —— 託管形狀是怎麼定下來的，以及兩次被實測推翻的推斷
+- [管理面](/architecture/control-plane.md) —— `POST /load` 的契約與 409 的理由
+- [建置與驗證](/platform/build-and-test.md) —— 怎麼在本機跑出這個二進位

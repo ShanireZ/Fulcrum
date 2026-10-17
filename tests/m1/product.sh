@@ -1,43 +1,43 @@
 #!/usr/bin/env bash
-# M1 第四个 systemd 场景（批 12 / G78）：**跑产品二进制**。
+# M1 第四個 systemd 場景（批 12 / G78）：**跑產品二進位**。
 #
-# ★ ★ ★ 它为什么必须单独存在：另外三个场景跑的是 spike（`target/release/m1-systemd`），
-#   而 spike 把 sd_notify、pid 文件、SIGUSR2 换代**自己实现了一遍**。
-#   于是那三个场景全绿的同时，产品二进制 `systemctl start` 会**超时失败**
-#   （实测：MainPID=0、Result=timeout、/run/fulcrum/ 空）。
+# ★ ★ ★ 它為什麼必須單獨存在：另外三個場景跑的是 spike（`target/release/m1-systemd`），
+#   而 spike 把 sd_notify、pid 檔案、SIGUSR2 換代**自己實作了一遍**。
+#   於是那三個場景全綠的同時，產品二進位 `systemctl start` 會**超時失敗**
+#   （實測：MainPID=0、Result=timeout、/run/fulcrum/ 空）。
 #
-#   > ★ 一个 spike 证明的是「这条路走得通」，不是「产品走在这条路上」。
-#     夹具喂给门的那个二进制，本身也是夹具的一部分。
+#   > ★ 一個 spike 證明的是「這條路走得通」，不是「產品走在這條路上」。
+#     夾具餵給門的那個二進位，本身也是夾具的一部分。
 #
-# 本场景逐条钉住批 12 补上的四件事，外加两条 M1 退出条件：
+# 本場景逐條釘住批 12 補上的四件事，外加兩條 M1 退出條件：
 #
-#   | 步 | 钉住什么 | 不补的话它红在哪 |
+#   | 步 | 釘住什麼 | 不補的話它紅在哪 |
 #   |---|---|---|
-#   | 1 | ① `sd_notify(READY=1)` | `systemctl start` 超时失败，脚本第一步就停 |
-#   | 1 | ④ 停机预算（默认 35s 而不是 pingora 的 305s）| 启动日志那行数字 |
-#   | 1 | ② pid 文件 | 文件不存在 / 内容对不上 MainPID |
-#   | 3 | ③ SIGUSR2 换代触发器 | ⚠ 不接的话 SIGUSR2 走**默认动作＝杀进程**，unit 当场 failed |
-#   | 5 | 换代之后管理面还在 | 批 12 查出：`-u` 那趟继承 fd，再 unlink 路径就永久失联 |
-#   | 4/6 | 改配置 + reload 生效、再 reload 回滚 | M1 退出条件第 3 条 |
-#   | 7 | 换二进制 + reload | 批 12 实测：只用 current_exe() 时 spawn 拿 ENOENT，**而 reload 报成功** |
-#   | 9 | ④ 的另一半：`systemctl stop` 走完排空且不是被打死的 | Result≠success / 耗时越界 |
+#   | 1 | ① `sd_notify(READY=1)` | `systemctl start` 超時失敗，指令碼第一步就停 |
+#   | 1 | ④ 停機預算（預設 35s 而不是 pingora 的 305s）| 啟動紀錄那行數字 |
+#   | 1 | ② pid 檔案 | 檔案不存在 / 內容對不上 MainPID |
+#   | 3 | ③ SIGUSR2 換代觸發器 | ⚠ 不接的話 SIGUSR2 走**預設動作＝殺處理程序**，unit 當場 failed |
+#   | 5 | 換代之後管理面還在 | 批 12 查出：`-u` 那趟繼承 fd，再 unlink 路徑就永久失聯 |
+#   | 4/6 | 改設定 + reload 生效、再 reload 回復 | M1 退出條件第 3 條 |
+#   | 7 | 換二進位 + reload | 批 12 實測：只用 current_exe() 時 spawn 拿 ENOENT，**而 reload 報成功** |
+#   | 9 | ④ 的另一半：`systemctl stop` 走完排空且不是被打死的 | Result≠success / 耗時越界 |
 #
-# 在**以 systemd 为 PID 1 的容器**里跑（由 tests/m1/systemd-run.sh 拉起），退出码即结论。
+# 在**以 systemd 為 PID 1 的容器**裡跑（由 tests/m1/systemd-run.sh 拉起），結束代碼即結論。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# ★ 这三个必须在 source 之前设：lib.sh 用 `${VAR:-默认}` 取值，且 CGROUP_DIR 由 UNIT 算出。
+# ★ 這三個必須在 source 之前設：lib.sh 用 `${VAR:-默认}` 取值，且 CGROUP_DIR 由 UNIT 算出。
 UNIT=${UNIT:-fulcrum-prod.service}
 PID_FILE=${PID_FILE:-/run/fulcrum/fulcrum.pid}
-# ⚠ 收尾要按它找残留进程。写死 `m1-systemd` 的话这里一个都收不到，而收尾照样报成功。
+# ⚠ 收尾要按它找殘留處理程序。寫死 `m1-systemd` 的話這裡一個都收不到，而收尾照樣報成功。
 PROC_PATTERN=${PROC_PATTERN:-fulcrum serve}
 export UNIT PID_FILE PROC_PATTERN
 # shellcheck source=tests/m1/lib.sh
 . "$HERE/lib.sh"
 
 BIN=${BIN:-/w/target/release}
-# ★ unit 指的是这个**容器本地**的副本，不是共享 target 卷里的那个原件。
-#   [7/9] 要把它换掉（rename 换 inode，升级的标准做法），换共享卷里的会波及别的场景。
+# ★ unit 指的是這個**容器本機**的副本，不是共享 target 卷裡的那個原件。
+#   [7/9] 要把它換掉（rename 換 inode，升級的標準做法），換共享卷裡的會波及別的場景。
 EXE=/opt/fulcrum/fulcrum
 BIND_HOST=${M1_BIND_HOST:-127.0.0.1}
 HTTP_PORT=${HTTP_PORT:-8080}
@@ -46,16 +46,16 @@ CONF="$CONF_DIR/Fulcrumfile"
 ADMIN_SOCK=/run/fulcrum/admin.sock
 PROBE_OUT=/tmp/fulcrum-prod-probe.txt
 
-# ★ ★ 这两个数必须与 crates/fulcrum-server/src/process.rs 的两个常量一致，
-#   而**本场景有意不在 Fulcrumfile 里写 `grace_period`** —— 走的就是默认值那条路。
-#   ⚠ 批 12 之前那条路是 `None`，pingora 会用它自己的 EXIT_TIMEOUT=300，
-#   于是 unit 的 TimeoutStopSec=60 会在排空进行到 1/5 时 SIGKILL。
+# ★ ★ 這兩個數必須與 crates/fulcrum-server/src/process.rs 的兩個常數一致，
+#   而**本場景有意不在 Fulcrumfile 裡寫 `grace_period`** —— 走的就是預設值那條路。
+#   ⚠ 批 12 之前那條路是 `None`，pingora 會用它自己的 EXIT_TIMEOUT=300，
+#   於是 unit 的 TimeoutStopSec=60 會在排空進行到 1/5 時 SIGKILL。
 EXPECT_GRACE=30
 EXPECT_BUDGET=35
 
 trap m1_cleanup EXIT
 
-# 起一个持续的 HTTP 探针。★ 它跨越整个换代窗口，判据是**一次都不许失败**。
+# 起一個持續的 HTTP 探針。★ 它跨越整個換代視窗，判據是**一次都不許失敗**。
 probe_start() {
   local secs=$1
   rm -f "$PROBE_OUT"
@@ -78,20 +78,20 @@ probe_start() {
 
 body() { curl -sS --max-time 3 "http://$BIND_HOST:$HTTP_PORT/" 2>/dev/null || echo "<curl 失败>"; }
 
-# 等响应体收敛到 $1，最多 $2 个 0.5 秒。打印实际用了多久。
+# 等回應體收斂到 $1，最多 $2 個 0.5 秒。列印實際用了多久。
 #
-# ★ ★ ★ **为什么这里必须是「等收敛」而不是「立刻断言」** —— CI 上抓到的：
+# ★ ★ ★ **為什麼這裡必須是「等收斂」而不是「立刻斷言」** —— CI 上抓到的：
 #
-#   换代时老一代收到 SIGQUIT 后，先把监听 fd 送给新一代，**然后还要再等
-#   `CLOSE_TIMEOUT`（5 秒，pingora 写死在 server/mod.rs）才停止 accept**。
-#   也就是说那 5 秒里**新旧两代都在同一个监听 socket 上 accept**，内核在两者之间分发。
-#   ⇒ 刚看到 pid 文件变了就发一个请求，它**完全可能落在老一代身上**，
-#     而老一代读的是旧配置 —— 本机跑十次都落在新一代，CI 上第一次就落在了老一代。
+#   換代時老一代收到 SIGQUIT 後，先把監聽 fd 送給新一代，**然後還要再等
+#   `CLOSE_TIMEOUT`（5 秒，pingora 寫死在 server/mod.rs）才停止 accept**。
+#   也就是說那 5 秒裡**新舊兩代都在同一個監聽 socket 上 accept**，核心在兩者之間散布。
+#   ⇒ 剛看到 pid 檔案變了就發一個請求，它**完全可能落在老一代身上**，
+#     而老一代讀的是舊設定 —— 本機跑十次都落在新一代，CI 上第一次就落在了老一代。
 #
-#   ⚠ 这不是「测试不稳定」，是**产品在换代窗口内的真实行为**，运维要知道：
-#     `systemctl reload` 之后的几秒内，两份配置都可能在服务。
-#     ⇒ 判据的正确形态是「**会收敛**，且在有界的时间内收敛」。
-#   ★ 而「老一代退干净之后只剩新配置」那条强判据在 [8/9] —— 两条都要有。
+#   ⚠ 這不是「測試不穩定」，是**產品在換代視窗內的真實行為**，維運要知道：
+#     `systemctl reload` 之後的幾秒內，兩份設定都可能在服務。
+#     ⇒ 判據的正確形態是「**會收斂**，且在有界的時間內收斂」。
+#   ★ 而「老一代退乾淨之後只剩新設定」那條強判據在 [8/9] —— 兩條都要有。
 wait_body() {
   local want=$1 tries=$2 i=0 got
   while [ "$i" -lt "$tries" ]; do
@@ -107,9 +107,9 @@ wait_body() {
   return 1
 }
 
-# 往 $CONF 写一份配置。$1 = 响应体里的标记。
+# 往 $CONF 寫一份設定。$1 = 回應體裡的標記。
 #
-# ★ 有意**不写 `grace_period`**（见上面 EXPECT_GRACE 那段）。
+# ★ 有意**不寫 `grace_period`**（見上面 EXPECT_GRACE 那段）。
 write_conf() {
   local mark=$1
   mkdir -p "$CONF_DIR"
@@ -123,15 +123,15 @@ write_conf() {
   } > "$CONF"
 }
 
-# 管理面存活探测：不认识的路径回 404。
-# ★ 取 404 而不是 200，是因为它**不改变任何状态**，却要求连接真的建起来并被应答。
+# 管理面存活探測：不認識的路徑回 404。
+# ★ 取 404 而不是 200，是因為它**不改變任何狀態**，卻要求連接真的建起來並被應答。
 admin_probe() {
   curl -s -o /dev/null -w '%{http_code}' --unix-socket "$ADMIN_SOCK" \
     -X POST --data-binary '{}' http://localhost/nope 2>/dev/null || echo "000"
 }
 
-# 等 pid 文件指向一个与 $1 不同的进程，最多 $2 个 0.2 秒。全程盯住 ActiveState。
-# 打印新一代的 pid；等不到就返回空。
+# 等 pid 檔案指向一個與 $1 不同的處理程序，最多 $2 個 0.2 秒。全程盯住 ActiveState。
+# 列印新一代的 pid；等不到就回傳空。
 wait_new_generation() {
   local prev=$1 tries=$2 st cur
   for _ in $(seq 1 "$tries"); do
@@ -149,9 +149,9 @@ wait_new_generation() {
 
 echo "=== [0/9] 前置检查 ==="
 [ -x "$BIN/fulcrum" ] || fail "找不到产品二进制 $BIN/fulcrum（构建没跑？）"
-# ★ 先证明量流量的家伙自己在。⚠ 少了这一条，镜像里没有 curl 时每一次请求都返回
-#   「<curl 失败>」，而报出来的判据是「数据面本身就不对」—— 一句指错方向的结论。
-#   （第一次跑本场景时真的发生了：镜像里当时确实没有 curl。）
+# ★ 先證明量流量的傢伙自己在。⚠ 少了這一條，鏡像裡沒有 curl 時每一次請求都回傳
+#   「<curl 失败>」，而報出來的判據是「資料面本身就不對」—— 一句指錯方向的結論。
+#   （第一次跑本場景時真的發生了：鏡像裡當時確實沒有 curl。）
 command -v curl >/dev/null 2>&1 \
   || fail "测试宿主镜像里没有 curl —— 本场景的流量判据全部量不了。见 docker/Dockerfile.systemd"
 [ "$(unit_prop LoadState)" = "loaded" ] || fail "unit $UNIT 没被 systemd 加载"
@@ -159,17 +159,17 @@ command -v curl >/dev/null 2>&1 \
 [ "$(unit_prop ExitType)" = "cgroup" ] \
   || fail "unit 的 ExitType 是 '$(unit_prop ExitType)'，本场景的前提是 cgroup"
 rm -f "$PID_FILE"
-# ★ port_listening 的 **false 方向**（true 方向在 [1/9]）。一次通过的运行走完两个方向。
+# ★ port_listening 的 **false 方向**（true 方向在 [1/9]）。一次通過的執行走完兩個方向。
 ! port_listening "$HTTP_PORT" tcp || fail "开跑前 tcp/$HTTP_PORT 就已经在监听，端口被别的东西占着"
 [ ! -e "$ADMIN_SOCK" ] || fail "开跑前 $ADMIN_SOCK 就已经存在"
-# 把二进制装到容器本地路径（unit 的 ExecStart 指着它）。[7/9] 会把它换掉。
+# 把二進位裝到容器本機路徑（unit 的 ExecStart 指著它）。[7/9] 會把它換掉。
 install -D -m 0755 "$BIN/fulcrum" "$EXE"
 write_conf gen-a
 echo "  ✓ 产品二进制已装到 $EXE；unit 已加载未启动、ExitType=cgroup；$HTTP_PORT 空着；配置已写入 $CONF"
 
 echo "=== [1/9] systemctl start —— ★ 缺口① sd_notify(READY=1) ==="
-# ⚠ 这一步就是实测失败的那一步：没有 READY=1 时它会等满 TimeoutStartSec
-#   然后返回 1（"Job for … failed because a timeout was exceeded"）。
+# ⚠ 這一步就是實測失敗的那一步：沒有 READY=1 時它會等滿 TimeoutStartSec
+#   然後回傳 1（"Job for … failed because a timeout was exceeded"）。
 systemctl start "$UNIT" \
   || fail "★ systemctl start 失败 —— 这正是缺口①的形状：Type=notify 等不到 READY=1。
        检查 fulcrum-server 有没有在 ExecutionPhase::Running 之后发 sd_notify。"
@@ -180,9 +180,9 @@ port_listening "$HTTP_PORT" tcp || fail "start 之后 tcp/$HTTP_PORT 仍然没�
 pid_in_cgroup "$GEN1" || fail "gen1=$GEN1 不在 unit 的 cgroup 里"
 echo "  ✓ unit active/running，MainPID=gen1=$GEN1，$HTTP_PORT 在监听"
 
-# ★ 缺口② —— 两条方向相反的断言，缺一不可：
-#   · pingora 默认的 /tmp/pingora.pid **不该存在**（它只由 daemonize() 写）；
-#   · 配置里指定的那个**必须存在且内容正确**（ExecReload 整条路建在它上面）。
+# ★ 缺口② —— 兩條方向相反的斷言，缺一不可：
+#   · pingora 預設的 /tmp/pingora.pid **不該存在**（它只由 daemonize() 寫）；
+#   · 設定裡指定的那個**必須存在且內容正確**（ExecReload 整條路建在它上面）。
 [ ! -e /tmp/pingora.pid ] || fail "出现了 /tmp/pingora.pid —— 说明 daemonize() 跑了，前台模式没生效"
 [ -s "$PID_FILE" ] \
   || fail "★ pid 文件 $PID_FILE 没出现 —— 缺口②：systemctl reload 将无处可查当前这一代。
@@ -190,9 +190,9 @@ echo "  ✓ unit active/running，MainPID=gen1=$GEN1，$HTTP_PORT 在监听"
 [ "$(cat "$PID_FILE")" = "$GEN1" ] || fail "pid 文件里是 $(cat "$PID_FILE")，而 MainPID 是 $GEN1"
 echo "  ✓ pid 文件 = $GEN1；没有 daemonize 留下的 /tmp/pingora.pid"
 
-# ★ 缺口④ —— 停机预算这行数字。
-#   ⚠ 判据取的是**具体的数**而不是「有这一行」：批 12 之前 grace 是 None，
-#     pingora 会等 EXIT_TIMEOUT=300，这行会写 305 —— 而 305 > TimeoutStopSec=60。
+# ★ 缺口④ —— 停機預算這行數字。
+#   ⚠ 判據取的是**具體的數**而不是「有這一行」：批 12 之前 grace 是 None，
+#     pingora 會等 EXIT_TIMEOUT=300，這行會寫 305 —— 而 305 > TimeoutStopSec=60。
 BUDGET_LINE=$(journalctl -u "$UNIT" --no-pager -o cat | grep -F '停机预算约' | tail -1 || true)
 [ -n "$BUDGET_LINE" ] || fail "启动日志里没有「停机预算约」这一行 —— 运维无从知道 TimeoutStopSec 该设多大"
 case "$BUDGET_LINE" in
@@ -213,11 +213,11 @@ CODE=$(admin_probe)
 echo "  ✓ GET / → gen-a；管理面在 $ADMIN_SOCK 上应答（404）"
 
 echo "=== [3/9] 改配置 + systemctl reload —— ★ 缺口③ SIGUSR2 换代触发器 ==="
-# ⚠ ⚠ 不接 SIGUSR2 的话，它走**默认动作＝终止进程**：这一步不是「reload 没反应」，
-#   而是**服务当场死掉**（Restart=no，unit 变 failed）。比缺口②描述的更糟。
+# ⚠ ⚠ 不接 SIGUSR2 的話，它走**預設動作＝終止處理程序**：這一步不是「reload 沒反應」，
+#   而是**服務當場死掉**（Restart=no，unit 變 failed）。比缺口②描述的更糟。
 write_conf gen-b
-# ★ 30 秒罩住**三次**换代（第 3、6、7 步）。它不额外花墙钟时间：
-#   第 8 步本来就要等老几代排空（默认 30s）。
+# ★ 30 秒罩住**三次**換代（第 3、6、7 步）。它不額外花牆鍾時間：
+#   第 8 步本來就要等老幾代排空（預設 30s）。
 probe_start 30
 sleep 1
 systemctl reload "$UNIT" || fail "systemctl reload 返回非零"
@@ -231,17 +231,17 @@ alive "$GEN1" || fail "gen1 在换代完成时就已经退出了，没有重叠�
 echo "  ✓ gen2 在 cgroup 里；此刻两代同时活着（重叠窗口成立）"
 
 echo "=== [4/9] 新配置真的生效了（M1 退出条件第 3 条的前半）==="
-# ⚠ 上界给 30 × 0.5s = 15s：CLOSE_TIMEOUT 是 5s，留三倍余量。
-#   收不敛才是真问题（新一代读的不是新配置）。
+# ⚠ 上界給 30 × 0.5s = 15s：CLOSE_TIMEOUT 是 5s，留三倍餘量。
+#   收不斂才是真問題（新一代讀的不是新設定）。
 N=$(wait_body gen-b 30) \
   || fail "15 秒内响应体一直没收敛到 gen-b（最后拿到「$N」）—— 换代发生了，但新一代读的不是新配置"
 echo "  ✓ GET / → gen-b（下一代重新读了 $CONF；等了 $((N / 2)).$((N % 2 * 5)) 秒收敛）"
 
 echo "=== [5/9] 换代之后管理面还在 —— 批 12 查出来的那个缺陷 ==="
-# ★ ★ ★ 优雅换代时监听 fd 是**从上一代继承**的（按地址字符串查 fd 表，UDS 的键就是路径），
-#   新一代不会重新 bind。此时若把路径 unlink 掉，两代都在一个**没有名字的** inode 上
-#   accept，而客户端按路径连过去只有 ENOENT —— **一次 reload 之后管理面永久失联**，
-#   且日志里一切正常、socket 也确实在 listen。
+# ★ ★ ★ 優雅換代時監聽 fd 是**從上一代繼承**的（按位址字串查 fd 表，UDS 的鍵就是路徑），
+#   新一代不會重新 bind。此時若把路徑 unlink 掉，兩代都在一個**沒有名字的** inode 上
+#   accept，而用戶端按路徑連過去只有 ENOENT —— **一次 reload 之後管理面永久失聯**，
+#   且紀錄裡一切正常、socket 也確實在 listen。
 [ -S "$ADMIN_SOCK" ] \
   || fail "★ 换代之后 $ADMIN_SOCK 不见了 —— 新一代把继承来的 socket 路径 unlink 了。
        见 fulcrum-server/src/lib.rs 里那句 not-upgrade 判断（换代那趟不许 unlink）。"
@@ -252,10 +252,10 @@ CODE=$(admin_probe)
 echo "  ✓ 管理面跨换代仍然可用（$ADMIN_SOCK 仍应答 404）"
 
 echo "=== [6/9] 回滚：再改回去 + 第二次 reload（M1 退出条件第 3 条的后半）==="
-# ★ 第二次 reload 必须也能成。`ExitType=cgroup` 之后 MainPID 已归零，
-#   若 ExecReload 还写着 `$MAINPID`，**第一次能成、第二次失败**（实测：退出码 1、
-#   journal 里是 kill 的 Usage，而 unit 仍 active —— 报错了，但换代没发生）。
-#   只换一次代的测试**看不见**这个洞。
+# ★ 第二次 reload 必須也能成。`ExitType=cgroup` 之後 MainPID 已歸零，
+#   若 ExecReload 還寫著 `$MAINPID`，**第一次能成、第二次失敗**（實測：結束代碼 1、
+#   journal 裡是 kill 的 Usage，而 unit 仍 active —— 回報錯誤了，但換代沒發生）。
+#   只換一次代的測試**看不見**這個洞。
 write_conf gen-a
 systemctl reload "$UNIT" || fail "第二次 systemctl reload 返回非零"
 GEN3=$(wait_new_generation "$GEN2" 100) \
@@ -266,26 +266,26 @@ N=$(wait_body gen-a 30) \
 echo "  ✓ pid 文件：$GEN2 → $GEN3，配置已回滚（GET / → gen-a；等了 $((N / 2)).$((N % 2 * 5)) 秒）"
 
 echo "=== [7/9] ★ 换二进制 + reload —— 零停机升级那条路 ==="
-# ★ ★ ★ 这一步是实测出来的一个真缺陷的门。
+# ★ ★ ★ 這一步是實測出來的一個真缺陷的門。
 #
-#   换二进制的标准做法是 rename 到原路径（直接往正在跑的可执行文件里写会 ETXTBSY），
-#   而 rename **换的是 inode**：Linux 上 /proc/self/exe 立刻变成 "…/fulcrum (deleted)"，
-#   `std::env::current_exe()` 原样返回这个带后缀的路径，exec 它必然 ENOENT。
-#   ⚠ ⚠ 而 `systemctl reload` **返回成功**（journal 里写着 Reloaded）——
-#   运维看到的是一次成功的升级，跑着的却还是旧二进制。
-# ⚠ ⚠ **判据一律走 `/proc/<pid>/exe`，不拿它跟路径的 `stat` 比。**
-#   实测（本容器是 overlayfs）：**什么都不替换**的情况下，
-#   `stat -c %i /opt/fulcrum/fulcrum` 与 `stat -c %i /proc/<pid>/exe` 就已经不同
-#   （325751 vs 235854）—— 路径那一侧报的是 overlay inode，`/proc` 那一侧报的是
-#   底层 upper 层的 inode。拿这两个数去比会得到一道**永远红**的门，
-#   而永远红的门等于没有门。⇒ 两边都从 `/proc` 取，才是同一个 inode 命名空间。
+#   換二進位的標準做法是 rename 到原路徑（直接往正在跑的執行檔裡寫會 ETXTBSY），
+#   而 rename **換的是 inode**：Linux 上 /proc/self/exe 立刻變成 "…/fulcrum (deleted)"，
+#   `std::env::current_exe()` 原樣回傳這個帶後綴的路徑，exec 它必然 ENOENT。
+#   ⚠ ⚠ 而 `systemctl reload` **回傳成功**（journal 裡寫著 Reloaded）——
+#   維運看到的是一次成功的升級，跑著的卻還是舊二進位。
+# ⚠ ⚠ **判據一律走 `/proc/<pid>/exe`，不拿它跟路徑的 `stat` 比。**
+#   實測（本容器是 overlayfs）：**什麼都不替換**的情況下，
+#   `stat -c %i /opt/fulcrum/fulcrum` 與 `stat -c %i /proc/<pid>/exe` 就已經不同
+#   （325751 vs 235854）—— 路徑那一側報的是 overlay inode，`/proc` 那一側報的是
+#   底層 upper 層的 inode。拿這兩個數去比會得到一道**永遠紅**的門，
+#   而永遠紅的門等於沒有門。⇒ 兩邊都從 `/proc` 取，才是同一個 inode 命名空間。
 GEN3_EXE_INO=$(stat -c '%i' "/proc/$GEN3/exe")
 cp "$BIN/fulcrum" "$EXE.new"
 chmod 0755 "$EXE.new"
 mv "$EXE.new" "$EXE"
-# ★ 自证：老一代的 /proc/<pid>/exe 现在必须带 (deleted)。
-#   它证明「旧 inode 真的从路径上消失了」——也就是本步要防的那个形态确实出现了。
-#   ⚠ 少了这一条，一个根本没换成功的替换会让下面的断言轻松通过。
+# ★ 自證：老一代的 /proc/<pid>/exe 現在必須帶 (deleted)。
+#   它證明「舊 inode 真的從路徑上消失了」——也就是本步要防的那個形態確實出現了。
+#   ⚠ 少了這一條，一個根本沒換成功的替換會讓下面的斷言輕鬆通過。
 GEN3_EXE=$(readlink "/proc/$GEN3/exe" 2>/dev/null || true)
 case "$GEN3_EXE" in
   *"(deleted)") ;;
@@ -299,12 +299,12 @@ GEN4=$(wait_new_generation "$GEN3" 100) \
        这正是只用 current_exe() 时的形状：它返回「…/fulcrum (deleted)」，
        spawn 拿到 ENOENT，本代继续服务 —— 而 systemctl reload 报的是成功。
        journal 里应当有「拉起下一代失败」。见 process.rs 的 next_generation_program()。"
-# ★ ★ 核心判据：新一代跑的必须是**磁盘上现在那一份**，不是旧 inode。
-#   ⚠ 只断言「换代发生了」不够：一个从 /proc/self/exe 的 **fd** 起下一代的实现
-#   也会换代成功，而它起来的是**旧二进制** —— 升级照样没发生，且更难看出来。
-#   ★ 两条断言合起来才够，而且它们用的是**同一把尺子的两个读数**
-#     （上面刚量到老一代是 `…(deleted)`，这里量到新一代是干净路径）——
-#     一次通过的运行就证明了这把尺子两个方向都能报。
+# ★ ★ 核心判據：新一代跑的必須是**磁碟上現在那一份**，不是舊 inode。
+#   ⚠ 只斷言「換代發生了」不夠：一個從 /proc/self/exe 的 **fd** 起下一代的實作
+#   也會換代成功，而它起來的是**舊二進位** —— 升級照樣沒發生，且更難看出來。
+#   ★ 兩條斷言合起來才夠，而且它們用的是**同一把尺子的兩個讀數**
+#     （上面剛量到老一代是 `…(deleted)`，這裡量到新一代是乾淨路徑）——
+#     一次通過的執行就證明了這把尺子兩個方向都能報。
 GEN4_EXE=$(readlink "/proc/$GEN4/exe" 2>/dev/null || true)
 [ "$GEN4_EXE" = "$EXE" ] \
   || fail "★ 新一代的 /proc/$GEN4/exe 是「$GEN4_EXE」，期望「$EXE」（不带 (deleted)）——
@@ -318,15 +318,15 @@ echo "  ✓ pid 文件：$GEN3 → $GEN4，新一代的 exe 是 $GEN4_EXE（inod
 
 echo "=== [8/9] 老几代自己退出，unit 不许跟着死 ==="
 wait "$PROBE" || true
-# ⚠ 探针没留下结果就必须当场判红，而不是让 `read` 在 set -e 下抛一句看不懂的错。
+# ⚠ 探針沒留下結果就必須當場判紅，而不是讓 `read` 在 set -e 下拋一句看不懂的錯。
 [ -s "$PROBE_OUT" ] || fail "探针没有留下结果文件 $PROBE_OUT —— 它多半是被收尾提前收掉了，本轮流量判据无效"
 read -r P_OK P_BAD < "$PROBE_OUT"
 [ "${P_OK:-0}" -gt 0 ] || fail "HTTP 探针一次都没成功过，测试本身无效"
 [ "${P_BAD:-1}" -eq 0 ] || fail "跨换代窗口 HTTP 请求失败 $P_BAD 次（成功 $P_OK 次）"
 echo "  ✓ 换代窗口内 HTTP $P_OK 次全成功、0 次失败"
 
-# ⚠ 上界要给足：老一代先等 CLOSE_TIMEOUT(5s) 送 fd，再走满 grace(${EXPECT_GRACE}s)。
-#   两代是先后开始排空的，所以按最晚那一代算。
+# ⚠ 上界要給足：老一代先等 CLOSE_TIMEOUT(5s) 送 fd，再走滿 grace(${EXPECT_GRACE}s)。
+#   兩代是先後開始排空的，所以按最晚那一代算。
 for g in "$GEN1" "$GEN2" "$GEN3"; do
   for _ in $(seq 1 450); do   # 450 × 0.2s = 90s
     alive "$g" || break
@@ -334,16 +334,16 @@ for g in "$GEN1" "$GEN2" "$GEN3"; do
   done
   alive "$g" && fail "90 秒后老一代 $g 还没退出，排空卡住了"
 done
-sleep 1   # 给 systemd 一点时间对「主进程退了」做出反应
+sleep 1   # 給 systemd 一點時間對「主處理程序退了」做出反應
 assert_active "老几代退出之后"
 alive "$GEN4" || fail "★ 老一代退出把 gen4 一起带走了 —— ExitType=cgroup 没有起作用"
 [ "$(main_pid)" = "0" ] \
   || fail "老代退出后 MainPID 是 $(main_pid)，而 ExitType=cgroup 下实测应当归零。
        行为变了：若它现在稳定指向新一代，ExecReload 可以退回 \$MAINPID。"
 echo "  ✓ gen1/gen2/gen3 已退出；unit 仍 active/running，gen4 活着；MainPID 已归零"
-# ★ ★ 现在只剩最后一代了，重叠窗口已经关闭 —— 这一条是**不带等待**的强判据：
-#   连打 5 次，每一次都必须是回滚后的那份配置。
-#   ⚠ [4/9]/[6/9] 那两条只证明「会收敛」；这一条证明「收敛之后不会再飘回去」。
+# ★ ★ 現在只剩最後一代了，重疊視窗已經關閉 —— 這一條是**不帶等待**的強判據：
+#   連打 5 次，每一次都必須是回復後的那份設定。
+#   ⚠ [4/9]/[6/9] 那兩條只證明「會收斂」；這一條證明「收斂之後不會再飄回去」。
 for i in 1 2 3 4 5; do
   BODY=$(body)
   [ "$BODY" = "gen-a" ] \
@@ -364,11 +364,11 @@ RESULT_PROP=$(unit_prop Result)
        ⚠ 'timeout' 正是缺口④的形状：排空窗口（默认 ${EXPECT_GRACE}s）若变回 pingora 的
        300s，systemd 会在 TimeoutStopSec=60 到点时 SIGKILL。"
 [ -z "$(cgroup_pids)" ] || fail "stop 之后 cgroup 里还有进程：$(cgroup_pids | tr '\n' ' ')"
-# ★ 下界比上界更值钱：stop 若**秒回**，说明它根本没等排空，
-#   那「TimeoutStopSec 按预算设就够」这条结论就是假的。
+# ★ 下界比上界更值錢：stop 若**秒回**，說明它根本沒等排空，
+#   那「TimeoutStopSec 按預算設就夠」這條結論就是假的。
 [ "$STOP_SECS" -ge "$EXPECT_GRACE" ] \
   || fail "stop 只用了 ${STOP_SECS}s，比默认排空窗口 ${EXPECT_GRACE}s 还短 —— systemd 没等排空就把进程收掉了"
-# 上界：它必须明显小于 TimeoutStopSec(60)，否则「没被打死」只是侥幸。
+# 上界：它必須明顯小於 TimeoutStopSec(60)，否則「沒被打死」只是僥倖。
 [ "$STOP_SECS" -le 55 ] \
   || fail "stop 用了 ${STOP_SECS}s，已经贴着 TimeoutStopSec=60 —— 预算与 unit 对不上了"
 echo "  ✓ stop 用了 ${STOP_SECS}s（预算 ${EXPECT_BUDGET}s，TimeoutStopSec=60），Result=success，cgroup 已空"

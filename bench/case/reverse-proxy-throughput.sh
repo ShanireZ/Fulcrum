@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
-# 用例类「反代吞吐」（M3，§8 七类之二）——四家各作反向代理，转发到**同一个常驻源站**。
+# 用例類「反代吞吐」（M3，§8 七類之二）——四家各作反向代理，轉發到**同一個常駐源站**。
 #
 #   bash bench/case/reverse-proxy-throughput.sh <输出目录>
 #
-# ⛔ **本脚本不判定、不比较、不打印任何「谁更快」。** 它只产出原始数据。
-#   判定在 `bench/verdict.sh`，而那一步会先问宿主合不合格。
+# ⛔ **本指令碼不判定、不比較、不列印任何「誰更快」。** 它只產出原始資料。
+#   判定在 `bench/verdict.sh`，而那一步會先問宿主合不合格。
 #
-# ── 对齐口径（★ 每一条都会被 bench/README.md 引用，改这里要一起改）─────────────
+# ── 對齊口徑（★ 每一條都會被 bench/README.md 引用，改這裡要一起改）─────────────
 #
-#   ① **一次只起一家**（源站除外，它常驻 —— 见下）。
-#   ② **同一个源站、同一个 URL 路径、同一份 payload 字节**，开跑前逐字节核对过。
-#   ③ **访问日志四家全关。**
-#   ④ **明文 HTTP/1.1 + keep-alive。** TLS 归「TLS 握手」那一类，⛔ 不混进来。
-#   ⑤ **worker 数四家一致**（`BENCH_WORKERS`）——★ **源站也吃同一个值**。
-#   ⑥ ★ ★ ★ **上游连接复用四家一致。** 四家的**默认**行为不同，而 oha 的 JSON 里
-#      **看不出这件事** —— 输出一切正常，只是某一家的数被系统性压低。
-#      ⇒ 四家全部显式配置（逐家的理由写在各自的配置文件里），并由本脚本产出的
-#      `upstream-conns.txt` 交给 `tests/bench/gate.sh` 的 C20 第 ② 半判着。
+#   ① **一次只起一家**（源站除外，它常駐 —— 見下）。
+#   ② **同一個源站、同一個 URL 路徑、同一份 payload 位元組**，開跑前逐位元組核對過。
+#   ③ **訪問紀錄四家全關。**
+#   ④ **明文 HTTP/1.1 + keep-alive。** TLS 歸「TLS 握手」那一類，⛔ 不混進來。
+#   ⑤ **worker 數四家一致**（`BENCH_WORKERS`）——★ **源站也吃同一個值**。
+#   ⑥ ★ ★ ★ **上游連接重複使用四家一致。** 四家的**預設**行為不同，而 oha 的 JSON 裡
+#      **看不出這件事** —— 輸出一切正常，只是某一家的數被系統性壓低。
+#      ⇒ 四家全部顯式設定（逐家的理由寫在各自的設定檔案裡），並由本指令碼產出的
+#      `upstream-conns.txt` 交給 `tests/bench/gate.sh` 的 C20 第 ② 半判著。
 #
-# ── 源站为什么是枢衡自己的 `respond` ─────────────────────────────────────────
+# ── 源站為什麼是樞衡自己的 `respond` ─────────────────────────────────────────
 #
-# ⚠ 与 `diag/cache-hit-p99.sh` 那个源站**性质完全不同**：那里命中之后源站根本
-#   不被访问（测量窗口里的 CPU 成本 ≈ 0），而**这里每一个请求都要穿过它**。
+# ⚠ 與 `diag/cache-hit-p99.sh` 那個源站**性質完全不同**：那裡命中之後源站根本
+#   不被訪問（測量視窗裡的 CPU 成本 ≈ 0），而**這裡每一個請求都要穿過它**。
 #
-# ★ 镜像里能当源站的只有四家自己与 python3（`docker/Dockerfile.bench`）
-#   ⇒ 加第五个实现要改镜像，**撞 G36**（`G152` 把它的 M3 冻结扩到了对拍镜像）。
-#   ⇒ **无论选谁，都必然有一趟是「同二进制两实例」**。选枢衡 ⇒ 受损的是
-#   枢衡自己那一趟：**误差方向对我们不利** ⇒ PASS 更可信，⛔ FAIL 不许拿它辩解。
-#   （选 haproxy 则受损的是很可能的最强者 ⇒ 门槛被低估 ⇒ PASS 不可信 ——
-#    那正是判据 ④C／`G146` 在治的那个失效。）
+# ★ 鏡像裡能當源站的只有四家自己與 python3（`docker/Dockerfile.bench`）
+#   ⇒ 加第五個實作要改鏡像，**撞 G36**（`G152` 把它的 M3 凍結擴到了對拍鏡像）。
+#   ⇒ **無論選誰，都必然有一趟是「同二進位兩執行個體」**。選樞衡 ⇒ 受損的是
+#   樞衡自己那一趟：**誤差方向對我們不利** ⇒ PASS 更可信，⛔ FAIL 不許拿它辯解。
+#   （選 haproxy 則受損的是很可能的最強者 ⇒ 門檻被低估 ⇒ PASS 不可信 ——
+#    那正是判據 ④C／`G146` 在治的那個失效。）
 #
-# ⚠ **枢衡 `file_server` 当时出局**的理由（2026-09-06 静态吞吐 7638.6 rps ⇒ 四家会一起被它压住
-#   ⇒ 判据 ④B 收敛作废整类）按窗口二的数（19811.2，已高于这一类的最强者）**已不成立**；
-#   选 `respond` 今天只靠上面那条「误差方向」站着 —— 见 bench/README.md「反代吞吐」一节。
+# ⚠ **樞衡 `file_server` 當時出局**的理由（2026-09-06 靜態吞吐 7638.6 rps ⇒ 四家會一起被它壓住
+#   ⇒ 判據 ④B 收斂作廢整類）按視窗二的數（19811.2，已高於這一類的最強者）**已不成立**；
+#   選 `respond` 今天只靠上面那條「誤差方向」站著 —— 見 bench/README.md「反代吞吐」一節。
 set -euo pipefail
 
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# ⚠ ⚠ ★ **只为拿那四个负载参数的缺省**（`bench/lib.sh` 的「负载参数」一节）。
-#   ⛔ **不许在本文件里再写一份 `:-` 缺省** —— 理由与 static-throughput.sh 逐字相同：
-#   用例用「声明值或缺省」而快照记「声明值」，会让没人显式设的参数在快照里成 `null`。
+# ⚠ ⚠ ★ **只為拿那四個負載參數的預設**（`bench/lib.sh` 的「負載參數」一節）。
+#   ⛔ **不許在本檔案裡再寫一份 `:-` 預設** —— 理由與 static-throughput.sh 逐字相同：
+#   用例用「宣告值或預設」而快照記「宣告值」，會讓沒人顯式設的參數在快照裡成 `null`。
 # shellcheck source=bench/lib.sh
 . "$BENCH_DIR/lib.sh"
 
@@ -48,17 +48,17 @@ RAW_DIR="$OUT_DIR/raw/$CASE"
 WORK=$(mktemp -d)
 HOST=127.0.0.1
 
-# ⛔ 这四个**不带 `:-`**：缺省由上面那次 `source` 供。少了那一行就是 `set -u`
-#   当场报错，⛔ 而不是安静地回落到一个只有本文件知道的数。
+# ⛔ 這四個**不帶 `:-`**：預設由上面那次 `source` 供。少了那一行就是 `set -u`
+#   當場回報錯誤，⛔ 而不是安靜地回落到一個只有本檔案知道的數。
 DURATION=$BENCH_DURATION
 CONNECTIONS=$BENCH_CONNECTIONS
 WORKERS=$BENCH_WORKERS
 PAYLOAD_BYTES=$BENCH_PAYLOAD_BYTES
 FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 
-# 端口：9949–9953（端口表在 docs/platform/host-and-gate-traps.md）。
-# ⚠ ⛔ 一个都别改成 :80 —— 那个端口在门禁里是共享的（G137），占住它会让一个
-#   与本用例毫无关系的场景起不来，而报错落在那个无辜的端口上。
+# 連接埠：9949–9953（連接埠表在 docs/platform/host-and-gate-traps.md）。
+# ⚠ ⛔ 一個都別改成 :80 —— 那個連接埠在門禁裡是共享的（G137），佔住它會讓一個
+#   與本用例毫無關係的場景起不來，而回報錯誤落在那個無辜的連接埠上。
 PORT_ORIGIN=${BENCH_PORT_RP_ORIGIN:-9949}
 PORT_FULCRUM=${BENCH_PORT_RP_FULCRUM:-9950}
 PORT_CADDY=${BENCH_PORT_RP_CADDY:-9951}
@@ -95,11 +95,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── 原语 ───────────────────────────────────────────────────────────────────
+# ── 原語 ───────────────────────────────────────────────────────────────────
 #
-# ★ 「起来了没有」判在**行为**上（真连一次），⛔ 不判某个工具在不在 ——
-#   `tests/stress/run.sh` 在这条上栽过：写 `ss -lnt …` 而镜像里根本没有 `ss`，
-#   于是那个原语**恒返回 false**。
+# ★ 「起來了沒有」判在**行為**上（真連一次），⛔ 不判某個工具在不在 ——
+#   `tests/stress/run.sh` 在這條上栽過：寫 `ss -lnt …` 而鏡像里根本沒有 `ss`，
+#   於是那個原語**恆回傳 false**。
 port_listening() {
   timeout 1 bash -c "exec 3<>/dev/tcp/$HOST/$1" 2>/dev/null
 }
@@ -122,13 +122,13 @@ wait_port_gone() {
   return 1
 }
 
-# 本 netns 里被动打开的 TCP 连接累计数（对齐口径第 ⑥ 条的观测量）。
+# 本 netns 裡被動打開的 TCP 連接累計數（對齊口徑第 ⑥ 條的觀測量）。
 #
-# ⚠ ⚠ 它是**整个 netns 的**，⛔ 不是只有「反代→源站」那一段（还含 oha→反代 那部分）。
-#   ★ 它够用**不是因为它精确，而是因为对齐与不对齐之间隔着两个数量级**：
-#     开发机 10s/50 连接实测，对齐后 0.4–2.1，未对齐 100.3（caddy）与 1001.5（nginx）。
-# ⚠ 逐列按**表头**找 `PassiveOpens`，⛔ 不写死列号：不同内核的 `/proc/net/snmp`
-#   列数不同，而一个写死的列号会安静地读出另一个计数器。
+# ⚠ ⚠ 它是**整個 netns 的**，⛔ 不是隻有「反代→源站」那一段（還含 oha→反代 那部分）。
+#   ★ 它夠用**不是因為它精確，而是因為對齊與不對齊之間隔著兩個數量級**：
+#     開發機 10s/50 連接實測，對齊後 0.4–2.1，未對齊 100.3（caddy）與 1001.5（nginx）。
+# ⚠ 逐列按**表頭**找 `PassiveOpens`，⛔ 不寫死列號：不同核心的 `/proc/net/snmp`
+#   列數不同，而一個寫死的列號會安靜地讀出另一個計數器。
 passive_opens() {
   awk '/^Tcp:/ {
     if (h == "") { for (i = 1; i <= NF; i++) k[i] = $i; h = 1; next }
@@ -136,12 +136,12 @@ passive_opens() {
   }' /proc/net/snmp
 }
 
-# CPU 亲和。★ 两组核都给了才用 `taskset`；只给一个等于没给。
-# ⚠ ⚠ **源站与被测共享 `BENCH_SERVER_CPUS`**（owner 2026-09-09 拍板）：合格宿主
-#   只有 4 核，分三组会让 oha 只剩 1 核去打四万多 rps ⇒ 很可能**压测端先饱和**，
-#   而那正是判据 ④B 会作废整类的情形。
-#   ⇒ 代价是源站吃掉的 CPU 混进四家读数，★ 但它对四家一视同仁 ⇒ 类内的相对
-#   比较（G19 那 10%）仍然成立。这一条写在 bench/README.md 的明处。
+# CPU 親和。★ 兩組核都給了才用 `taskset`；只給一個等於沒給。
+# ⚠ ⚠ **源站與被測共享 `BENCH_SERVER_CPUS`**（owner 2026-09-09 拍板）：合格宿主
+#   只有 4 核，分三組會讓 oha 只剩 1 核去打四萬多 rps ⇒ 很可能**壓測端先飽和**，
+#   而那正是判據 ④B 會作廢整類的情形。
+#   ⇒ 代價是源站吃掉的 CPU 混進四家讀數，★ 但它對四家一視同仁 ⇒ 類內的相對
+#   比較（G19 那 10%）仍然成立。這一條寫在 bench/README.md 的明處。
 pin_server=()
 pin_load=()
 if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
@@ -151,14 +151,14 @@ fi
 
 mkdir -p "$RAW_DIR"
 
-# ── payload：可打印的 N 字节 ───────────────────────────────────────────────
+# ── payload：可列印的 N 位元組 ───────────────────────────────────────────────
 #
-# ⚠ ⚠ `respond` 的正文**只有内联形态**（⛔ 没有 file 形式，不像 HAProxy 那条
-#   `http-request return … file <路径>`）⇒ payload 必须**可打印**。取 base64
-#   字母表（不含 `|`、`&`、反斜杠与引号）—— 与 diag/respond-ceiling.sh 同一手法。
-# ⛔ 这与静态吞吐那一类的 `/dev/urandom` **不是同一份字节** ⇒ 两类的绝对读数
-#   不可并排比较（又一条，写在 bench/README.md）。
-# ⚠ base64 把 3 字节涨成 4 ⇒ 取 PAYLOAD_BYTES 字节的随机源足够裁出 PAYLOAD_BYTES 个字符。
+# ⚠ ⚠ `respond` 的正文**只有內聯形態**（⛔ 沒有 file 形式，不像 HAProxy 那條
+#   `http-request return … file <路径>`）⇒ payload 必須**可列印**。取 base64
+#   字母表（不含 `|`、`&`、反斜槓與引號）—— 與 diag/respond-ceiling.sh 同一手法。
+# ⛔ 這與靜態吞吐那一類的 `/dev/urandom` **不是同一份位元組** ⇒ 兩類的絕對讀數
+#   不可並排比較（又一條，寫在 bench/README.md）。
+# ⚠ base64 把 3 位元組漲成 4 ⇒ 取 PAYLOAD_BYTES 位元組的隨機源足夠裁出 PAYLOAD_BYTES 個字元。
 head -c "$PAYLOAD_BYTES" /dev/urandom > "$WORK/rand.bin"
 base64 -w0 < "$WORK/rand.bin" > "$WORK/b64.txt"
 head -c "$PAYLOAD_BYTES" "$WORK/b64.txt" > "$WORK/payload.bin"
@@ -170,13 +170,13 @@ ACTUAL_BYTES=$(wc -c < "$WORK/payload.bin" | tr -d ' ')
 BODY=$(cat "$WORK/payload.bin")
 URL_PATH=/payload.bin
 
-# ── 渲染配置 ───────────────────────────────────────────────────────────────
+# ── 繪製設定 ───────────────────────────────────────────────────────────────
 #
-# ★ 模板在 `bench/conf/` 下、是**交付物的一部分**，这里只替换占位符。
-#   ⛔ 别把配置内联进本脚本：第三方要看的就是那几份配置本身。
-# ★ ★ caddy / nginx 的上游空闲连接上限跟着并发数走（`bench/lib.sh` 的
-#   `bench_upstream_idle_cap`，2026-09-10）—— 写死 64 时窗口的 200 并发下两家部分不复用。
-#   算不出来就在 `set -e` 下当场失败，⛔ 不回落到一个只有本文件知道的数。
+# ★ 範本在 `bench/conf/` 下、是**交付物的一部分**，這裡只替換佔位符。
+#   ⛔ 別把設定內聯進本指令碼：第三方要看的就是那幾份設定本身。
+# ★ ★ caddy / nginx 的上游空閒連接上限跟著並行數走（`bench/lib.sh` 的
+#   `bench_upstream_idle_cap`，2026-09-10）—— 寫死 64 時視窗的 200 並行下兩家部分不復用。
+#   算不出來就在 `set -e` 下當場失敗，⛔ 不回落到一個只有本檔案知道的數。
 IDLE_CAP=$(bench_upstream_idle_cap "$CONNECTIONS")
 render() {
   local src=$1 dst=$2 port=$3
@@ -188,7 +188,7 @@ render() {
     -e "s|__IDLE_CAP__|$IDLE_CAP|g" \
     "$src" > "$dst"
 }
-# 源站：与 diag/respond-ceiling.sh **共用同一份模板**（见那份文件头部的说明）。
+# 源站：與 diag/respond-ceiling.sh **共用同一份範本**（見那份檔案頭部的說明）。
 sed -e "s|__PORT__|$PORT_ORIGIN|g" \
   -e "s|__WORKERS__|$WORKERS|g" \
   -e "s|__BODY__|$BODY|g" \
@@ -200,10 +200,10 @@ render "$BENCH_DIR/conf/haproxy-proxy.cfg" "$WORK/haproxy.cfg" "$PORT_HAPROXY"
 render "$BENCH_DIR/conf/nginx-proxy.conf" "$WORK/nginx.conf" "$PORT_NGINX"
 mkdir -p "$WORK/nginx-body"
 
-# ── 源站：常驻，跨四趟 ─────────────────────────────────────────────────────
+# ── 源站：常駐，跨四趟 ─────────────────────────────────────────────────────
 #
-# ★ 它是**环境**不是被测 ⇒ 不跟着四家一起起停：每趟重起会把源站的预热状态
-#   变成一个新变量，而四家面对的就不再是同一个上游了。
+# ★ 它是**環境**不是被測 ⇒ 不跟著四家一起起停：每趟重起會把源站的預熱狀態
+#   變成一個新變數，而四家面對的就不再是同一個上游了。
 echo "── 源站（枢衡 respond）──"
 "${pin_server[@]}" "$FULCRUM_BIN" serve "$WORK/origin.Fulcrumfile" \
   --bind-host "$HOST" \
@@ -223,8 +223,8 @@ CONNS_TXT="$RAW_DIR/upstream-conns.txt"
 
 # ── 一家的完整一趟 ─────────────────────────────────────────────────────────
 #
-# 核源站还活着 → 起 → 等端口 → **核对它转发的到底是不是那份 payload** →
-# 打负载（前后各读一次 PassiveOpens）→ 收 → 等端口消失。
+# 核源站還活著 → 起 → 等連接埠 → **核對它轉發的到底是不是那份 payload** →
+# 打負載（前後各讀一次 PassiveOpens）→ 收 → 等連接埠消失。
 run_subject() {
   local name=$1 port=$2
   shift 2
@@ -232,9 +232,9 @@ run_subject() {
 
   echo "── $name ──"
 
-  # ★ ★ 每趟开跑前先确认**源站还活着** —— 它常驻跨四趟，中途死掉会让后面几家
-  #   一起变成 502，而 `read-raw.py` 会把它们判成 INVALID（那是对的），
-  #   但现场看不出真因在源站身上。
+  # ★ ★ 每趟開跑前先確認**源站還活著** —— 它常駐跨四趟，中途死掉會讓後面幾家
+  #   一起變成 502，而 `read-raw.py` 會把它們判成 INVALID（那是對的），
+  #   但現場看不出真因在源站身上。
   if ! kill -0 "$ORIGIN_PID" 2>/dev/null; then
     bad "$name 开跑前源站已经不在了 —— 后面几家的读数都不算数"
     return 0
@@ -251,9 +251,9 @@ run_subject() {
     return 0
   fi
 
-  # ★ ★ ★ **开跑前先证明样本里真有东西，且它真的穿过了源站。**
-  #   一个稳定回 404、或回 200 空 body 的被测会给出非常漂亮的 RPS，
-  #   而那个数与「转发那个资源」毫无关系。⇒ 状态码、字节数、**逐字节**都要对上。
+  # ★ ★ ★ **開跑前先證明樣本里真有東西，且它真的穿過了源站。**
+  #   一個穩定回 404、或回 200 空 body 的被測會給出非常漂亮的 RPS，
+  #   而那個數與「轉發那個資源」毫無關係。⇒ 狀態碼、位元組數、**逐位元組**都要對上。
   local probe code size
   probe=$(curl -sS -o "$WORK/$name.body" -w '%{http_code} %{size_download}' \
     "http://$HOST:$port$URL_PATH" 2>>"$log" || echo "000 0")
@@ -274,7 +274,7 @@ run_subject() {
   fi
   ok "$name 转发的是源站那份 payload（HTTP 200，$size 字节，逐字节相同）"
 
-  # ── 负载 + 上游连接复用的观测量 ─────────────────────────────────────────
+  # ── 負載 + 上游連接重複使用的觀測量 ─────────────────────────────────────────
   local before after opened reqs per1k
   before=$(passive_opens)
   if "${pin_load[@]}" oha \
@@ -290,9 +290,9 @@ run_subject() {
   after=$(passive_opens)
   opened=$((after - before))
 
-  # ⚠ ⚠ ⛔ **有意不叫 `.json`** —— `bench/read-raw.py` 对本目录做 `glob("*.json")`，
-  #   一个 `.json` 会被它当成**第五家被测**混进竞品集合，于是「最强者」可能变成它，
-  #   而**不会有任何东西说**。★ 与 `ceiling.txt` 逐字同一条教训（bench/verdict.sh）。
+  # ⚠ ⚠ ⛔ **有意不叫 `.json`** —— `bench/read-raw.py` 對本目錄做 `glob("*.json")`，
+  #   一個 `.json` 會被它當成**第五家被測**混進競品集合，於是「最強者」可能變成它，
+  #   而**不會有任何東西說**。★ 與 `ceiling.txt` 逐字同一條教訓（bench/verdict.sh）。
   if [ -s "$RAW_DIR/$name.json" ]; then
     reqs=$(python3 -c 'import json,sys;print(sum(json.load(open(sys.argv[1]))["statusCodeDistribution"].values()))' \
       "$RAW_DIR/$name.json" 2>/dev/null || echo 0)
@@ -302,8 +302,8 @@ run_subject() {
   if [ "$reqs" -gt 0 ] 2>/dev/null; then
     per1k=$(awk -v o="$opened" -v r="$reqs" 'BEGIN { printf "%.2f", 1000.0 * o / r }')
   else
-    # ⛔ 「算不出来」一律记成一个判据认得的坏值，⛔ 而不是省略这一行 ——
-    #   缺一行会让判据少判一家，而**少判与判过在输出上分不开**。
+    # ⛔ 「算不出來」一律記成一個判據認得的壞值，⛔ 而不是省略這一行 ——
+    #   缺一行會讓判據少判一家，而**少判與判過在輸出上分不開**。
     per1k=NaN
   fi
   printf '%s %s\n' "$name" "$per1k" >> "$CONNS_TXT"
@@ -314,7 +314,7 @@ run_subject() {
   wait_port_gone "$port" || bad "$name 收掉之后 $port 还占着 —— 下一家会起不来"
 }
 
-# ⚠ 顺序有意固定：结果与顺序无关才对，⇒ 固定它是为了让两趟之间可比。
+# ⚠ 順序有意固定：結果與順序無關才對，⇒ 固定它是為了讓兩趟之間可比。
 run_subject fulcrum "$PORT_FULCRUM" \
   "$FULCRUM_BIN" serve "$WORK/fulcrum.Fulcrumfile" \
   --bind-host "$HOST" \
@@ -322,16 +322,16 @@ run_subject fulcrum "$PORT_FULCRUM" \
   --upgrade-sock "$WORK/fulcrum.sock" \
   --state-dir "$WORK/state"
 
-# ★ `GOMAXPROCS` 是 Caddy 唯一的并行度旋钮（它是 Go 写的，没有 worker 进程的概念）。
+# ★ `GOMAXPROCS` 是 Caddy 唯一的並行度旋鈕（它是 Go 寫的，沒有 worker 處理程序的概念）。
 GOMAXPROCS="$WORKERS" \
   run_subject caddy "$PORT_CADDY" \
   caddy run --config "$WORK/Caddyfile" --adapter caddyfile
 
-# ★ `-db` = 不 daemon 化、不做后台化，编排脚本才拿得到它的 pid。
+# ★ `-db` = 不 daemon 化、不做後台化，編排指令碼才拿得到它的 pid。
 run_subject haproxy "$PORT_HAPROXY" \
   haproxy -f "$WORK/haproxy.cfg" -db
 
-# ★ nginx 的 `daemon off` 写在配置里（见 bench/conf/nginx-proxy.conf）。
+# ★ nginx 的 `daemon off` 寫在設定裡（見 bench/conf/nginx-proxy.conf）。
 run_subject nginx "$PORT_NGINX" \
   nginx -c "$WORK/nginx.conf"
 

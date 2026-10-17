@@ -1,66 +1,66 @@
 #!/bin/sh
-# **产物里真的链接了哪几套 TLS**（结案 D23）。
+# **產物裡真的連結了哪幾套 TLS**（結案 D23）。
 #
-# 用法：`sh tests/ci/tls-linkage.sh <二进制>` —— 往标准输出打若干行 `键=值`。
-# ⛔ 它自己**不判红**：判据在调用方（`tests/musl/product.sh`）。
-#   ★ 分开是有意的，与那份 `evidence.txt` 的既有形状一致：取数与判定各一处，
-#   一份「读起来像结论」的自由文本会诱人用 `grep 通过` 去判。
+# 用法：`sh tests/ci/tls-linkage.sh <二进制>` —— 往標準輸出打若干行 `键=值`。
+# ⛔ 它自己**不判紅**：判據在呼叫方（`tests/musl/product.sh`）。
+#   ★ 分開是有意的，與那份 `evidence.txt` 的既有形狀一致：取數與判定各一處，
+#   一份「讀起來像結論」的自由文字會誘人用 `grep 通过` 去判。
 #
-# ## ★ ★ 这一格与门 4 / 门 5 问的**不是同一个问题**
+# ## ★ ★ 這一格與門 4 / 門 5 問的**不是同一個問題**
 #
-# | 问题 | 谁答 |
+# | 問題 | 誰答 |
 # |---|---|
-# | `Cargo.lock` 里写着哪些 | 供应链门 4 |
-# | 依赖图里真有哪些 | 门 5（`cargo tree -e all --target all`）|
-# | **产物里真的链接了哪些** | **本脚本** |
+# | `Cargo.lock` 裡寫著哪些 | 供應鏈門 4 |
+# | 依賴圖裡真有哪些 | 門 5（`cargo tree -e all --target all`）|
+# | **產物裡真的連結了哪些** | **本指令碼** |
 #
-# ⚠ `Cargo.lock` 是依赖图的超集（「锁 ≠ 图」已被实测抓到过一次），
-# 而「图 ≠ 产物」同样不能靠推理当成同一件事 —— 图里有、而产物里其实没链接，
-# 是门 5 **原理上**看不见的那一半。
+# ⚠ `Cargo.lock` 是依賴圖的超集（「鎖 ≠ 圖」已被實測抓到過一次），
+# 而「圖 ≠ 產物」同樣不能靠推理當成同一件事 —— 圖裡有、而產物裡其實沒連結，
+# 是門 5 **原理上**看不見的那一半。
 #
-# ## ⚠ ⚠ 为什么判符号而不是判字符串
+# ## ⚠ ⚠ 為什麼判符號而不是判字串
 #
-# `strings` 里 `boringssl` 出现三百多次，几乎全是**源码路径**（panic 位置、调试信息）；
-# 而 `rustls` 出现 4 次，**全部**来自 `rustls_pki_types`。
-# ⇒ 一条 `strings | grep -i rustls` 的门会**永远误报**，然后有人给它加一条豁免 ——
-# 而那条豁免早晚会盖住一次真的。★ 符号表说的是「哪些代码真的被链接进来了」。
+# `strings` 裡 `boringssl` 出現三百多次，幾乎全是**原始碼路徑**（panic 位置、偵錯資訊）；
+# 而 `rustls` 出現 4 次，**全部**來自 `rustls_pki_types`。
+# ⇒ 一條 `strings | grep -i rustls` 的門會**永遠誤報**，然後有人給它加一條豁免 ——
+# 而那條豁免早晚會蓋住一次真的。★ 符號表說的是「哪些程式碼真的被連結進來了」。
 #
-# ## ★ ★ ★ `rustls_pki_types` 是允许的，而 `rustls` 不是
+# ## ★ ★ ★ `rustls_pki_types` 是允許的，而 `rustls` 不是
 #
-# 前者是 `instant_acme` 拉进来的**纯类型 crate**（`CertificateDer` / `PrivatePkcs8KeyDer`），
-# 里面**没有协议实现、没有密码学**；后者才是 TLS 栈本身。
-# ⇒ 判据用 Rust v0 名字修饰的**长度前缀**把两者精确分开：
-# `_6rustls` 是 crate 名恰好为 `rustls`，而 `_16rustls_pki_types` 里 `_` 与 `6` 之间隔着 `1`
-# ⇒ **`_6rustls` 不是它的子串**。⛔ 别改成 `grep rustls`，那正是上面那条陷阱。
+# 前者是 `instant_acme` 拉進來的**純類型 crate**（`CertificateDer` / `PrivatePkcs8KeyDer`），
+# 裡面**沒有協定實作、沒有密碼學**；後者才是 TLS 棧本身。
+# ⇒ 判據用 Rust v0 名字修飾的**長度前綴**把兩者精確分開：
+# `_6rustls` 是 crate 名恰好為 `rustls`，而 `_16rustls_pki_types` 裡 `_` 與 `6` 之間隔著 `1`
+# ⇒ **`_6rustls` 不是它的子串**。⛔ 別改成 `grep rustls`，那正是上面那條陷阱。
 set -eu
 
 BIN=${1:?用法：tls-linkage.sh <二进制>}
 
-# ⚠ 读不到符号表时**不许静默给 0** —— 那会让每一条「必须为 0」的判据凭空全绿。
-#   ⇒ 打一个 `TLS_NM=missing`，由调用方判红（「没能检查」不算「检查通过」）。
+# ⚠ 讀不到符號表時**不許靜默給 0** —— 那會讓每一條「必須為 0」的判據憑空全綠。
+#   ⇒ 打一個 `TLS_NM=missing`，由呼叫方判紅（「沒能檢查」不算「檢查通過」）。
 if ! command -v nm >/dev/null 2>&1; then
   echo "TLS_NM=missing"
   exit 0
 fi
-# ⚠ ⚠ ★ **`nm` 失败** 与 **符号表真的被剥掉** 是两件事，⛔ 原先它们都打 `stripped`。
-#   实测（2026-09-08）：路径写错、或者传进来的根本不是目标文件，得到的也是
-#   `TLS_NM=stripped` —— 于是人拿着「它被剥了符号」这句话去查一个**不存在的文件**。
-#   nm 的原话是 `file format not recognized` / `No such file or directory`，
-#   那比任何分类都准。
-# ★ ★ 这个分法**站得住，是量出来的**（2026-09-08 在 `fulcrum-build:local` 里实测
-#   GNU binutils 的退出码，⛔ 不是推断）：
-#     · 有符号            ⇒ rc=0，stdout 非空          ⇒ ok
-#     · `strip` 过的       ⇒ rc=**0**，stderr `no symbols` ⇒ stripped（真被剥了）
-#     · 不是目标文件       ⇒ rc=1，`file format not recognized`
-#     · 文件不存在         ⇒ rc=1，`No such file`
-#   ⇒ 「rc≠0」与「被剥符号」在这个平台上**确实是两条不相交的路**，
-#   下面那句「这不是被剥掉」才敢写。⚠ 哪天 binutils 改了退出码约定，
-#   要红的是这张表，⛔ 别默默把那句断言留着。
-# ★ 失败路径上**再问一次**只为取 stderr（`2>&1 >/dev/null`，⛔ 顺序不能反）——
-#   与 `tests/ci/shellcheck-all.sh`、`tests/musl/arm64-trigger.sh` 同一套写法。
-# ⚠ `|| nm_rc=$?` 接住，⛔ 否则 `set -e` 在这里就把脚本掐了。
-# ★ 新取值 `nm-failed` 对调用方是安全的：`tests/musl/product.sh` 判的是
-#   `[ "$tls_nm" != "ok" ]` ⇒ 任何非 ok 一律判红，**不会**因为多一种取值而放行。
+# ⚠ ⚠ ★ **`nm` 失敗** 與 **符號表真的被剝掉** 是兩件事，⛔ 原先它們都打 `stripped`。
+#   實測（2026-09-08）：路徑寫錯、或者傳進來的根本不是目標檔案，得到的也是
+#   `TLS_NM=stripped` —— 於是人拿著「它被剝了符號」這句話去查一個**不存在的檔案**。
+#   nm 的原話是 `file format not recognized` / `No such file or directory`，
+#   那比任何分類都準。
+# ★ ★ 這個分法**站得住，是量出來的**（2026-09-08 在 `fulcrum-build:local` 裡實測
+#   GNU binutils 的結束代碼，⛔ 不是推斷）：
+#     · 有符號            ⇒ rc=0，stdout 非空          ⇒ ok
+#     · `strip` 過的       ⇒ rc=**0**，stderr `no symbols` ⇒ stripped（真被剝了）
+#     · 不是目標檔案       ⇒ rc=1，`file format not recognized`
+#     · 檔案不存在         ⇒ rc=1，`No such file`
+#   ⇒ 「rc≠0」與「被剝符號」在這個平台上**確實是兩條不相交的路**，
+#   下面那句「這不是被剝掉」才敢寫。⚠ 哪天 binutils 改了結束代碼約定，
+#   要紅的是這張表，⛔ 別默默把那句斷言留著。
+# ★ 失敗路徑上**再問一次**只為取 stderr（`2>&1 >/dev/null`，⛔ 順序不能反）——
+#   與 `tests/ci/shellcheck-all.sh`、`tests/musl/arm64-trigger.sh` 同一套寫法。
+# ⚠ `|| nm_rc=$?` 接住，⛔ 否則 `set -e` 在這裡就把指令碼掐了。
+# ★ 新取值 `nm-failed` 對呼叫方是安全的：`tests/musl/product.sh` 判的是
+#   `[ "$tls_nm" != "ok" ]` ⇒ 任何非 ok 一律判紅，**不會**因為多一種取值而放行。
 nm_rc=0
 SYMS=$(nm "$BIN" 2>/dev/null) || nm_rc=$?
 if [ "$nm_rc" -ne 0 ]; then
@@ -72,7 +72,7 @@ if [ "$nm_rc" -ne 0 ]; then
   exit 0
 fi
 if [ -z "$SYMS" ]; then
-  # ★ 走到这里 nm **成功**了、只是一条符号都没有 ⇒ 「被剥掉」这句话现在是有据的。
+  # ★ 走到這裡 nm **成功**了、只是一條符號都沒有 ⇒ 「被剝掉」這句話現在是有據的。
   echo "TLS_NM=stripped"
   exit 0
 fi
@@ -80,15 +80,15 @@ echo "TLS_NM=ok"
 
 count() { printf '%s\n' "$SYMS" | grep -c "$1" || true; }
 
-# ── 正向：BoringSSL 独有的符号 ──────────────────────────────────────────────
+# ── 正向：BoringSSL 獨有的符號 ──────────────────────────────────────────────
 #
-# ★ ★ `SSL_CTX_set_select_certificate_cb` **不是随便挑的**：它正是 G6 第 1 条
-#   「两个入口（h1/h2 与 h3/QUIC）共用同一个证书选择回调」的执行者
-#   ⇒ 这条判据与那条锁死的架构约束**是同一件事**，而不是一个凑数的探针。
-# ⚠ 另两个也各自只在 BoringSSL 里有：`SSL_error_description`（OpenSSL 无）、
-#   `CRYPTO_BUFFER_new`（BoringSSL 特有的缓冲类型）。
-# ⛔ **不要用 `BORINGSSL_self_test`** —— 它只在 FIPS 构建里存在，非 FIPS 下恒为 0
-#   （写这个脚本时当场量到的，差点选它当判据）。
+# ★ ★ `SSL_CTX_set_select_certificate_cb` **不是隨便挑的**：它正是 G6 第 1 條
+#   「兩個入口（h1/h2 與 h3/QUIC）共用同一個證書選擇回呼」的執行者
+#   ⇒ 這條判據與那條鎖死的架構約束**是同一件事**，而不是一個湊數的探針。
+# ⚠ 另兩個也各自只在 BoringSSL 裡有：`SSL_error_description`（OpenSSL 無）、
+#   `CRYPTO_BUFFER_new`（BoringSSL 特有的緩衝類型）。
+# ⛔ **不要用 `BORINGSSL_self_test`** —— 它只在 FIPS 建置裡存在，非 FIPS 下恆為 0
+#   （寫這個指令碼時當場量到的，差點選它當判據）。
 BORING=0
 for s in SSL_CTX_set_select_certificate_cb SSL_error_description CRYPTO_BUFFER_new; do
   n=$(count " [TtWw] $s\$")
@@ -96,10 +96,10 @@ for s in SSL_CTX_set_select_certificate_cb SSL_error_description CRYPTO_BUFFER_n
 done
 echo "TLS_BORINGSSL_ONLY=$BORING"
 
-# ── 反向 A：OpenSSL 独有的符号，一个都不许有 ────────────────────────────────
+# ── 反向 A：OpenSSL 獨有的符號，一個都不許有 ────────────────────────────────
 #
-# ★ 这四个在 BoringSSL 里**不存在**（它有意删掉了 ENGINE 那一套与 OpenSSL 的初始化门面）
-# ⇒ 它们分得开 BoringSSL 与 OpenSSL，而单看 `SSL_CTX_new` 一类共有符号分不开。
+# ★ 這四個在 BoringSSL 裡**不存在**（它有意刪掉了 ENGINE 那一套與 OpenSSL 的初始化門面）
+# ⇒ 它們分得開 BoringSSL 與 OpenSSL，而單看 `SSL_CTX_new` 一類共有符號分不開。
 OSSL=0
 for s in OPENSSL_init_ssl ENGINE_init OpenSSL_version SSL_CTX_set_ssl_version; do
   n=$(count " [TtWwDdBb] $s\$")
@@ -107,16 +107,16 @@ for s in OPENSSL_init_ssl ENGINE_init OpenSSL_version SSL_CTX_set_ssl_version; d
 done
 echo "TLS_OPENSSL_ONLY=$OSSL"
 
-# ── 反向 B：rustls **本体**一个符号都不许有 ─────────────────────────────────
+# ── 反向 B：rustls **本體**一個符號都不許有 ─────────────────────────────────
 echo "TLS_RUSTLS_IMPL=$(count '_6rustls')"
-# ★ 只报不判：它是允许的（纯类型 crate），但**数出来写在证据里** ——
-#   哪天它变成 0，说明 `instant_acme` 换了依赖，那是一件该被看见的事。
+# ★ 只報不判：它是允許的（純類型 crate），但**數出來寫在證據裡** ——
+#   哪天它變成 0，說明 `instant_acme` 換了依賴，那是一件該被看見的事。
 echo "TLS_RUSTLS_PKI_TYPES=$(count '_16rustls_pki_types')"
 
-# ── ★ ★ ★ 扫描器自证：这个形状**命中得了** ─────────────────────────────────
+# ── ★ ★ ★ 掃描器自證：這個形狀**命中得了** ─────────────────────────────────
 #
-# ⚠ 上面三条「必须为 0」的判据，**failure mode 是模式写错而不是真的没有** ——
-#   一个写错的 `grep` 与「真的一个都没有」给出完全相同的 0。
-# ⇒ 拿一个**必然存在**的同形状模式做对照（本产品自己的 crate 名）。
-#   调用方要求它 > 0，否则整组判据一律不可信。
+# ⚠ 上面三條「必須為 0」的判據，**failure mode 是模式寫錯而不是真的沒有** ——
+#   一個寫錯的 `grep` 與「真的一個都沒有」給出完全相同的 0。
+# ⇒ 拿一個**必然存在**的同形狀模式做對照（本產品自己的 crate 名）。
+#   呼叫方要求它 > 0，否則整組判據一律不可信。
 echo "TLS_PROBE_CONTROL=$(count '_14fulcrum_server')"

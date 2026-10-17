@@ -1,48 +1,48 @@
 #!/usr/bin/env bash
-# `GET /stats` 的**可选字段与退化态**（M2 批 N 任务 7）。
+# `GET /stats` 的**可選欄位與退化態**（M2 批 N 任務 7）。
 #
-# ★ ★ ★ **为什么它是独立一格，而不是往 `tests/serve/` 里再加一节**：
-#   `/stats` 的「抓得到、字段在、与 /metrics 同源」已经有两处真 E2E 覆盖了
-#   （`tests/serve/run.sh` 的 [3.6/4]、`tests/metrics/run.sh` 的 overrides 一节）。
-#   ⇒ 再抓一遍**不构成**新场景的理由。本格只覆盖那两处**在结构上够不着**的东西：
-#   它们各自的实例形态是固定的，而本格要的恰恰是**换着形态开**。
+# ★ ★ ★ **為什麼它是獨立一格，而不是往 `tests/serve/` 裡再加一節**：
+#   `/stats` 的「抓得到、欄位在、與 /metrics 同源」已經有兩處真 E2E 覆蓋了
+#   （`tests/serve/run.sh` 的 [3.6/4]、`tests/metrics/run.sh` 的 overrides 一節）。
+#   ⇒ 再抓一遍**不構成**新場景的理由。本格只覆蓋那兩處**在結構上夠不著**的東西：
+#   它們各自的執行個體形態是固定的，而本格要的恰恰是**換著形態開**。
 #
-# ⚠ ⚠ ★ **一个被实测推翻过的设计（写在这里免得下一个人再推一遍）**：
-#   本格初稿打算覆盖 `cache` / `certs` 两个 `Option` 的四种组合。**其中两格在
-#   生产上根本到不了** —— 唯一的生产调用点 `crates/fulcrum-server/src/lib.rs:2146`
-#   把两个参数都写死成 `Some(...)`（`cache` 更是在 `lib.rs:1828` 无条件构造）。
-#   ⇒ `"cache": null` / `"certs": null` **只有 Rust 单测**里那个
-#   `AdminApp::new(…, None, None, None)` 造得出来，真二进制一次都不会吐。
-#   ⇒ 本格判的是**「空」与「非空」**，⛔ 不是「null 与非 null」。
-#   ★ 那个 `Option` 该不该留，已登记给 owner（任务 7 brief §7）——**本格不改它**。
+# ⚠ ⚠ ★ **一個被實測推翻過的設計（寫在這裡免得下一個人再推一遍）**：
+#   本格初稿打算覆蓋 `cache` / `certs` 兩個 `Option` 的四種組合。**其中兩格在
+#   生產上根本到不了** —— 唯一的生產呼叫點 `crates/fulcrum-server/src/lib.rs:2146`
+#   把兩個參數都寫死成 `Some(...)`（`cache` 更是在 `lib.rs:1828` 無條件建構）。
+#   ⇒ `"cache": null` / `"certs": null` **只有 Rust 單測**裡那個
+#   `AdminApp::new(…, None, None, None)` 造得出來，真二進位一次都不會吐。
+#   ⇒ 本格判的是**「空」與「非空」**，⛔ 不是「null 與非 null」。
+#   ★ 那個 `Option` 該不該留，已登記給 owner（任務 7 brief §7）——**本格不改它**。
 #
-# 三条主题（都是今天一条判据都没有的）：
-#   ① `certs: []`（有解析器、零证书）与 `certs: [一张]` 是**两个不同的状态**。
-#      ⚠ `tests/serve/` 恒有 TLS 站点、`tests/metrics/` 恒无 ⇒ 各自只走得到一边，
-#        而「空数组」这一边**从来没有任何判据看过**。
-#   ② `cache.entries` 是**一次真读数**，不是「没接上所以给了个 0」——
-#      判据挂在「缓存了东西之后它真的动了」，⛔ 不挂在「这个字段在不在」。
-#      ★ 与 `fulcrum_overrides_active` 判据 4/5 分开写是同一条道理：
-#        **「零」与「不存在」在读的人眼里长得一样**。
-#   ③ `config_loaded_at_unix` 在一次 `POST /load` 之后**真的变了**。
-#      今天只有「它是个数」这种判据，没有任何东西看它会不会动 ——
-#      一个把它写成常量（比如进程启动时间）的实现能通过现有全部判据。
+# 三條主題（都是今天一條判據都沒有的）：
+#   ① `certs: []`（有解析器、零證書）與 `certs: [一张]` 是**兩個不同的狀態**。
+#      ⚠ `tests/serve/` 恆有 TLS 站台、`tests/metrics/` 恆無 ⇒ 各自只走得到一邊，
+#        而「空陣列」這一邊**從來沒有任何判據看過**。
+#   ② `cache.entries` 是**一次真讀數**，不是「沒接上所以給了個 0」——
+#      判據掛在「快取了東西之後它真的動了」，⛔ 不掛在「這個欄位在不在」。
+#      ★ 與 `fulcrum_overrides_active` 判據 4/5 分開寫是同一條道理：
+#        **「零」與「不存在」在讀的人眼裡長得一樣**。
+#   ③ `config_loaded_at_unix` 在一次 `POST /load` 之後**真的變了**。
+#      今天只有「它是個數」這種判據，沒有任何東西看它會不會動 ——
+#      一個把它寫成常數（比如處理程序啟動時間）的實作能通過現有全部判據。
 #
-# 端口 9930–9935（★ 与其余场景全都错开，见
-# docs/platform/host-and-gate-traps.md 那张端口表）：
-#   9930 站点 S —— `http://s.example:9930`，带 `cache` + `reverse_proxy` 到 9931。
-#   9931 上游 —— 一个真的 HTTP 上游（python）。
-#   9932 站点 T —— **第二阶段**才起，`t.example:9932` 带 `tls` ⇒ `certs` 从空变非空。
+# 連接埠 9930–9935（★ 與其餘場景全都錯開，見
+# docs/platform/host-and-gate-traps.md 那張連接埠表）：
+#   9930 站台 S —— `http://s.example:9930`，帶 `cache` + `reverse_proxy` 到 9931。
+#   9931 上游 —— 一個真的 HTTP 上游（python）。
+#   9932 站台 T —— **第二階段**才起，`t.example:9932` 帶 `tls` ⇒ `certs` 從空變非空。
 #
-# ⚠ ⚠ **本格不碰共享的 `:80`，而这件事需要两句话才成立**：
-#   ① 第一、二代的站点写的是 `http://s.example:9930` ⇒ 天然不合成重定向站点；
-#   ② 第三代写的是 `t.example:9932`（没写 scheme ⇒ 推成 `https` ⇒ `auto_https`），
-#      它**本来会**合成一个 `:80` 站点 —— 由那一份配置里的 `auto_http_redirect false` 按住，
-#      并由一条**编译期**判据守着（见 gen3 那一段）。
-#   ★ 这一段此前只写了 ①，于是那句「不合成 `:80` 重定向站点」在第三代上是**假话**，
-#     而它读起来完全成立 —— 2026-09-03 实测 `fulcrum compile` 才发现（当时本格确实在绑 `:80`，
-#     且不在 AGENTS.md 那张表点名的名单里）。
-# ★ cleanup 仍然断言本格用过的端口都已还回去（照 tests/quic-relay/run.sh）。
+# ⚠ ⚠ **本格不碰共享的 `:80`，而這件事需要兩句話才成立**：
+#   ① 第一、二代的站台寫的是 `http://s.example:9930` ⇒ 天然不合成重定向站台；
+#   ② 第三代寫的是 `t.example:9932`（沒寫 scheme ⇒ 推成 `https` ⇒ `auto_https`），
+#      它**本來會**合成一個 `:80` 站台 —— 由那一份設定裡的 `auto_http_redirect false` 按住，
+#      並由一條**編譯期**判據守著（見 gen3 那一段）。
+#   ★ 這一段此前只寫了 ①，於是那句「不合成 `:80` 重定向站台」在第三代上是**假話**，
+#     而它讀起來完全成立 —— 2026-09-03 實測 `fulcrum compile` 才發現（當時本格確實在綁 `:80`，
+#     且不在 AGENTS.md 那張表點名的名單裡）。
+# ★ cleanup 仍然斷言本格用過的連接埠都已還回去（照 tests/quic-relay/run.sh）。
 
 set -euo pipefail
 
@@ -65,8 +65,8 @@ fail() {
 }
 ok() { echo "  ✓ $*"; }
 
-# ★ ★ ★ 「捕获一个可能失败的命令」的唯一写法，连同它为什么必须存在，都在
-#   tests/lib/capture.sh 里（任务 7 收敛）。⛔ 本文件里不许再出现裸 `VAR=$(可能失败的命令)`。
+# ★ ★ ★ 「捕獲一個可能失敗的命令」的唯一寫法，連同它為什麼必須存在，都在
+#   tests/lib/capture.sh 裡（任務 7 收斂）。⛔ 本檔案裡不許再出現裸 `VAR=$(可能失败的命令)`。
 # shellcheck source=tests/lib/capture.sh
 . "$REPO/tests/lib/capture.sh"
 
@@ -100,9 +100,9 @@ cleanup() {
     kill -9 "$pid" 2>/dev/null || true
   done
 
-  # ── ★ ★ 收尾自证：本场景用过的端口，走的时候必须全部还回去 ────────────────
-  #   照 tests/quic-relay/run.sh 那段。判据挂在「端口还回去了没有」而不是
-  #   「进程还在不在」：前者才是下一个场景真会被绊到的东西。
+  # ── ★ ★ 收尾自證：本場景用過的連接埠，走的時候必須全部還回去 ────────────────
+  #   照 tests/quic-relay/run.sh 那段。判據掛在「連接埠還回去了沒有」而不是
+  #   「處理程序還在不在」：前者才是下一個場景真會被絆到的東西。
   for p in "$S_PORT" "$UP_PORT" "$T_PORT"; do
     waited=0
     while port_listening "$p" && [ "$waited" -lt 30 ]; do
@@ -124,7 +124,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 管理面：回状态码，正文落 $WORK/admin.out（与其余场景同一个约定）。
+# 管理面：回狀態碼，正文落 $WORK/admin.out（與其餘場景同一個約定）。
 admin_get() {
   curl -s -o "$WORK/admin.out" -w '%{http_code}' \
     --unix-socket "$ADMIN_SOCK" "http://localhost$1" 2>/dev/null || echo "000"
@@ -135,7 +135,7 @@ admin_post() {
     "http://localhost$1" 2>/dev/null || echo "000"
 }
 
-# 一条数值断言。$1 说明 · $2 期望 · $3 实际。
+# 一條數值斷言。$1 說明 · $2 期望 · $3 實際。
 eq() {
   if [ "$2" = "$3" ]; then
     ok "$1（$3）"
@@ -144,13 +144,13 @@ eq() {
   fi
 }
 
-# ── /stats 的读取端 ─────────────────────────────────────────────────────────
+# ── /stats 的讀取端 ─────────────────────────────────────────────────────────
 #
-# ⚠ 用 python 而不是 grep：`grep '"certs":\[\]'` 会在字段顺序、空格、转义任一处
-#   变化时静默漏判 —— 而「静默漏判」正好长得像「判据通过」。
-# ⚠ ★ 读不懂就**当场非零退出**，不猜、不给默认值：一个「找不到就回 0」的读取端
-#   会让下面每一条判据在服务端彻底坏掉时**依然是绿的**。
-#   ⇒ 它自己带 selftest，开跑前先证「它命中得了，也落空得了」。
+# ⚠ 用 python 而不是 grep：`grep '"certs":\[\]'` 會在欄位順序、空格、轉義任一處
+#   變化時靜默漏判 —— 而「靜默漏判」正好長得像「判據通過」。
+# ⚠ ★ 讀不懂就**當場非零退出**，不猜、不給預設值：一個「找不到就回 0」的讀取端
+#   會讓下面每一條判據在伺服器端徹底壞掉時**依然是綠的**。
+#   ⇒ 它自己帶 selftest，開跑前先證「它命中得了，也落空得了」。
 STATS_PY="$WORK/stats_check.py"
 cat > "$STATS_PY" <<'PY'
 #!/usr/bin/env python3
@@ -268,7 +268,7 @@ PY
 
 sc() { python3 "$STATS_PY" "$@"; }
 
-# ── [0/5] 基线 ──────────────────────────────────────────────────────────────
+# ── [0/5] 基線 ──────────────────────────────────────────────────────────────
 echo "=== [0/5] 基线：三个端口空着 · /stats 读取端自证 ==="
 for p in "$S_PORT" "$UP_PORT" "$T_PORT"; do
   if port_listening "$p"; then
@@ -284,7 +284,7 @@ else
   exit 1
 fi
 
-# ── [1/5] 起上游与被测实例（第一代：无 TLS 站点）───────────────────────────
+# ── [1/5] 起上游與被測執行個體（第一代：無 TLS 站台）───────────────────────────
 echo "=== [1/5] 起上游与被测实例（第一代：一个 TLS 站点都没有）==="
 
 python3 -c "
@@ -329,8 +329,8 @@ RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/gen1.Fulcrumfile" \
   --pid-file "$WORK/f.pid" \
   --upgrade-sock "$WORK/f.sock" \
   > "$WORK/f.log" 2>&1 &
-# ★ 单独记住被测实例的 pid：[5/5] 要**只停它**，而 `PIDS` 里还有上游，
-#   清空整个数组会让 `cleanup` 丢掉上游（初稿就是这么泄漏 9931 的）。
+# ★ 單獨記住被測執行個體的 pid：[5/5] 要**只停它**，而 `PIDS` 裡還有上游，
+#   清空整個陣列會讓 `cleanup` 丟掉上游（初稿就是這麼洩漏 9931 的）。
 F1_PID=$!
 PIDS+=("$F1_PID")
 wait_port "$S_PORT" || {
@@ -340,7 +340,7 @@ wait_port "$S_PORT" || {
 }
 ok "被测实例起来了（站点 S 在 $S_PORT）"
 
-# ── [2/5] 主题 ①：certs 是**空数组**，不是 null、也不是缺字段 ───────────────
+# ── [2/5] 主題 ①：certs 是**空陣列**，不是 null、也不是缺欄位 ───────────────
 echo "=== [2/5] 主题 ①：一个 TLS 站点都没有 ⇒ certs 是空数组 ==="
 
 capture_ok "GET /stats（第一代）" admin_get /stats
@@ -351,8 +351,8 @@ capture_ok "certs 的条数（第一代）" sc certs_len "$WORK/stats1.json"
 eq "★★★ 无 TLS 站点 ⇒ certs 是**空数组**（字段在、值为空 —— 与「字段不在」是两回事）" \
   0 "$CAPTURE_OUT"
 
-# ★ ★ cache 那一格同一刻也要看：它必须是**一个对象**（有 bytes 与 entries），
-#   ⛔ 不是 null。这一条与上面那条合起来钉住「两个可选字段在真二进制上恒为非 null」。
+# ★ ★ cache 那一格同一刻也要看：它必須是**一個物件**（有 bytes 與 entries），
+#   ⛔ 不是 null。這一條與上面那條合起來釘住「兩個可選欄位在真二進位上恆為非 null」。
 capture_ok "cache 的形状（第一代）" sc cache_is_object "$WORK/stats1.json"
 eq "★★★ cache 是一个真对象（bytes + entries 都在）—— 生产上它到不了 null" \
   OK "$CAPTURE_OUT"
@@ -360,28 +360,28 @@ eq "★★★ cache 是一个真对象（bytes + entries 都在）—— 生产�
 capture_ok "cache.entries（还没请求过）" sc cache_entries "$WORK/stats1.json"
 eq "★ 夹具前提：这一刻缓存里一条都没有" 0 "$CAPTURE_OUT"
 
-# ── [3/5] 主题 ②：cache.entries 是真读数（缓存了东西之后它真的动）──────────
+# ── [3/5] 主題 ②：cache.entries 是真讀數（快取了東西之後它真的動）──────────
 echo "=== [3/5] 主题 ②：cache.entries 是一次真读数，不是恒 0 ==="
 
-# ⚠ ⚠ 判据**不能**只看「entries 是 0」——一个把 cache 那一格硬编码成
-#   `{bytes:0, entries:0}` 的实现在上面那条判据上是绿的。
-#   ⇒ 唯一分得开的写法是**让它动一次**，比前后两个读数。
+# ⚠ ⚠ 判據**不能**只看「entries 是 0」——一個把 cache 那一格硬編碼成
+#   `{bytes:0, entries:0}` 的實作在上面那條判據上是綠的。
+#   ⇒ 唯一分得開的寫法是**讓它動一次**，比前後兩個讀數。
 capture_ok "打一条会被缓存的请求" curl -sS -o /dev/null -w '%{http_code}' \
   --max-time 5 -H "Host: s.example" "http://$HOST:$S_PORT/cacheable"
 eq "请求走通（回源到上游）" 200 "$CAPTURE_OUT"
 
-# ⚠ ⚠ ★ **先轮询，⛔ 不能 curl 一回来就死读一次**（2026-09-10 坐实；此前完整门禁里红过）：
-#   产品在**响应体写完之后**才把条目存进缓存 —— `crates/fulcrum-server/src/lib.rs` 里
-#   `write_response_body(…, true)` 在前、`store_if_allowed` 在后，而这是**有意的**：
-#   缓存写入不该挂在客户端的延迟路径上。上游带 `Content-Length` ⇒ curl 在最后一个体字节
-#   到达时就退出了，此后服务端还要走完「读到 EOF → 压缩收尾 → 写空尾块 → 存」。
-#   ⇒ 一次死读在机器满载时会读到 0（完整门禁里红过；单跑 `STATS_ONLY` 从没红过）。
-#   ★ 在那两行之间注入 300 ms 延迟 ⇒ 旧写法 100% 红，报文逐字相同。
-# ★ 轮询**不削弱**这条判据要抓的东西：一个把 cache 硬编码成 `{entries:0}` 的实现永远
-#   等不到 1 ⇒ 超时后下面那条照原样红。⚠ 它放弃的是「存入变慢、但慢不过 5 秒」那一族，
-#   而那从来不是这条判据的目标。
-# ⛔ 循环里只取数、不判定（用 `capture` 不用 `capture_ok`，否则每轮没等到都记一笔失败）；
-#   判定仍是下面那几行原样的断言。
+# ⚠ ⚠ ★ **先輪詢，⛔ 不能 curl 一回來就死讀一次**（2026-09-10 坐實；此前完整門禁裡紅過）：
+#   產品在**回應體寫完之後**才把條目存進快取 —— `crates/fulcrum-server/src/lib.rs` 裡
+#   `write_response_body(…, true)` 在前、`store_if_allowed` 在後，而這是**有意的**：
+#   快取寫入不該掛在用戶端的延遲路徑上。上游帶 `Content-Length` ⇒ curl 在最後一個體位元組
+#   到達時就退出了，此後伺服器端還要走完「讀到 EOF → 壓縮收尾 → 寫空尾塊 → 存」。
+#   ⇒ 一次死讀在機器滿載時會讀到 0（完整門禁裡紅過；單跑 `STATS_ONLY` 從沒紅過）。
+#   ★ 在那兩行之間注入 300 ms 延遲 ⇒ 舊寫法 100% 紅，訊息逐字相同。
+# ★ 輪詢**不削弱**這條判據要抓的東西：一個把 cache 硬編碼成 `{entries:0}` 的實作永遠
+#   等不到 1 ⇒ 超時後下面那條照原樣紅。⚠ 它放棄的是「存入變慢、但慢不過 5 秒」那一族，
+#   而那從來不是這條判據的目標。
+# ⛔ 循環裡只取數、不判定（用 `capture` 不用 `capture_ok`，否則每輪沒等到都記一筆失敗）；
+#   判定仍是下面那幾行原樣的斷言。
 C_TRIES=0
 while [ "$C_TRIES" -lt 50 ]; do
   capture admin_get /stats
@@ -406,21 +406,21 @@ capture_ok "cache.entries（缓存之后）" sc cache_entries "$WORK/stats2.json
 eq "★★★ 缓存了一条之后 cache.entries 真的动了 ⇒ 它是活体读数，不是常量" \
   1 "$CAPTURE_OUT"
 
-# ── [4/5] 主题 ③：config_loaded_at_unix 在一次 /load 之后真的变了 ───────────
+# ── [4/5] 主題 ③：config_loaded_at_unix 在一次 /load 之後真的變了 ───────────
 echo "=== [4/5] 主题 ③：config_loaded_at_unix 会随 /load 变 ==="
 
 capture_ok "换代之前的 config_loaded_at_unix" sc field "$WORK/stats2.json" config_loaded_at_unix
 T_BEFORE="$CAPTURE_OUT"
 ok "换代之前 config_loaded_at_unix = $T_BEFORE"
 
-# ★ 睡一下，否则两次装载可能落在同一个秒里 —— 那样「变了没有」这条判据
-#   会**间歇性**地假绿，而间歇性假绿比恒假绿更难查。
+# ★ 睡一下，否則兩次裝載可能落在同一個秒裡 —— 那樣「變了沒有」這條判據
+#   會**間歇性**地假綠，而間歇性假綠比恆假綠更難查。
 sleep 1.1
 
-# 第二代：加一个 TLS 站点（主题 ① 的另一半），并保留站点 S。
-# ⚠ 监听端口集变了（多了 $T_PORT）——`/load` 对端口集变化是 409。
-#   ⇒ 本格**有意**不走 /load 换端口，而是：先用同一套端口集 load 一次
-#     （证明时间戳会动），TLS 那半留给第三代重开一个实例。
+# 第二代：加一個 TLS 站台（主題 ① 的另一半），並保留站台 S。
+# ⚠ 監聽連接埠集變了（多了 $T_PORT）——`/load` 對連接埠集變化是 409。
+#   ⇒ 本格**有意**不走 /load 換連接埠，而是：先用同一套連接埠集 load 一次
+#     （證明時間戳會動），TLS 那半留給第三代重開一個執行個體。
 cat > "$WORK/gen2.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -438,9 +438,9 @@ http://s.example:$S_PORT {
     }
 }
 CONF
-# ⚠ 同上：**分流 stderr**。这一份配置今天没有 `tls` ⇒ stderr 恰好是空的，
-#   于是原来那种 `capture_ok` + `printf "$CAPTURE_OUT"` 的写法**靠运气**是对的 ——
-#   谁给它加一行 `tls`，那句「已装载 N 个 SNI 的证书」就会被拼进 JSON 里。
+# ⚠ 同上：**分流 stderr**。這一份設定今天沒有 `tls` ⇒ stderr 恰好是空的，
+#   於是原來那種 `capture_ok` + `printf "$CAPTURE_OUT"` 的寫法**靠運氣**是對的 ——
+#   誰給它加一行 `tls`，那句「已裝載 N 個 SNI 的證書」就會被拼進 JSON 裡。
 if ! "$BIN" compile "$WORK/gen2.Fulcrumfile" > "$WORK/gen2.json" 2> "$WORK/gen2.err"; then
   fail "compile 第二代失败：$(head -3 "$WORK/gen2.err" | tr '
 ' ' ')"
@@ -462,23 +462,23 @@ else
   ok "★★★ config_loaded_at_unix 随 /load 变了（$T_BEFORE → $T_AFTER）"
 fi
 
-# ★ 顺带：换代之后 upstreams 有两行（两条 reverse_proxy 指同一台）。
-#   ⚠ ⚠ 判据要 ≥2 且**不等于 1**：只有一行时「按地址归并了没有」测不出来。
+# ★ 順帶：換代之後 upstreams 有兩行（兩條 reverse_proxy 指同一臺）。
+#   ⚠ ⚠ 判據要 ≥2 且**不等於 1**：只有一行時「按位址歸併了沒有」測不出來。
 capture_ok "换代之后 upstreams 的行数" sc upstreams_len "$WORK/stats3.json"
 eq "★★ 两条 reverse_proxy 指同一台 ⇒ upstreams 出两行（⛔ 不按地址归并）" \
   2 "$CAPTURE_OUT"
 
-# ── [5/5] 主题 ① 的另一半：有 TLS 站点 ⇒ certs 非空且逐项对得上 ─────────────
+# ── [5/5] 主題 ① 的另一半：有 TLS 站台 ⇒ certs 非空且逐項對得上 ─────────────
 echo "=== [5/5] 主题 ① 另一半：起一个带 TLS 的实例 ⇒ certs 从空变非空 ==="
 
-# 停掉**被测实例**，把 $S_PORT 还回去（⚠ 端口集变了，`/load` 会 409 ——
-# 换端口不是本格要测的东西，所以这里重开一个实例而不是换代）。
+# 停掉**被測執行個體**，把 $S_PORT 還回去（⚠ 連接埠集變了，`/load` 會 409 ——
+# 換連接埠不是本格要測的東西，所以這裡重開一個執行個體而不是換代）。
 #
-# ⚠ ⚠ ★ **只停被测实例，⛔ 不动上游、⛔ 不清空 `PIDS`。**
-#   初稿在这里 `kill` 了 `PIDS` 里所有 pid 然后 `PIDS=()`，结果：上游没被 SIGINT 收掉，
-#   而它的 pid 已经被从数组里抹掉 ⇒ `cleanup` 再也找不到它 ⇒ **端口 9931 泄漏到下一个场景**。
-#   ★ 那次泄漏是被本文件 `cleanup` 里那段「端口还回去了没有」自证抓住的
-#   —— 全部 18 条业务判据当时都是绿的。**这就是那段自证存在的全部理由。**
+# ⚠ ⚠ ★ **只停被測執行個體，⛔ 不動上游、⛔ 不清空 `PIDS`。**
+#   初稿在這裡 `kill` 了 `PIDS` 裡所有 pid 然後 `PIDS=()`，結果：上游沒被 SIGINT 收掉，
+#   而它的 pid 已經被從陣列裡抹掉 ⇒ `cleanup` 再也找不到它 ⇒ **連接埠 9931 洩漏到下一個場景**。
+#   ★ 那次洩漏是被本檔案 `cleanup` 裡那段「連接埠還回去了沒有」自證抓住的
+#   —— 全部 18 條業務判據當時都是綠的。**這就是那段自證存在的全部理由。**
 kill -INT "$F1_PID" 2>/dev/null || true
 waited=0
 while port_listening "$S_PORT" && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
@@ -509,22 +509,22 @@ t.example:$T_PORT {
 }
 CONF
 
-# ── ★ ★ ★ 那行 `auto_http_redirect false` 是**承重的，不是样板** ──────────────
+# ── ★ ★ ★ 那行 `auto_http_redirect false` 是**承重的，不是樣板** ──────────────
 #
-# 「t.example:$T_PORT」没写 scheme ⇒ `parse_address` 按主机名非空推成 `https`
-# ⇒ `auto_https` 为真 ⇒ 而 `auto_http_redirect` **默认是开的**
-# ⇒ `synthesize_http_redirect` 会给它合成一个 **`http://t.example:80`** 站点。
-# ⚠ ⚠ 那会让本场景**隐式绑住共享的 `:80`** —— 而本仓实测过：占着 `:80` 能让
-#   **别的端口**起不来（`ListenerEndpoint::listen` 持着进程级 `ListenFds` 锁去 bind，
-#   一个占用把那把锁停住最多 30 秒），症状落在一个无辜的端口上。
-# ⚠ 写 `tls <crt> <key>` **摘不掉**它：那一行只决定 TLS 开不开，与 `auto_https` 无关。
+# 「t.example:$T_PORT」沒寫 scheme ⇒ `parse_address` 按主機名非空推成 `https`
+# ⇒ `auto_https` 為真 ⇒ 而 `auto_http_redirect` **預設是開的**
+# ⇒ `synthesize_http_redirect` 會給它合成一個 **`http://t.example:80`** 站台。
+# ⚠ ⚠ 那會讓本場景**隱式綁住共享的 `:80`** —— 而本儲存庫實測過：佔著 `:80` 能讓
+#   **別的連接埠**起不來（`ListenerEndpoint::listen` 持著處理程序級 `ListenFds` 鎖去 bind，
+#   一個佔用把那把鎖停住最多 30 秒），症狀落在一個無辜的連接埠上。
+# ⚠ 寫 `tls <crt> <key>` **摘不掉**它：那一行只決定 TLS 開不開，與 `auto_https` 無關。
 #
-# ★ ★ 这条判据**落在编译产物上而不是运行时**：它是确定性的（不拼时序、不拼谁先起），
-#   而且删掉上面那一行就当场红。
-# ⚠ ⚠ **compile 的输出不能用 `capture_ok` 接**：`capture` 是 `2>&1` 合并的，而
-#   `fulcrum compile` 会把「已装载 N 个 SNI 的证书」这类话写到 **stderr**
-#   ⇒ 拿到的是「一行中文 + JSON」，`json.load` 当场炸。★ 实测过一次。
-#   ⇒ 要解析的输出一律**分流到文件**，只让判据去接 python 那一步。
+# ★ ★ 這條判據**落在編譯產物上而不是執行環境**：它是確定性的（不拼時序、不拼誰先起），
+#   而且刪掉上面那一行就當場紅。
+# ⚠ ⚠ **compile 的輸出不能用 `capture_ok` 接**：`capture` 是 `2>&1` 合併的，而
+#   `fulcrum compile` 會把「已裝載 N 個 SNI 的證書」這類話寫到 **stderr**
+#   ⇒ 拿到的是「一行中文 + JSON」，`json.load` 當場炸。★ 實測過一次。
+#   ⇒ 要解析的輸出一律**分流到檔案**，只讓判據去接 python 那一步。
 if ! "$BIN" compile "$WORK/gen3.Fulcrumfile" > "$WORK/gen3.json" 2> "$WORK/gen3.err"; then
   fail "compile 第三代失败：$(head -3 "$WORK/gen3.err" | tr '
 ' ' ')"
@@ -559,7 +559,7 @@ capture_ok "certs 的条数（带 TLS）" sc certs_len "$WORK/stats4.json"
 eq "★★★ 有一个 TLS 站点 ⇒ certs 非空 —— 与 [2/5] 那次的空数组是**两个不同的状态**" \
   1 "$CAPTURE_OUT"
 
-# ★ 逐项断到，⛔ 不只断条数（表头 .len() 在只渲染第一项时仍然是对的）。
+# ★ 逐項斷到，⛔ 不只斷條數（表頭 .len() 在只繪製第一項時仍然是對的）。
 capture_ok "certs 的域名逐项" sc certs_domains "$WORK/stats4.json"
 eq "★★ certs 逐项对得上（域名就是配置里那个）" "t.example" "$CAPTURE_OUT"
 

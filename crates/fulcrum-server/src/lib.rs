@@ -1,4 +1,4 @@
-//! 数据面：把[运行时对象图](fulcrum_runtime::Runtime)挂到 Pingora 上。
+//! 資料面：把[執行環境物件圖](fulcrum_runtime::Runtime)掛到 Pingora 上。
 //!
 //! ```text
 //! 结构化配置 ──▶ Runtime（纯逻辑，决定「该做什么」）
@@ -7,63 +7,63 @@
 //!            本 crate（用 Pingora 把它做出来）
 //! ```
 //!
-//! # 模块地图
+//! # 模組地圖
 //!
-//! | 模块 | 管什么 |
+//! | 模組 | 管什麼 |
 //! |---|---|
-//! | 本文件 | h1/h2 入口、执行链、路由、装载摘要 |
-//! | [`l4`] | L4 面：TCP/UDP 透传、SNI/ALPN 分流、PROXY protocol |
-//! | [`files`] | 静态文件 |
-//! | [`cache`] | HTTP 缓存（语义层 + 内存/磁盘后端 + 防惊群） |
-//! | [`encode`] | 响应压缩与预压缩旁文件 |
-//! | [`quic`] | HTTP/3 入口与换代时的跨进程连接转交 |
-//! | [`access_log`] | 结构化访问日志 |
-//! | [`metrics`] | Prometheus 指标：注册表 + text exposition 渲染 |
-//! | [`acme`] · [`health`] · [`dns`] | 自动 HTTPS · 主动健康检查 · 上游域名重解析 |
-//! | [`admin`] · [`process`] | 管理面 · 进程托管（`sd_notify` / pid 文件 / `SIGUSR2` 换代） |
+//! | 本檔案 | h1/h2 入口、執行鏈、路由、裝載摘要 |
+//! | [`l4`] | L4 面：TCP/UDP 透傳、SNI/ALPN 分流、PROXY protocol |
+//! | [`files`] | 靜態檔案 |
+//! | [`cache`] | HTTP 快取（語義層 + 記憶體/磁碟後端 + 防驚群） |
+//! | [`encode`] | 回應壓縮與預壓縮旁檔案 |
+//! | [`quic`] | HTTP/3 入口與換代時的跨處理程序連接轉交 |
+//! | [`access_log`] | 結構化訪問紀錄 |
+//! | [`metrics`] | Prometheus 指標：註冊表 + text exposition 繪製 |
+//! | [`acme`] · [`health`] · [`dns`] | 自動 HTTPS · 主動健康檢查 · 上游網域重解析 |
+//! | [`admin`] · [`process`] | 管理面 · 處理程序託管（`sd_notify` / pid 檔案 / `SIGUSR2` 換代） |
 //!
-//! ⚠ **哪些能力认得但还没接线，以 [`fulcrum_runtime::UNWIRED`] 为准** ——
-//! 这里不复述一份会烂掉的清单。
+//! ⚠ **哪些能力認得但還沒串接，以 [`fulcrum_runtime::UNWIRED`] 為準** ——
+//! 這裡不復述一份會爛掉的清單。
 //!
-//! # ⛔ 回落层已整层删除（G98）
+//! # ⛔ 回落層已整層刪除（G98）
 //!
-//! 写了 `fallback_nginx` / `fallback_caddy` 的配置会编译不过，并给一条专门的诊断
-//! （`compile.rs` 的 `removed_global_option`）。★ 它留下的两句话在别处照样成立：
-//! ① **501 与 502 是两个不同的事实，不许合并**（配置遗漏 vs 后端故障）；
-//! ② **一个静静躺着的死配置，与一个正在生效的配置，在配置文件里长得一模一样。**
+//! 寫了 `fallback_nginx` / `fallback_caddy` 的設定會編譯不過，並給一條專門的診斷
+//! （`compile.rs` 的 `removed_global_option`）。★ 它留下的兩句話在別處照樣成立：
+//! ① **501 與 502 是兩個不同的事實，不許合併**（設定遺漏 vs 後端故障）；
+//! ② **一個靜靜躺著的死設定，與一個正在生效的設定，在設定檔案里長得一模一樣。**
 //!
-//! # ★ 客户端 IP 只取 socket 对端，绝不取 XFF
+//! # ★ 用戶端 IP 只取 socket 對端，絕不取 XFF
 //!
-//! `X-Forwarded-For` 的最左项**客户端可以随便写** —— 拿它喂 `remote_ip` 匹配器，
-//! 等于让任何人自称来自 `10.0.0.0/8`。⚠ 将来支持「信任前置代理」时，
-//! 判据是**最近一跳**，且必须显式配置。
+//! `X-Forwarded-For` 的最左項**用戶端可以隨便寫** —— 拿它喂 `remote_ip` 匹配器，
+//! 等於讓任何人自稱來自 `10.0.0.0/8`。⚠ 將來支援「信任前置代理」時，
+//! 判據是**最近一跳**，且必須顯式設定。
 
 pub mod access_log;
 pub mod acme;
 pub mod admin;
 pub mod cache;
-/// 连接计数的登记处（**M2 批 O**，G122 的连接那半）。
+/// 連接計數的登記處（**M2 批 O**，G122 的連接那半）。
 pub mod conn_stats;
 pub mod dns;
-/// 响应压缩（M2 批 I）：`encode` 接线，用的是 fork 里那份压缩模块（G100）。
+/// 回應壓縮（M2 批 I）：`encode` 串接，用的是 fork 裡那份壓縮模組（G100）。
 pub mod encode;
 pub mod files;
 pub mod health;
-/// keep-alive 空闲窗口：每条连接一个计时器、跨请求带着走（G160）。
+/// keep-alive 空閒視窗：每條連接一個計時器、跨請求帶著走（G160）。
 mod keepalive;
-/// L4 面（M2 批 A：TCP，批 B：UDP）：自建监听器 + socket 移交。
+/// L4 面（M2 批 A：TCP，批 B：UDP）：自建監聽器 + socket 移交。
 pub mod l4;
-/// Prometheus 指标（M2 批 M）：进程级注册表 + text exposition 的自研渲染器（G117）。
+/// Prometheus 指標（M2 批 M）：處理程序級註冊表 + text exposition 的自研繪製器（G117）。
 pub mod metrics;
-/// `outcome` 闭集与只能由它构造取值的类型。★ 单独成模块是判据本身，见模块文档。
+/// `outcome` 閉集與只能由它建構取值的類型。★ 單獨成模組是判據本身，見模組文件。
 pub mod outcome;
 pub mod process;
 mod proxyproto;
-/// HTTP/3 入口（M2 批 J）：QUIC 传输层 + `quiche::h3`。
+/// HTTP/3 入口（M2 批 J）：QUIC 傳輸層 + `quiche::h3`。
 pub mod quic;
 pub mod tls;
 
-// ★ 重导出，保住 `crate::OUTCOME_*` / `crate::OUTCOMES` 这些既有路径（上千处引用按号走同一形状）。
+// ★ 重匯出，保住 `crate::OUTCOME_*` / `crate::OUTCOMES` 這些既有路徑（上千處引用按號走同一形狀）。
 pub use outcome::{
     OUTCOME_ACME_HTTP01, OUTCOME_ERROR, OUTCOME_FILE_SERVER, OUTCOME_METRICS,
     OUTCOME_NO_SITE_MATCH, OUTCOME_REDIR, OUTCOME_RESPOND, OUTCOME_REVERSE_PROXY,
@@ -92,40 +92,40 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// keep-alive 空闲窗口：从开始等下一条请求到它的请求头读完，**合计**这么久（G160，见 [`keepalive`]）。
-/// ★ 停机时会被改成 `None`（不续），让连接自然收敛。
+/// keep-alive 空閒視窗：從開始等下一條請求到它的請求頭讀完，**合計**這麼久（G160，見 [`keepalive`]）。
+/// ★ 停機時會被改成 `None`（不續），讓連接自然收斂。
 const KEEPALIVE_SECS: u64 = 60;
 
-/// L7 数据面监听（明文与 TLS）给接入连接的缓冲：**写 16 KiB**，读仍用 pingora 的缺省（64 KiB）。
+/// L7 資料面監聽（明文與 TLS）給接入連接的緩衝：**寫 16 KiB**，讀仍用 pingora 的預設（64 KiB）。
 ///
-/// ★ pingora 缺省的写缓冲只有 1460 字节，而 h1 写响应是先把头 `write_all` 进缓冲、再写正文
-///   ⇒ 「缓冲里的 + 这次的」一超过容量，头就先被冲出去、正文再写穿
-///   ⇒ 头 + 约 4 KiB 正文的响应是**两次 send、两个 TCP 段**（nginx / haproxy 是一次）。
-///   16 KiB 让**带 `Content-Length`** 且头 + 正文不超过约 16 KiB 的响应一次发出；更大的仍然先冲头。
-///   ⚠ 没有 `Content-Length` 的响应（chunked、`encode` 压缩后、读到关闭）写完头就 flush，
-///   缓冲多大都还是 ≥ 2 次 send（`G155`）。
-/// ⚠ 代价：写缓冲在建连时整块分配 ⇒ 每条连接多约 15 KiB；分几段写的 `Content-Length` 正文
-///   攒满约 16 KiB 或写完最后一段才发，**响应头也一起等**（带 CL 的头本来就不 flush）
-///   ⇒ 反代一个先发头和不到 16 KiB 正文、然后停住的上游时，客户端在停顿结束前**连状态行都
-///   收不到，而且没有时间上限**（改前的门槛约 1.4 KiB）。分几段写 CL 正文的只有反代分支
-///   （含缓存未命中回源）；chunked 与读到关闭的正文每写必 flush，不受影响。
-/// ★ 守它的是 `tests/serve/run.sh` 第 10 节：客户端读 `TCP_INFO`，数带数据的段。
+/// ★ pingora 預設的寫緩衝只有 1460 位元組，而 h1 寫回應是先把頭 `write_all` 進緩衝、再寫正文
+///   ⇒ 「緩衝裡的 + 這次的」一超過容量，頭就先被衝出去、正文再寫穿
+///   ⇒ 頭 + 約 4 KiB 正文的回應是**兩次 send、兩個 TCP 段**（nginx / haproxy 是一次）。
+///   16 KiB 讓**帶 `Content-Length`** 且頭 + 正文不超過約 16 KiB 的回應一次發出；更大的仍然先衝頭。
+///   ⚠ 沒有 `Content-Length` 的回應（chunked、`encode` 壓縮後、讀到關閉）寫完頭就 flush，
+///   緩衝多大都還是 ≥ 2 次 send（`G155`）。
+/// ⚠ 代價：寫緩衝在建連時整塊分配 ⇒ 每條連接多約 15 KiB；分幾段寫的 `Content-Length` 正文
+///   攢滿約 16 KiB 或寫完最後一段才發，**回應頭也一起等**（帶 CL 的頭本來就不 flush）
+///   ⇒ 反代一個先發頭和不到 16 KiB 正文、然後停住的上游時，用戶端在停頓結束前**連狀態行都
+///   收不到，而且沒有時間上限**（改前的門檻約 1.4 KiB）。分幾段寫 CL 正文的只有反代分支
+///   （含快取未命中回源）；chunked 與讀到關閉的正文每寫必 flush，不受影響。
+/// ★ 守它的是 `tests/serve/run.sh` 第 10 節：用戶端讀 `TCP_INFO`，數帶資料的段。
 const L7_L4_BUFFER: L4BufferSettings = L4BufferSettings {
     read: None,
     write: Some(16 * 1024),
 };
 
-/// `&RequestHeader` 的 [`Headers`] 适配器。零拷贝。
+/// `&RequestHeader` 的 [`Headers`] 適配器。零拷貝。
 struct ReqHeaders<'a>(&'a RequestHeader);
 
 impl Headers for ReqHeaders<'_> {
     fn get(&self, name: &str) -> Option<&str> {
-        // `http::HeaderMap` 的查找本身就是大小写不敏感的。
+        // `http::HeaderMap` 的查找本身就是大小寫不敏感的。
         self.0.headers.get(name).and_then(|v| v.to_str().ok())
     }
 }
 
-/// `&ResponseHeader` 的适配器，给 `{resp_header.*}` 用。
+/// `&ResponseHeader` 的適配器，給 `{resp_header.*}` 用。
 struct RespHeaders<'a>(&'a ResponseHeader);
 
 impl Headers for RespHeaders<'_> {
@@ -134,11 +134,11 @@ impl Headers for RespHeaders<'_> {
     }
 }
 
-/// 在飞连接计数的 RAII 守卫。
+/// 在飛連接計數的 RAII 守衛。
 ///
-/// ★ ★ **为什么必须是守卫而不是手写一对调用**：转发路径上每一步都可能 `?` 提前返回，
-/// 而漏掉一次 `release` 会让 `least_conn` 的计数**单调漂移**，最终永远不选这个上游——
-/// **而这件事不会有任何报错**。把配对交给 `Drop`，就没有「忘了」这个选项。
+/// ★ ★ **為什麼必須是守衛而不是手寫一對呼叫**：轉發路徑上每一步都可能 `?` 提前回傳，
+/// 而漏掉一次 `release` 會讓 `least_conn` 的計數**單調漂移**，最終永遠不選這個上游——
+/// **而這件事不會有任何回報錯誤**。把配對交給 `Drop`，就沒有「忘了」這個選項。
 struct Inflight<'a>(&'a Upstream);
 
 impl<'a> Inflight<'a> {
@@ -154,42 +154,42 @@ impl Drop for Inflight<'_> {
     }
 }
 
-/// 下游响应的**唯一出口**（**M2 批 J 第六步**，G110 的落点）。
+/// 下游回應的**唯一出口**（**M2 批 J 第六步**，G110 的落點）。
 ///
-/// # 为什么是一个类型，而不是「记得在四个地方各加一行」
+/// # 為什麼是一個類型，而不是「記得在四個地方各加一行」
 ///
-/// G110 要求 h1/h2 的**每一条**响应都发 `Alt-Svc`，而写响应头的地方有四处，
-/// 第五处随时会出现。⇒ 换成这个类型：它 `Deref` 到 `ServerSession`，
-/// 而 [`Downstream::write_response_header`] 是**内在方法**
-/// ⇒ **内在方法优先于 `Deref` 过去的同名方法**，既有调用点一个字都不用改。
+/// G110 要求 h1/h2 的**每一條**回應都發 `Alt-Svc`，而寫回應頭的地方有四處，
+/// 第五處隨時會出現。⇒ 換成這個類型：它 `Deref` 到 `ServerSession`，
+/// 而 [`Downstream::write_response_header`] 是**內在方法**
+/// ⇒ **內在方法優先於 `Deref` 過去的同名方法**，既有呼叫點一個字都不用改。
 ///
-/// ⚠ 同名是**有意的**：换个名字等于要求下一个人记得用新名字。
-/// 第二道保险是 `crates/fulcrum/tests/response_gate.rs`，它钉住
-/// 「`.write_response_header(` 只许出现在这一处实现里」。
+/// ⚠ 同名是**有意的**：換個名字等於要求下一個人記得用新名字。
+/// 第二道保險是 `crates/fulcrum/tests/response_gate.rs`，它釘住
+/// 「`.write_response_header(` 只許出現在這一處實作裡」。
 ///
 /// ⚠ **h1/h2 用 [`Downstream::advertising`]，h3 用 [`Downstream::plain`]** ——
-/// 已经在 h3 上的客户端不需要被告知有 h3。★ 这个差别落在两个调用点上，
-/// 而不是落在一处「这条连接是不是 h3」的推断上。
+/// 已經在 h3 上的用戶端不需要被告知有 h3。★ 這個差別落在兩個呼叫點上，
+/// 而不是落在一處「這條連接是不是 h3」的推斷上。
 pub(crate) struct Downstream<'a> {
     session: &'a mut ServerSession,
-    /// 要发的 `Alt-Svc` 值；`None` = 不发。
+    /// 要發的 `Alt-Svc` 值；`None` = 不發。
     alt_svc: Option<&'a str>,
-    /// 这一次请求在访问日志里的样子，**逐段填**（M2 批 L 第 ② 步）。
+    /// 這一次請求在訪問紀錄裡的樣子，**逐段填**（M2 批 L 第 ② 步）。
     pub(crate) record: access_log::Record,
 }
 
 impl<'a> Downstream<'a> {
     /// **h1/h2 入口**。
     ///
-    /// ⚠ ⚠ 从 `advertising` 改名成 `h1h2`，而改名是有理由的：
-    /// 这个构造函数现在决定**两件**事 —— 发不发 `Alt-Svc`（G110），
-    /// 以及访问日志里的 `proto`。★ 两件事按**同一个岔口**分开
-    /// （h1/h2 入口 vs h3 入口），所以名字应当叫那个岔口，
-    /// 而不是叫其中一件事的效果 —— 否则下一个人会以为另一件事是「顺带的」。
+    /// ⚠ ⚠ 從 `advertising` 改名成 `h1h2`，而改名是有理由的：
+    /// 這個建構函式現在決定**兩件**事 —— 發不發 `Alt-Svc`（G110），
+    /// 以及訪問紀錄裡的 `proto`。★ 兩件事按**同一個岔口**分開
+    /// （h1/h2 入口 vs h3 入口），所以名字應當叫那個岔口，
+    /// 而不是叫其中一件事的效果 —— 否則下一個人會以為另一件事是「順帶的」。
     pub(crate) fn h1h2(session: &'a mut ServerSession, alt_svc: Option<&'a str>) -> Downstream<'a> {
-        // ★ h1 与 h2 的区别问 session 自己 —— 那是它**知道**的事，不是推断。
-        // ★ 用常量而不是字面量：`access_log::PROTOS` 是基数表那道门算上界用的闭集，
-        //   而它必须与**产生这些值的这一处**是同一批名字，⛔ 不能是一份抄件。
+        // ★ h1 與 h2 的區別問 session 自己 —— 那是它**知道**的事，不是推斷。
+        // ★ 用常數而不是字面值：`access_log::PROTOS` 是基數表那道門算上界用的閉集，
+        //   而它必須與**產生這些值的這一處**是同一批名字，⛔ 不能是一份抄件。
         let proto = if session.is_http2() {
             access_log::PROTO_H2
         } else {
@@ -202,7 +202,7 @@ impl<'a> Downstream<'a> {
         }
     }
 
-    /// **h3 入口**：不发 `Alt-Svc`（客户端已经在 h3 上了），`proto` 恒为 `HTTP/3.0`。
+    /// **h3 入口**：不發 `Alt-Svc`（用戶端已經在 h3 上了），`proto` 恆為 `HTTP/3.0`。
     pub(crate) fn h3(session: &'a mut ServerSession) -> Downstream<'a> {
         Downstream {
             session,
@@ -211,23 +211,23 @@ impl<'a> Downstream<'a> {
         }
     }
 
-    /// ★ ★ **跑一次请求，然后一定收尾一次** —— 两件事绑在同一个方法里，
-    /// 于是「每一条请求都记一行、都记一次数」不是一件要靠记性的事，
-    /// 加新入口时这里不用改。
+    /// ★ ★ **跑一次請求，然後一定收尾一次** —— 兩件事綁在同一個方法裡，
+    /// 於是「每一條請求都記一行、都記一次數」不是一件要靠記性的事，
+    /// 加新入口時這裡不用改。
     ///
-    /// ⚠ 收尾走 [`access_log::Record::finish`] 而不是 `emit`：**指标不跟着
-    /// `log` 配置早退**（没配日志的站点照样要有指标），理由写在 `finish` 上。
+    /// ⚠ 收尾走 [`access_log::Record::finish`] 而不是 `emit`：**指標不跟著
+    /// `log` 設定早退**（沒配紀錄的站台照樣要有指標），理由寫在 `finish` 上。
     ///
-    /// ⚠ `status` 与 `resp_size` **现问 `ServerSession`**，不在 `Record` 里另存一份 ——
-    /// 两份迟早不一致，而不一致的那天没有任何东西会说。
-    /// ★ ★ **`outcome` 从此走同一条规矩**：它是 [`FulcrumApp::serve_one`] 的**返回值**，
-    /// 不是 `Record` 上的一个字段 ⇒ 「某条返回路径忘了写它」不再是一个静默缺陷，
-    /// 而是一个编译错误（那条路径求不出 [`OutcomeName`] 就返回不了）。
+    /// ⚠ `status` 與 `resp_size` **現問 `ServerSession`**，不在 `Record` 裡另存一份 ——
+    /// 兩份遲早不一致，而不一致的那天沒有任何東西會說。
+    /// ★ ★ **`outcome` 從此走同一條規矩**：它是 [`FulcrumApp::serve_one`] 的**回傳值**，
+    /// 不是 `Record` 上的一個欄位 ⇒ 「某條回傳路徑忘了寫它」不再是一個靜默缺陷，
+    /// 而是一個編譯錯誤（那條路徑求不出 [`OutcomeName`] 就回傳不了）。
     ///
-    /// ★ 没写出任何响应头时 `status` 是 **0**：那不是「未知」，是「什么都没发生」。
-    /// ⚠ ⚠ 此时 `outcome` **仍是执行链给的那个值** —— ⛔ 不是什么「aborted」：
-    /// 那个默认值连同它的字段一起没有了。判据在 `tests/metrics/run.sh`
-    /// 「而 outcome 仍是执行链给的那个值」那一条。
+    /// ★ 沒寫出任何回應頭時 `status` 是 **0**：那不是「未知」，是「什麼都沒發生」。
+    /// ⚠ ⚠ 此時 `outcome` **仍是執行鏈給的那個值** —— ⛔ 不是什麼「aborted」：
+    /// 那個預設值連同它的欄位一起沒有了。判據在 `tests/metrics/run.sh`
+    /// 「而 outcome 仍是執行鏈給的那個值」那一條。
     pub(crate) async fn serve(&mut self, app: &FulcrumApp) {
         let outcome = app.serve_one(self).await;
         let status = self
@@ -236,14 +236,14 @@ impl<'a> Downstream<'a> {
             .map(|r| r.status.as_u16())
             .unwrap_or(0);
         let size = self.session.body_bytes_sent();
-        // ── 白名单头与 TLS 信息（**M2 批 L 第 ③ 步**）──────────────────────
+        // ── 白名單頭與 TLS 資訊（**M2 批 L 第 ③ 步**）──────────────────────
         //
-        // ★ ★ 三样都在**这里**问会话，而不是在执行链中途各记一份 ——
-        //   与 `status` / `resp_size` 逐字同一条理由。
-        // ⚠ 而它们**只能**在 `serve_one` 之后问，各有各的原因：
-        //   ① 白名单是**路由之后**才知道的（`log` 是站点块内的指令 ⇒ `target` 那时才有）；
-        //   ② 响应头要等响应真的写出去；
-        //   ③ TLS 那份 digest 从连接建起来就有，放这里只是为了三件事在一处。
+        // ★ ★ 三樣都在**這裡**問工作階段，而不是在執行鏈中途各記一份 ——
+        //   與 `status` / `resp_size` 逐字同一條理由。
+        // ⚠ 而它們**只能**在 `serve_one` 之後問，各有各的原因：
+        //   ① 白名單是**路由之後**才知道的（`log` 是站台塊內的指令 ⇒ `target` 那時才有）；
+        //   ② 回應頭要等回應真的寫出去；
+        //   ③ TLS 那份 digest 從連接建起來就有，放這裡只是為了三件事在一處。
         if let Some(cfg) = self.record.target.clone() {
             if !cfg.req_headers.is_empty() {
                 let picked =
@@ -261,20 +261,20 @@ impl<'a> Downstream<'a> {
         self.record.finish(outcome, status, size);
     }
 
-    /// 写下游响应头 —— **本 crate 数据面唯一的一处**。
+    /// 寫下游回應頭 —— **本 crate 資料面唯一的一處**。
     ///
-    /// ⚠ 与 `ServerSession::write_response_header` **同名是有意的**，见类型文档。
+    /// ⚠ 與 `ServerSession::write_response_header` **同名是有意的**，見類型文件。
     ///
-    /// ★ 用 `insert_header` 而不是 `append_header`：一条响应上出现两个 `Alt-Svc`
-    /// 不是错误（RFC 7838 允许），但**上游若已经发了一个，那是它的 h3、不是我们的**
-    /// —— 我们是终结这条 TLS 连接的人，端口的话语权在我们这里。
+    /// ★ 用 `insert_header` 而不是 `append_header`：一條回應上出現兩個 `Alt-Svc`
+    /// 不是錯誤（RFC 7838 允許），但**上游若已經發了一個，那是它的 h3、不是我們的**
+    /// —— 我們是終結這條 TLS 連接的人，連接埠的話語權在我們這裡。
     pub(crate) async fn write_response_header(
         &mut self,
         mut resp: Box<ResponseHeader>,
     ) -> pingora_core::Result<()> {
         if let Some(v) = self.alt_svc {
-            // ⚠ 失败只可能是头值非法，而这个值是我们自己拼的常量形状 ⇒ 不该发生；
-            //   真发生了也不能把整条响应搭进去。
+            // ⚠ 失敗只可能是頭值非法，而這個值是我們自己拼的常數形狀 ⇒ 不該發生；
+            //   真發生了也不能把整條回應搭進去。
             if let Err(e) = resp.insert_header("Alt-Svc", v) {
                 warn!("Alt-Svc 装不进响应头（{v}）：{e}");
             }
@@ -296,12 +296,12 @@ impl std::ops::DerefMut for Downstream<'_> {
     }
 }
 
-/// 一次请求在路由与写响应之间反复要用的几个事实 —— 都不借请求头（**HTTP 层诊断发现 2 · 请求头不整份克隆**）。
+/// 一次請求在路由與寫回應之間反覆要用的幾個事實 —— 都不借請求頭（**HTTP 層診斷髮現 2 · 請求頭不整份克隆**）。
 ///
-/// ★ 头视图**不在里面**：同一次请求要对着不同的头视图各建一个 [`RequestCtx`] ——
-///   借 `session` 里那一份（`respond` 一类、`file_server`），或反代自己克隆的那一份。
-///   ⚠ 反过来「先建一个带空头的 ctx 再改 `headers`」是个陷阱：那个空头 ctx 一旦被直接拿去展开，
-///   `{header.X}` 就静静地变成空串 —— 正是 `tests/serve/run.sh` 第 11 节守的那种回归。
+/// ★ 頭視圖**不在裡面**：同一次請求要對著不同的頭視圖各建一個 [`RequestCtx`] ——
+///   借 `session` 裡那一份（`respond` 一類、`file_server`），或反代自己克隆的那一份。
+///   ⚠ 反過來「先建一個帶空頭的 ctx 再改 `headers`」是個陷阱：那個空頭 ctx 一旦被直接拿去展開，
+///   `{header.X}` 就靜靜地變成空串 —— 正是 `tests/serve/run.sh` 第 11 節守的那種迴歸。
 #[derive(Clone, Copy)]
 struct ReqFacts<'a> {
     host: &'a str,
@@ -330,11 +330,11 @@ impl<'a> ReqFacts<'a> {
     }
 }
 
-/// 一次请求的只读视图，打包传给转发路径。
+/// 一次請求的唯讀視圖，打包傳給轉發路徑。
 ///
-/// ★ clippy 的 `too_many_arguments` 在这里说得对：八个参数里有四个是
-/// **同一次请求的不同侧面**，本来就该是一个东西。把它们捆起来之后，
-/// 转发函数的签名也读得出「它需要请求的哪几个面」。
+/// ★ clippy 的 `too_many_arguments` 在這裡說得對：八個參數裡有四個是
+/// **同一次請求的不同側面**，本來就該是一個東西。把它們捆起來之後，
+/// 轉發函式的簽名也讀得出「它需要請求的哪幾個面」。
 #[derive(Clone, Copy)]
 struct ReqView<'a> {
     ctx: &'a RequestCtx<'a>,
@@ -343,39 +343,39 @@ struct ReqView<'a> {
     started: SystemTime,
 }
 
-/// 挂在一个监听端口上的枢衡应用。
+/// 掛在一個監聽連接埠上的樞衡應用。
 ///
-/// ⚠ **每个端口一个实例**：站点索引是按 `(Host, 本地端口)` 两维查的，
-/// 而 Pingora 的 `ServerSession` 拿不到「这条连接落在哪个监听器上」。
-/// 把端口写进 app 里，是唯一不靠猜的办法。
+/// ⚠ **每個連接埠一個執行個體**：站台索引是按 `(Host, 本地端口)` 兩維查的，
+/// 而 Pingora 的 `ServerSession` 拿不到「這條連接落在哪個監聽器上」。
+/// 把連接埠寫進 app 裡，是唯一不靠猜的辦法。
 pub struct FulcrumApp {
-    /// ★ **可在运行期整体换掉**（G8 的全量原子 load）。
-    /// ⚠ 每个请求只在入口取一次快照——理由见 `SharedRuntime` 的类型文档：
-    /// 一次发生在请求中途的 load 会让同一个请求按旧配置路由、按新配置转发，
+    /// ★ **可在執行期整體換掉**（G8 的全量原子 load）。
+    /// ⚠ 每個請求只在入口取一次快照——理由見 `SharedRuntime` 的類型文件：
+    /// 一次發生在請求中途的 load 會讓同一個請求按舊設定路由、按新設定轉發，
     /// 那正是 G8 明令禁止的「部分生效」。
     rt: Arc<fulcrum_runtime::SharedRuntime>,
     port: u16,
-    /// 这个监听端口是不是 TLS。★ 它决定 `{scheme}` 展开成什么，
-    /// 也决定 `redir` 里的 `https://{host}` 是否自洽。
+    /// 這個監聽連接埠是不是 TLS。★ 它決定 `{scheme}` 展開成什麼，
+    /// 也決定 `redir` 裡的 `https://{host}` 是否自洽。
     https: bool,
     connector: Connector,
-    /// ACME 的 HTTP-01 应答表。★ 没开自动签发时它是空的，而**空表什么都不接**——
-    /// 于是「有没有 ACME」不改变数据面的任何一条行为。
+    /// ACME 的 HTTP-01 應答表。★ 沒開自動簽發時它是空的，而**空表什麼都不接**——
+    /// 於是「有沒有 ACME」不改變資料面的任何一條行為。
     http01: Arc<Http01Store>,
-    /// 自研 HTTP 缓存（M2 批 G）。
+    /// 自研 HTTP 快取（M2 批 G）。
     ///
-    /// ⚠ ⚠ **它挂在 app 上而不是在 `Runtime` 里**，这一点是有意的：
-    /// G8 的全量原子 load 会把整棵运行时图换掉，而**缓存内容不该跟着没** ——
-    /// 每 reload 一次就清空缓存，等于每次改配置都让上游挨一次满负荷。
-    /// ★ 于是「换配置」与「缓存里有什么」是两件独立的事，正如它们本来就该是。
+    /// ⚠ ⚠ **它掛在 app 上而不是在 `Runtime` 裡**，這一點是有意的：
+    /// G8 的全量原子 load 會把整棵執行環境圖換掉，而**快取內容不該跟著沒** ——
+    /// 每 reload 一次就清空快取，等於每次改設定都讓上游挨一次滿負荷。
+    /// ★ 於是「換設定」與「快取裡有什麼」是兩件獨立的事，正如它們本來就該是。
     cache: Arc<cache::CacheHandle>,
-    /// 这个端口上要对 h1/h2 响应发的 `Alt-Svc`（**G110**）；`None` = 不发。
+    /// 這個連接埠上要對 h1/h2 回應發的 `Alt-Svc`（**G110**）；`None` = 不發。
     ///
-    /// ★ 它是**接线那一步**算好的常量串，不是每条响应现拼：值只取决于
-    /// 「这个监听端口开没开 h3」，而端口集变了只能走真的换代。
-    /// ⇒ 数据面这一路上没有一处需要再判「h3 开了吗」。
+    /// ★ 它是**串接那一步**算好的常數串，不是每條回應現拼：值只取決於
+    /// 「這個監聽連接埠開沒開 h3」，而連接埠集變了只能走真的換代。
+    /// ⇒ 資料面這一路上沒有一處需要再判「h3 開了嗎」。
     ///
-    /// ⚠ **不发它，浏览器永远不会主动尝试 h3** —— h3 入口对真实用户等于不存在。
+    /// ⚠ **不發它，瀏覽器永遠不會主動嘗試 h3** —— h3 入口對真實使用者等於不存在。
     alt_svc: Option<String>,
 }
 
@@ -393,10 +393,10 @@ impl FulcrumApp {
             rt,
             port,
             https,
-            // ★ pingora 0.9.0 把上游空闲连接池从「每个线程一个 LRU」改成「整进程一个分片的全局 LRU」，
-            //   `Connector::new(None)` 的缺省 128 从此是**整进程**的上限（0.8.1 时是每线程 128）。
-            //   上游自己在 `ConnectorOptions::from_server_conf` 里乘了线程数来保持原意 ⇒ 这里照做：
-            //   容量由调用方按「每线程池大小 × L7 线程数」给（owner 2026-09-24 拍板保持 0.8.1 的总量）。
+            // ★ pingora 0.9.0 把上游空閒連接池從「每個執行緒一個 LRU」改成「整處理程序一個分片的全域 LRU」，
+            //   `Connector::new(None)` 的預設 128 從此是**整處理程序**的上限（0.8.1 時是每執行緒 128）。
+            //   上游自己在 `ConnectorOptions::from_server_conf` 裡乘了執行緒數來保持原意 ⇒ 這裡照做：
+            //   容量由呼叫方按「每執行緒池大小 × L7 執行緒數」給（owner 2026-09-24 拍板保持 0.8.1 的總量）。
             connector: Connector::new(Some(ConnectorOptions::new(upstream_keepalive_pool))),
             http01,
             cache,
@@ -405,17 +405,17 @@ impl FulcrumApp {
     }
 }
 
-/// h1/h2 那一侧交给 Pingora 的入口 —— 只是把 [`FulcrumApp`] 包了一层。
+/// h1/h2 那一側交給 Pingora 的入口 —— 只是把 [`FulcrumApp`] 包了一層。
 ///
-/// # 它存在的唯一理由：让两个入口共用**同一个** app 实例
+/// # 它存在的唯一理由：讓兩個入口共用**同一個** app 執行個體
 ///
 /// h3 入口要 `Arc<FulcrumApp>`，而 pingora 的 `Service::new` 收的是 `A` 不是 `Arc<A>`。
-/// ⇒ 不套这一层就得建**两个** `FulcrumApp`，也就是**两个上游连接池**
-/// （`Connector` 每实例一个）—— ⚠ 这件事不会有任何报错，只表现为上游连接数翻倍。
-/// ★ 更贵的是「两个实例必须构造得一模一样」又是一条靠人记着的约束。
+/// ⇒ 不套這一層就得建**兩個** `FulcrumApp`，也就是**兩個上游連接池**
+/// （`Connector` 每執行個體一個）—— ⚠ 這件事不會有任何回報錯誤，只表現為上游連接數翻倍。
+/// ★ 更貴的是「兩個執行個體必須建構得一模一樣」又是一條靠人記著的約束。
 ///
-/// ⚠ 孤儿规则挡住了更直接的写法（`impl HttpServerApp for Arc<FulcrumApp>` 不合法），
-/// 所以必须是一个本地 newtype。
+/// ⚠ 孤兒規則擋住了更直接的寫法（`impl HttpServerApp for Arc<FulcrumApp>` 不合法），
+/// 所以必須是一個本機 newtype。
 pub struct H1Entry(Arc<FulcrumApp>);
 
 impl H1Entry {
@@ -431,39 +431,39 @@ impl HttpServerApp for H1Entry {
         session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        // ★ 调固有方法、⛔ 不再经 `HttpServerApp` 转一手（2026-10-15 · respond 剩的分配）：
-        //   `#[async_trait]` 每过一层就把那一层的 future 装一次箱 —— pingora 调到这里已经装过一次，
-        //   再经 trait 调 `FulcrumApp` 等于每条请求多一次分配。判据：`tests/respond_alloc.rs`。
+        // ★ 調固有方法、⛔ 不再經 `HttpServerApp` 轉一手（2026-10-15 · respond 剩的分配）：
+        //   `#[async_trait]` 每過一層就把那一層的 future 裝一次箱 —— pingora 調到這裡已經裝過一次，
+        //   再經 trait 調 `FulcrumApp` 等於每條請求多一次分配。判據：`tests/respond_alloc.rs`。
         self.0.serve_h1(session, shutdown).await
     }
 }
 
-/// h3 那一侧的入口 —— **同一个 [`FulcrumApp`]、同一条执行链**。
+/// h3 那一側的入口 —— **同一個 [`FulcrumApp`]、同一條執行鏈**。
 ///
-/// ★ 依赖方向：`quic` 模块只认 [`quic::h3_conn::H3RequestHandler`] 这个 trait，
-/// **不认识** `FulcrumApp` ⇒ HTTP/3 入口不会反向依赖数据面本体。
+/// ★ 依賴方向：`quic` 模組只認 [`quic::h3_conn::H3RequestHandler`] 這個 trait，
+/// **不認識** `FulcrumApp` ⇒ HTTP/3 入口不會反向依賴資料面本體。
 ///
-/// ⚠ 与 h1/h2 的**唯一**差别是 [`Downstream::plain`]（已经在 h3 上的客户端
-/// 不需要再被告知有 h3），而它落在**这一行**上。
+/// ⚠ 與 h1/h2 的**唯一**差別是 [`Downstream::plain`]（已經在 h3 上的用戶端
+/// 不需要再被告知有 h3），而它落在**這一行**上。
 #[async_trait]
 impl quic::h3_conn::H3RequestHandler for FulcrumApp {
     async fn handle(&self, mut session: ServerSession) {
-        // ⚠ 请求头由 h3 那一层在建 `H3Session` 时就填好了 —— 这里**不能**再
-        //   `read_request()`：h1 那侧它是「从 socket 上读一个请求头」，
-        //   而 h3 上没有那个动作。
+        // ⚠ 請求頭由 h3 那一層在建 `H3Session` 時就填好了 —— 這裡**不能**再
+        //   `read_request()`：h1 那側它是「從 socket 上讀一個請求頭」，
+        //   而 h3 上沒有那個動作。
         {
             let mut out = Downstream::h3(&mut session);
             out.serve(self).await;
         }
-        // ★ h3 上 `finish()` 收的是「这条流完了」，不是「这条连接完了」——
-        //   一条 QUIC 连接上还会有别的流。
+        // ★ h3 上 `finish()` 收的是「這條流完了」，不是「這條連接完了」——
+        //   一條 QUIC 連接上還會有別的流。
         if let Err(e) = session.finish().await {
             debug!("h3 收尾失败：{e}");
         }
     }
 }
 
-/// `keepalive` 只拿得到这几样（G160）；⛔ 不含写响应 —— 响应只从 [`Downstream`] 出（G110）。
+/// `keepalive` 只拿得到這幾樣（G160）；⛔ 不含寫回應 —— 回應只從 [`Downstream`] 出（G110）。
 impl keepalive::Conn for ServerSession {
     fn keepalive(&self) -> Option<u64> {
         self.get_keepalive()
@@ -485,18 +485,18 @@ impl keepalive::Conn for ServerSession {
 }
 
 impl FulcrumApp {
-    /// h1/h2 的一条请求：读请求头 → 执行链 → 收尾，把连接交回 pingora。只经 [`H1Entry`] 进来。
+    /// h1/h2 的一條請求：讀請求頭 → 執行鏈 → 收尾，把連接交回 pingora。只經 [`H1Entry`] 進來。
     ///
-    /// ★ 是固有方法、⛔ 不是 `HttpServerApp` 的实现：那样 [`H1Entry`] 每转一手就多装一次箱（见那里）。
-    /// ★ pub 只为 `tests/respond_alloc.rs` 拿它当对照，数「入口那一层多几次分配」。
+    /// ★ 是固有方法、⛔ 不是 `HttpServerApp` 的實作：那樣 [`H1Entry`] 每轉一手就多裝一次箱（見那裡）。
+    /// ★ pub 只為 `tests/respond_alloc.rs` 拿它當對照，數「入口那一層多幾次分配」。
     pub async fn serve_h1(
         &self,
         mut session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        // ★ keep-alive 的空闲计时由 `keepalive` 接管（G160）：每条连接一个计时器，跨请求带着走。
-        // ★ 请求头名的原样大小写只有原样转发给上游时才用得到 ⇒ 端口上没有反代站点就不保留（G163）。
-        //   读请求头之前还不知道 Host ⇒ 只能按端口；查的是位图，⛔ 不为它再拿一次运行时的读锁。
+        // ★ keep-alive 的空閒計時由 `keepalive` 接管（G160）：每條連接一個計時器，跨請求帶著走。
+        // ★ 請求頭名的原樣大小寫只有原樣轉發給上游時才用得到 ⇒ 連接埠上沒有反代站台就不保留（G163）。
+        //   讀請求頭之前還不知道 Host ⇒ 只能按連接埠；查的是點陣圖，⛔ 不為它再拿一次執行環境的讀鎖。
         let preserve_case = self.rt.port_has_proxy(self.port);
         let (read, idle_timer) = keepalive::read_request(&mut session, preserve_case).await;
         match read {
@@ -511,12 +511,12 @@ impl FulcrumApp {
             }
         }
 
-        // ★ 续不续、续多久（G161）：停机窗口内不续（让连接自己收敛，而不是等被砍断）；
-        //   pingora 判了「不续」的也不续 —— 枢衡只管时长。
+        // ★ 續不續、續多久（G161）：停機視窗內不續（讓連接自己收斂，而不是等被砍斷）；
+        //   pingora 判了「不續」的也不續 —— 樞衡只管時長。
         keepalive::settle_after_read(&mut session, *shutdown.borrow(), KEEPALIVE_SECS);
 
-        // ★ ★ `Alt-Svc` 在这里接上（**G110**）：h1/h2 的每一条响应都带它，
-        //   而「每一条」是由 `Downstream` 这个类型保证的，不是由记性保证的。
+        // ★ ★ `Alt-Svc` 在這裡接上（**G110**）：h1/h2 的每一條回應都帶它，
+        //   而「每一條」是由 `Downstream` 這個類型保證的，不是由記性保證的。
         {
             let mut out = Downstream::h1h2(&mut session, self.alt_svc.as_deref());
             out.serve(self).await;
@@ -525,8 +525,8 @@ impl FulcrumApp {
         let mut persistent = HttpPersistentSettings::for_session(&session);
         keepalive::carry(&mut persistent, idle_timer);
         match session.finish().await {
-            // ★ pingora 0.9.0：`finish()` 返回 `ReusableHttpStream`（带着 pipelining 预读到的字节）⇒ 照上游
-            //   `apps/http_app.rs` 用 `from_reusable_stream`；⛔ 别写 `into_parts().0`，那会把预读的字节丢掉。
+            // ★ pingora 0.9.0：`finish()` 回傳 `ReusableHttpStream`（帶著 pipelining 預讀到的位元組）⇒ 照上游
+            //   `apps/http_app.rs` 用 `from_reusable_stream`；⛔ 別寫 `into_parts().0`，那會把預讀的位元組丟掉。
             Ok(c) => c.map(|s| ReusedHttpStream::from_reusable_stream(s, persistent)),
             Err(e) => {
                 debug!("收尾失败：{e}");
@@ -537,11 +537,11 @@ impl FulcrumApp {
 }
 
 impl FulcrumApp {
-    /// 一次请求的「事实」，**全部借自 `hdr`**（HTTP 层诊断 10-05 · 请求路径上的字符串分配）。
+    /// 一次請求的「事實」，**全部借自 `hdr`**（HTTP 層診斷 10-05 · 請求路徑上的字串分配）。
     ///
-    /// ★ 单独一个函数，是因为同一次请求要对着**不同的那份请求头**各取一次：
-    ///   `serve_one` 开头借 `session` 里那份；反代借它自己克隆的那份；`file_server` 出错后重新借一次 ——
-    ///   后两处都要跨过「写响应」（那要 `&mut session`），不能沿用开头那份借用。
+    /// ★ 單獨一個函式，是因為同一次請求要對著**不同的那份請求頭**各取一次：
+    ///   `serve_one` 開頭借 `session` 裡那份；反代借它自己克隆的那份；`file_server` 出錯後重新借一次 ——
+    ///   後兩處都要跨過「寫回應」（那要 `&mut session`），不能沿用開頭那份借用。
     fn facts_of<'a>(
         &self,
         hdr: &'a RequestHeader,
@@ -549,7 +549,7 @@ impl FulcrumApp {
         remote_port: u16,
     ) -> ReqFacts<'a> {
         ReqFacts {
-            // Host 里可能带端口（`a.com:8443`）——站点索引只认主机名。
+            // Host 裡可能帶連接埠（`a.com:8443`）——站台索引只認主機名。
             host: host_of(hdr).split(':').next().unwrap_or(""),
             port: self.port,
             scheme: if self.https { "https" } else { "http" },
@@ -563,25 +563,25 @@ impl FulcrumApp {
 
     pub(crate) async fn serve_one(&self, session: &mut Downstream<'_>) -> OutcomeName {
         let started = SystemTime::now();
-        // ★ ★ **整次请求的配置快照，只在这里取一次。**
-        //   之后所有阶段用的都是 `rt` 这一份，而不是再去问 `self.rt`。
-        //   ⚠ 每阶段各取一次的话，一次发生在请求中途的全量 load 会让**同一个请求**
-        //   按旧配置路由、按新配置转发——G8 明令禁止的「部分生效」。
+        // ★ ★ **整次請求的設定快照，只在這裡取一次。**
+        //   之後所有階段用的都是 `rt` 這一份，而不是再去問 `self.rt`。
+        //   ⚠ 每階段各取一次的話，一次發生在請求中途的全量 load 會讓**同一個請求**
+        //   按舊設定路由、按新設定轉發——G8 明令禁止的「部分生效」。
         let rt = self.rt.current();
-        // ── 1. 请求头：**借**，⛔ 不整份克隆（HTTP 层诊断发现 2 · 请求头不整份克隆，2026-09-26）─────────
+        // ── 1. 請求頭：**借**，⛔ 不整份克隆（HTTP 層診斷髮現 2 · 請求頭不整份克隆，2026-09-26）─────────
         //
-        // ★ 按**字段**借（`session.session`），⛔ 不经 `Deref`：借的只是那一个字段，
-        //   于是下面照样能写 `session.record`。
-        // ⚠ 写响应要 `&mut session`，而请求头就在 `session` 里 ⇒ 每条分支都**先算后写**：
-        //   借用期内把要写的东西算完（`Prepared` / `ErrorPage` / `FileReq`），放掉借用再写。
-        //   ★ 反代是唯一的例外：它边写边读请求头（`header_down` 的 `{header.X}` 要等上游回来才展开），
-        //   所以它在自己那一支里克隆一份 —— 就是这里原来那一次，挪过去了。
+        // ★ 按**欄位**借（`session.session`），⛔ 不經 `Deref`：借的只是那一個欄位，
+        //   於是下面照樣能寫 `session.record`。
+        // ⚠ 寫回應要 `&mut session`，而請求頭就在 `session` 裡 ⇒ 每條分支都**先算後寫**：
+        //   借用期內把要寫的東西算完（`Prepared` / `ErrorPage` / `FileReq`），放掉借用再寫。
+        //   ★ 反代是唯一的例外：它邊寫邊讀請求頭（`header_down` 的 `{header.X}` 要等上游回來才展開），
+        //   所以它在自己那一支裡克隆一份 —— 就是這裡原來那一次，挪過去了。
         let hdr: &RequestHeader = session.session.req_header();
-        // ⚠ 这一行照旧经 `Deref` 借整个 `session`：它是**共享**借用、当场就还，与上面按字段借的 `hdr` 共存得了。
+        // ⚠ 這一行照舊經 `Deref` 借整個 `session`：它是**共享**借用、當場就還，與上面按欄位借的 `hdr` 共存得了。
         let (remote_ip, remote_port) = client_addr(session);
-        // ★ host / path / query / method 四样都**借**请求头、⛔ 不 `to_string`（HTTP 层诊断 10-05）。
-        //   ⚠ 代价是它们的借用不能跨过「写响应」：`respond` 一类本来就先算后写；
-        //   要跨过去的两支（`file_server` 出错后算错误页、反代）各自重新借（见 [`Self::facts_of`]）。
+        // ★ host / path / query / method 四樣都**借**請求頭、⛔ 不 `to_string`（HTTP 層診斷 10-05）。
+        //   ⚠ 代價是它們的借用不能跨過「寫回應」：`respond` 一類本來就先算後寫；
+        //   要跨過去的兩支（`file_server` 出錯後算錯誤頁、反代）各自重新借（見 [`Self::facts_of`]）。
         let facts = self.facts_of(hdr, remote_ip, remote_port);
         let ReqFacts {
             host,
@@ -593,26 +593,26 @@ impl FulcrumApp {
         let headers = ReqHeaders(hdr);
         let ctx = facts.ctx(&headers);
 
-        // ── 访问日志：请求那一半里每请求都要的两格（**M2 批 L 第 ② 步**）──────
+        // ── 訪問紀錄：請求那一半里每請求都要的兩格（**M2 批 L 第 ② 步**）──────
         //
-        // ★ method / host / uri / site 四格**路由之后、站点配了 `log` 才填**（见下面「站点那一半」）。
+        // ★ method / host / uri / site 四格**路由之後、站台配了 `log` 才填**（見下面「站台那一半」）。
         session.record.remote_ip = remote_ip;
         session.record.remote_port = remote_port;
 
-        // ── 1.5 ACME 的 HTTP-01 挑战（RFC 8555 §8.3）────────────────────────
+        // ── 1.5 ACME 的 HTTP-01 挑戰（RFC 8555 §8.3）────────────────────────
         //
-        // ★ ★ **必须在路由之前**。一份 `respond 403` 的配置完全合法，
-        //   而如果挑战应答走正常路由，**用户的配置会把自己的证书签发挡掉**——
-        //   现场看到的只是「CA 说验不过」，配置里没有任何一行看得出问题。
-        // ★ 表空的时候（没开自动签发、或已经签完摘掉了）这里什么都不接，
-        //   请求原样落回路由：**有没有 ACME 不改变数据面的任何一条行为**。
+        // ★ ★ **必須在路由之前**。一份 `respond 403` 的設定完全合法，
+        //   而如果挑戰應答走正常路由，**使用者的設定會把自己的證書籤發擋掉**——
+        //   現場看到的只是「CA 說驗不過」，設定裡沒有任何一行看得出問題。
+        // ★ 表空的時候（沒開自動簽發、或已經簽完摘掉了）這裡什麼都不接，
+        //   請求原樣落迴路由：**有沒有 ACME 不改變資料面的任何一條行為**。
         if let Some(key_auth) = self.http01.answer(path) {
             debug!("HTTP-01 应答 {path}");
-            // ⚠ 它在路由**之前**，所以没有站点、也没有站点的 `log` 配置
-            //   ⇒ 这一条记不进访问日志（与 421 同一个形状 —— 那是 D26，
-            //     ✅ 已由 G118 结案：给 `no_site_match` 一个计数器）。
-            //   ★ 仍然把 `outcome` 填对：它不进日志，但填对了不白填。
-            // RFC 8555 §8.3 建议 `application/octet-stream`。
+            // ⚠ 它在路由**之前**，所以沒有站台、也沒有站台的 `log` 設定
+            //   ⇒ 這一條記不進訪問紀錄（與 421 同一個形狀 —— 那是 D26，
+            //     ✅ 已由 G118 結案：給 `no_site_match` 一個計數器）。
+            //   ★ 仍然把 `outcome` 填對：它不進紀錄，但填對了不白填。
+            // RFC 8555 §8.3 建議 `application/octet-stream`。
             write_with_headers(
                 session,
                 200,
@@ -625,20 +625,20 @@ impl FulcrumApp {
 
         // ── 2. 路由 ────────────────────────────────────────────────────────
         let Some(routed) = rt.route(&ctx) else {
-            // ★ 无站点匹配 → 421（G63）。**不静默交给某个站点**——那是 nginx
-            //   `default_server` 那类行为的温床。
+            // ★ 無站台匹配 → 421（G63）。**不靜默交給某個站台**——那是 nginx
+            //   `default_server` 那類行為的溫床。
             let status = rt.defaults.no_site_match;
             debug!("无站点匹配：Host={host} port={}", self.port);
             // ── `fulcrum_no_site_match_total{host}`（G118）─────────────────
             //
-            // ★ 记在**写 `outcome` 的同一处**：这两句说的是同一件事，
-            //   分开就有一天会有人只改其中一句。
-            // ⚠ ⚠ `host` 由请求方给、攻击者可控 ⇒ **只有出现在配置里的地址字面量
-            //   才带真值**，其余一律 `<other>` —— 上界由配置定、不由访问者定。
-            //   ★ 通配字面量 `*.wild.example` 的子域名判**未知**：它不是一条地址
-            //     字面量，而那正是这一句话的全部含义（见 `has_address_literal`）。
-            // ⚠ 集合**从 `rt` 现问**，不在指标那边另存一份 —— 换一次配置那份就过期，
-            //   而过期的样子是「某个 host 从此归 <other>」，没有任何东西会说。
+            // ★ 記在**寫 `outcome` 的同一處**：這兩句說的是同一件事，
+            //   分開就有一天會有人只改其中一句。
+            // ⚠ ⚠ `host` 由請求方給、攻擊者可控 ⇒ **只有出現在設定裡的位址字面值
+            //   才帶真值**，其餘一律 `<other>` —— 上界由設定定、不由訪問者定。
+            //   ★ 通配字面值 `*.wild.example` 的子網域判**未知**：它不是一條位址
+            //     字面值，而那正是這一句話的全部含義（見 `has_address_literal`）。
+            // ⚠ 集合**從 `rt` 現問**，不在指標那邊另存一份 —— 換一次設定那份就過期，
+            //   而過期的樣子是「某個 host 從此歸 <other>」，沒有任何東西會說。
             let h = host.to_ascii_lowercase();
             let label = if rt.has_address_literal(&h) {
                 h.as_str()
@@ -651,20 +651,20 @@ impl FulcrumApp {
             return OUTCOME_NO_SITE_MATCH;
         };
 
-        // ── 访问日志：站点那一半 ──────────────────────────────────────────
+        // ── 訪問紀錄：站台那一半 ──────────────────────────────────────────
         //
-        // ★ ★ `outcome` 从 [`Outcome`] 那个枚举**一次算出来**，而不是在下面
-        //   五个分支里各写一行。⇒ 将来加一种终结方式时，
-        //   `outcome_name` 的穷尽匹配会**编不过**，而那正是契约里
-        //   「`outcome` 是闭集」那句话的落法。
-        // ★ `site_addr` 每请求都要（指标的 `site` 标签）；它是 `Arc<str>`，克隆不分配。
+        // ★ ★ `outcome` 從 [`Outcome`] 那個枚舉**一次算出來**，而不是在下面
+        //   五個分支裡各寫一行。⇒ 將來加一種終結方式時，
+        //   `outcome_name` 的窮盡匹配會**編不過**，而那正是契約裡
+        //   「`outcome` 是閉集」那句話的落法。
+        // ★ `site_addr` 每請求都要（指標的 `site` 標籤）；它是 `Arc<str>`，克隆不分配。
         session.record.site_addr = Some(routed.site_addr.clone());
         session.record.target = routed.site.log.clone();
-        // ★ ★ method / host / uri / site 四格**只有 `to_json_line` 读**，而站点没配 `log` 时那一行根本不写
-        //   ⇒ 只在配了 `log` 时才填（HTTP 层诊断 10-05：照填等于每请求白分配四次）。值与以前逐字相同。
-        // ★ `uri` 取的是**原始**请求目标（`rewrite` 之前）—— 契约里写死的。
-        //   ⚠ 取 `effective_path` 的话，一条 `rewrite` 会让日志说出一个
-        //   **客户端从没请求过**的地址，而排障时那是最误导人的一种。
+        // ★ ★ method / host / uri / site 四格**只有 `to_json_line` 讀**，而站台沒配 `log` 時那一行根本不寫
+        //   ⇒ 只在配了 `log` 時才填（HTTP 層診斷 10-05：照填等於每請求白分配四次）。值與以前逐字相同。
+        // ★ `uri` 取的是**原始**請求目標（`rewrite` 之前）—— 契約裡寫死的。
+        //   ⚠ 取 `effective_path` 的話，一條 `rewrite` 會讓紀錄說出一個
+        //   **用戶端從沒請求過**的位址，而疑難排解時那是最誤導人的一種。
         if session.record.target.is_some() {
             session.record.method = method.to_owned();
             session.record.host = host.to_owned();
@@ -677,7 +677,7 @@ impl FulcrumApp {
         }
         let base = outcome_name(&routed.outcome);
 
-        // 改写过的路径要带给上游。★ 没改写时借 `path`，⛔ 不克隆。
+        // 改寫過的路徑要帶給上游。★ 沒改寫時借 `path`，⛔ 不克隆。
         let effective_path: &str = routed.rewritten_path.as_deref().unwrap_or(path);
 
         match &routed.outcome {
@@ -704,22 +704,22 @@ impl FulcrumApp {
                 write_with_headers(session, *code, None, extra).await;
                 base
             }
-            // ── Prometheus 抓取端点（M2 批 M，G116）────────────────────────
+            // ── Prometheus 抓取端點（M2 批 M，G116）────────────────────────
             //
-            // ★ 走的是 `Outcome::Redirect` 那条一模一样的路：先摆自己那个头，
-            //   再让站点的 `header` 指令叠上去，最后交给 `write_with_headers`。
-            //   ⚠ **不新开一条写响应的路** —— 另起一条的代价不是重复代码，
-            //   而是访问日志的 `resp_size`、压缩、头处理三件事会在这一条路上
-            //   与别的终结类**慢慢长得不一样**，而不一样的那天没有任何东西会说。
-            // ⚠ `Content-Type` 摆在 `collect_ops` **之前**：写了
-            //   `header Content-Type …` 的人是在明确要求换掉它，而
-            //   `write_with_headers` 里那个 `insert_header` 是覆盖语义。
+            // ★ 走的是 `Outcome::Redirect` 那條一模一樣的路：先擺自己那個頭，
+            //   再讓站台的 `header` 指令疊上去，最後交給 `write_with_headers`。
+            //   ⚠ **不新開一條寫回應的路** —— 另起一條的代價不是重複程式碼，
+            //   而是訪問紀錄的 `resp_size`、壓縮、頭處理三件事會在這一條路上
+            //   與別的終結類**慢慢長得不一樣**，而不一樣的那天沒有任何東西會說。
+            // ⚠ `Content-Type` 擺在 `collect_ops` **之前**：寫了
+            //   `header Content-Type …` 的人是在明確要求換掉它，而
+            //   `write_with_headers` 裡那個 `insert_header` 是覆蓋語義。
             Outcome::Metrics => {
                 let rc = resp_ctx(200, None);
                 let mut extra: Vec<(String, String)> = vec![(
                     "Content-Type".into(),
-                    // ⚠ 这一串是 exposition 格式的版本标识，**不是随便写的 MIME**：
-                    //   抓取端按它决定用哪个解析器。
+                    // ⚠ 這一串是 exposition 格式的版本標識，**不是隨便寫的 MIME**：
+                    //   抓取端按它決定用哪個解析器。
                     "text/plain; version=0.0.4; charset=utf-8".into(),
                 )];
                 collect_ops(
@@ -738,31 +738,31 @@ impl FulcrumApp {
                 let page = prepare_error(&rt, routed.site, status, &routed, &ctx, started);
                 write_error_page(session, page).await
             }
-            // ── 自研静态文件（M2 批 F）─────────────────────────────────────
+            // ── 自研靜態檔案（M2 批 F）─────────────────────────────────────
             //
-            // ★ 路径用的是 `effective_path`，也就是 `rewrite` **之后**那一个 ——
-            //   与转发那条路取同一个值。⚠ 取 `ctx.path` 的话，一条
-            //   `rewrite` 就会在「转发」与「发文件」两条路上给出两个不同的答案。
-            // ★ 404 / 403 / 400 交回给站点的 `handle_errors`，与 `NoRouteMatch`
-            //   同一条路 —— 一个站点的错误页不该因为它是静态站就长得不一样。
+            // ★ 路徑用的是 `effective_path`，也就是 `rewrite` **之後**那一個 ——
+            //   與轉發那條路取同一個值。⚠ 取 `ctx.path` 的話，一條
+            //   `rewrite` 就會在「轉發」與「發檔案」兩條路上給出兩個不同的答案。
+            // ★ 404 / 403 / 400 交回給站台的 `handle_errors`，與 `NoRouteMatch`
+            //   同一條路 —— 一個站台的錯誤頁不該因為它是靜態站就長得不一樣。
             Outcome::FileServer(fs) => {
-                // ★ ★ 压缩（M2 批 I）：`encode` 是中间件，静态文件是终结类 ——
-                //   与 Caddy 一样，中间件裹在终结类外面。
-                //   ⚠ 而**预压缩旁文件优先**：那条路在 `files` 里面判，
-                //   判中了它会把这个 encoder 丢掉（旁文件已经是压好的）。
-                // ★ 在借用期内取好 `file_server` 要的全部东西（`FileReq` + `Encoder`），
-                //   之后这一支不再借请求头 ⇒ 下面才能把 `&mut session` 交出去（⛔ 不克隆）。
+                // ★ ★ 壓縮（M2 批 I）：`encode` 是中介軟體，靜態檔案是終結類 ——
+                //   與 Caddy 一樣，中介軟體裹在終結類外面。
+                //   ⚠ 而**預壓縮旁檔案優先**：那條路在 `files` 裡面判，
+                //   判中了它會把這個 encoder 丟掉（旁檔案已經是壓好的）。
+                // ★ 在借用期內取好 `file_server` 要的全部東西（`FileReq` + `Encoder`），
+                //   之後這一支不再借請求頭 ⇒ 下面才能把 `&mut session` 交出去（⛔ 不克隆）。
                 let enc = encode::Encoder::new(encode::wanted(&routed), hdr);
                 let freq = files::FileReq::from_header(hdr);
-                // ⚠ 下面要把 `&mut session` 交出去，而 `effective_path` / `query` 可能借着 session 里的请求头
-                //   ⇒ 这一支各拿一份自有的（`query` 为空时不分配）。
+                // ⚠ 下面要把 `&mut session` 交出去，而 `effective_path` / `query` 可能借著 session 裡的請求頭
+                //   ⇒ 這一支各拿一份自有的（`query` 為空時不分配）。
                 let url_path = effective_path.to_owned();
                 let query = query.to_owned();
                 match files::serve(session, &freq, fs, &url_path, &query, enc).await {
                     Ok(()) => base,
                     Err(status) => {
-                        // ★ 走到这里时一个字节都还没写（`files` 里所有 `Err(status)` 都在任何写之前返回，
-                        //   写出去的 405 / 304 / 416 / 正文都返回 `Ok`）⇒ 重新借一次请求头来算错误页（⛔ 不克隆）。
+                        // ★ 走到這裡時一個位元組都還沒寫（`files` 裡所有 `Err(status)` 都在任何寫之前回傳，
+                        //   寫出去的 405 / 304 / 416 / 正文都回傳 `Ok`）⇒ 重新借一次請求頭來算錯誤頁（⛔ 不克隆）。
                         let hdr = session.session.req_header();
                         let headers = ReqHeaders(hdr);
                         let ctx = self.facts_of(hdr, remote_ip, remote_port).ctx(&headers);
@@ -771,19 +771,19 @@ impl FulcrumApp {
                     }
                 }
             }
-            // ── 转发（可能被缓存裹住，M2 批 G）──────────────────────────────
+            // ── 轉發（可能被快取裹住，M2 批 G）──────────────────────────────
             //
-            // ★ ★ `cache` 是**中间件**，所以它不在这个 `match` 里占一支 ——
-            //   它在 `routed.cache` 上，由这里决定要不要走带缓存的那条路。
-            // ⚠ 缓存**只裹 `reverse_proxy`**：`respond` / `redir` 没有上游可省，
-            //   而 `file_server` 的字节已经在本机磁盘上、再存一份内存是净亏。
-            //   ★ 写在别处时装载日志会说出来（`log_load_summary`），不是静默忽略。
+            // ★ ★ `cache` 是**中介軟體**，所以它不在這個 `match` 裡佔一支 ——
+            //   它在 `routed.cache` 上，由這裡決定要不要走帶快取的那條路。
+            // ⚠ 快取**只裹 `reverse_proxy`**：`respond` / `redir` 沒有上游可省，
+            //   而 `file_server` 的位元組已經在本機磁碟上、再存一份記憶體是淨虧。
+            //   ★ 寫在別處時裝載紀錄會說出來（`log_load_summary`），不是靜默忽略。
             Outcome::Proxy(target) => {
-                // ★ 反代边写边读请求头（`header_down` 的 `{header.X}` 要等上游回来才展开）
-                //   ⇒ 它克隆一份 —— 就是 `serve_one` 开头原来那一次，挪到这里（次数没变）。
+                // ★ 反代邊寫邊讀請求頭（`header_down` 的 `{header.X}` 要等上游回來才展開）
+                //   ⇒ 它克隆一份 —— 就是 `serve_one` 開頭原來那一次，挪到這裡（次數沒變）。
                 let owned = hdr.clone();
                 let oh = ReqHeaders(&owned);
-                // ★ 这一支要跨过写响应还在用请求的各项 ⇒ 改借这份克隆（⛔ 不再借 session 里那份）。
+                // ★ 這一支要跨過寫回應還在用請求的各項 ⇒ 改借這份克隆（⛔ 不再借 session 裡那份）。
                 let ctx = self.facts_of(&owned, remote_ip, remote_port).ctx(&oh);
                 let view = ReqView {
                     ctx: &ctx,
@@ -809,21 +809,21 @@ impl FulcrumApp {
         }
     }
 
-    /// 错误响应。优先用站点的 `handle_errors`。
+    /// 錯誤回應。優先用站台的 `handle_errors`。
     ///
-    /// ⚠ 只有 `ctx` 借的**不是** `session` 里那份头时才能调它（今天只有反代那一支）；
-    ///   `NoRouteMatch` 与 `file_server` 出错那两条用拆开的 [`prepare_error`] + [`write_error_page`]。
-    // ⚠ clippy 说它 8 个参数太多。这里放行而不是硬拆：其中 7 个本来就是
-    //   「同一次请求的不同侧面」，而 `rt` 是批 9 加的**配置快照** ——
-    //   把它塞进 `Routed` 或 `ReqView` 会让那两个类型多背一份生命周期，
-    //   换来的只是参数表短一格。★ 真正要守的是「整次请求用同一份快照」，
-    //   而那由 `serve_one` 里那一次 `current()` 保证，不是由参数个数保证。
+    /// ⚠ 只有 `ctx` 借的**不是** `session` 裡那份頭時才能調它（今天只有反代那一支）；
+    ///   `NoRouteMatch` 與 `file_server` 出錯那兩條用拆開的 [`prepare_error`] + [`write_error_page`]。
+    // ⚠ clippy 說它 8 個參數太多。這裡放行而不是硬拆：其中 7 個本來就是
+    //   「同一次請求的不同側面」，而 `rt` 是批 9 加的**設定快照** ——
+    //   把它塞進 `Routed` 或 `ReqView` 會讓那兩個類型多背一份生命週期，
+    //   換來的只是參數表短一格。★ 真正要守的是「整次請求用同一份快照」，
+    //   而那由 `serve_one` 裡那一次 `current()` 保證，不是由參數個數保證。
     #[allow(clippy::too_many_arguments)]
     async fn write_error(
         &self,
         rt: &Runtime,
-        // ⚠ 进到这里就意味着这一条最终是**错误页**，无论它原本要去哪 ——
-        //   所以 `outcome` 在函数体第一行被改写成 `error`（见下）。
+        // ⚠ 進到這裡就意味著這一條最終是**錯誤頁**，無論它原本要去哪 ——
+        //   所以 `outcome` 在函式體第一行被改寫成 `error`（見下）。
         session: &mut Downstream<'_>,
         site: &SiteRt,
         status: u16,
@@ -831,23 +831,23 @@ impl FulcrumApp {
         ctx: &RequestCtx<'_>,
         started: SystemTime,
     ) -> OutcomeName {
-        // ★ 进到这里就意味着这一条最终是**错误页** —— 无论它原本要去哪。
-        //   ⚠ ⚠ 它是**返回值**而不是往 `Record` 上写一笔：写错误页的调用点不止一处
-        //   （[`write_error_page`] 今天有三处），而「下一处随时会出现」（G110 那次的原话）—— 返回值那种写法下，
-        //   新调用点**不处理这个值就编不过**，而副作用那种写法下它只是少一行。
-        //   ★ 拆成「算 / 写」两半之后这条照旧：`OUTCOME_ERROR` 只从 [`write_error_page`] 出来。
+        // ★ 進到這裡就意味著這一條最終是**錯誤頁** —— 無論它原本要去哪。
+        //   ⚠ ⚠ 它是**回傳值**而不是往 `Record` 上寫一筆：寫錯誤頁的呼叫點不止一處
+        //   （[`write_error_page`] 今天有三處），而「下一處隨時會出現」（G110 那次的原話）—— 回傳值那種寫法下，
+        //   新呼叫點**不處理這個值就編不過**，而副作用那種寫法下它只是少一行。
+        //   ★ 拆成「算 / 寫」兩半之後這條照舊：`OUTCOME_ERROR` 只從 [`write_error_page`] 出來。
         let page = prepare_error(rt, site, status, routed, ctx, started);
         write_error_page(session, page).await
     }
 
-    /// 带缓存的转发。出错时返回该回给下游的状态码。
+    /// 帶快取的轉發。出錯時回傳該回給下游的狀態碼。
     ///
-    /// 次序：算键 → 查缓存 →（新鲜 ⇒ 直接发）→（陈的 ⇒ 带校验器去重验证）
-    /// →（没有 ⇒ 抢防惊群的闸，leader 回源、follower 等完**重新查一次**）。
+    /// 次序：算鍵 → 查快取 →（新鮮 ⇒ 直接發）→（陳的 ⇒ 帶檢核器去重驗證）
+    /// →（沒有 ⇒ 搶防驚群的閘，leader 回源、follower 等完**重新查一次**）。
     ///
-    /// ⚠ ⚠ **follower 等完必须重新查缓存**，不能用 leader 递过来的东西 ——
-    /// leader 可能取回了 `no-store` / `private` 的响应，复用它等于把一个私有响应
-    /// 发给了另外 N 个客户端。
+    /// ⚠ ⚠ **follower 等完必須重新查快取**，不能用 leader 遞過來的東西 ——
+    /// leader 可能取回了 `no-store` / `private` 的回應，重複使用它等於把一個私有回應
+    /// 發給了另外 N 個用戶端。
     async fn proxy_cached(
         &self,
         rt: &Runtime,
@@ -866,9 +866,9 @@ impl FulcrumApp {
             view.effective_path,
             ctx.query,
         );
-        // ★ 这条链上 `encode` 要求的算法 —— 次级键归一化要用（G101）。
-        //   ⚠ 查与存必须用**同一个**列表，所以它从这里一路带下去，
-        //   而不是在两处各自从 `Routed` 取一遍。
+        // ★ 這條鏈上 `encode` 要求的演算法 —— 次級鍵歸一化要用（G101）。
+        //   ⚠ 查與存必須用**同一個**列表，所以它從這裡一路帶下去，
+        //   而不是在兩處各自從 `Routed` 取一遍。
         let encodings = encode::wanted(routed);
         let req_cc = cache::cc::parse_request(header_str(req, "cache-control").unwrap_or(""));
 
@@ -895,26 +895,26 @@ impl FulcrumApp {
             CacheAttempt::Miss => {}
         }
 
-        // ⚠ ⚠ `only-if-cached`：客户端说「只要缓存里的」。没有就回 **504**
+        // ⚠ ⚠ `only-if-cached`：用戶端說「只要快取裡的」。沒有就回 **504**
         //   （RFC 9111 §5.2.1.7），**不是**回源。
         if req_cc.only_if_cached {
             debug!("only-if-cached 而缓存里没有 → 504（{primary}）");
             return Err(504);
         }
 
-        // ── 防惊群 ────────────────────────────────────────────────────
+        // ── 防驚群 ────────────────────────────────────────────────────
         let slot = self.cache.coalescer.acquire(&primary);
         let _leader = match slot {
             cache::coalesce::Slot::Leader(l) => Some(l),
             cache::coalesce::Slot::Follower(n) => {
-                // ★ 等 leader 放闸。⚠ 带超时：leader 若卡在一个不回话的上游上，
-                //   follower 不该跟着一起挂 —— 超时之后自己回源，那只是多一次回源。
+                // ★ 等 leader 放閘。⚠ 帶超時：leader 若卡在一個不回話的上游上，
+                //   follower 不該跟著一起掛 —— 超時之後自己回源，那只是多一次回源。
                 let waited =
                     tokio::time::timeout(std::time::Duration::from_secs(15), n.notified()).await;
                 if waited.is_err() {
                     debug!("等 leader 超时，自己回源（{primary}）");
                 }
-                // ★ ★ **重新查**，而不是用 leader 的结果（理由见本函数文档）。
+                // ★ ★ **重新查**，而不是用 leader 的結果（理由見本函式文件）。
                 if let CacheAttempt::Served(r) = self
                     .cache_try_serve(session, &primary, req, &req_cc, encodings)
                     .await
@@ -938,7 +938,7 @@ impl FulcrumApp {
             .await
     }
 
-    /// 查一次缓存，能直接发就发了。
+    /// 查一次快取，能直接發就發了。
     async fn cache_try_serve(
         &self,
         session: &mut Downstream<'_>,
@@ -953,8 +953,8 @@ impl FulcrumApp {
             .get(primary, cache_key_header(req, encodings));
         let entry = match hit {
             cache::store::Lookup::Hit(e) => e,
-            // ★ 两种未命中在日志里是分开的（见 `store::Lookup` 的注释），
-            //   而在这里的处置相同：回源。
+            // ★ 兩種未命中在紀錄裡是分開的（見 `store::Lookup` 的註解），
+            //   而在這裡的處置相同：回源。
             cache::store::Lookup::VaryMiss { .. } | cache::store::Lookup::Miss => {
                 return CacheAttempt::Miss;
             }
@@ -972,9 +972,9 @@ impl FulcrumApp {
                 )
                 .await,
             ),
-            // ⚠ 陈的与「必须重验证」在这里**同一条路**：都去问上游。
-            //   ★ 差别在于陈的那条**可以**在上游挂掉时退回来用（stale-if-error），
-            //   而那一条这一批不做（G97 的最小集之外），所以现在两者确实一样。
+            // ⚠ 陳的與「必須重驗證」在這裡**同一條路**：都去問上游。
+            //   ★ 差別在於陳的那條**可以**在上游掛掉時退回來用（stale-if-error），
+            //   而那一條這一批不做（G97 的最小集之外），所以現在兩者確實一樣。
             cache::policy::Freshness::Stale | cache::policy::Freshness::MustRevalidate => {
                 let secondary =
                     cache::key::secondary(&entry.vary, cache_key_header(req, encodings));
@@ -983,7 +983,7 @@ impl FulcrumApp {
         }
     }
 
-    /// 原样转发（不缓存）。
+    /// 原樣轉發（不快取）。
     async fn proxy(
         &self,
         rt: &Runtime,
@@ -996,20 +996,20 @@ impl FulcrumApp {
             .await
     }
 
-    /// ★ ★ ★ **转发只有这一条路径，缓存叠在它上面。**
+    /// ★ ★ ★ **轉發只有這一條路徑，快取疊在它上面。**
     ///
-    /// 这不是省事：**能力翻译与语义映射一旦有了第二条路径就必然发生** ——
-    /// 一个「带缓存的转发」与一个「不带缓存的转发」若是两份代码，
-    /// 它们对 `header_up` / `rewrite` / 候选地址回退的处理迟早会分家，
-    /// ⚠ 而现场表现是「配了缓存之后某个头就没了」。
-    /// 把一次上游结果记进被动熔断，并在**状态翻面**时各打一行（**G136**）。
+    /// 這不是省事：**能力翻譯與語義映射一旦有了第二條路徑就必然發生** ——
+    /// 一個「帶快取的轉發」與一個「不帶快取的轉發」若是兩份程式碼，
+    /// 它們對 `header_up` / `rewrite` / 候選位址退回的處理遲早會分家，
+    /// ⚠ 而現場表現是「配了快取之後某個頭就沒了」。
+    /// 把一次上游結果記進被動熔斷，並在**狀態翻面**時各打一行（**G136**）。
     ///
-    /// ★ ★ **只有这一份推导**：三个落账点（连不上 / 读不到响应头 / 上游真的回了 5xx）
-    /// 全走它。⚠ 各写一遍的失效形态是「某一条路上的失败不算数」——
-    /// 而那条路恰好是最常见的那条时，整个特性就等于不存在，且没有任何症状。
+    /// ★ ★ **只有這一份推導**：三個落賬點（連不上 / 讀不到回應頭 / 上游真的回了 5xx）
+    /// 全走它。⚠ 各寫一遍的失效形態是「某一條路上的失敗不算數」——
+    /// 而那條路恰好是最常見的那條時，整個特性就等於不存在，且沒有任何症狀。
     ///
-    /// ⚠ ⚠ **只在翻面时打日志，⛔ 不是每次失败一行**：一个正在故障的上游每秒会产生
-    /// 成百上千次失败，逐次打日志会把现场淹掉 —— 而现场正是那时候最需要读的东西。
+    /// ⚠ ⚠ **只在翻面時打紀錄，⛔ 不是每次失敗一行**：一個正在故障的上游每秒會產生
+    /// 成百上千次失敗，逐次打紀錄會把現場淹掉 —— 而現場正是那時候最需要讀的東西。
     fn record_passive(target: &ProxyTarget, up: &fulcrum_runtime::Upstream, ok: bool) {
         if ok {
             if up.record_passive_success(target.passive.as_ref()) {
@@ -1047,17 +1047,17 @@ impl FulcrumApp {
         };
         let _guard = Inflight::acquire(up);
 
-        // SNI 取上游**主机名**；`transport http` 时用不到。
-        // ⚠ SNI 必须来自配置里写的那个名字，**不能用解析出来的 IP** ——
-        //   拿 IP 去握手，上游的证书一定对不上。
+        // SNI 取上游**主機名**；`transport http` 時用不到。
+        // ⚠ SNI 必須來自設定裡寫的那個名字，**不能用解析出來的 IP** ——
+        //   拿 IP 去握手，上游的證書一定對不上。
         let sni = up.addr.split(':').next().unwrap_or("").to_string();
-        // ★ ★ ★ **请求路径上绝不做 DNS**：这里拿的是后台任务解析好的地址。
-        //   ⚠ 改之前这里是 `HttpPeer::new(up.addr.clone(), …)`，而
-        //   `HttpPeer::new` 里是 `to_socket_addrs().unwrap()` ——
-        //   于是每个请求做一次**阻塞** getaddrinfo，解析不了就 **panic**（实测过）。
-        //   现在传的是 `SocketAddr`，它的 `to_socket_addrs()` 不会失败。
-        //   ★ `pick()` 已经筛掉了解析不出来的上游，所以走到这里通常是 Some；
-        //   ⚠ 但不 unwrap —— **「通常」不是判据**。
+        // ★ ★ ★ **請求路徑上絕不做 DNS**：這裡拿的是後台任務解析好的位址。
+        //   ⚠ 改之前這裡是 `HttpPeer::new(up.addr.clone(), …)`，而
+        //   `HttpPeer::new` 裡是 `to_socket_addrs().unwrap()` ——
+        //   於是每個請求做一次**阻塞** getaddrinfo，解析不了就 **panic**（實測過）。
+        //   現在傳的是 `SocketAddr`，它的 `to_socket_addrs()` 不會失敗。
+        //   ★ `pick()` 已經篩掉了解析不出來的上游，所以走到這裡通常是 Some；
+        //   ⚠ 但不 unwrap —— **「通常」不是判據**。
         let candidates = up.dial_candidates();
         if candidates.is_empty() {
             error!(
@@ -1067,17 +1067,17 @@ impl FulcrumApp {
             return Err(rt.defaults.all_upstreams_down);
         }
 
-        // ★ **逐个候选试，不是只试第一个** —— `localhost` 的第一个地址可能是 `[::1]`
-        //   而上游只听 `127.0.0.1`，现场只有一句「连不上上游」。
-        // ⚠ 只在**建连接**这一步回退：请求发出去之后再换上游那是重试语义，不归这里。
+        // ★ **逐個候選試，不是隻試第一個** —— `localhost` 的第一個位址可能是 `[::1]`
+        //   而上游只聽 `127.0.0.1`，現場只有一句「連不上上游」。
+        // ⚠ 只在**建連接**這一步退回：請求發出去之後再換上游那是重試語義，不歸這裡。
         let mut last_err: Option<String> = None;
         let mut got = None;
-        // ⚠ 连上的**那一个** peer 要留着：收尾归还连接（`release_http_session`）
-        //   必须用同一个 peer，否则连接池会按另一个 key 归档 —— 那等于池永远不复用。
+        // ⚠ 連上的**那一個** peer 要留著：收尾歸還連接（`release_http_session`）
+        //   必須用同一個 peer，否則連接池會按另一個 key 歸檔 —— 那等於池永遠不復用。
         let mut used_peer: Option<HttpPeer> = None;
-        // ★ 访问日志要的是**地址**。⚠ 别拿 `peer.to_string()` —— 实测它给的是
-        //   `addr: …, scheme: HTTP, sni: …` 那样一串给人看的调试文本，
-        //   而这一格是要被机器消费的。
+        // ★ 訪問紀錄要的是**位址**。⚠ 別拿 `peer.to_string()` —— 實測它給的是
+        //   `addr: …, scheme: HTTP, sni: …` 那樣一串給人看的偵錯文字，
+        //   而這一格是要被機器消費的。
         let mut used_dial: Option<std::net::SocketAddr> = None;
         for (i, dial) in candidates.iter().enumerate() {
             let peer = HttpPeer::new(*dial, target.tls, sni.clone());
@@ -1094,9 +1094,9 @@ impl FulcrumApp {
                 Err(e) => last_err = Some(format!("{dial}：{e}")),
             }
         }
-        // ★ G136 落账点①：**一个候选地址都没连上** —— 这是被动熔断要数的第一类失败。
-        //   ⚠ 它记的是「连不上」这件事本身，⛔ 不是下面那个合成出来的 502：
-        //   枢衡自己合成的 5xx 一律不落账（否则一次全站故障会把每个上游再熔一遍）。
+        // ★ G136 落賬點①：**一個候選位址都沒連上** —— 這是被動熔斷要數的第一類失敗。
+        //   ⚠ 它記的是「連不上」這件事本身，⛔ 不是下面那個合成出來的 502：
+        //   樞衡自己合成的 5xx 一律不落賬（否則一次全站故障會把每個上游再熔一遍）。
         if got.is_none() {
             Self::record_passive(target, up, false);
         }
@@ -1110,14 +1110,14 @@ impl FulcrumApp {
             return Err(rt.defaults.all_upstreams_down);
         };
         debug!("上游 {} （复用={reused}）", up.addr);
-        // ★ 记**真的连上的那一个**，不是配置里写的那串候选 ——
-        //   排障时想知道的是「这条请求最后落到谁身上」。
+        // ★ 記**真的連上的那一個**，不是設定裡寫的那串候選 ——
+        //   疑難排解時想知道的是「這條請求最後落到誰身上」。
         session.record.upstream = used_dial.map(|d| d.to_string());
 
-        // ── 上游请求头 ────────────────────────────────────────────────────
+        // ── 上游請求頭 ────────────────────────────────────────────────────
         let mut ureq = downstream_req.clone();
         if effective_path != ctx.path {
-            // `rewrite` 改过路径：要带到上游去。查询串按原样保留。
+            // `rewrite` 改過路徑：要帶到上游去。查詢串按原樣保留。
             let new_uri = if ctx.query.is_empty() {
                 effective_path.to_string()
             } else {
@@ -1132,9 +1132,9 @@ impl FulcrumApp {
             }
         }
         apply_ops_to_request(&mut ureq, &target.header_up, ctx, &routed.captures, started);
-        // ★ 重验证：把缓存里那条的校验器带给上游（M2 批 G）。
-        //   ⚠ 顺序在 `header_up` **之后**：用户显式写的 `header_up If-None-Match`
-        //   应当赢 —— 那是他明确要求的，而这几条是我们替他加的。
+        // ★ 重驗證：把快取裡那條的檢核器帶給上游（M2 批 G）。
+        //   ⚠ 順序在 `header_up` **之後**：使用者顯式寫的 `header_up If-None-Match`
+        //   應當贏 —— 那是他明確要求的，而這幾條是我們替他加的。
         if let Some(cp) = &pass
             && let Some(e) = &cp.revalidate
         {
@@ -1151,7 +1151,7 @@ impl FulcrumApp {
             return Err(rt.defaults.all_upstreams_down);
         }
 
-        // ── 请求体 ────────────────────────────────────────────────────────
+        // ── 請求體 ────────────────────────────────────────────────────────
         loop {
             match session.read_request_body().await {
                 Ok(Some(chunk)) => {
@@ -1172,10 +1172,10 @@ impl FulcrumApp {
             return Err(rt.defaults.all_upstreams_down);
         }
 
-        // ── 响应头 ────────────────────────────────────────────────────────
-        // ★ G136 落账点②：连上了、但**拿不回一个响应头**（超时、对端半路关了、协议错）。
-        //   ⚠ 它与①分开是有意的：①说的是「拨不通」，②说的是「拨通了但它不干活」，
-        //   而后者恰恰是主动健康检查最容易漏掉的一类。
+        // ── 回應頭 ────────────────────────────────────────────────────────
+        // ★ G136 落賬點②：連上了、但**拿不回一個回應頭**（超時、對端半路關了、協定錯）。
+        //   ⚠ 它與①分開是有意的：①說的是「撥不通」，②說的是「撥通了但它不幹活」，
+        //   而後者恰恰是主動健康檢查最容易漏掉的一類。
         if let Err(e) = upstream.read_response_header().await {
             error!("读上游响应头失败：{e}");
             Self::record_passive(target, up, false);
@@ -1189,19 +1189,19 @@ impl FulcrumApp {
         let mut dresp = uresp.clone();
         let status = dresp.status.as_u16();
 
-        // ★ ★ ★ G136 落账点③：**上游真的发回来的**状态码。这一条是这个特性的立身之本 ——
-        //   一个 `/health` 回 200 而真实业务在 500 的上游，主动健康检查看不出来，只有它看得见。
-        //   ⚠ ⚠ 判据是 `>= 500`，而这里拿到的是**上游发回来的那一个**（`uresp`），
-        //   ⛔ 不是枢衡合成的那些（`all_upstreams_down` / `no_route_match` / 错误页）——
-        //   那些根本不经过这一行。★ 这一点是「不自我强化」那条设计的**执行者**：
-        //   合成的 5xx 若也落账，一次全站故障会把每个上游轮流再熔一遍。
+        // ★ ★ ★ G136 落賬點③：**上游真的發回來的**狀態碼。這一條是這個特性的立身之本 ——
+        //   一個 `/health` 回 200 而真實業務在 500 的上游，主動健康檢查看不出來，只有它看得見。
+        //   ⚠ ⚠ 判據是 `>= 500`，而這裡拿到的是**上游發回來的那一個**（`uresp`），
+        //   ⛔ 不是樞衡合成的那些（`all_upstreams_down` / `no_route_match` / 錯誤頁）——
+        //   那些根本不經過這一行。★ 這一點是「不自我強化」那條設計的**執行者**：
+        //   合成的 5xx 若也落賬，一次全站故障會把每個上游輪流再熔一遍。
         Self::record_passive(target, up, status < 500);
 
-        // ── ★ ★ 重验证命中：304 ⇒ **只更新元数据，不动 body**（G83 那条理由的内存版）
+        // ── ★ ★ 重驗證命中：304 ⇒ **只更新中繼資料，不動 body**（G83 那條理由的記憶體版）
         //
-        // ⚠ ⚠ 这里回给客户端的是**缓存里那份完整响应**，不是上游这个 304 ——
-        //   304 是给我们看的，不是给客户端看的。★ 直接把 304 转下去，
-        //   客户端会拿到一个「没变」的答复，而它手上**根本没有那份内容**。
+        // ⚠ ⚠ 這裡回給用戶端的是**快取裡那份完整回應**，不是上游這個 304 ——
+        //   304 是給我們看的，不是給用戶端看的。★ 直接把 304 轉下去，
+        //   用戶端會拿到一個「沒變」的答覆，而它手上**根本沒有那份內容**。
         if status == 304
             && let Some(cp) = &pass
             && let Some(entry) = cp.revalidate.clone()
@@ -1225,31 +1225,31 @@ impl FulcrumApp {
             .await;
         }
 
-        // ── 缓存事件：回源（R7 的 `miss`）──────────────────────────────────
+        // ── 快取事件：回源（R7 的 `miss`）──────────────────────────────────
         //
-        // ★ ★ **这一行是「这条响应的内容来自上游」唯一的判定点**，而那正是 `miss`
-        //   的定义。上面那个 304 分支已经把「重验证成功、发出去的还是缓存里那一份」
-        //   摘走了（它在 `write_cached` 里记 `stale`）⇒ 走到这里的每一条都在往下游
-        //   发上游给的字节，无论它此前是没命中还是重验证没验住。
-        // ⚠ 记在这里而不是「查缓存没命中」那一处：那一处之后还可能拐弯 ——
-        //   `only-if-cached` 回 504（根本没回源）、防惊群的 follower 等完重查一次
-        //   **命中了**。在那里记，两种都会被算成 `miss`，而**数字看起来完全正常**。
-        // ⚠ `pass` 是 `None` 说明这个站点根本没配 `cache`：它没有「命中/未命中」
-        //   可言，一条都不记。★ 记了的话，`hit/(hit+miss)` 会被没开缓存的流量
-        //   稀释成一个假比例 —— 而那个比例读起来同样完全正常。
+        // ★ ★ **這一行是「這條回應的內容來自上游」唯一的判定點**，而那正是 `miss`
+        //   的定義。上面那個 304 分支已經把「重驗證成功、發出去的還是快取裡那一份」
+        //   摘走了（它在 `write_cached` 裡記 `stale`）⇒ 走到這裡的每一條都在往下游
+        //   發上遊給的位元組，無論它此前是沒命中還是重驗證沒驗住。
+        // ⚠ 記在這裡而不是「查快取沒命中」那一處：那一處之後還可能拐彎 ——
+        //   `only-if-cached` 回 504（根本沒回源）、防驚群的 follower 等完重查一次
+        //   **命中了**。在那裡記，兩種都會被算成 `miss`，而**數字看起來完全正常**。
+        // ⚠ `pass` 是 `None` 說明這個站台根本沒配 `cache`：它沒有「命中/未命中」
+        //   可言，一條都不記。★ 記了的話，`hit/(hit+miss)` 會被沒開快取的流量
+        //   稀釋成一個假比例 —— 而那個比例讀起來同樣完全正常。
         if pass.is_some() {
             cache::CacheEvent::Miss.record(1);
         }
 
-        // ★ 存进缓存的是**改完头之后**那一份（`header_down` 已经施加）——
-        //   ⚠ 存改头之前那份的话，命中时那些头会**消失**：一条 `header_down`
-        //   在未命中时生效、命中时不生效，而两次请求的配置一模一样。
-        //   ⇒ 两份快照都留着：`uresp_snapshot` 判可缓存性（那是上游说的话），
-        //   `dresp_snapshot` 是要存下来的内容。
+        // ★ 存進快取的是**改完頭之後**那一份（`header_down` 已經施加）——
+        //   ⚠ 存改頭之前那份的話，命中時那些頭會**消失**：一條 `header_down`
+        //   在未命中時生效、命中時不生效，而兩次請求的設定一模一樣。
+        //   ⇒ 兩份快照都留著：`uresp_snapshot` 判可快取性（那是上游說的話），
+        //   `dresp_snapshot` 是要存下來的內容。
         let uresp_snapshot = uresp.clone();
         {
-            // ★ 先算好取值再改头：`{resp_header.X}` 说的是**上游给的**那份，
-            //   而不是我们改到一半的那份。借用规则恰好把这件事逼成显式的。
+            // ★ 先算好取值再改頭：`{resp_header.X}` 說的是**上游給的**那份，
+            //   而不是我們改到一半的那份。借用規則恰好把這件事逼成顯式的。
             let snapshot = dresp.clone();
             let snap_headers = RespHeaders(&snapshot);
             let rc = ResponseCtx {
@@ -1276,14 +1276,14 @@ impl FulcrumApp {
             );
             apply_pairs(&mut dresp, &pairs);
         }
-        // ── ★ ★ 压缩（**M2 批 I**，G99–G102）────────────────────────────────
+        // ── ★ ★ 壓縮（**M2 批 I**，G99–G102）────────────────────────────────
         //
-        // 它的位置是判据的一部分，两侧都不能挪：
-        // · 排在 `header_down` **之后** —— 用户改的头要被压缩层看见
-        //   （`Content-Type` 决定压不压、`Content-Encoding` 决定要不要放过）；
-        // · 排在缓存捕获**之前** —— G101 拍的是「压完再存」，
-        //   ⇒ 缓存里那份就是压缩后的字节，命中时直接发、不必再压一遍。
-        // ⚠ `status_has_no_body`：没有体的响应（204/304）不许被加上 `chunked`。
+        // 它的位置是判據的一部分，兩側都不能挪：
+        // · 排在 `header_down` **之後** —— 使用者改的頭要被壓縮層看見
+        //   （`Content-Type` 決定壓不壓、`Content-Encoding` 決定要不要放過）；
+        // · 排在快取捕獲**之前** —— G101 拍的是「壓完再存」，
+        //   ⇒ 快取裡那份就是壓縮後的位元組，命中時直接發、不必再壓一遍。
+        // ⚠ `status_has_no_body`：沒有體的回應（204/304）不許被加上 `chunked`。
         let mut encoder = encode::Encoder::new(encode::wanted(routed), downstream_req);
         if let Some(enc) = &mut encoder {
             enc.header_filter(&mut dresp, encode::status_has_no_body(status));
@@ -1291,23 +1291,23 @@ impl FulcrumApp {
         let dresp_snapshot = dresp.clone();
         if let Err(e) = session.write_response_header(Box::new(dresp)).await {
             debug!("写下游响应头失败：{e}");
-            return Ok(()); // 下游没了，不是上游的错
+            return Ok(()); // 下游沒了，不是上游的錯
         }
 
-        // ── 响应体 ────────────────────────────────────────────────────────
+        // ── 回應體 ────────────────────────────────────────────────────────
         //
-        // ★ ★ **边发边捕获**，而不是先全收下来再发：一个正在下载 2GB 的客户端
-        //   不该等我们把 2GB 收完。⚠ 捕获只到 `max_size` 为止 ——
-        //   超过就**放弃缓存**并继续照发，而不是把内存吃光。
+        // ★ ★ **邊發邊捕獲**，而不是先全收下來再發：一個正在下載 2GB 的用戶端
+        //   不該等我們把 2GB 收完。⚠ 捕獲只到 `max_size` 為止 ——
+        //   超過就**放棄快取**並繼續照發，而不是把記憶體吃光。
         let mut captured: Option<Vec<u8>> = pass.as_ref().map(|_| Vec::new());
         let cap_limit = pass.as_ref().map(|p| p.cfg.max_size_bytes).unwrap_or(0);
         loop {
             match upstream.read_response_body().await {
                 Ok(Some(chunk)) => {
-                    // ★ ★ 压缩排在捕获之前（G101：压完再存）。
-                    //   ⚠ 压缩层会**攒**数据：一块进去可能什么都不出来，
-                    //   而**空块不能写下去** —— HTTP/1.1 的分块编码里
-                    //   一个零长块就是**体结束**，写下去等于把响应截断在这里。
+                    // ★ ★ 壓縮排在捕獲之前（G101：壓完再存）。
+                    //   ⚠ 壓縮層會**攢**資料：一塊進去可能什麼都不出來，
+                    //   而**空塊不能寫下去** —— HTTP/1.1 的分塊編碼裡
+                    //   一個零長塊就是**體結束**，寫下去等於把回應截斷在這裡。
                     let out = match &mut encoder {
                         Some(e) => e.body_filter(Some(&chunk), false),
                         None => None,
@@ -1320,9 +1320,9 @@ impl FulcrumApp {
                         if buf.len() as u64 + chunk.len() as u64 <= cap_limit {
                             buf.extend_from_slice(&chunk);
                         } else {
-                            // ⚠ 一超上限就**整条放弃**，而不是存半截。
-                            //   ★ 存半截 = 此后每个命中都拿到一个被截断的响应，
-                            //   而 `Content-Length` 还是原来那个 —— 客户端会挂在那儿等。
+                            // ⚠ 一超上限就**整條放棄**，而不是存半截。
+                            //   ★ 存半截 = 此後每個命中都拿到一個被截斷的回應，
+                            //   而 `Content-Length` 還是原來那個 —— 用戶端會掛在那兒等。
                             debug!("响应超过 max_size，本条不缓存");
                             captured = None;
                         }
@@ -1335,17 +1335,17 @@ impl FulcrumApp {
                 Ok(None) => break,
                 Err(e) => {
                     error!("读上游响应体失败：{e}");
-                    // 头已经发出去了，改不了状态码——只能断开。
-                    // ⚠ 这时**不许存**：我们手上是个不完整的响应。
+                    // 頭已經發出去了，改不了狀態碼——只能斷開。
+                    // ⚠ 這時**不許存**：我們手上是個不完整的回應。
                     return Ok(());
                 }
             }
         }
-        // ★ ★ 压缩的收尾：压缩层手上还攒着最后一段（gzip 的 footer、brotli 的收尾块）。
-        //   ⚠ 漏了这一步，客户端拿到的是一个**少了尾巴**的压缩流 —— 而
-        //   `Content-Length` 已经被压缩层去掉了，所以它不会「长度对不上」，
-        //   只会在解压到最后一刻报「意外的流结束」。★ 缓存里那份同样会少尾巴，
-        //   于是**每一次命中都重现同一个坏响应**。
+        // ★ ★ 壓縮的收尾：壓縮層手上還攢著最後一段（gzip 的 footer、brotli 的收尾塊）。
+        //   ⚠ 漏了這一步，用戶端拿到的是一個**少了尾巴**的壓縮流 —— 而
+        //   `Content-Length` 已經被壓縮層去掉了，所以它不會「長度對不上」，
+        //   只會在解壓到最後一刻報「意外的流結束」。★ 快取裡那份同樣會少尾巴，
+        //   於是**每一次命中都重現同一個壞回應**。
         if let Some(enc) = &mut encoder
             && let Some(tail) = enc.body_filter(None, true)
             && !tail.is_empty()
@@ -1364,7 +1364,7 @@ impl FulcrumApp {
         }
         let _ = session.write_response_body(Bytes::new(), true).await;
 
-        // ── 存进缓存 ──────────────────────────────────────────────────────
+        // ── 存進快取 ──────────────────────────────────────────────────────
         if let (Some(cp), Some(body)) = (pass.take(), captured) {
             store_if_allowed(
                 &cp,
@@ -1376,7 +1376,7 @@ impl FulcrumApp {
             );
         }
 
-        // ★ 归还连接到池子里。失败不影响本次请求，但要说出来。
+        // ★ 歸還連接到池子裡。失敗不影響本次請求，但要說出來。
         self.connector
             .release_http_session(upstream, &peer, None)
             .await;
@@ -1384,33 +1384,33 @@ impl FulcrumApp {
     }
 }
 
-/// 一次「带缓存的转发」要带着的东西。
+/// 一次「帶快取的轉發」要帶著的東西。
 struct CachePass<'a> {
     cfg: &'a CacheRt,
     handle: &'a cache::CacheHandle,
     primary: String,
-    /// 重验证时是那条已有条目的次级键；未命中时先空着，存的时候按响应的 `Vary` 算。
+    /// 重驗證時是那條已有條目的次級鍵；未命中時先空著，存的時候按回應的 `Vary` 算。
     secondary: String,
-    /// 非 `None` = 这次是**重验证**，缓存里已经有一条。
+    /// 非 `None` = 這次是**重驗證**，快取裡已經有一條。
     revalidate: Option<Box<cache::store::Entry>>,
     req_cc: cache::cc::RequestCc,
-    /// 这条链上 `encode` 要求的算法（**M2 批 I**）。
+    /// 這條鏈上 `encode` 要求的演算法（**M2 批 I**）。
     ///
-    /// ⚠ ⚠ 它进这个结构**只为一件事**：存的时候算次级键要用它归一化
-    /// `Accept-Encoding`（G101）—— 而查的时候用的必须是**同一个**列表，
-    /// 否则存与查落在两个键上，缓存永远不命中。
-    /// ★ 带进来而不是在 `store_if_allowed` 里从 `Routed` 现取，是因为那里拿不到 `Routed`。
+    /// ⚠ ⚠ 它進這個結構**只為一件事**：存的時候算次級鍵要用它歸一化
+    /// `Accept-Encoding`（G101）—— 而查的時候用的必須是**同一個**列表，
+    /// 否則存與查落在兩個鍵上，快取永遠不命中。
+    /// ★ 帶進來而不是在 `store_if_allowed` 裡從 `Routed` 現取，是因為那裡拿不到 `Routed`。
     encodings: Vec<String>,
 }
 
-/// 查缓存的三种结果。
+/// 查快取的三種結果。
 enum CacheAttempt {
-    /// 已经发完了。
+    /// 已經發完了。
     Served(Result<(), u16>),
-    /// 缓存里有，但要先问上游。
+    /// 快取裡有，但要先問上游。
     ///
-    /// ⚠ `entry` 装了箱，理由与 `store::Lookup::Hit` 一样：这个枚举在
-    /// **每一次未命中时也要被构造**，而条目本身比别的变体大一个数量级。
+    /// ⚠ `entry` 裝了箱，理由與 `store::Lookup::Hit` 一樣：這個枚舉在
+    /// **每一次未命中時也要被建構**，而條目本身比別的變體大一個數量級。
     Revalidate {
         secondary: String,
         entry: Box<cache::store::Entry>,
@@ -1429,21 +1429,21 @@ fn header_str<'a>(req: &'a RequestHeader, name: &str) -> Option<&'a str> {
     req.headers.get(name).and_then(|v| v.to_str().ok())
 }
 
-/// 算缓存次级键时用的「取一个请求头」——**只有 `Accept-Encoding` 被归一化**（**G101**）。
+/// 算快取次級鍵時用的「取一個請求頭」——**只有 `Accept-Encoding` 被歸一化**（**G101**）。
 ///
-/// G101 拍了「压完再存」⇒ 缓存里那份是压过的，`Vary: Accept-Encoding` 让缓存按这个头分身。
-/// ⚠ 浏览器发的写法与顺序千奇百怪 —— 拿原值当次级键，同一条 URL 会存出几十份
-/// **内容完全相同**的条目。
+/// G101 拍了「壓完再存」⇒ 快取裡那份是壓過的，`Vary: Accept-Encoding` 讓快取按這個頭分身。
+/// ⚠ 瀏覽器發的寫法與順序千奇百怪 —— 拿原值當次級鍵，同一條 URL 會存出幾十份
+/// **內容完全相同**的條目。
 ///
-/// ⚠ ⚠ **「查」和「存」两处必须用同一个函数** —— 正确性就建立在这一点上。
-/// ★ 它不改动 `key::secondary` 的签名，于是两个后端一个字都不用动。
+/// ⚠ ⚠ **「查」和「存」兩處必須用同一個函式** —— 正確性就建立在這一點上。
+/// ★ 它不改動 `key::secondary` 的簽名，於是兩個後端一個字都不用動。
 fn cache_key_header<'a>(
     req: &'a RequestHeader,
     encodings: &'a [String],
 ) -> impl FnMut(&str) -> Option<&'a str> + 'a {
     move |name: &str| {
         if name.eq_ignore_ascii_case("accept-encoding") {
-            // ★ 返回的是 `&'static str`，所以这里没有生命周期上的麻烦。
+            // ★ 回傳的是 `&'static str`，所以這裡沒有生命週期上的麻煩。
             Some(encode::preferred_encoding(header_str(req, name), encodings))
         } else {
             header_str(req, name)
@@ -1459,7 +1459,7 @@ fn cache_cc_of(h: &http::HeaderMap) -> cache::cc::ResponseCc {
     cache::cc::parse_response(resp_header_str(h, "cache-control").unwrap_or(""))
 }
 
-/// 这次响应的新鲜期（秒）。★ `ttl` 是**兜底**（G96）—— 走到最后一步才用它。
+/// 這次回應的新鮮期（秒）。★ `ttl` 是**備援**（G96）—— 走到最後一步才用它。
 fn cache_freshness_of(h: &http::HeaderMap, cfg: &CacheRt, now: i64) -> u64 {
     let cc = cache_cc_of(h);
     if let Some(n) = cc.shared_max_age() {
@@ -1474,11 +1474,11 @@ fn cache_freshness_of(h: &http::HeaderMap, cfg: &CacheRt, now: i64) -> u64 {
     cfg.ttl_ms.map(|ms| ms / 1000).unwrap_or(0)
 }
 
-/// 把缓存里那条发给客户端。
+/// 把快取裡那條發給用戶端。
 ///
-/// ⚠ ⚠ **`Age` 头是必须的**（RFC 9111 §5.1）：下游可能还有一层缓存，
-/// 它要拿 `Age` 去算自己的新鲜度。★ 不发的话，一条已经在我们这儿放了 59 分钟的响应，
-/// 在下一层看起来是**刚出炉的** —— 于是同一份内容会被一路放大到两倍寿命。
+/// ⚠ ⚠ **`Age` 頭是必須的**（RFC 9111 §5.1）：下游可能還有一層快取，
+/// 它要拿 `Age` 去算自己的新鮮度。★ 不發的話，一條已經在我們這兒放了 59 分鐘的回應，
+/// 在下一層看起來是**剛出爐的** —— 於是同一份內容會被一路放大到兩倍壽命。
 async fn write_cached(
     session: &mut Downstream<'_>,
     entry: &cache::store::Entry,
@@ -1498,16 +1498,16 @@ async fn write_cached(
         let _ = resp.append_header(k.clone(), v);
     }
     let _ = resp.insert_header("Age", age.to_string());
-    // ★ 让「这一条是从哪来的」在**响应里**看得见，而不是只在日志里。
-    //   ⚠ 判据也靠它：只看状态码与体，命中与回源长得一模一样。
-    // ⚠ 后端后缀（`-DISK`）由 `store` 加 —— 它知道本进程挑中了哪个后端。
+    // ★ 讓「這一條是從哪來的」在**回應裡**看得見，而不是隻在紀錄裡。
+    //   ⚠ 判據也靠它：只看狀態碼與體，命中與回源長得一模一樣。
+    // ⚠ 後端後綴（`-DISK`）由 `store` 加 —— 它知道本處理程序挑中了哪個後端。
     let header = store.state(state);
     let _ = resp.insert_header("X-Fulcrum-Cache", header.as_str());
-    // ★ ★ ★ 响应头、访问日志那一格、指标那一格**三者取同一个 `state`，在同一处赋** ——
-    //   分几处各算一遍的话，它们哪天不一致，每一处读起来都很正常（G66 的形状）。
-    //   ⚠ 回源那条路**没有**这个头，所以日志里也没有 `cache` 这一格（契约里写死的）；
-    //     它的 `miss` 记在 `proxy_with` 里回源那一处。
-    //   ⚠ 指标那一格比响应头**粗**：`HIT` 与 `HIT-DISK` 折成同一个 `hit`（R7）。
+    // ★ ★ ★ 回應頭、訪問紀錄那一格、指標那一格**三者取同一個 `state`，在同一處賦** ——
+    //   分幾處各算一遍的話，它們哪天不一致，每一處讀起來都很正常（G66 的形狀）。
+    //   ⚠ 回源那條路**沒有**這個頭，所以紀錄裡也沒有 `cache` 這一格（契約裡寫死的）；
+    //     它的 `miss` 記在 `proxy_with` 裡回源那一處。
+    //   ⚠ 指標那一格比回應頭**粗**：`HIT` 與 `HIT-DISK` 折成同一個 `hit`（R7）。
     session.record.cache = Some(header);
     state.event().record(1);
     let _ = resp.insert_header("Content-Length", entry.body.len().to_string());
@@ -1521,7 +1521,7 @@ async fn write_cached(
     Ok(())
 }
 
-/// 逐跳头：**不许存**，也不许原样转发（RFC 9110 §7.6.1）。
+/// 逐跳頭：**不許存**，也不許原樣轉發（RFC 9110 §7.6.1）。
 const HOP_BY_HOP: &[&str] = &[
     "connection",
     "keep-alive",
@@ -1533,7 +1533,7 @@ const HOP_BY_HOP: &[&str] = &[
     "upgrade",
 ];
 
-/// 判一次响应能不能存，能就存。
+/// 判一次回應能不能存，能就存。
 fn store_if_allowed(
     cp: &CachePass<'_>,
     uresp: &ResponseHeader,
@@ -1544,13 +1544,13 @@ fn store_if_allowed(
 ) {
     let now = now_unix();
     let cc = cache_cc_of(&uresp.headers);
-    // ★ ★ ★ **可缓存性看上游那份（`uresp`），次级键看我们发出去的那份（`dresp`）。**
-    //   `Vary: Accept-Encoding` 是**压缩层加在 `dresp` 上的**，`uresp` 里一个字没有 ⇒
-    //   从 `uresp` 取会得到空 vary ⇒ 次级键恒空 ⇒ 所有客户端共用同一条，而那条是压过的
-    //   ⇒ **一个从没说过自己认 gzip 的客户端会收到 gzip 的字节**。
-    //   ⚠ 现场是「有些客户端看到乱码」，而两边的头都完全正常。
-    // ⇒ **承诺是谁做的，键就跟谁走。**
-    // ★ 而 `vary_star`（`Vary: *`）仍看 `uresp`：那是可缓存性判断，属于上游说的话。
+    // ★ ★ ★ **可快取性看上游那份（`uresp`），次級鍵看我們發出去的那份（`dresp`）。**
+    //   `Vary: Accept-Encoding` 是**壓縮層加在 `dresp` 上的**，`uresp` 裡一個字沒有 ⇒
+    //   從 `uresp` 取會得到空 vary ⇒ 次級鍵恆空 ⇒ 所有用戶端共用同一條，而那條是壓過的
+    //   ⇒ **一個從沒說過自己認 gzip 的用戶端會收到 gzip 的位元組**。
+    //   ⚠ 現場是「有些用戶端看到亂碼」，而兩邊的頭都完全正常。
+    // ⇒ **承諾是誰做的，鍵就跟誰走。**
+    // ★ 而 `vary_star`（`Vary: *`）仍看 `uresp`：那是可快取性判斷，屬於上游說的話。
     let vary_raw = resp_header_str(&dresp.headers, "vary").unwrap_or("");
     let upstream_vary = resp_header_str(&uresp.headers, "vary").unwrap_or("");
     let input = cache::policy::StoreInput {
@@ -1566,7 +1566,7 @@ fn store_if_allowed(
         body_len: Some(body.len() as u64),
         max_size: cp.cfg.max_size_bytes,
         default_ttl_secs: cp.cfg.ttl_ms.map(|ms| ms / 1000),
-        // ★ 这一条看**上游**那份（理由见上面 `upstream_vary` 那段）。
+        // ★ 這一條看**上游**那份（理由見上面 `upstream_vary` 那段）。
         vary_star: cache::key::is_vary_star(upstream_vary),
         has_set_cookie: uresp.headers.get("set-cookie").is_some(),
     };
@@ -1581,12 +1581,12 @@ fn store_if_allowed(
     let vary = cache::key::parse_vary(vary_raw);
     let secondary = cache::key::secondary(&vary, cache_key_header(req, &cp.encodings));
 
-    // ★ ★ 存的是**改完头之后**那一份（`header_down` 已经施加），但要剥两类头：
-    //   ① 逐跳头 —— 它们属于**这一条连接**，存下来发给别人是错的；
-    //   ② `no-cache="字段名"` 与 `private="字段名"` 点名的那几个 —— RFC 9111 §5.2.2
-    //      说得很明确，共享缓存不许把它们发给别人。
-    //   ⚠ ⚠ ② 这一条最容易漏：`no-cache="Set-Cookie"` 的意思正是
-    //   「你可以存这个响应，但**别把那个头转给下一个人**」。漏了它就是串号。
+    // ★ ★ 存的是**改完頭之後**那一份（`header_down` 已經施加），但要剝兩類頭：
+    //   ① 逐跳頭 —— 它們屬於**這一條連接**，存下來發給別人是錯的；
+    //   ② `no-cache="字段名"` 與 `private="字段名"` 點名的那幾個 —— RFC 9111 §5.2.2
+    //      說得很明確，共享快取不許把它們發給別人。
+    //   ⚠ ⚠ ② 這一條最容易漏：`no-cache="Set-Cookie"` 的意思正是
+    //   「你可以存這個回應，但**別把那個頭轉給下一個人**」。漏了它就是串號。
     let mut headers: Vec<(String, String)> = Vec::new();
     for (k, v) in dresp.headers.iter() {
         let name = k.as_str().to_ascii_lowercase();
@@ -1596,7 +1596,7 @@ fn store_if_allowed(
         if cc.no_cache_fields.contains(&name) || cc.private_fields.contains(&name) {
             continue;
         }
-        // `Content-Length` 由 `write_cached` 自己按体长重算 —— 存下来会打架。
+        // `Content-Length` 由 `write_cached` 自己按體長重算 —— 存下來會打架。
         if name == "content-length" || name == "age" {
             continue;
         }
@@ -1620,8 +1620,8 @@ fn store_if_allowed(
     cp.handle.store.put(&cp.primary, secondary, entry);
 }
 
-/// 取 Host：h1 看 `Host` 头，h2 看 `:authority`（Pingora 会把它填进 uri）。
-/// ★ 借请求头、⛔ 不分配（HTTP 层诊断 10-05 · 请求路径上的字符串分配）。
+/// 取 Host：h1 看 `Host` 頭，h2 看 `:authority`（Pingora 會把它填進 uri）。
+/// ★ 借請求頭、⛔ 不分配（HTTP 層診斷 10-05 · 請求路徑上的字串分配）。
 fn host_of(req: &RequestHeader) -> &str {
     if let Some(v) = req.headers.get("host")
         && let Ok(s) = v.to_str()
@@ -1632,14 +1632,14 @@ fn host_of(req: &RequestHeader) -> &str {
     req.uri.host().unwrap_or("")
 }
 
-/// 把一个 [`Outcome`] 翻成访问日志契约里那个**闭集**的取值。
+/// 把一個 [`Outcome`] 翻成訪問紀錄契約裡那個**閉集**的取值。
 ///
-/// ★ **穷尽 `match` 是判据**：契约写着 `outcome` 是闭集，而「闭集」要有东西守着才算数
-/// ⇒ 给 [`Outcome`] 加一种终结方式时**这里编不过**。
+/// ★ **窮盡 `match` 是判據**：契約寫著 `outcome` 是閉集，而「閉集」要有東西守著才算數
+/// ⇒ 給 [`Outcome`] 加一種終結方式時**這裡編不過**。
 ///
-/// ★ ★ 返回 [`OutcomeName`] 而不是 `&'static str`，堵的是另一条路：
-/// 编译器逼你补一条臂，但**逼不了你在那条臂里写一个正当的值** ——
-/// 返回类型一收紧，`=> "foo"` 就当场是类型错误。
+/// ★ ★ 回傳 [`OutcomeName`] 而不是 `&'static str`，堵的是另一條路：
+/// 編譯器逼你補一條臂，但**逼不了你在那條臂裡寫一個正當的值** ——
+/// 回傳類型一收緊，`=> "foo"` 就當場是類型錯誤。
 fn outcome_name(o: &Outcome<'_>) -> OutcomeName {
     match o {
         Outcome::Respond { .. } => OUTCOME_RESPOND,
@@ -1651,10 +1651,10 @@ fn outcome_name(o: &Outcome<'_>) -> OutcomeName {
     }
 }
 
-/// ★ ★ 客户端 IP 与端口 = **socket 对端**。不看 `X-Forwarded-For`（客户端可伪造）。
+/// ★ ★ 用戶端 IP 與連接埠 = **socket 對端**。不看 `X-Forwarded-For`（用戶端可偽造）。
 ///
-/// ★ Unix socket 上没有 IP：返回 `None` 而不是编一个 `127.0.0.1`——
-/// `remote_ip` 匹配器在取不到 IP 时判**不命中**，那是安全的一侧。
+/// ★ Unix socket 上沒有 IP：回傳 `None` 而不是編一個 `127.0.0.1`——
+/// `remote_ip` 匹配器在取不到 IP 時判**不命中**，那是安全的一側。
 fn client_addr(session: &ServerSession) -> (Option<IpAddr>, u16) {
     match session.client_addr().and_then(|a| a.as_inet()) {
         Some(a) => (Some(a.ip()), a.port()),
@@ -1662,32 +1662,32 @@ fn client_addr(session: &ServerSession) -> (Option<IpAddr>, u16) {
     }
 }
 
-/// 这条连接的 TLS 四格（**M2 批 L 第 ③ 步**；**改成单一来源**）。
+/// 這條連接的 TLS 四格（**M2 批 L 第 ③ 步**；**改成單一來源**）。
 /// `None` = 它不是 TLS。
 ///
-/// ★ **四格全部来自同一个 `SslDigest`**，h1/h2 与 h3 走同一段代码 —— 差别只在
-/// 谁造了那份 digest（h1/h2 是上游的 `from_ssl()`，h3 是 [`crate::quic::h3_session`]）。
-/// ⇒ 「同一格数据两个填法」在这一层做不到。
+/// ★ **四格全部來自同一個 `SslDigest`**，h1/h2 與 h3 走同一段程式碼 —— 差別只在
+/// 誰造了那份 digest（h1/h2 是上游的 `from_ssl()`，h3 是 [`crate::quic::h3_session`]）。
+/// ⇒ 「同一格資料兩個填法」在這一層做不到。
 ///
-/// ⚠ **h3 上 `cipher` 是空的** —— quiche 的 `Handshake::cipher()` 锁在私有 `mod tls` 里。
-/// 空串在 [`access_log::TlsFields`] 里就是「这一格不出现」。
+/// ⚠ **h3 上 `cipher` 是空的** —— quiche 的 `Handshake::cipher()` 鎖在私有 `mod tls` 裡。
+/// 空串在 [`access_log::TlsFields`] 裡就是「這一格不出現」。
 fn tls_fields(session: &ServerSession) -> Option<access_log::TlsFields> {
     let ssl = session.digest()?.ssl_digest.as_ref()?;
     Some(access_log::TlsFields {
         version: ssl.version.to_string(),
         cipher: ssl.cipher.to_string(),
-        // ★ fork 改动 14：上游的 `SslDigest` 本来没有这两格。
+        // ★ fork 改動 14：上游的 `SslDigest` 本來沒有這兩格。
         sni: ssl.sni.clone(),
         alpn: ssl.alpn.clone(),
     })
 }
 
-/// 只带状态码与上游地址的响应上下文。
+/// 只帶狀態碼與上游位址的回應上下文。
 ///
-/// ⚠ **不在这里塞响应头**：`ResponseCtx.headers` 要一个 `&dyn Headers`，
-/// 而它必须借用一个活着的 `RespHeaders`。⚠ 不要用 `Box::leak` 绕过它 ——
-/// 那是**每个请求泄漏一次**，而一个「能编过、跑得动、内存慢慢涨」的写法
-/// 正是最难在测试里看见的那种。需要响应头的地方在栈上自己建。
+/// ⚠ **不在這裡塞回應頭**：`ResponseCtx.headers` 要一個 `&dyn Headers`，
+/// 而它必須借用一個活著的 `RespHeaders`。⚠ 不要用 `Box::leak` 繞過它 ——
+/// 那是**每個請求洩漏一次**，而一個「能編過、跑得動、記憶體慢慢漲」的寫法
+/// 正是最難在測試裡看見的那種。需要回應頭的地方在棧上自己建。
 fn resp_ctx<'a>(status: u16, upstream: Option<&'a str>) -> ResponseCtx<'a> {
     ResponseCtx {
         status: Some(status),
@@ -1696,10 +1696,10 @@ fn resp_ctx<'a>(status: u16, upstream: Option<&'a str>) -> ResponseCtx<'a> {
     }
 }
 
-/// 把一串头操作展开成 `(名字, 取值)`。名字前缀 `+` = 追加，`-` = 删除。
+/// 把一串頭操作展開成 `(名字, 取值)`。名字前綴 `+` = 追加，`-` = 刪除。
 ///
-/// ★ 泛型接 `&HeaderOpRt` 的迭代器，于是 `&[HeaderOpRt]` 与 `&[&HeaderOpRt]`
-/// 两种形状都能直接喂进来，不必为了统一类型先 clone 一份。
+/// ★ 泛型接 `&HeaderOpRt` 的迭代器，於是 `&[HeaderOpRt]` 與 `&[&HeaderOpRt]`
+/// 兩種形狀都能直接喂進來，不必為了統一類型先 clone 一份。
 fn collect_ops<'o>(
     ops: impl IntoIterator<Item = &'o HeaderOpRt>,
     ctx: &RequestCtx<'_>,
@@ -1724,7 +1724,7 @@ fn collect_ops<'o>(
     }
 }
 
-/// 把 `(名字, 取值)` 施加到响应头上。
+/// 把 `(名字, 取值)` 施加到回應頭上。
 fn apply_pairs(resp: &mut ResponseHeader, pairs: &[(String, String)]) {
     for (name, value) in pairs {
         if let Some(n) = name.strip_prefix('-') {
@@ -1768,11 +1768,11 @@ fn apply_ops_to_request(
 
 /// `respond` 的正文。
 ///
-/// ★ 整段都是字面量时**不拷**：返回的 `Bytes` 直接指着模板装载时建好的那一份
-///   （[`Template::shared_literal`]），每个请求只剩 `from_owner` 那一个几十字节的小分配。
-///   ⚠ 没让 `fulcrum-runtime` 直接存 `Bytes`（那样连小分配都没有）：要给它加 `bytes` 依赖、
-///   改 `Cargo.lock`，而 aarch64 那一格的触发集哈希的正是整份 `Cargo.lock`。
-/// 有占位符的照旧按请求展开。
+/// ★ 整段都是字面值時**不拷**：回傳的 `Bytes` 直接指著範本裝載時建好的那一份
+///   （[`Template::shared_literal`]），每個請求只剩 `from_owner` 那一個幾十位元組的小分配。
+///   ⚠ 沒讓 `fulcrum-runtime` 直接存 `Bytes`（那樣連小分配都沒有）：要給它加 `bytes` 依賴、
+///   改 `Cargo.lock`，而 aarch64 那一格的觸發集雜湊的正是整份 `Cargo.lock`。
+/// 有佔位符的照舊按請求展開。
 fn respond_body(
     t: &Template,
     ctx: &RequestCtx<'_>,
@@ -1786,12 +1786,12 @@ fn respond_body(
     }
 }
 
-/// 一条待写的简单响应 —— 就是 [`write_with_headers`] 收的那三样（**HTTP 层诊断发现 2 · 请求头不整份克隆**）。
+/// 一條待寫的簡單回應 —— 就是 [`write_with_headers`] 收的那三樣（**HTTP 層診斷髮現 2 · 請求頭不整份克隆**）。
 ///
-/// ★ 把「算」与「写」拆开的理由：算要借请求头（`ctx`），写要 `&mut session`，
-///   而请求头就在 `session` 里 ⇒ 两件事不能同时进行；先算完、放掉借用、再写。
-/// ★ `#[must_use]`：算出来却没写出去，这条请求就一个字节都不发、状态记成 0 —— 拆开之前
-///   `write_simple(..)` 返回 future，忘了 `.await` 会被 lint 抓到；拆开之后要靠这一行。
+/// ★ 把「算」與「寫」拆開的理由：算要借請求頭（`ctx`），寫要 `&mut session`，
+///   而請求頭就在 `session` 裡 ⇒ 兩件事不能同時進行；先算完、放掉借用、再寫。
+/// ★ `#[must_use]`：算出來卻沒寫出去，這條請求就一個位元組都不發、狀態記成 0 —— 拆開之前
+///   `write_simple(..)` 回傳 future，忘了 `.await` 會被 lint 抓到；拆開之後要靠這一行。
 #[must_use]
 struct Prepared {
     status: u16,
@@ -1799,7 +1799,7 @@ struct Prepared {
     extra: Vec<(String, String)>,
 }
 
-/// 算：站点的 `header` 指令按这条响应展开。
+/// 算：站台的 `header` 指令按這條回應展開。
 fn prepare_simple(
     status: u16,
     body: Option<Bytes>,
@@ -1817,17 +1817,17 @@ fn prepare_simple(
     }
 }
 
-/// 写：交给 [`write_with_headers`]。
+/// 寫：交給 [`write_with_headers`]。
 async fn write_prepared(session: &mut Downstream<'_>, p: Prepared) {
     write_with_headers(session, p.status, p.body, p.extra).await;
 }
 
-/// 算好的错误页。★ `#[must_use]`：拿到它就得交给 [`write_error_page`]，
-/// 而 `outcome = error` 只从那里出来 —— 与拆开之前「`write_error` 的返回值逼着处理」同一条纪律。
+/// 算好的錯誤頁。★ `#[must_use]`：拿到它就得交給 [`write_error_page`]，
+/// 而 `outcome = error` 只從那裡出來 —— 與拆開之前「`write_error` 的回傳值逼著處理」同一條紀律。
 #[must_use]
 struct ErrorPage(Prepared);
 
-/// 错误页：算。优先用站点的 `handle_errors`。
+/// 錯誤頁：算。優先用站台的 `handle_errors`。
 fn prepare_error(
     rt: &Runtime,
     site: &SiteRt,
@@ -1838,8 +1838,8 @@ fn prepare_error(
 ) -> ErrorPage {
     ErrorPage(match rt.error_page(site) {
         Some(page) => {
-            // ★ `handle_errors` 块内 `{status}` 指的是**原始**错误码，
-            //   不是它自己那条 respond 的码——否则那个占位符毫无用处。
+            // ★ `handle_errors` 塊內 `{status}` 指的是**原始**錯誤碼，
+            //   不是它自己那條 respond 的碼——否則那個佔位符毫無用處。
             let rc = resp_ctx(status, None);
             let body = page
                 .body
@@ -1850,16 +1850,16 @@ fn prepare_error(
     })
 }
 
-/// 错误页：写。⚠ 进到这里就意味着这一条最终是**错误页** —— `outcome` 从这里出来。
+/// 錯誤頁：寫。⚠ 進到這裡就意味著這一條最終是**錯誤頁** —— `outcome` 從這裡出來。
 async fn write_error_page(session: &mut Downstream<'_>, page: ErrorPage) -> OutcomeName {
     write_prepared(session, page.0).await;
     OUTCOME_ERROR
 }
 
-/// 不建大小写表时，这个头名在 h1 上会不会**照原样**写出去（G162）。
+/// 不建大小寫表時，這個頭名在 h1 上會不會**照原樣**寫出去（G162）。
 ///
-/// pingora 没表时按 `titled_header_name_str` 写：表里有就写那一种，没有就写小写 ⇒ 只有恰好是那一种写法的名，
-/// 换 `build_no_case` 才逐字节不变。`X-Frame-Options`、`content-type` 都不是（前者会变小写，后者会变 `Content-Type`）。
+/// pingora 沒表時按 `titled_header_name_str` 寫：表裡有就寫那一種，沒有就寫小寫 ⇒ 只有恰好是那一種寫法的名，
+/// 換 `build_no_case` 才逐位元組不變。`X-Frame-Options`、`content-type` 都不是（前者會變小寫，後者會變 `Content-Type`）。
 pub(crate) fn h1_name_as_is(name: &str) -> bool {
     match http::HeaderName::from_bytes(name.as_bytes()) {
         Ok(h) => pingora_http::titled_header_name_str(&h).unwrap_or(h.as_str()) == name,
@@ -1867,12 +1867,12 @@ pub(crate) fn h1_name_as_is(name: &str) -> bool {
     }
 }
 
-/// 枢衡自己构的响应头（G162）：要插的名都照原样写得出就**不建大小写表**（每个响应省一张表），否则照旧建。
+/// 樞衡自己構的回應頭（G162）：要插的名都照原樣寫得出就**不建大小寫表**（每個回應省一張表），否則照舊建。
 ///
-/// `extra` 是 [`apply_pairs`] 收的那种对子：`-名` 只删不插 ⇒ 不碍事；`+名` 与 `名` 看名本身。
-/// ★ 用户 `header` 指令的名大小写随意 ⇒ 写了不合缺省写法的名，那一条响应仍建表、照他写的发。
-/// ⚠ 本函数之外再往这个头里插的名（下面两个字面量、漏斗里的 `Alt-Svc`、pingora 写响应时用常量补的）
-///   都必须照原样写得出 —— 由 `自建响应里固定插的名都照原样写得出` 那条测试钉着。
+/// `extra` 是 [`apply_pairs`] 收的那種對子：`-名` 只刪不插 ⇒ 不礙事；`+名` 與 `名` 看名本身。
+/// ★ 使用者 `header` 指令的名大小寫隨意 ⇒ 寫了不合預設寫法的名，那一條回應仍建表、照他寫的發。
+/// ⚠ 本函式之外再往這個頭裡插的名（下面兩個字面值、漏斗裡的 `Alt-Svc`、pingora 寫回應時用常數補的）
+///   都必須照原樣寫得出 —— 由 `自建响应里固定插的名都照原样写得出` 那條測試釘著。
 fn self_built_header(
     status: u16,
     extra: &[(String, String)],
@@ -1887,14 +1887,14 @@ fn self_built_header(
     }
 }
 
-/// 带正文的自建响应缺省的 `Content-Type`。
+/// 帶正文的自建回應預設的 `Content-Type`。
 const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
 
-/// [`write_with_headers`] 要写的那份响应头：只算、⛔ 不写。`body_len` 为 `None` = 没有正文。
+/// [`write_with_headers`] 要寫的那份回應頭：只算、⛔ 不寫。`body_len` 為 `None` = 沒有正文。
 ///
-/// ★ 除了头表本身，只有 `Content-Length` 的值分配一次（2026-10-15 · respond 剩的分配）：
-///   `Content-Type` 走 `from_static`，⛔ 别换回 `&str` —— 那会经 `HeaderValue::from_str` 每个响应拷一份。
-/// ★ pub 只为 `tests/respond_alloc.rs` 数分配。
+/// ★ 除了頭表本身，只有 `Content-Length` 的值分配一次（2026-10-15 · respond 剩的分配）：
+///   `Content-Type` 走 `from_static`，⛔ 別換回 `&str` —— 那會經 `HeaderValue::from_str` 每個回應拷一份。
+/// ★ pub 只為 `tests/respond_alloc.rs` 數分配。
 pub fn simple_response_header(
     status: u16,
     body_len: Option<usize>,
@@ -1937,23 +1937,23 @@ async fn write_with_headers(
     }
 }
 
-/// 把装载结论打出来：生效的默认值（G52 的接班人）、自环、
-/// 未接线能力（[`fulcrum_runtime::UNWIRED`]）。
+/// 把裝載結論打出來：生效的預設值（G52 的接班人）、自環、
+/// 未串接能力（[`fulcrum_runtime::UNWIRED`]）。
 ///
-/// ★ 装载时说清楚，而不是等出事再查——回落是真实的性能与运维成本，
-/// 未接线的能力是真实的功能缺口，两者都不该需要另外去问才知道。
+/// ★ 裝載時說清楚，而不是等出事再查——回落是真實的效能與維運成本，
+/// 未串接的能力是真實的功能缺口，兩者都不該需要另外去問才知道。
 pub fn log_load_summary(
     cfg: &fulcrum_config::StructuredConfig,
     rt: &Runtime,
     cache: &cache::CacheHandle,
 ) {
-    // ★ ★ ★ **自研静态文件：把生效的 hide 清单逐字打出来**（G88 的「可见性」那一格，M2 批 F）。
+    // ★ ★ ★ **自研靜態檔案：把生效的 hide 清單逐字打出來**（G88 的「可見性」那一格，M2 批 F）。
     //
-    // ⚠ ⚠ 默认表**非空**（`.git` `.env` `.svn` `.hg` `.bzr` `.DS_Store`），
-    //   而一个不说出来的非空默认就是一次**静默行为** —— 现场是「我的文件明明在，
-    //   却一直 404」，而配置文件里一个字都看不出来。批 20 为「静默失能」专门堵过一次。
-    // ★ 打的是**运行时手里那一份**（`rt.file_servers()`），不是照配置再算一遍：
-    //   两份各算各的时，日志说的和服务器做的可以不是一回事。
+    // ⚠ ⚠ 預設表**非空**（`.git` `.env` `.svn` `.hg` `.bzr` `.DS_Store`），
+    //   而一個不說出來的非空預設就是一次**靜默行為** —— 現場是「我的檔案明明在，
+    //   卻一直 404」，而設定檔案裡一個字都看不出來。批 20 為「靜默失能」專門堵過一次。
+    // ★ 打的是**執行環境手裡那一份**（`rt.file_servers()`），不是照設定再算一遍：
+    //   兩份各算各的時，紀錄說的和伺服器做的可以不是一回事。
     for (site, fs) in rt.file_servers() {
         info!(
             "静态文件：站点 {site} root={} index={} browse={} follow_symlinks={}",
@@ -1966,8 +1966,8 @@ pub fn log_load_summary(
             "  hide（生效的完整清单，按路径段匹配、命中回 404）：{}",
             fs.hide.join(" ")
         );
-        // ★ 预压缩旁文件（M2 批 I）：**配了才说**，没配时不打这一行 ——
-        //   一行「precompressed：（无）」对每一个静态站点都印一遍，就是噪音。
+        // ★ 預壓縮旁檔案（M2 批 I）：**配了才說**，沒配時不打這一行 ——
+        //   一行「precompressed：（無）」對每一個靜態站台都印一遍，就是噪音。
         if !fs.precompressed.is_empty() {
             info!(
                 "  预压缩旁文件：{}（发 /x.css 时先找 /x.css.{{gz,br,zst}}；                 ⚠ 旁文件比原文件旧就当它不存在）",
@@ -1975,25 +1975,25 @@ pub fn log_load_summary(
             );
         }
     }
-    // ★ ★ ★ **自研压缩：把生效的算法打出来**（M2 批 I）。
+    // ★ ★ ★ **自研壓縮：把生效的演算法打出來**（M2 批 I）。
     //
-    // ⚠ ⚠ `encode` 从 M1 起就写得下、而运行时一步都不做（它在 `UNWIRED` 里躺了
-    //   整整一段）。⇒ 它**刚刚开始真的生效**这件事必须说出来 ——
-    //   一个从旧版本升上来的站点，行为在这一刻变了，而配置一个字都没改。
-    // ★ 打的是**运行时手里那一份**，不是照配置再算一遍。
+    // ⚠ ⚠ `encode` 從 M1 起就寫得下、而執行環境一步都不做（它在 `UNWIRED` 裡躺了
+    //   整整一段）。⇒ 它**剛剛開始真的生效**這件事必須說出來 ——
+    //   一個從舊版本升上來的站台，行為在這一刻變了，而設定一個字都沒改。
+    // ★ 打的是**執行環境手裡那一份**，不是照設定再算一遍。
     for (site, algos) in rt.encodings() {
         info!(
             "压缩：站点 {site} encode={}（按客户端 `Accept-Encoding` 的**首选**挑；             ⚠ 被压的响应没有 `Content-Length` 与 Range，强 ETag 会被弱化成 W/\"…\"）",
             algos.join(" ")
         );
     }
-    // ★ ★ ★ **自研缓存：把生效的设置打出来**（G96 的可见性，M2 批 G）。
+    // ★ ★ ★ **自研快取：把生效的設定打出來**（G96 的可見性，M2 批 G）。
     //
-    // ⚠ ⚠ `ttl` 是**兜底**不是覆盖 —— 而从 nginx `proxy_cache_valid` 迁过来的人
-    //   默认会以为它是覆盖。★ 一个与用户预期相反的默认，如果不说出来，
-    //   现场是「我明明配了 5 分钟，怎么 30 秒就变了」，而配置里一个字都看不出问题。
-    // ⚠ 这几行由 `tests/cache/run.sh` 的两条装载日志断言守着 —— 一个「写好了却没人调」
-    //   的摘要函数与不存在的摘要函数，在日志上长得一模一样。
+    // ⚠ ⚠ `ttl` 是**備援**不是覆蓋 —— 而從 nginx `proxy_cache_valid` 遷過來的人
+    //   預設會以為它是覆蓋。★ 一個與使用者預期相反的預設，如果不說出來，
+    //   現場是「我明明配了 5 分鐘，怎麼 30 秒就變了」，而設定裡一個字都看不出問題。
+    // ⚠ 這幾行由 `tests/cache/run.sh` 的兩條裝載紀錄斷言守著 —— 一個「寫好了卻沒人調」
+    //   的摘要函式與不存在的摘要函式，在紀錄上長得一模一樣。
     for (site, c) in rt.cache_settings() {
         info!(
             "缓存：站点 {site} ttl={} max_size={}B capacity={}B",
@@ -2004,11 +2004,11 @@ pub fn log_load_summary(
             c.max_size_bytes,
             c.capacity_bytes,
         );
-        // ★ ★ ★ **后端说的是「真的挑中了哪一个」，不是配置里写了什么。**
-        //   ⚠ 两句话在一种情况下恰好不一样：配了 `disk` 而那个目录用不了 ——
-        //   那时缓存是**关掉**的（照常转发，只是不再有命中），而这一行是
-        //   运维在启动那一刻唯一看得见它的地方。
-        //   ★ 第二个信号在运行时：`X-Fulcrum-Cache` 那个头不再出现。
+        // ★ ★ ★ **後端說的是「真的挑中了哪一個」，不是設定裡寫了什麼。**
+        //   ⚠ 兩句話在一種情況下恰好不一樣：配了 `disk` 而那個目錄用不了 ——
+        //   那時快取是**關掉**的（照常轉發，只是不再有命中），而這一行是
+        //   維運在啟動那一刻唯一看得見它的地方。
+        //   ★ 第二個信號在執行環境：`X-Fulcrum-Cache` 那個頭不再出現。
         match &cache.store {
             cache::Backend::Mem(s) => info!(
                 "  内存后端（没写 `disk`）；生效容量 {}B；只裹 reverse_proxy，别处不生效",
@@ -2027,59 +2027,59 @@ pub fn log_load_summary(
             ),
         }
     }
-    // ★ ★ 反向那一半：配了 `cache` 却没有 `reverse_proxy` 可裹 ⇒ **说出来**。
-    //   ⚠ 一条不生效的 `cache` 与一条正在生效的，在配置文件里长得一模一样 ——
-    //   与回落层那条「死配置」是同一个形状（那一层没了，教训留下）。
+    // ★ ★ 反向那一半：配了 `cache` 卻沒有 `reverse_proxy` 可裹 ⇒ **說出來**。
+    //   ⚠ 一條不生效的 `cache` 與一條正在生效的，在設定檔案里長得一模一樣 ——
+    //   與回落層那條「死設定」是同一個形狀（那一層沒了，教訓留下）。
     if !rt.cache_settings().is_empty() && rt.all_upstreams().is_empty() {
         warn!("★ 配了 `cache`，而这份配置里**没有任何 reverse_proxy** —— 缓存不会生效");
     }
-    // ★ ★ ★ **自环：`reverse_proxy` 指回枢衡自己**（M2 批 G 从回落层挪过来）。
+    // ★ ★ ★ **自環：`reverse_proxy` 指回樞衡自己**（M2 批 G 從回落層挪過來）。
     //
-    // ⚠ ⚠ 这几句话此前**算了却没人说**：`Runtime::self_loop_warnings` 在建图那一刻
-    //   就算好了，而全仓唯一的读者是单测 ⇒ 「算得对」与「运维看得见」在同一个字段上
-    //   长得一模一样，而现场读到的是一片安静。★ `fulcrum-runtime` 有意不依赖 `log`
-    //   （它返回话、不自己打印），所以「说出来」这一步只能落在这里。
-    // ⚠ **是 warn 不是 error**：指回自己可能是有意的（自己终止 TLS 再回自己的明文口）
-    //   ⇒ 说出来，但不替用户拒绝。判据在 `tests/serve/run.sh` 的 [4/4]（含反向那一半：
-    //   不自环的上游不许被说进去），单测那侧钉的是扁平站点、这里钉的是容器下钻。
+    // ⚠ ⚠ 這幾句話此前**算了卻沒人說**：`Runtime::self_loop_warnings` 在建圖那一刻
+    //   就算好了，而全倉唯一的讀者是單測 ⇒ 「算得對」與「維運看得見」在同一個欄位上
+    //   長得一模一樣，而現場讀到的是一片安靜。★ `fulcrum-runtime` 有意不依賴 `log`
+    //   （它回傳話、不自己列印），所以「說出來」這一步只能落在這裡。
+    // ⚠ **是 warn 不是 error**：指回自己可能是有意的（自己終止 TLS 再回自己的明文口）
+    //   ⇒ 說出來，但不替使用者拒絕。判據在 `tests/serve/run.sh` 的 [4/4]（含反向那一半：
+    //   不自環的上游不許被說進去），單測那側釘的是扁平站台、這裡釘的是容器下鑽。
     for w in &rt.self_loop_warnings {
         warn!("{w}");
     }
     for (k, why) in rt.unwired_in_use(cfg) {
         warn!("⏳ `{k}` 这一批还没接线：{why}");
     }
-    // ⚠ 这里原来有一行「端口上有 https 站点，而 TLS 还没接线，会以明文 HTTP 监听」。
-    //   TLS 接上之后它就成了**假警告**，而假警告比没有警告更糟：它训练人忽略警告，
-    //   连带把真的那几条一起埋掉。TLS 的现状由 `tls::log_tls_notes` 说，
-    //   它说的是「哪些站点还缺证书」——那是真的还缺的东西。
+    // ⚠ 這裡原來有一行「連接埠上有 https 站台，而 TLS 還沒串接，會以明文 HTTP 監聽」。
+    //   TLS 接上之後它就成了**假警告**，而假警告比沒有警告更糟：它訓練人忽略警告，
+    //   連帶把真的那幾條一起埋掉。TLS 的現狀由 `tls::log_tls_notes` 說，
+    //   它說的是「哪些站台還缺證書」——那是真的還缺的東西。
 }
 
-/// 展开一个模板（给外部调用方用，例如 CLI 的自检）。
+/// 展開一個範本（給外部呼叫方用，例如 CLI 的自檢）。
 pub fn expand_for_test(t: &Template, ctx: &RequestCtx<'_>) -> String {
     t.expand(ctx, &ResponseCtx::default(), &[], SystemTime::now())
 }
 
-// ── 装配与运行 ──────────────────────────────────────────────────────────────
+// ── 裝配與執行 ──────────────────────────────────────────────────────────────
 
-/// 起服务需要的、配置层管不到的那几项。
+/// 起服務需要的、設定層管不到的那幾項。
 ///
-/// ★ 它们属于**进程模型**（G13/G31/G33/G37），而不是站点配置：
-/// pid 文件与升级 socket 的路径由 systemd 托管、可覆盖，
-/// 所以它们从命令行进来，不进 DSL。
+/// ★ 它們屬於**處理程序模型**（G13/G31/G33/G37），而不是站台設定：
+/// pid 檔案與升級 socket 的路徑由 systemd 託管、可覆蓋，
+/// 所以它們從命令行進來，不進 DSL。
 pub struct ServeOptions {
-    /// 监听地址的主机部分。默认 `0.0.0.0`。
+    /// 監聽位址的主機部分。預設 `0.0.0.0`。
     pub bind_host: String,
     pub pid_file: String,
     pub upgrade_sock: String,
-    /// 状态目录（G33 的 `StateDirectory=`）。证书存在 `<state>/certs/` 下面。
+    /// 狀態目錄（G33 的 `StateDirectory=`）。證書存在 `<state>/certs/` 下面。
     pub state_dir: String,
-    /// 是否从正在跑的旧世代接管（Pingora 的 `-u`）。
+    /// 是否從正在跑的舊世代接管（Pingora 的 `-u`）。
     pub upgrade: bool,
 }
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        // ★ 默认值照 G33：systemd 托管为主，全部可覆盖。
+        // ★ 預設值照 G33：systemd 託管為主，全部可覆蓋。
         ServeOptions {
             bind_host: "0.0.0.0".to_string(),
             pid_file: "/run/fulcrum/fulcrum.pid".to_string(),
@@ -2090,21 +2090,21 @@ impl Default for ServeOptions {
     }
 }
 
-/// 起 Pingora，把每个监听端口挂上一个 [`FulcrumApp`]，然后**不返回**。
+/// 起 Pingora，把每個監聽連接埠掛上一個 [`FulcrumApp`]，然後**不回傳**。
 ///
-/// ⚠ **每个端口一个 service**：站点索引按 `(Host, 本地端口)` 两维查，
-/// 而会话本身问不出「我落在哪个监听器上」。一个端口一个 app 实例是唯一不靠猜的办法。
+/// ⚠ **每個連接埠一個 service**：站台索引按 `(Host, 本地端口)` 兩維查，
+/// 而工作階段本身問不出「我落在哪個監聽器上」。一個連接埠一個 app 執行個體是唯一不靠猜的辦法。
 pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: ServeOptions) -> ! {
     use pingora_core::server::Server;
     use pingora_core::server::configuration::Opt;
     use pingora_core::services::listening::Service as ListeningService;
 
-    // ★ 造 `ServerConf` 的活儿在 `process::build_server_conf` 里，因为**它有门**：
-    //   `serve()` 返回 `!`、还要绑端口，单测碰不了它，而「排空窗口不许留 None」
-    //   这类判据恰恰最需要门。见 process.rs 顶部那张四条缺口表。
-    // ★ 探测一次、往下传（G140）。⛔ 别在每个 service 那里各问一次系统：
-    //   那样一趟里可能得到不同的答案（cgroup 配额是会变的），
-    //   而「同一趟里两个 service 按不同的核数算」没有任何东西会说。
+    // ★ 造 `ServerConf` 的活兒在 `process::build_server_conf` 裡，因為**它有門**：
+    //   `serve()` 回傳 `!`、還要綁連接埠，單測碰不了它，而「排空視窗不許留 None」
+    //   這類判據恰恰最需要門。見 process.rs 頂部那張四條缺口表。
+    // ★ 探測一次、往下傳（G140）。⛔ 別在每個 service 那裡各問一次系統：
+    //   那樣一趟裡可能得到不同的答案（cgroup 配額是會變的），
+    //   而「同一趟裡兩個 service 按不同的核數算」沒有任何東西會說。
     let cpus = process::detected_cpus();
     let threads_l7 = process::threads_for(process::ThreadRole::L7, &cfg.global, cpus);
     let threads_l4 = process::threads_for(process::ThreadRole::L4, &cfg.global, cpus);
@@ -2112,11 +2112,11 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     let conf = process::build_server_conf(cfg, &opts, cpus);
     let shutdown_budget = process::shutdown_budget_secs(&conf);
 
-    // ★ ★ **把这一趟真的用了几个线程打进启动日志**（D19 / G135 刚教过的那条：
-    //   一个没有运行时出口的旋钮，设了也无从核对它到底生效了没）。
-    //   ⚠ 管理面那一格由 `conf.threads` 承载，⇒ 从 `conf` 上读回来，
-    //   ⛔ 不是把刚算出来的那个值再回显一遍 —— 回显自己刚写进去的值，
-    //   对「它有没有真的落到 `ServerConf` 上」零判别力。
+    // ★ ★ **把這一趟真的用了幾個執行緒打進啟動紀錄**（D19 / G135 剛教過的那條：
+    //   一個沒有執行環境出口的旋鈕，設了也無從核對它到底生效了沒）。
+    //   ⚠ 管理面那一格由 `conf.threads` 承載，⇒ 從 `conf` 上讀回來，
+    //   ⛔ 不是把剛算出來的那個值再回顯一遍 —— 回顯自己剛寫進去的值，
+    //   對「它有沒有真的落到 `ServerConf` 上」零判別力。
     info!(
         "线程模型（G35）：L7 每个 service {threads_l7} · L4 每个 service {threads_l4} · \
          管理面与后台 {}（探测到 {cpus} 个可用核）。⚠ 线程不跨 service 共享 ⇒ 总数 ≈ Σ(各 service)",
@@ -2130,37 +2130,37 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     let mut server = Server::new_with_opt_and_conf(opt, conf);
     server.bootstrap();
 
-    // ★ ★ 换代触发器要在 `run_forever()` **之前**装上：否则从「服务起来」到
-    //   「run() 建好 runtime」之间的那一小段时间里，`systemctl reload` 会丢。
-    //   ⚠ 更要紧的是——不装它的话 SIGUSR2 走默认动作，即**终止进程**：
-    //   一次 `systemctl reload` 会把服务打死。
+    // ★ ★ 換代觸發器要在 `run_forever()` **之前**裝上：否則從「服務起來」到
+    //   「run() 建好 runtime」之間的那一小段時間裡，`systemctl reload` 會丟。
+    //   ⚠ 更要緊的是——不裝它的話 SIGUSR2 走預設動作，即**終止處理程序**：
+    //   一次 `systemctl reload` 會把服務打死。
     process::spawn_upgrade_trigger();
 
-    // ★ **缓存实例只建一次，全部监听端口共用一份**：每端口一份的话，同一条 URL
-    //   在 :80 与 :443 上会各存一份，而容量上限也会变成配置值的 N 倍。
-    // ★ ★ 「各块取最大值」那条推导在 [`cache::effective_capacity`] 里，**只有一处** ——
-    //   `POST /load` 换配置之后要算同一个值（D19），两处各写一遍的失效形态是
-    //   「启动时算出来的容量与 load 之后算出来的不是同一个数」，而两处各自都自洽。
+    // ★ **快取執行個體只建一次，全部監聽連接埠共用一份**：每連接埠一份的話，同一條 URL
+    //   在 :80 與 :443 上會各存一份，而容量上限也會變成設定值的 N 倍。
+    // ★ ★ 「各塊取最大值」那條推導在 [`cache::effective_capacity`] 裡，**只有一處** ——
+    //   `POST /load` 換設定之後要算同一個值（D19），兩處各寫一遍的失效形態是
+    //   「啟動時算出來的容量與 load 之後算出來的不是同一個數」，而兩處各自都自洽。
     let cache_capacity = cache::effective_capacity(&rt.cache_settings());
     let cache_dir = rt
         .cache_settings()
         .iter()
         .find_map(|(_, c)| c.disk_dir.clone());
-    // ⚠ ⚠ **它必须建在 `log_load_summary` 之前**：装载日志要说的是
-    //   「真的挑中了哪个后端」，而不是「配置里写了什么」。★ 目录用不了时这两句话
-    //   恰好不一样 —— 而那正是最需要说出来的那一刻。
+    // ⚠ ⚠ **它必須建在 `log_load_summary` 之前**：裝載紀錄要說的是
+    //   「真的挑中了哪個後端」，而不是「設定裡寫了什麼」。★ 目錄用不了時這兩句話
+    //   恰好不一樣 —— 而那正是最需要說出來的那一刻。
     let cache = cache::CacheHandle::new(cache::Backend::open(cache_dir.as_deref(), cache_capacity));
 
     log_load_summary(cfg, &rt, &cache);
 
-    // ★ 把停机预算打出来，因为 `TimeoutStopSec` 必须按它设，而它由配置决定。
-    //   ⚠ 不打的话，这个数只存在于源码里，运维只能靠猜或靠翻文档。
+    // ★ 把停機預算打出來，因為 `TimeoutStopSec` 必須按它設，而它由設定決定。
+    //   ⚠ 不打的話，這個數只存在於原始碼裡，維運只能靠猜或靠翻文件。
     info!(
         "停机预算约 {shutdown_budget}s（排空 + 收尾）—— systemd unit 的 TimeoutStopSec 要大于它；\
          换代时老一代另需最多 5s 送 fd"
     );
 
-    // ── TLS：按 SNI 挑证书（§5.1 第 1 条锁死的那条路）────────────────────
+    // ── TLS：按 SNI 挑證書（§5.1 第 1 條鎖死的那條路）────────────────────
     let cert_root = std::path::Path::new(&opts.state_dir).join("certs");
     let issuer = fulcrum_acme::issuer_slug(
         cfg.global
@@ -2171,8 +2171,8 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     let plan = match tls::plan_tls(&rt, &cert_root, &issuer, cfg.global.default_sni.as_deref()) {
         Ok(p) => p,
         Err(errs) => {
-            // ⚠ 走到这里说明配置里显式给的 PEM 读不出来。**不许降级成告警**：
-            //   一个「起来了但那个站点永远握手失败」的进程比起不来更难查。
+            // ⚠ 走到這裡說明設定裡顯式給的 PEM 讀不出來。**不許降級成告警**：
+            //   一個「起來了但那個站台永遠握手失敗」的處理程序比起不來更難查。
             for e in &errs {
                 error!("TLS 装载失败：{e}");
             }
@@ -2181,12 +2181,12 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     };
     tls::log_tls_notes(&plan, &format!("证书存储 {}", cert_root.display()));
 
-    // ── 访问日志：**装载时就把每个日志文件打开一次**（M2 批 L 第 ② 步）────────
+    // ── 訪問紀錄：**裝載時就把每個紀錄檔案打開一次**（M2 批 L 第 ② 步）────────
     //
-    // ⚠ ⚠ 与上面 TLS 那条逐字同一个理由，而这里更刺眼：一个打不开的日志文件
-    //   若拖到第一个请求才发现，现场是**服务完全正常、而日志一行都没有** ——
-    //   ★ ★ ★ 一个用来「出了事你能知道」的东西，自己坏掉时没人知道。
-    //   ⇒ 硬错误，不许降级成告警。
+    // ⚠ ⚠ 與上面 TLS 那條逐字同一個理由，而這裡更刺眼：一個打不開的紀錄檔案
+    //   若拖到第一個請求才發現，現場是**服務完全正常、而紀錄一行都沒有** ——
+    //   ★ ★ ★ 一個用來「出了事你能知道」的東西，自己壞掉時沒人知道。
+    //   ⇒ 硬錯誤，不許降級成告警。
     match access_log::open_all(&rt) {
         Ok(0) => {}
         Ok(n) => info!("访问日志：打开了 {n} 个日志文件"),
@@ -2198,10 +2198,10 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
         }
     }
 
-    // ── ACME：自动签发与续期（G53/G54/G56）────────────────────────────────
+    // ── ACME：自動簽發與續期（G53/G54/G56）────────────────────────────────
     //
-    // ★ 巡检跑在**后台服务**里，也就是监听器起来之后——HTTP-01 要 CA 能连上来，
-    //   在监听器之前签必然失败一次，还白耗一次速率配额。
+    // ★ 巡檢跑在**後台服務**裡，也就是監聽器起來之後——HTTP-01 要 CA 能連上來，
+    //   在監聽器之前籤必然失敗一次，還白耗一次速率配額。
     let http01 = Arc::new(fulcrum_acme::Http01Store::new());
     let acme = acme::build(
         cfg,
@@ -2211,34 +2211,34 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
         &opts.state_dir,
     );
 
-    // ★ 监听端口从**建起来的那一份**取。⚠ 换配置换不了监听端口——
-    //   Pingora 在启动时绑定，端口集变了只能走 `systemctl reload`（真的换代）。
-    //   全量 load 那条路会显式拒绝这种配置，理由写在 admin 模块里。
+    // ★ 監聽連接埠從**建起來的那一份**取。⚠ 換設定換不了監聽連接埠——
+    //   Pingora 在啟動時綁定，連接埠集變了只能走 `systemctl reload`（真的換代）。
+    //   全量 load 那條路會顯式拒絕這種設定，理由寫在 admin 模組裡。
     let listen_ports = rt.listen_ports.clone();
-    // 管理面要拿它当「端口集有没有变」的判据（全量 load 那条路）。
+    // 管理面要拿它當「連接埠集有沒有變」的判據（全量 load 那條路）。
     let listen_ports_for_admin = listen_ports.clone();
-    // ★ ★ **收流量之前先把域名上游解析一遍。**
-    //   ⚠ 少了这一步，第一批请求会撞上「还没解析出来」而被回 502；
-    //   而在改这一批之前，它们撞上的是**每请求一次 panic**（实测过）。
+    // ★ ★ **收流量之前先把網域上游解析一遍。**
+    //   ⚠ 少了這一步，第一批請求會撞上「還沒解析出來」而被回 502；
+    //   而在改這一批之前，它們撞上的是**每請求一次 panic**（實測過）。
     dns::resolve_now(&rt, "启动");
     let dns_interval = dns::tick_interval(cfg);
     let shared = fulcrum_runtime::SharedRuntime::new(rt);
 
-    // ── ★ ★ 指标里「抓取时去问活体」那几个族的取数对象（**M2 批 M**）───────────
+    // ── ★ ★ 指標裡「抓取時去問活體」那幾個族的取數物件（**M2 批 M**）───────────
     //
-    // ★ ★ **登记的是句柄，不是一份读数**：上游在途数、健康位、证书到期时刻、
-    //   ACME 签发计数全都在渲染那一刻现问 —— 能从被测对象本身问到的东西，
-    //   就不要在旁边再记一份，否则两份迟早不一致，而不一致的那天没有任何东西会说。
-    // ★ 登记 `shared` 而不是某一份 `Runtime` 快照：全量 load 换掉的正是它里面那一份。
-    // ⚠ `acme` 这一格可以是 `None`（这份配置里没有自动签发）—— 那时
-    //   `fulcrum_acme_issue_total` 只出 HELP/TYPE、不出样本，而**不是整族消失**：
-    //   整族消失会让「没接上」与「没数据」在抓取端看起来一模一样。
-    // ── 连接计数的登记处（**M2 批 O**，G122 的连接那半）────────────────────────
+    // ★ ★ **登記的是句柄，不是一份讀數**：上游在途數、健康位、證書到期時刻、
+    //   ACME 簽發計數全都在繪製那一刻現問 —— 能從被測物件本身問到的東西，
+    //   就不要在旁邊再記一份，否則兩份遲早不一致，而不一致的那天沒有任何東西會說。
+    // ★ 登記 `shared` 而不是某一份 `Runtime` 快照：全量 load 換掉的正是它裡面那一份。
+    // ⚠ `acme` 這一格可以是 `None`（這份設定裡沒有自動簽發）—— 那時
+    //   `fulcrum_acme_issue_total` 只出 HELP/TYPE、不出樣本，而**不是整族消失**：
+    //   整族消失會讓「沒接上」與「沒資料」在抓取端看起來一模一樣。
+    // ── 連接計數的登記處（**M2 批 O**，G122 的連接那半）────────────────────────
     //
-    // ★ ★ 它的格子由**创建服务的那一行**顺手声明（`view` / `guard_for` 都会声明）——
-    //   ⛔ 有意不在这里先枚举一遍监听器：那会是**第二条枚举路径**，而
-    //   `Runtime::all_proxy_targets` 的文档正是为这个形状写的警告
-    //   （「⚠ ⚠ 有意不自己再走一遍……走法分家的表现是某条在某一张清单里不存在」）。
+    // ★ ★ 它的格子由**建立服務的那一行**順手宣告（`view` / `guard_for` 都會宣告）——
+    //   ⛔ 有意不在這裡先枚舉一遍監聽器：那會是**第二條枚舉路徑**，而
+    //   `Runtime::all_proxy_targets` 的文件正是為這個形狀寫的警告
+    //   （「⚠ ⚠ 有意不自己再走一遍……走法分家的表現是某條在某一張清單裡不存在」）。
     let conn_reg = conn_stats::ConnRegistry::new();
 
     metrics::register_live(metrics::LiveSources {
@@ -2248,27 +2248,27 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
         conn: Some(conn_reg.clone()),
     });
 
-    // ── ★ ★ 本代的身份（**G109 ①**）——**一个进程一把，不是一个端口一把** ─────
+    // ── ★ ★ 本代的身分（**G109 ①**）——**一個處理程序一把，不是一個連接埠一把** ─────
     //
-    // ⚠ 每个监听端口各铸一把也能跑，而且**判据全绿** —— 直到换代那天：
-    //   转交是按 DCID 前缀反查「这是哪一代」的，一代进程有多个身份，
-    //   老一代就认不全自己的连接。★ 那种红在批 K 才出现，而根因在这一行。
-    // ★ 铸在循环外，是让「一代一个」在结构上成立，而不是靠每个分支都记得传同一个。
+    // ⚠ 每個監聽連接埠各鑄一把也能跑，而且**判據全綠** —— 直到換代那天：
+    //   轉交是按 DCID 前綴反查「這是哪一代」的，一代處理程序有多個身分，
+    //   老一代就認不全自己的連接。★ 那種紅在批 K 才出現，而根因在這一行。
+    // ★ 鑄在循環外，是讓「一代一個」在結構上成立，而不是靠每個分支都記得傳同一個。
     let gen_id = quic::gen_id::GenId::random();
-    // ── HTTP 面的 PROXY protocol 「收」半边（M2 批 L 第 ① 步）—─────────
+    // ── HTTP 面的 PROXY protocol 「收」半邊（M2 批 L 第 ① 步）—─────────
     //
-    // ★ 一个进程一份，所有端口共用 —— 信任清单本来就是**全局**的
-    //   （它是**连接级**判断：一条连接上还没有 Host，还不知道会落到哪个站点）。
-    // ☆ 它拿的是 `SharedRuntime` 不是快照，理由见 `proxyproto` 模块的类型文档。
+    // ★ 一個處理程序一份，所有連接埠共用 —— 信任清單本來就是**全域**的
+    //   （它是**連接級**判斷：一條連接上還沒有 Host，還不知道會落到哪個站台）。
+    // ☆ 它拿的是 `SharedRuntime` 不是快照，理由見 `proxyproto` 模組的類型文件。
     let proxy_protocol_policy = proxyproto::HttpProxyProtocol::new(shared.clone());
     for (port, is_tls) in listen_ports {
-        // ── ★ ★ ★ **G110：HTTP/3 跟着 `tls` 自动开** ───────────────────────
+        // ── ★ ★ ★ **G110：HTTP/3 跟著 `tls` 自動開** ───────────────────────
         //
-        // 有 TLS 的端口自动在**同一个端口号**上听 UDP，并对 h1/h2 的响应发
-        // `Alt-Svc: h3=":<端口>"`。⚠ 不发它，浏览器永远不会主动尝试 h3。
+        // 有 TLS 的連接埠自動在**同一個連接埠號**上聽 UDP，並對 h1/h2 的回應發
+        // `Alt-Svc: h3=":<端口>"`。⚠ 不發它，瀏覽器永遠不會主動嘗試 h3。
         //
-        // ★ `ma` 取一天（RFC 7838 §3.1 的默认值，这里写显式）：取更长只会让
-        //   「哪天关掉 h3」之后客户端多试很久的 UDP，而重新广播本来就不花什么。
+        // ★ `ma` 取一天（RFC 7838 §3.1 的預設值，這裡寫顯式）：取更長只會讓
+        //   「哪天關掉 h3」之後用戶端多試很久的 UDP，而重新廣播本來就不花什麼。
         let alt_svc = is_tls.then(|| format!("h3=\":{port}\"; ma=86400"));
         let app = Arc::new(FulcrumApp::new(
             shared.clone(),
@@ -2277,43 +2277,43 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
             http01.clone(),
             cache.clone(),
             alt_svc,
-            // 每线程池大小取 ServerConf 的值（缺省 128），乘 L7 线程数 ⇒ 与 0.8.1 的总容量相同。
+            // 每執行緒池大小取 ServerConf 的值（預設 128），乘 L7 執行緒數 ⇒ 與 0.8.1 的總容量相同。
             server
                 .configuration
                 .upstream_keepalive_pool_size
                 .saturating_mul(threads_l7.max(1)),
         ));
         let kind = if is_tls { "https" } else { "http" };
-        // ⚠ `H1Entry` 是为了让 h3 那一侧拿到**同一个** app 实例，理由见它的类型文档。
+        // ⚠ `H1Entry` 是為了讓 h3 那一側拿到**同一個** app 執行個體，理由見它的類型文件。
         let mut svc =
             ListeningService::new(format!("fulcrum-{kind}-{port}"), H1Entry::new(app.clone()));
 
-        // ── ★ ★ ★ HTTP 面的 PROXY protocol（**M2 批 L 第 ① 步**，fork 改动 12）────
+        // ── ★ ★ ★ HTTP 面的 PROXY protocol（**M2 批 L 第 ① 步**，fork 改動 12）────
         //
-        // ★ ★ **无条件挂，不看清单空不空** —— 有条件挂的话，一份后来才写上
-        //   `proxy_protocol_from` 的配置做 `POST /load` 会**装得上、不报错、也不生效**（D19 那个形状）。
-        // ★ 「挂了」不等于「会读字节」：清单空时 `trusts()` 恒 false，
-        //   而 `proxyproto` 的 `PreTlsProcess` 实现在 false 时一个字节都不读。
-        // ★ pingora 0.9.0 起走上游的 `set_pre_tls_callback`（fork 改动 12 只剩「明文端口也调」，见 FORK.md §12）。
+        // ★ ★ **無條件掛，不看清單空不空** —— 有條件掛的話，一份後來才寫上
+        //   `proxy_protocol_from` 的設定做 `POST /load` 會**裝得上、不回報錯誤、也不生效**（D19 那個形狀）。
+        // ★ 「掛了」不等於「會讀位元組」：清單空時 `trusts()` 恆 false，
+        //   而 `proxyproto` 的 `PreTlsProcess` 實作在 false 時一個位元組都不讀。
+        // ★ pingora 0.9.0 起走上游的 `set_pre_tls_callback`（fork 改動 12 只剩「明文連接埠也調」，見 FORK.md §12）。
         svc.endpoints()
             .set_pre_tls_callback(proxy_protocol_policy.clone());
 
         let bind = format!("{}:{port}", opts.bind_host);
 
-        // ── 连接计数（**M2 批 O**，fork 改动 15 的接缝）─────────────────────────
+        // ── 連接計數（**M2 批 O**，fork 改動 15 的接縫）─────────────────────────
         //
-        // ★ `view()` 顺手**声明**这一格 ⇒ 这个监听器从进程起来的第一秒就有一条 `0`
-        //   的样本，而不是「有连接了才出现」。⚠ 那个区分正是「我配了这个端口怎么
-        //   没流量」要靠的东西：没有 series 与「有 series 但值是 0」在抓取端分不开。
+        // ★ `view()` 順手**宣告**這一格 ⇒ 這個監聽器從處理程序起來的第一秒就有一條 `0`
+        //   的樣本，而不是「有連接了才出現」。⚠ 那個區分正是「我配了這個連接埠怎麼
+        //   沒流量」要靠的東西：沒有 series 與「有 series 但值是 0」在抓取端分不開。
         svc.endpoints()
             .set_connection_counter(conn_reg.view(conn_stats::Entrypoint::Http, &bind));
         if is_tls {
-            // ⚠ ⚠ ★ **别把这一行换成 `TlsSettings::with_callbacks`「顺手拿点什么」。**
-            //   带回调时上游走 `handshake_with_callback()`，每次握手都要多走一趟
-            //   「挂起 → `certificate_callback` → `resume_accept`」
-            //   （`start_accept()` 无条件装一个恒回 `-1` 的 `cert_cb`）。
-            //   访问日志要的 SNI / ALPN 由 **fork 改动 14** 直接记进 `SslDigest`
-            //   （`from_ssl()` 握手结束后本来就握着 `&SslRef`）⇒ 那趟开销归零。
+            // ⚠ ⚠ ★ **別把這一行換成 `TlsSettings::with_callbacks`「順手拿點什麼」。**
+            //   帶回呼時上游走 `handshake_with_callback()`，每次握手都要多走一趟
+            //   「掛起 → `certificate_callback` → `resume_accept`」
+            //   （`start_accept()` 無條件裝一個恆回 `-1` 的 `cert_cb`）。
+            //   訪問紀錄要的 SNI / ALPN 由 **fork 改動 14** 直接記進 `SslDigest`
+            //   （`from_ssl()` 握手結束後本來就握著 `&SslRef`）⇒ 那趟開銷歸零。
             // ★ 守它的是 `crates/fulcrum/tests/tls_digest_gate.rs`。
             match pingora_core::tls::ssl::SslAcceptor::mozilla_intermediate_v5(
                 pingora_core::tls::ssl::SslMethod::tls(),
@@ -2321,18 +2321,18 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
             .map(pingora_core::listeners::tls::TlsSettings::from)
             {
                 Ok(mut settings) => {
-                    // ★ ★ **G104 的落点就在这一行**：h1/h2 入口与（将来的）h3 入口
-                    //   挂**同一个**回调，于是「两个入口各有一套挑证书实现」在结构上做不到。
-                    //   那正是取「统一 BoringSSL」而不是「两套并存」的全部理由（D18/G66 同源）。
+                    // ★ ★ **G104 的落點就在這一行**：h1/h2 入口與（將來的）h3 入口
+                    //   掛**同一個**回呼，於是「兩個入口各有一套挑證書實作」在結構上做不到。
+                    //   那正是取「統一 BoringSSL」而不是「兩套並存」的全部理由（D18/G66 同源）。
                     plan.resolver.install_into(&mut settings);
 
-                    // h2 + http/1.1 —— ALPN 里两个都要有，否则只会 h2 的客户端连不上。
-                    // ★ ★ 再加一条 `acme-tls/1`：TLS-ALPN-01（RFC 8737 / G54 的「主」）
-                    //   要在**同一个端口**上完成，挑战挪不到别处（RFC 8737 §3 写死 443）。
-                    // ★ 顺序即偏好序：`acme-tls/1` 放末尾，**正常流量的偏好完全不受影响**，
-                    //   而只提供它的 CA 验证连接会且只会拿到它。
-                    // ⚠ 这里写的是 **wire 格式**（每条前面一个长度字节），
-                    //   与 `set_alpn_protos` 收的格式一致。
+                    // h2 + http/1.1 —— ALPN 裡兩個都要有，否則只會 h2 的用戶端連不上。
+                    // ★ ★ 再加一條 `acme-tls/1`：TLS-ALPN-01（RFC 8737 / G54 的「主」）
+                    //   要在**同一個連接埠**上完成，挑戰挪不到別處（RFC 8737 §3 寫死 443）。
+                    // ★ 順序即偏好序：`acme-tls/1` 放末尾，**正常流量的偏好完全不受影響**，
+                    //   而只提供它的 CA 驗證連接會且只會拿到它。
+                    // ⚠ 這裡寫的是 **wire 格式**（每條前面一個長度位元組），
+                    //   與 `set_alpn_protos` 收的格式一致。
                     settings.set_alpn_select_callback(|_ssl, client| {
                         const PREF: &[u8] = b"h2http/1.1
 acme-tls/1";
@@ -2342,8 +2342,8 @@ acme-tls/1";
                     info!(
                         "监听 {bind}（HTTPS，按 SNI 动态挑证书，ALPN: h2 / http/1.1 / acme-tls/1）"
                     );
-                    // ★ 与 `add_tls_with_settings(&bind, None, settings)` 只差写缓冲
-                    //   （pingora 里那个函数就是这一句去掉 `.l4_buffer(…)`），理由见 [`L7_L4_BUFFER`]。
+                    // ★ 與 `add_tls_with_settings(&bind, None, settings)` 只差寫緩衝
+                    //   （pingora 裡那個函式就是這一句去掉 `.l4_buffer(…)`），理由見 [`L7_L4_BUFFER`]。
                     svc.add_listener(
                         ListenerConfig::tcp(&bind)
                             .tls(settings)
@@ -2357,22 +2357,22 @@ acme-tls/1";
             }
         } else {
             info!("监听 {bind}（HTTP）");
-            // ★ 与 `add_tcp(&bind)` 只差写缓冲，理由见 [`L7_L4_BUFFER`]。
+            // ★ 與 `add_tcp(&bind)` 只差寫緩衝，理由見 [`L7_L4_BUFFER`]。
             svc.add_listener(ListenerConfig::tcp(&bind).l4_buffer(L7_L4_BUFFER));
         }
-        // ★ L7 数据面的线程数（G35 / G140）。⚠ 这是**逐 service** 的覆盖，
-        //   `Service::threads()` 返回 `Some` 时 pingora 就不看全局 `conf.threads` 了。
-        //   ⇒ 这一行是 `threads_l7` 在 h1/h2 那条路上唯一的落点。
+        // ★ L7 資料面的執行緒數（G35 / G140）。⚠ 這是**逐 service** 的覆蓋，
+        //   `Service::threads()` 回傳 `Some` 時 pingora 就不看全域 `conf.threads` 了。
+        //   ⇒ 這一行是 `threads_l7` 在 h1/h2 那條路上唯一的落點。
         svc.threads = Some(threads_l7);
         server.add_service(svc);
 
         // ── ★ ★ ★ HTTP/3 入口（**M2 批 J**，G110）───────────────────────────
         //
-        // ★ 它是**另一个 `Service`**：pingora 的 `ListeningService` 只管 TCP/UDS，
-        //   而 QUIC 要自己收 UDP 包、按 DCID 分发 ⇒ `QuicListenerService` 自建监听器
-        //   并自己参与 socket 移交（fd 键前缀 `fulcrum-quic:`）。
-        // ⚠ **跟在 `add_service(svc)` 之后加**，于是启动日志里同一端口的 h1/h2 与 h3
-        //   两行是挨着的 —— 「443 上到底开没开 h3」是运维第一个会问的问题。
+        // ★ 它是**另一個 `Service`**：pingora 的 `ListeningService` 只管 TCP/UDS，
+        //   而 QUIC 要自己收 UDP 包、按 DCID 散布 ⇒ `QuicListenerService` 自建監聽器
+        //   並自己參與 socket 移交（fd 鍵前綴 `fulcrum-quic:`）。
+        // ⚠ **跟在 `add_service(svc)` 之後加**，於是啟動紀錄裡同一連接埠的 h1/h2 與 h3
+        //   兩行是挨著的 —— 「443 上到底開沒開 h3」是維運第一個會問的問題。
         if is_tls {
             let mut q = quic::listener::QuicListenerService::new(
                 bind.clone(),
@@ -2380,25 +2380,25 @@ acme-tls/1";
                 plan.resolver.clone(),
                 gen_id,
                 app.clone(),
-                // ★ ★ **M2 批 K**：换代转交 socket 落在**换代 socket 的父目录**里。
-                //   ⚠ 那是一条推导，所以 `run_dir_of` 有自己的判据 —— 见它的文档。
+                // ★ ★ **M2 批 K**：換代轉交 socket 落在**換代 socket 的父目錄**裡。
+                //   ⚠ 那是一條推導，所以 `run_dir_of` 有自己的判據 —— 見它的文件。
                 quic::listener::run_dir_of(&opts.upgrade_sock),
                 conn_reg.clone(),
             );
-            // ★ h3 与 h1/h2 **同一个角色**（G140 ③，owner 拍板）：它就是数据面入口，
-            //   与 h1/h2 服务同一批流量、走同一条执行链。
+            // ★ h3 與 h1/h2 **同一個角色**（G140 ③，owner 拍板）：它就是資料面入口，
+            //   與 h1/h2 服務同一批流量、走同一條執行鏈。
             q.threads = Some(threads_l7);
             server.add_service(q);
         }
     }
 
-    // ── L4 面：TCP 透传（M2 批 A）────────────────────────────────────────
+    // ── L4 面：TCP 透傳（M2 批 A）────────────────────────────────────────
     //
-    // ★ 排在 HTTP 监听器之后加：两者互不依赖，而按「先七层后四层」的顺序加，
-    //   启动日志读起来与配置文件的形状一致。
-    // ⚠ `--bind-host` 只在配置写成 `:3306`（没有主机部分）时才补上，
-    //   写了 `127.0.0.1:3306` 就按写的来 —— 与 HTTP 那边**不同**：那边端口来自站点地址，
-    //   主机部分永远由 `--bind-host` 决定，而 L4 的监听地址是**整串**写在配置里的。
+    // ★ 排在 HTTP 監聽器之後加：兩者互不依賴，而按「先七層後四層」的順序加，
+    //   啟動紀錄讀起來與設定檔案的形狀一致。
+    // ⚠ `--bind-host` 只在設定寫成 `:3306`（沒有主機部分）時才補上，
+    //   寫了 `127.0.0.1:3306` 就按寫的來 —— 與 HTTP 那邊**不同**：那邊連接埠來自站台位址，
+    //   主機部分永遠由 `--bind-host` 決定，而 L4 的監聽位址是**整串**寫在設定裡的。
     {
         let cur = shared.current();
         for l in &cur.l4_listeners {
@@ -2406,8 +2406,8 @@ acme-tls/1";
                 Some(h) => format!("{h}:{}", l.listen_port),
                 None => format!("{}:{}", opts.bind_host, l.listen_port),
             };
-            // ★ ★ 装载日志要**逐条说出分流规则**：一条「按 SNI 走别处」的规则如果只活在
-            //   配置文件里，运维在排查「为什么这个域名去了另一台机器」时无从下手。
+            // ★ ★ 裝載紀錄要**逐條說出分流規則**：一條「按 SNI 走別處」的規則如果只活在
+            //   設定檔案裡，維運在排查「為什麼這個網域去了另一臺機器」時無從下手。
             let ups: Vec<&str> = l
                 .target
                 .as_ref()
@@ -2438,8 +2438,8 @@ acme-tls/1";
                     rups.join(" ")
                 );
             }
-            // ★ 两种协议各起各的服务：它们的**失效面完全不同**（见 l4.rs 那张对照表），
-            //   共用一个 `Service` 只会让两套语义在同一个 `match` 里互相打架。
+            // ★ 兩種協定各起各的服務：它們的**失效面完全不同**（見 l4.rs 那張對照表），
+            //   共用一個 `Service` 只會讓兩套語義在同一個 `match` 裡互相打架。
             match l.proto {
                 fulcrum_runtime::L4Proto::Tcp => {
                     let mut s = l4::TcpProxyService::new(
@@ -2467,14 +2467,14 @@ acme-tls/1";
         }
     }
 
-    // ── ★ ★ G59 第 2 条：**启动时校验 DNS 凭据** ────────────────────────────
+    // ── ★ ★ G59 第 2 條：**啟動時檢核 DNS 憑證** ────────────────────────────
     //
-    // 形状照 G15（On-Demand 没配准入就拒绝启动）：**错误在启动时暴露，
-    // 不等被滥用才发现**。⚠ 理由不是洁癖 —— 拿到某域的 DNS 写权限
-    // 等于能为该域签发任意证书，还能改 MX 劫持邮件。
+    // 形狀照 G15（On-Demand 沒配存取資格就拒絕啟動）：**錯誤在啟動時暴露，
+    // 不等被濫用才發現**。⚠ 理由不是潔癖 —— 拿到某域的 DNS 寫權限
+    // 等於能為該域簽發任意證書，還能改 MX 劫持電子郵件。
     //
-    // ★ 这一步跑在 `run_forever()` **之前**，所以「拒绝启动」是真的拒绝。
-    //   ⚠ 这里要一个临时 runtime：校验是异步的，而 Pingora 的 runtime 还没起来。
+    // ★ 這一步跑在 `run_forever()` **之前**，所以「拒絕啟動」是真的拒絕。
+    //   ⚠ 這裡要一個臨時 runtime：檢核是非同步的，而 Pingora 的 runtime 還沒起來。
     if let Some(manager) = &acme {
         match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2487,25 +2487,25 @@ acme-tls/1";
                     std::process::exit(1);
                 }
             }
-            // ⚠ 建不出 runtime 是本机资源问题，与凭据无关。说出来，不假装校验过了。
+            // ⚠ 建不出 runtime 是本機資源問題，與憑證無關。說出來，不假裝檢核過了。
             Err(e) => error!("⚠ 建不出临时 runtime（{e}）—— 本次**没有**校验 DNS 凭据"),
         }
     }
 
-    // ── ★ ★ 管理面（G8 的全量原子 load + G74 的强制续期），走 Unix socket（G14）──
+    // ── ★ ★ 管理面（G8 的全量原子 load + G74 的強制續期），走 Unix socket（G14）──
     //
-    // ⚠ 没配 `admin` 就**一个 socket 都不建**：管理面默认不出机器，
-    //   而「默认开着」正是 G14 要堵的那个 Caddy 短处。
+    // ⚠ 沒配 `admin` 就**一個 socket 都不建**：管理面預設不出機器，
+    //   而「預設開著」正是 G14 要堵的那個 Caddy 短處。
     if let Some(spec) = &cfg.global.admin {
         match admin::socket_path(spec) {
             Ok(path) => {
-                // ⚠ 上一代留下的 socket 文件会让 bind 失败（EADDRINUSE），而报错只说
-                //   「地址已被使用」，看不出是一个陈旧的文件。systemd 重启、非优雅退出都会留下它。
-                // ★ ★ ★ **但换代（`-u`）那一趟绝对不能清**：监听 fd 是从上一代继承来的
-                //   （`ListenerEndpoint::listen` 按地址字符串查 fd 表，UDS 的键就是这个路径），
-                //   新一代根本不会重新 `bind()`。此时 unlink 掉，两代都在一个**没有名字的**
-                //   inode 上 accept，客户端按路径连过去只拿到 ENOENT ——
-                //   **一次 `systemctl reload` 之后管理面永久失联**，而日志里一切正常。
+                // ⚠ 上一代留下的 socket 檔案會讓 bind 失敗（EADDRINUSE），而回報錯誤只說
+                //   「位址已被使用」，看不出是一個陳舊的檔案。systemd 重新啟動、非優雅退出都會留下它。
+                // ★ ★ ★ **但換代（`-u`）那一趟絕對不能清**：監聽 fd 是從上一代繼承來的
+                //   （`ListenerEndpoint::listen` 按位址字串查 fd 表，UDS 的鍵就是這個路徑），
+                //   新一代根本不會重新 `bind()`。此時 unlink 掉，兩代都在一個**沒有名字的**
+                //   inode 上 accept，用戶端按路徑連過去只拿到 ENOENT ——
+                //   **一次 `systemctl reload` 之後管理面永久失聯**，而紀錄裡一切正常。
                 if !opts.upgrade && std::path::Path::new(&path).exists() {
                     match std::fs::remove_file(&path) {
                         Ok(()) => info!("清掉上一代留下的管理 socket {path}"),
@@ -2517,18 +2517,18 @@ acme-tls/1";
                     listen_ports_for_admin,
                     acme.clone(),
                     Some(cache.clone()),
-                    // ★ ★ 与 `metrics::LiveSources.resolver`（上面 `register_live`
-                    //   那一行）拿的是**同一个** `Arc<SniResolver>`——`/stats` 与
-                    //   `/metrics` 的证书到期因此只有一个源（M2 批 N 任务 6）。
+                    // ★ ★ 與 `metrics::LiveSources.resolver`（上面 `register_live`
+                    //   那一行）拿的是**同一個** `Arc<SniResolver>`——`/stats` 與
+                    //   `/metrics` 的證書到期因此只有一個源（M2 批 N 任務 6）。
                     Some(plan.resolver.clone()),
                 );
                 let mut svc = ListeningService::new("fulcrum-admin".to_string(), app);
-                // ★ 连接计数（**M2 批 O**）：管理面单列一格 `entrypoint="admin"`，
-                //   ⛔ 不并进 `http` —— 跨平面求和之前先按 entrypoint 过滤，
-                //   是抓取端唯一能把数据面与管理面分开的办法。
+                // ★ 連接計數（**M2 批 O**）：管理面單列一格 `entrypoint="admin"`，
+                //   ⛔ 不併進 `http` —— 跨平面求和之前先按 entrypoint 過濾，
+                //   是抓取端唯一能把資料面與管理面分開的辦法。
                 svc.endpoints()
                     .set_connection_counter(conn_reg.view(conn_stats::Entrypoint::Admin, &path));
-                // ★ 0600：**这就是管理面的全部访问控制**（G14：交给文件系统 ACL）。
+                // ★ 0600：**這就是管理面的全部訪問控制**（G14：交給檔案系統 ACL）。
                 svc.add_uds(
                     &path,
                     Some(std::os::unix::fs::PermissionsExt::from_mode(
@@ -2541,8 +2541,8 @@ acme-tls/1";
                 );
                 server.add_service(svc);
             }
-            // ⚠ 写错了要**拒绝启动**，不是打条警告继续跑：一个「以为管理面开着、
-            //   其实没开」的进程，比一个起不来的进程难查得多。形状照 G15。
+            // ⚠ 寫錯了要**拒絕啟動**，不是打條警告繼續跑：一個「以為管理面開著、
+            //   其實沒開」的處理程序，比一個起不來的處理程序難查得多。形狀照 G15。
             Err(e) => {
                 error!("{e}");
                 std::process::exit(1);
@@ -2550,10 +2550,10 @@ acme-tls/1";
         }
     }
 
-    // ── 主动健康检查（`health_uri`）────────────────────────────────────────
+    // ── 主動健康檢查（`health_uri`）────────────────────────────────────────
     //
-    // ★ 只在**真的有目标配了 `health_uri`** 时才起（同 DNS 那条的理由）。
-    //   ⚠ 判据与打点节奏共用一次判定，见 `health::any_health_check` 上那段。
+    // ★ 只在**真的有目標配了 `health_uri`** 時才起（同 DNS 那條的理由）。
+    //   ⚠ 判據與打點節奏共用一次判定，見 `health::any_health_check` 上那段。
     if health::any_health_check(cfg) {
         server.add_service(pingora_core::services::background::background_service(
             "fulcrum-health-check",
@@ -2561,13 +2561,13 @@ acme-tls/1";
         ));
     }
 
-    // ── 磁盘缓存的后台维护（**M2 批 H**，G84）──────────────────────────────
+    // ── 磁碟快取的後台維護（**M2 批 H**，G84）──────────────────────────────
     //
-    // ★ 只在**真的是磁盘后端**时才起（同 DNS / 健康检查那条的理由）：
-    //   内存后端下它没有任何事可做，而一个每秒醒一次什么都不做的任务，
-    //   会让「有没有磁盘缓存」在 `top` 里看不出区别。
-    // ★ ★ 它挂成 `BackgroundService` 而不是裸 `tokio::spawn`，是为了**停机那一刻**：
-    //   淘汰索引要在那时存下去（G84 的 save 那一半），而裸 spawn 的任务会被直接丢掉。
+    // ★ 只在**真的是磁碟後端**時才起（同 DNS / 健康檢查那條的理由）：
+    //   記憶體後端下它沒有任何事可做，而一個每秒醒一次什麼都不做的任務，
+    //   會讓「有沒有磁碟快取」在 `top` 裡看不出區別。
+    // ★ ★ 它掛成 `BackgroundService` 而不是裸 `tokio::spawn`，是為了**停機那一刻**：
+    //   淘汰索引要在那時存下去（G84 的 save 那一半），而裸 spawn 的任務會被直接丟掉。
     if cache.disk().is_some() {
         server.add_service(pingora_core::services::background::background_service(
             "fulcrum-cache-maintenance",
@@ -2575,10 +2575,10 @@ acme-tls/1";
         ));
     }
 
-    // ── 上游域名的定期重解析（`dns_refresh`）────────────────────────────────
+    // ── 上游網域的定期重解析（`dns_refresh`）────────────────────────────────
     //
-    // ★ 只在**真的有域名上游**时才起：一份全是 IP 字面量的配置起这个任务，
-    //   等于每 30 秒醒来一次什么都不做，而日志里多一行没人需要的噪音。
+    // ★ 只在**真的有網域上游**時才起：一份全是 IP 字面值的設定起這個任務，
+    //   等於每 30 秒醒來一次什麼都不做，而紀錄裡多一行沒人需要的噪音。
     if shared
         .current()
         .all_upstreams()
@@ -2593,8 +2593,8 @@ acme-tls/1";
         info!("没有域名上游（全是 IP 字面量）—— 不起 DNS 重解析任务");
     }
 
-    // ★ 排在监听器**之后**加：Pingora 按加入顺序起服务，而 HTTP-01 的应答
-    //   要有人在端口上听着才有意义。
+    // ★ 排在監聽器**之後**加：Pingora 按加入順序起服務，而 HTTP-01 的應答
+    //   要有人在連接埠上聽著才有意義。
     if let Some(manager) = acme {
         server.add_service(pingora_core::services::background::background_service(
             "fulcrum-acme",
@@ -2602,12 +2602,12 @@ acme-tls/1";
         ));
     }
 
-    // ── ★ ★ 就绪信号 + pid 文件（`Type=notify` 与 `ExecReload` 各自的那半边）──
+    // ── ★ ★ 就緒信號 + pid 檔案（`Type=notify` 與 `ExecReload` 各自的那半邊）──
     //
-    // ⚠ **必须在 `run_forever()` 之前订阅**：它会 move 掉 `server`。
-    // ★ 订阅的是 `ExecutionPhase::Running`——pingora 在所有 service 都启动完之后
-    //   才发这个相位。换代时这正是要的那一刻：新一代已经把 fd 取走并开始 accept 了，
-    //   此刻才写 pid 文件、才报就绪，是诚实的。
+    // ⚠ **必須在 `run_forever()` 之前訂閱**：它會 move 掉 `server`。
+    // ★ 訂閱的是 `ExecutionPhase::Running`——pingora 在所有 service 都啟動完之後
+    //   才發這個相位。換代時這正是要的那一刻：新一代已經把 fd 取走並開始 accept 了，
+    //   此刻才寫 pid 檔案、才報就緒，是誠實的。
     process::spawn_readiness(server.watch_execution_phase(), opts.pid_file.clone());
 
     server.run_forever()
@@ -2619,7 +2619,7 @@ mod tests {
     use fulcrum_runtime::request::HeaderList;
     use std::time::UNIX_EPOCH;
 
-    /// G162：「不建大小写表也照原样」两个方向都有 —— 标题化表里的名只认那一种写法，表外的名只认小写。
+    /// G162：「不建大小寫表也照原樣」兩個方向都有 —— 標題化表裡的名只認那一種寫法，表外的名只認小寫。
     #[test]
     fn h1_name_as_is_两个方向() {
         for yes in [
@@ -2645,8 +2645,8 @@ mod tests {
         }
     }
 
-    /// G162：`self_built_header` 之外往自建响应里插的固定名（`write_with_headers` 的两个、漏斗的 `Alt-Svc`）
-    ///   也都必须照原样写得出 —— 否则不建表的那一条会把它们写变样。
+    /// G162：`self_built_header` 之外往自建回應裡插的固定名（`write_with_headers` 的兩個、漏斗的 `Alt-Svc`）
+    ///   也都必須照原樣寫得出 —— 否則不建表的那一條會把它們寫變樣。
     #[test]
     fn 自建响应里固定插的名都照原样写得出() {
         for n in ["Content-Length", "Content-Type", "Alt-Svc"] {
@@ -2654,13 +2654,13 @@ mod tests {
         }
     }
 
-    /// ★ `HeaderValue::from_static` 遇到非法字符会**在请求路径上 panic** ⇒ 喂给它的固定值钉住（同 `files` 里的同名单测）。
+    /// ★ `HeaderValue::from_static` 遇到非法字元會**在請求路徑上 panic** ⇒ 餵給它的固定值釘住（同 `files` 裡的同名單測）。
     #[test]
     fn 喂给_from_static_的固定值都是合法头值() {
         assert!(HeaderValue::from_str(TEXT_PLAIN).is_ok(), "{TEXT_PLAIN}");
     }
 
-    /// G162：什么时候不建大小写表。看得见的只有 `case_header_iter`：没有表时它一个都不给。
+    /// G162：什麼時候不建大小寫表。看得見的只有 `case_header_iter`：沒有表時它一個都不給。
     #[test]
     fn self_built_header_名都照原样才不建表() {
         let has_case_map = |extra: &[(&str, &str)]| {
@@ -2693,7 +2693,7 @@ mod tests {
         );
     }
 
-    /// 只为给 [`respond_body`] 一个请求视图。
+    /// 只為給 [`respond_body`] 一個請求視圖。
     fn ctx<'a>(headers: &'a HeaderList<'a>) -> RequestCtx<'a> {
         RequestCtx {
             host: "a.example",
@@ -2708,9 +2708,9 @@ mod tests {
         }
     }
 
-    /// ★ 字面量正文**每个请求都不拷**：两次调用拿到的是同一块内存。
-    /// ⚠ 两份 `Bytes` 必须同时活着 —— 先放掉第一份的话，分配器很可能把同一个地址
-    ///   再发给第二份，于是一个每次都拷的实现也会让指针相等。
+    /// ★ 字面值正文**每個請求都不拷**：兩次呼叫拿到的是同一塊記憶體。
+    /// ⚠ 兩份 `Bytes` 必須同時活著 —— 先放掉第一份的話，分配器很可能把同一個位址
+    ///   再發給第二份，於是一個每次都拷的實作也會讓指針相等。
     #[test]
     fn 字面量正文两次调用指着同一块内存() {
         let t = Template::parse("literal body, no placeholders");
@@ -2722,7 +2722,7 @@ mod tests {
         assert_eq!(a.as_ptr(), b.as_ptr(), "字面量正文每个请求都新拷了一份");
     }
 
-    /// 反方向：带占位符的正文照样按请求展开 —— ⛔ 不能被当成字面量存住第一次的结果。
+    /// 反方向：帶佔位符的正文照樣按請求展開 —— ⛔ 不能被當成字面值存住第一次的結果。
     #[test]
     fn 带占位符的正文照样按请求展开() {
         let t = Template::parse("method={method}");
@@ -2736,8 +2736,8 @@ mod tests {
         assert_eq!(&b[..], b"method=POST");
     }
 
-    /// 真跑一次 `process_new_http`（经 pingora 实际调的那个 [`H1Entry`]；只有一个 `respond` 站点，`duplex` 当连接），
-    /// 返回交给下一条请求的 keep-alive：外层 `None` = 这条连接不续。
+    /// 真跑一次 `process_new_http`（經 pingora 實際調的那個 [`H1Entry`]；只有一個 `respond` 站台，`duplex` 當連接），
+    /// 回傳交給下一條請求的 keep-alive：外層 `None` = 這條連接不續。
     async fn reuse_after(raw: &[u8]) -> Option<Option<u64>> {
         let cfg = fulcrum_config::compile_str("t.Fulcrumfile", ":8080 {\n  respond 200 ok\n}\n")
             .config
@@ -2753,7 +2753,7 @@ mod tests {
         ))));
         let (server, mut client) = tokio::io::duplex(64 * 1024);
         let mut session = ServerSession::new_http1(Box::new(server));
-        // 与 pingora `apps/mod.rs` 给新连接第一条请求设的一样。
+        // 與 pingora `apps/mod.rs` 給新連接第一條請求設的一樣。
         session.set_keepalive(Some(KEEPALIVE_SECS));
         tokio::io::AsyncWriteExt::write_all(&mut client, raw)
             .await
@@ -2766,9 +2766,9 @@ mod tests {
         Some(next.get_keepalive())
     }
 
-    /// G161 的接线：`process_new_http` 真的经 `keepalive::settle_after_read` 定续不续、续多久。
-    /// ⚠ 端到端（`tests/serve` 第 12 节）判不出「那一行被删掉」—— 删掉时 pingora 的判定原样留着、
-    ///   关与续照样全对，丢的是时长（续变成不限时、空闲永远不关），而 60 s 在端到端里量不起。
+    /// G161 的串接：`process_new_http` 真的經 `keepalive::settle_after_read` 定續不續、續多久。
+    /// ⚠ 端到端（`tests/serve` 第 12 節）判不出「那一行被刪掉」—— 刪掉時 pingora 的判定原樣留著、
+    ///   關與續照樣全對，丟的是時長（續變成不限時、空閒永遠不關），而 60 s 在端到端裡量不起。
     #[tokio::test]
     async fn process_new_http_续的连接带着空闲窗口交给下一条_不续的不交() {
         assert_eq!(

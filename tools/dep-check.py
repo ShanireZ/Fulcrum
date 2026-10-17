@@ -85,7 +85,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Windows 控制台默认不是 UTF-8，中文输出会变乱码。强制一下，免得每周看到的都是问号。
+# Windows 控制檯預設不是 UTF-8，中文輸出會變亂碼。強制一下，免得每週看到的都是問號。
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -95,26 +95,26 @@ for _stream in (sys.stdout, sys.stderr):
 REPO = Path(__file__).resolve().parent.parent
 UA = "fulcrum-dep-check (https://github.com/ShanireZ/Fulcrum)"
 
-# G30 的 fork。基线版本直接读 fork 里 pingora-core 的 `version`，
-# 不另设一份需要手工同步的记录——那种记录迟早与事实分家。
+# G30 的 fork。基線版本直接讀 fork 裡 pingora-core 的 `version`，
+# 不另設一份需要手動同步的記錄——那種記錄遲早與事實分家。
 FORK_CRATE = "pingora-core"
 FORK_MANIFEST = REPO / "vendor" / "pingora" / FORK_CRATE / "Cargo.toml"
 FORK_DOC = "vendor/pingora/FORK.md"
 FORK_UPSTREAM_REPO = "cloudflare/pingora"
 
-# ★ 只看发版是不够的。上游 main 上的依赖上界改动在发版前就有价值——
-#   nix 0.24→0.31 那条就是先落在 main、我们直接照抄省下一整轮迁移的。
-#   所以除了比对 crates.io 的版本，还看一眼 main 领先基线 tag 多少提交。
+# ★ 只看發版是不夠的。上游 main 上的依賴上界改動在發版前就有價值——
+#   nix 0.24→0.31 那條就是先落在 main、我們直接照抄省下一整輪遷移的。
+#   所以除了比對 crates.io 的版本，還看一眼 main 領先基線 tag 多少提交。
 DEP_BUMP_HINT = re.compile(r"\b(bump|upgrade|update|deps?|dependenc)", re.I)
 
 PKG_VERSION = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.M)
 
-# ── 构建镜像（G36 / D13）─────────────────────────────────────────────────────
-# ★ 钉定的 tag 与 digest **只从 Dockerfile 读**，不另存一份——同 fork 基线的道理：
-#   第二份记录迟早与事实分家（这个项目已经栽过一次：文档说 trixie，镜像里是 bookworm）。
+# ── 建置鏡像（G36 / D13）─────────────────────────────────────────────────────
+# ★ 釘定的 tag 與 digest **只從 Dockerfile 讀**，不另存一份——同 fork 基線的道理：
+#   第二份記錄遲早與事實分家（這個專案已經栽過一次：文件說 trixie，鏡像裡是 bookworm）。
 BUILD_DOCKERFILE = REPO / "docker" / "Dockerfile.build"
 BUILD_DOC = "docs/platform/build-and-test.md"
-# 上游用来「追新」的那个浮动 tag。钉子就是从它身上取下来的。
+# 上游用來「追新」的那個浮動 tag。釘子就是從它身上取下來的。
 BASE_FLOATING_TAG = "1-trixie"
 BASE_HUB_REPO = "library/rust"
 # FROM rust:1.97.1-trixie@sha256:3382bd…
@@ -122,12 +122,12 @@ FROM_LINE = re.compile(
     r"^FROM\s+(?P<repo>[^\s:@]+):(?P<tag>[^\s@]+?)(?:@(?P<digest>sha256:[0-9a-f]{64}))?\s*$",
     re.M,
 )
-# 从 `1.97.1-trixie` 里取出 `1.97.1`
+# 從 `1.97.1-trixie` 裡取出 `1.97.1`
 TAG_VERSION = re.compile(r"^(\d+(?:\.\d+)*)-")
 
-# ── pebble（G64）：门禁里那个本地 ACME CA ─────────────────────────────────────
-# ★ 它与 rustc 钉在**同一个文件**里，处置也一样（改文件 → 重建镜像 → 重跑门禁），
-#   所以并进 40 那一档，不新开一位——退出码只有 8 位，现有五档相加已经 310。
+# ── pebble（G64）：門禁裡那個本機 ACME CA ─────────────────────────────────────
+# ★ 它與 rustc 釘在**同一個檔案**裡，處置也一樣（改檔案 → 重建鏡像 → 重跑門禁），
+#   所以並進 40 那一檔，不新開一位——結束代碼只有 8 位，現有五檔相加已經 310。
 PEBBLE_REPO = "letsencrypt/pebble"
 PEBBLE_PIN = re.compile(r"^ARG\s+PEBBLE_VERSION=(\S+)", re.MULTILINE)
 PEBBLE_SHA_ARGS = (
@@ -137,35 +137,35 @@ PEBBLE_SHA_ARGS = (
     "CHALLTESTSRV_SHA256_ARM64",
 )
 
-# ── systemd 测试宿主镜像（G39 / ）───────────────────────────────────
-# ★ 与 G36 的构建镜像**同构但不同判据**：那边判 rustc，这边判 **systemd 大版本**。
-#   理由：M1 spike #1 的结论（alien MainPID 之下 systemctl stop 不再等排空）是
-#   **对某个 systemd 版本成立**的，版本本身就是结论的一部分。浮动 tag 会让结论某天
-#   悄悄失效，而没有任何一行输出会说出来——这正是构建镜像那次栽过的形状。
+# ── systemd 測試宿主鏡像（G39 / ）───────────────────────────────────
+# ★ 與 G36 的建置鏡像**同構但不同判據**：那邊判 rustc，這邊判 **systemd 大版本**。
+#   理由：M1 spike #1 的結論（alien MainPID 之下 systemctl stop 不再等排空）是
+#   **對某個 systemd 版本成立**的，版本本身就是結論的一部分。浮動 tag 會讓結論某天
+#   悄悄失效，而沒有任何一行輸出會說出來——這正是建置鏡像那次栽過的形狀。
 SYSTEMD_DOCKERFILE = REPO / "docker" / "Dockerfile.systemd"
 SYSTEMD_HUB_REPO = "library/debian"
 SYSTEMD_DOC = "docs/verification/m1-systemd.md"
-# ★ 钉定的 systemd 版本写在 Dockerfile 里一行**机器可读**的注释上，与 FROM 行同处一个文件。
-#   不另存第二份——同 fork 基线与构建镜像的道理（第二份记录迟早与事实分家）。
+# ★ 釘定的 systemd 版本寫在 Dockerfile 裡一行**機器可讀**的註解上，與 FROM 行同處一個檔案。
+#   不另存第二份——同 fork 基線與建置鏡像的道理（第二份記錄遲早與事實分家）。
 PINNED_SYSTEMD = re.compile(r"^#\s*fulcrum-pinned-systemd:\s*(?P<ver>\S+)\s*$", re.M)
-# Debian 的源码 API：一个很小的 JSON，直接给出每个 suite 当前的版本。纯 HTTP。
+# Debian 的原始碼 API：一個很小的 JSON，直接給出每個 suite 當前的版本。純 HTTP。
 DEB_SOURCES_API = "https://sources.debian.org/api/src/systemd/"
-# 从 `257.13-1~deb13u1` 里取出大版本 `257`
+# 從 `257.13-1~deb13u1` 裡取出大版本 `257`
 SYSTEMD_MAJOR = re.compile(r"^(\d+)")
 
-# cargo 的 dry-run 输出形如：
+# cargo 的 dry-run 輸出形如：
 #     Updating pingora-core v0.8.1 -> v0.9.0
 #       Adding some-new-crate v1.2.3
 #
-# ★ 行尾可能再挂一个括号注记，**必须认**：不认，这一行整条被丢 —— 不报、不过怀疑期、不采纳，一点声响都没有。
-#   2026-10-16 在 cargo 1.98.0（fulcrum-build:local）里实测到的两种：
-#     Updating zstd v0.12.4 -> v0.13.3 (available: v0.14.2)                      有更新、但跨了大版本，`cargo update` 够不到
-#     Updating clap v4.0.0 -> v4.5.61 (available: v4.6.7, requires Rust 1.85)    更新的那版要更高的 Rust（resolver 3 的 MSRV 回退）
-#   `Adding` 同样带。另有三种照 cargo 源码（797e8a9bc `ops/cargo_update.rs` 的 `report_*`）才知道的：
-#   `(requires Rust X)`（选中的版本比 rust-version 还新）、`(published 3 hours ago, minimum age 7 days)` 与
-#   `(available: vX, published …)`（后两种要 -Zmin-publish-age，稳定版打不出来）。
-#   ⇒ 不枚举内容，认「行尾恰好一个不含括号的括号注记」：将来再冒出新种类，也不至于重蹈覆辙。
-#   `Downgrading` / `Removing` / `Unchanged` 不是采纳候选，不解析（`Downgrading` 一样带注记，见 [`_self_check_dry_run`]）。
+# ★ 行尾可能再掛一個括號註記，**必須認**：不認，這一行整條被丟 —— 不報、不過懷疑期、不採納，一點聲響都沒有。
+#   2026-10-16 在 cargo 1.98.0（fulcrum-build:local）裡實測到的兩種：
+#     Updating zstd v0.12.4 -> v0.13.3 (available: v0.14.2)                      有更新、但跨了大版本，`cargo update` 夠不到
+#     Updating clap v4.0.0 -> v4.5.61 (available: v4.6.7, requires Rust 1.85)    更新的那版要更高的 Rust（resolver 3 的 MSRV 退回）
+#   `Adding` 同樣帶。另有三種照 cargo 原始碼（797e8a9bc `ops/cargo_update.rs` 的 `report_*`）才知道的：
+#   `(requires Rust X)`（選中的版本比 rust-version 還新）、`(published 3 hours ago, minimum age 7 days)` 與
+#   `(available: vX, published …)`（後兩種要 -Zmin-publish-age，穩定版打不出來）。
+#   ⇒ 不枚舉內容，認「行尾恰好一個不含括號的括號註記」：將來再冒出新種類，也不至於重蹈覆轍。
+#   `Downgrading` / `Removing` / `Unchanged` 不是採納候選，不解析（`Downgrading` 一樣帶註記，見 [`_self_check_dry_run`]）。
 _NOTE = r"(?:\s+\([^()]*\))?"
 UPDATING = re.compile(r"^\s*Updating\s+(\S+)\s+v(\S+)\s+->\s+v(\S+)" + _NOTE + r"\s*$")
 ADDING = re.compile(r"^\s*Adding\s+(\S+)\s+v(\S+)" + _NOTE + r"\s*$")
@@ -242,7 +242,7 @@ def crate_versions(name: str) -> dict[str, dict]:
 
 
 def parse_ts(raw: str) -> datetime:
-    # crates.io 给的是 RFC3339，尾巴可能是 Z
+    # crates.io 給的是 RFC3339，尾巴可能是 Z
     return datetime.fromisoformat(raw.replace("Z", "+00:00"))
 
 
@@ -294,9 +294,9 @@ def version_key(v: str) -> tuple:
     return tuple(int(x) if x.isdigit() else 0 for x in core.split("."))
 
 
-# ★ 本仓库有**两把锁**，而 `tests/vendor/run.sh` 要求它们对同一个包解出同一组版本。
-#   ⚠ 定义在这里而不是各处写字面量，是因为之前它只写在
-#     `ADVISORY_LOCKS` 里，而 `--apply` 那条路**完全不知道第二把锁的存在**。
+# ★ 本儲存庫有**兩把鎖**，而 `tests/vendor/run.sh` 要求它們對同一個包解出同一組版本。
+#   ⚠ 定義在這裡而不是各處寫字面值，是因為之前它只寫在
+#     `ADVISORY_LOCKS` 裡，而 `--apply` 那條路**完全不知道第二把鎖的存在**。
 VENDOR_LOCK = "vendor/pingora/Cargo.lock"
 VENDOR_MANIFEST = "vendor/pingora/Cargo.toml"
 
@@ -305,7 +305,7 @@ def fork_baseline() -> str | None:
     """fork 当前对齐的上游版本 = vendor 里 pingora-core 的 `version`。"""
     if not FORK_MANIFEST.exists():
         return None
-    # 只看 [package] 段，避免撞上依赖项里的 version
+    # 只看 [package] 段，避免撞上依賴項裡的 version
     text = FORK_MANIFEST.read_text(encoding="utf-8").split("[dependencies]")[0]
     m = PKG_VERSION.search(text)
     return m.group(1) if m else None
@@ -342,13 +342,13 @@ def check_upstream_main(baseline: str) -> None:
 
     print(f"  ★ 上游 main 相对 tag {baseline}：**{status}**，领先 {ahead} 个 / 落后 {behind} 个提交")
 
-    # ★ ★ ★ 「落后」这一半必须先说，而且要说得比「领先」那一半响。
-    #   实测：main 与 0.8.1 是 **diverged**（共同祖先是 0.8.0），
-    #   而 main **落后 8 个提交**，那 8 个里有 `RUSTSEC-2026-0098/0099 fixes` 与
+    # ★ ★ ★ 「落後」這一半必須先說，而且要說得比「領先」那一半響。
+    #   實測：main 與 0.8.1 是 **diverged**（共同祖先是 0.8.0），
+    #   而 main **落後 8 個提交**，那 8 個裡有 `RUSTSEC-2026-0098/0099 fixes` 與
     #   `Bound default HTTP/2 server limits to mitigate memory exhaustion`。
-    #   ⇒ 本函数原先只读 `ahead_by`，于是它说的是「main 领先 190 个提交」——
-    #     一句会被读成「main ⊇ tag + 190」的话，而那是假的。
-    #   ★ 那句话当天真的把一个决定引到了「从 main 捞改动」上。
+    #   ⇒ 本函式原先唯讀 `ahead_by`，於是它說的是「main 領先 190 個提交」——
+    #     一句會被讀成「main ⊇ tag + 190」的話，而那是假的。
+    #   ★ 那句話當天真的把一個決定引到了「從 main 撈改動」上。
     if behind:
         print(f"    ⚠ ⚠ ★ **main 上没有 tag {baseline} 的那 {behind} 个提交** —— 它们不是「旧的」，")
         print("      是**只存在于发布线上的**。⇒ 把 fork 挪到 main、或按 main 重做 vendor，")
@@ -447,7 +447,7 @@ def hub_tag_digests(repo: str, name_filter: str) -> dict[str, str]:
         f"https://hub.docker.com/v2/repositories/{repo}/tags"
         f"?page_size=100&name={name_filter}"
     )
-    for _ in range(5):  # 有界翻页，别写成无限循环
+    for _ in range(5):  # 有界翻頁，別寫成無限循環
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.load(resp)
@@ -493,7 +493,7 @@ def check_build_image() -> bool:
         return True
 
     pinned_tag, pinned_digest = m.group("tag"), m.group("digest")
-    # ★ 这一条同时守着自己的修复：钉子被人拿掉了，本检查就该红。
+    # ★ 這一條同時守著自己的修復：釘子被人拿掉了，本檢查就該紅。
     if not pinned_digest:
         print(f"★ 基础镜像 `{m.group('repo')}:{pinned_tag}` **没有钉 digest**——浮动 tag 与 §8"
               f"「对拍环境可复现」直接冲突。见 {BUILD_DOC}。")
@@ -508,8 +508,8 @@ def check_build_image() -> bool:
     try:
         tags = hub_trixie_tags()
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
-        # ★ 查不到 ≠ 没落后。**「没能检查」不许当成「检查通过」**——这是本项目复审
-        #   两轮反复抓到的形状。只有一个请求，失败多半是真有问题，重跑也便宜。
+        # ★ 查不到 ≠ 沒落後。**「沒能檢查」不許當成「檢查通過」**——這是本專案複審
+        #   兩輪反覆抓到的形狀。只有一個請求，失敗多半是真有問題，重跑也便宜。
         print(f"★ 没能向 Docker Hub 查证构建镜像：{e}")
         print("  ★ 这**不等于**镜像是最新的——本次构建镜像那一栏没有结论，换网络重跑。")
         return True
@@ -523,8 +523,8 @@ def check_build_image() -> bool:
         print(f"构建镜像已是 `{BASE_FLOATING_TAG}` 当前指向的那一个（rustc {pinned_ver}），无需拔钉子。")
         return False
 
-    # digest 变了。★ 只有 rustc 也变了才判红。
-    # 找出与浮动 tag 同 digest 的那个精确版本 tag，例如 `1.97.2-trixie`。
+    # digest 變了。★ 只有 rustc 也變了才判紅。
+    # 找出與浮動 tag 同 digest 的那個精確版本 tag，例如 `1.97.2-trixie`。
     precise = sorted(
         (n for n, d in tags.items() if d == live_digest and TAG_VERSION.match(n)),
         key=lambda n: version_key(TAG_VERSION.match(n).group(1)),
@@ -537,7 +537,7 @@ def check_build_image() -> bool:
         return True
 
     if version_key(live_ver) <= version_key(pinned_ver):
-        # 同一个 rustc，只是 Debian 侧重打了包。按 G36 只提示。
+        # 同一個 rustc，只是 Debian 側重打了包。按 G36 只提示。
         print(f"构建镜像的 rustc 仍是 {pinned_ver}，无需拔钉子。")
         print(f"  （`{BASE_FLOATING_TAG}` 的 digest 已重打为 {live_digest[:19]}…，Debian 侧的更新；"
               f"这些包不进产物，按 G36 只提示不判红）")
@@ -572,15 +572,15 @@ def check_pebble() -> bool:
     text = BUILD_DOCKERFILE.read_text(encoding="utf-8")
     m = PEBBLE_PIN.search(text)
     if m is None:
-        # ★ 这一条同时守着自己：有人把 pebble 那段删了或改了写法，本检查就该红，
-        #   而不是安静地什么都不查（「没能检查」当成「检查通过」是本项目栽过的形状）。
+        # ★ 這一條同時守著自己：有人把 pebble 那段刪了或改了寫法，本檢查就該紅，
+        #   而不是安靜地什麼都不查（「沒能檢查」當成「檢查通過」是本專案栽過的形狀）。
         print(f"★ {rel(BUILD_DOCKERFILE)} 里读不出 `ARG PEBBLE_VERSION=` —— "
               f"pebble 那一段被改过写法？本次 pebble 没有结论。")
         return True
     pinned = m.group(1)
 
-    # ★ 四个哈希也要在。少一个架构的哈希，那个架构上的门禁会在构建时才炸，
-    #   而那时的报错离「谁把它删了」已经很远。
+    # ★ 四個雜湊也要在。少一個架構的雜湊，那個架構上的門禁會在建置時才炸，
+    #   而那時的回報錯誤離「誰把它刪了」已經很遠。
     missing = [k for k in PEBBLE_SHA_ARGS if f"ARG {k}=" not in text]
     if missing:
         print(f"★ {rel(BUILD_DOCKERFILE)} 缺这几个哈希：{', '.join(missing)} —— "
@@ -641,7 +641,7 @@ def check_systemd_image() -> bool:
         return True
 
     pinned_tag, pinned_digest = m.group("tag"), m.group("digest")
-    # ★ 与 G36 那条一样，这一句同时守着自己的修复：钉子被人拿掉了，本检查就该红。
+    # ★ 與 G36 那條一樣，這一句同時守著自己的修復：釘子被人拿掉了，本檢查就該紅。
     if not pinned_digest:
         print(f"★ 测试宿主镜像 `{m.group('repo')}:{pinned_tag}` **没有钉 digest**——"
               f"而 systemd 的版本是 M1 结论的一部分。见 {SYSTEMD_DOC}。")
@@ -666,7 +666,7 @@ def check_systemd_image() -> bool:
         tags = hub_tag_digests(SYSTEMD_HUB_REPO, suite)
         live_sd = debian_suite_systemd(suite)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as e:
-        # ★ 查不到 ≠ 没落后。**「没能检查」不许当成「检查通过」**（本项目已抓到过五种面目）。
+        # ★ 查不到 ≠ 沒落後。**「沒能檢查」不許當成「檢查通過」**（本專案已抓到過五種面目）。
         print(f"★ 没能查证 systemd 测试宿主镜像：{e}")
         print("  ★ 这**不等于**它是最新的——本次这一栏没有结论，换网络重跑。")
         return True
@@ -701,7 +701,7 @@ def check_systemd_image() -> bool:
         return True
 
     if live_digest != pinned_digest or live_sd != pinned_sd:
-        # 同一个大版本，只是 Debian 侧重打了包或出了小版本。按 G36 的口径只提示。
+        # 同一個大版本，只是 Debian 側重打了包或出了小版本。按 G36 的口徑只提示。
         print(f"systemd 测试宿主的大版本仍是 {pinned_major}，无需拔钉子。")
         if live_sd != pinned_sd:
             print(f"  （suite `{suite}` 的 systemd 已是 {live_sd}，钉的是 {pinned_sd}；"
@@ -713,8 +713,8 @@ def check_systemd_image() -> bool:
     print(f"systemd 测试宿主已是 `{pinned_tag}` 当前指向的那一个（systemd {pinned_sd}），无需拔钉子。")
     return False
 
-# ── 安全公告（第五项）───────────────────────────────────────────
-# 要扫的锁。★ 顺序有意义：vendor 那把是**产品的真实依赖**，放前面。
+# ── 安全公告（第五項）───────────────────────────────────────────
+# 要掃的鎖。★ 順序有意義：vendor 那把是**產品的真實依賴**，放前面。
 ADVISORY_LOCKS = (VENDOR_LOCK, "Cargo.lock")
 
 
@@ -781,8 +781,8 @@ def check_advisories() -> bool:
     if registered:
         print(f"  ○ 已登记并接受 {registered} 条（理由见 supply-audit.py 的 ACCEPTED）")
 
-    # ★ 反向校验：ACCEPTED 里有条目在两把锁上都不再命中 → 它该被删掉，否则名单会烂。
-    #   ⚠ 只在**确实查成了**的时候才做——`unqueried` 非空时上面已经 return，所以这里安全。
+    # ★ 反向檢核：ACCEPTED 裡有條目在兩把鎖上都不再命中 → 它該被刪掉，否則名單會爛。
+    #   ⚠ 只在**確實查成了**的時候才做——`unqueried` 非空時上面已經 return，所以這裡安全。
     dead = sorted(set(sa.ACCEPTED) - seen_accepted)
     if dead:
         print(f"  ★ ACCEPTED 里有 {len(dead)} 条本次没有命中任何包，应当删掉：{', '.join(dead)}")
@@ -821,12 +821,12 @@ def finish(code: int) -> int:
     """
     if code <= 255:
         return code
-    # ⚠ ⚠ **这几档不是二进制位**，是十进制的 10 / 20 / 40 / 80 / 160。
-    #   ⚠ 写成 `code & bit == bit` 是错的 —— 文档里虽然管它们叫「一位」，
-    #   我就当真按位与去解了。结果 310 解出来**只有「fork 上游要人管」一条**：
-    #   一份读起来很像结论的错报告，而且比真相轻得多。
-    #   ★ 它们都是 10 的倍数、逐档翻倍，所以先除以 10 才是真正的位图。
-    #   （这条与本项目反复记的是同一件事：**判据要照定义写，不照它长得像什么写**。）
+    # ⚠ ⚠ **這幾檔不是二進位位**，是十進位的 10 / 20 / 40 / 80 / 160。
+    #   ⚠ 寫成 `code & bit == bit` 是錯的 —— 文件裡雖然管它們叫「一位」，
+    #   我就當真按位與去解了。結果 310 解出來**只有「fork 上游要人管」一條**：
+    #   一份讀起來很像結論的錯報告，而且比真相輕得多。
+    #   ★ 它們都是 10 的倍數、逐檔翻倍，所以先除以 10 才是真正的點陣圖。
+    #   （這條與本專案反覆記的是同一件事：**判據要照定義寫，不照它長得像什麼寫**。）
     mask = code // 10
     lit = [label for bit, label in EXIT_BITS if mask & (bit // 10)]
     print()
@@ -864,8 +864,8 @@ def main() -> int:
     cargo = args.cargo.split()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
 
-    # ── fork 的上游先查。它与 cargo 那条路完全独立：patch 过去的 crate
-    #    不在 `cargo update` 的视野里，而它恰恰是本项目最重要的那个依赖。
+    # ── fork 的上游先查。它與 cargo 那條路完全獨立：patch 過去的 crate
+    #    不在 `cargo update` 的視野裡，而它恰恰是本專案最重要的那個依賴。
     fork_behind = False
     if not args.skip_fork:
         print("── fork 上游检查 ──")
@@ -873,14 +873,14 @@ def main() -> int:
         print()
     fork_code = 20 if fork_behind else 0
 
-    # ── 构建镜像（G36 / D13）。同样在 `cargo update` 的视野之外。
+    # ── 建置鏡像（G36 / D13）。同樣在 `cargo update` 的視野之外。
     image_behind = False
     if not args.skip_image:
         print("── 构建镜像检查 ──")
         image_behind = check_build_image()
-        # ★ pebble 并进同一档（40）。⚠ 两个都要跑完再取或，**不能写成
-        #   `check_build_image() or check_pebble()`**：`or` 短路，rustc 一红
-        #   pebble 那条就整轮不查了——而它恰恰是「没能检查算作检查通过」的近亲。
+        # ★ pebble 並進同一檔（40）。⚠ 兩個都要跑完再取或，**不能寫成
+        #   `check_build_image() or check_pebble()`**：`or` 短路，rustc 一紅
+        #   pebble 那條就整輪不查了——而它恰恰是「沒能檢查算作檢查通過」的近親。
         print()
         print("── 门禁本地 CA（pebble，G64）检查 ──")
         pebble_behind = check_pebble()
@@ -888,8 +888,8 @@ def main() -> int:
         print()
     image_code = 40 if image_behind else 0
 
-    # ── systemd 测试宿主镜像（G39）。同样在 `cargo update` 的视野之外，
-    #    而且它比构建镜像更需要盯着：**systemd 的版本是 M1 结论的一部分**。
+    # ── systemd 測試宿主鏡像（G39）。同樣在 `cargo update` 的視野之外，
+    #    而且它比建置鏡像更需要盯著：**systemd 的版本是 M1 結論的一部分**。
     systemd_behind = False
     if not args.skip_systemd_image:
         print("── systemd 测试宿主镜像检查 ──")
@@ -897,8 +897,8 @@ def main() -> int:
         print()
     systemd_code = 80 if systemd_behind else 0
 
-    # ── 安全公告。★ 它与上面三条一样在 `cargo update` 的视野之外：
-    #    `cargo update` 只管「有没有新版」，管不了「现有版本有没有公告」。
+    # ── 安全公告。★ 它與上面三條一樣在 `cargo update` 的視野之外：
+    #    `cargo update` 只管「有沒有新版」，管不了「現有版本有沒有公告」。
     advisories_bad = False
     if not args.skip_advisories:
         print("── 安全公告检查（两把锁）──")
@@ -908,7 +908,7 @@ def main() -> int:
 
     print("── crates.io 更新检查 ──")
     candidates = cargo_candidates(cargo)
-    # ★ vendor 清单再问一次：只在 vendor 锁里的版本根那条路看不见，见 [`vendor_only`]。
+    # ★ vendor 清單再問一次：只在 vendor 鎖裡的版本根那條路看不見，見 [`vendor_only`]。
     vendor_candidates = vendor_only(cargo_candidates(cargo, VENDOR_MANIFEST), _lock_versions("Cargo.lock"))
     if not candidates and not vendor_candidates:
         print("没有可用更新，依赖已是最新。")
@@ -916,15 +916,15 @@ def main() -> int:
               "被上游清单上界卡住的依赖它一个都不会报。全量审计见 docs/platform/supply-chain.md。")
         return finish(fork_code + image_code + systemd_code + advisory_code)
 
-    # ★ ★ 第二格是**当前版本**，而它是补上的，理由是一次真的失败：
-    #   `syn` 在图里有两个大版本（2.0.119 与 3.0.3），于是
-    #   `cargo update -p syn --precise 3.0.4` 报 `specification 'syn' is ambiguous`，
-    #   ⚠ 而**另外八项全成功了** —— 一次「大部分绿」的采纳，最容易被读成全绿。
-    #   ⇒ 用 `name@当前版本` 这个 pkgid spec 去指名道姓（cargo 自己在那条报错里
-    #     给出的正是这种写法）。
+    # ★ ★ 第二格是**當前版本**，而它是補上的，理由是一次真的失敗：
+    #   `syn` 在圖裡有兩個大版本（2.0.119 與 3.0.3），於是
+    #   `cargo update -p syn --precise 3.0.4` 報 `specification 'syn' is ambiguous`，
+    #   ⚠ 而**另外八項全成功了** —— 一次「大部分綠」的採納，最容易被讀成全綠。
+    #   ⇒ 用 `name@当前版本` 這個 pkgid spec 去指名道姓（cargo 自己在那條回報錯誤裡
+    #     給出的正是這種寫法）。
     print(f"候选更新 {len(candidates)} 项，怀疑期 {args.hours} 小时（早于 {cutoff:%Y-%m-%d %H:%M UTC} 发布的才算数）\n")
 
-    # 判过的版本记下来：采纳之后的闯入者核对多半撞上候选清单里被挡的那几个，不必再问 crates.io。
+    # 判過的版本記下來：採納之後的闖入者核對多半撞上候選清單裡被擋的那幾個，不必再問 crates.io。
     verdicts: dict[tuple[str, str], tuple[str | None, str]] = {}
 
     def vet(name: str, version: str) -> tuple[str | None, str]:
@@ -963,7 +963,7 @@ def main() -> int:
             return blaming(update, read_lock, lock, blame)(" ".join(specs), "各自最新的兼容版（一起采纳）")
         return run_group
 
-    # ★ 采纳前给两把锁拍快照（逐字节）：顺带带进没过怀疑期的版本时整批还原，见 [`lock_intruders`]。
+    # ★ 採納前給兩把鎖拍快照（逐位元組）：順帶帶進沒過懷疑期的版本時整批還原，見 [`lock_intruders`]。
     locks = ("Cargo.lock", VENDOR_LOCK)
     snapshot = {lock: (REPO / lock).read_bytes() for lock in locks}
     before = {lock: _lock_versions(lock) for lock in locks}
@@ -983,13 +983,13 @@ def main() -> int:
         failed += _align_vendor_lock(cargo, eligible, blame)
 
     if vendor_eligible:
-        # ★ 根那一批之后再做：它们的目标里不该有根那一批会镜像过来的版本（[`vendor_only`] 已排除）。
+        # ★ 根那一批之後再做：它們的目標裡不該有根那一批會鏡像過來的版本（[`vendor_only`] 已排除）。
         print(f"\n采纳 vendor 独有的（{VENDOR_LOCK}）：")
         prior = read_vendor()
         failed += len(adopt_root(vendor_eligible, blaming(update_vendor, read_vendor, VENDOR_LOCK, blame),
                                  read_vendor, label=f"vendor 锁（{VENDOR_LOCK}）",
                                  update_group=group(read_vendor, VENDOR_LOCK, ["--manifest-path", VENDOR_MANIFEST])))
-        # ⚠ vendor 独有的一项也可能把**两把锁共有**的包拉走（新版本要更新的依赖）⇒ 动过的名字都再对一次齐。
+        # ⚠ vendor 獨有的一項也可能把**兩把鎖共有**的包拉走（新版本要更新的依賴）⇒ 動過的名字都再對一次齊。
         moved = sorted(n for n, vs in read_vendor().items() if vs != prior.get(n, set()))
         moved += sorted(set(prior) - set(read_vendor()))
         failed += _report_alignment(cargo, moved)
@@ -1040,8 +1040,8 @@ def adopt_root(eligible, update, read_lock, label: str = "根锁（Cargo.lock）
     采纳后的怀疑期核对（[`lock_intruders`]）也会现查它 —— 判据不放松。
     """
     for name, cur, version in eligible:
-        # ⚠ 同名多版本时裸 `name` 是**歧义的**，而 cargo 会因此整条失败。
-        #   带上当前版本就唯一了；`cur` 为空（新增包）时只能裸着来。
+        # ⚠ 同名多版本時裸 `name` 是**歧義的**，而 cargo 會因此整條失敗。
+        #   帶上當前版本就唯一了；`cur` 為空（新增包）時只能裸著來。
         spec = f"{name}@{cur}" if cur else name
         rc, out = update(spec, version)
         if rc == 0:
@@ -1575,8 +1575,8 @@ note: pass `--verbose` to see 3 unchanged dependencies behind latest
             extra = [c for c in got if c not in want]
             bad.append(f"dry-run 行解析「{label}」：丢了 {lost or '无'}，多收了 {extra or '无'}")
 
-    # 再走一遍真正的入口：用解释器假扮 cargo（把第一个参数原样吐到 stderr、退 0），
-    # 证明 `cargo_candidates` 确实经过 `parse_dry_run`，不是只有自测在用它。
+    # 再走一遍真正的入口：用解釋器假扮 cargo（把第一個參數原樣吐到 stderr、退 0），
+    # 證明 `cargo_candidates` 確實經過 `parse_dry_run`，不是隻有自測在用它。
     label, out, want = cases[0]
     fake_cargo = [sys.executable, "-c", "import sys; sys.stderr.write(sys.argv[1])", out]
     got = cargo_candidates(fake_cargo)
@@ -1605,9 +1605,9 @@ def self_check() -> int:
     另：[`parse_dry_run`] 认不认得 cargo 的 dry-run 行（含行尾括号注记）不属上面几处 `--apply` 判定，见 [`_self_check_dry_run`]。
     """
     users = {
-        ("base64", "0.23.1"): [],  # 只经 rcgen → pem 4 进产物（2026-09-24 的真实形状）
-        ("lru", "0.18.2"): ["pingora-pool"],  # pingora 在用、vendor 却没解析出来 —— 真问题
-        ("zstd", "9.9.9"): None,  # 问不出来
+        ("base64", "0.23.1"): [],  # 只經 rcgen → pem 4 進產物（2026-09-24 的真實形狀）
+        ("lru", "0.18.2"): ["pingora-pool"],  # pingora 在用、vendor 卻沒解析出來 —— 真問題
+        ("zstd", "9.9.9"): None,  # 問不出來
     }
     root = {
         "rand": {"0.10.3"},
@@ -1617,8 +1617,8 @@ def self_check() -> int:
         "pem": {"4.0.0"},
     }
     vendor = {
-        "quinn-proto": {"0.11.16"},  # 只在 vendor 锁里（2026-10-16 的真实形状）
-        "rand": {"0.8.7", "0.10.3"},  # vendor 侧合法地多一个老大版本（dev-dep／可选依赖）
+        "quinn-proto": {"0.11.16"},  # 只在 vendor 鎖裡（2026-10-16 的真實形狀）
+        "rand": {"0.8.7", "0.10.3"},  # vendor 側合法地多一個老大版本（dev-dep／可選依賴）
         "base64": {"0.22.1"},
         "lru": {"0.18.5"},
         "zstd": {"0.14.0"},
@@ -1627,7 +1627,7 @@ def self_check() -> int:
         "rand": "ok",
         "base64": "root-only-path",
         "lru": "mismatch",
-        "zstd": "mismatch",  # ⛔ 问不出来 ≠ 没人用
+        "zstd": "mismatch",  # ⛔ 問不出來 ≠ 沒人用
         "pem": "absent",
         "quinn-proto": "vendor-only",
     }

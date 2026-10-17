@@ -1,29 +1,29 @@
-//! HTTP-01 的应答表（G54 的「备」那一条）。
+//! HTTP-01 的應答表（G54 的「備」那一條）。
 //!
-//! ACME 的 HTTP-01 要求服务器在
+//! ACME 的 HTTP-01 要求伺服器在
 //! `http://<域名>/.well-known/acme-challenge/<token>` 上回一段 key authorization
-//! （RFC 8555 §8.3）。这个表就是「token → 该回什么」，由签发流程填、由数据面读。
+//! （RFC 8555 §8.3）。這個表就是「token → 該回什麼」，由簽發流程填、由資料面讀。
 //!
-//! # ★ ★ 为什么它必须绕过路由
+//! # ★ ★ 為什麼它必須繞過路由
 //!
-//! 一份配置完全可以是 `respond 403`（或者 `handle` 里没有任何分支接得住这条路径）。
-//! 如果挑战应答走正常路由，**用户的配置会把自己的证书签发挡掉**，
-//! 而现场看到的只是「CA 说验不过」——配置里没有任何一行看得出问题。
-//! 所以数据面在路由**之前**先问这张表，问不到才继续正常流程。
+//! 一份設定完全可以是 `respond 403`（或者 `handle` 裡沒有任何分支接得住這條路徑）。
+//! 如果挑戰應答走正常路由，**使用者的設定會把自己的證書籤發擋掉**，
+//! 而現場看到的只是「CA 說驗不過」——設定裡沒有任何一行看得出問題。
+//! 所以資料面在路由**之前**先問這張表，問不到才繼續正常流程。
 //!
-//! ⚠ 绕过路由意味着这条路径**不受配置控制**，所以面收到最小：
-//! 只认那一个前缀且 token 当前有效 · 表空时什么都不接（请求照常落回路由）·
+//! ⚠ 繞過路由意味著這條路徑**不受設定控制**，所以面收到最小：
+//! 只認那一個前綴且 token 當前有效 · 表空時什麼都不接（請求照常落迴路由）·
 //! 只做等值查找，不做任何模式匹配。
 //!
-//! ★ **token 用完就删，删由 `Drop` 管**（[`Provisioned`] 是守卫）：
-//! 手写一对 insert/remove 迟早会漏一次，而漏掉的后果是一个早已失效的 token
-//! 永远留在表上 —— 一条免费的信息泄露面。
+//! ★ **token 用完就刪，刪由 `Drop` 管**（[`Provisioned`] 是守衛）：
+//! 手寫一對 insert/remove 遲早會漏一次，而漏掉的後果是一個早已失效的 token
+//! 永遠留在表上 —— 一條免費的資訊洩露面。
 
 use log::debug;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-/// 挑战路径的前缀。RFC 8555 §8.3 写死的，不可配置。
+/// 挑戰路徑的前綴。RFC 8555 §8.3 寫死的，不可設定。
 pub const WELL_KNOWN_PREFIX: &str = "/.well-known/acme-challenge/";
 
 /// token → key authorization。
@@ -37,7 +37,7 @@ impl Http01Store {
         Http01Store::default()
     }
 
-    /// 挂一个 token 上去，拿到一个到期自动摘掉的守卫。
+    /// 掛一個 token 上去，拿到一個到期自動摘掉的守衛。
     pub fn provision(self: &Arc<Self>, token: &str, key_authorization: &str) -> Provisioned {
         if let Ok(mut t) = self.tokens.write() {
             t.insert(token.to_string(), key_authorization.to_string());
@@ -49,21 +49,21 @@ impl Http01Store {
         }
     }
 
-    /// 数据面调用：这条路径该不该由我们直接应答？
+    /// 資料面呼叫：這條路徑該不該由我們直接應答？
     ///
-    /// 返回 `None` 表示「不是挑战请求，或这个 token 不认识」——两种情况数据面的处置相同：
-    /// 照常走路由。★ 不把「不认识的 token」变成 404：那会让这条路径的存在**可被探测**，
-    /// 而它本该与任何别的路径没有区别。
+    /// 回傳 `None` 表示「不是挑戰請求，或這個 token 不認識」——兩種情況資料面的處置相同：
+    /// 照常走路由。★ 不把「不認識的 token」變成 404：那會讓這條路徑的存在**可被探測**，
+    /// 而它本該與任何別的路徑沒有區別。
     pub fn answer(&self, path: &str) -> Option<String> {
         let token = path.strip_prefix(WELL_KNOWN_PREFIX)?;
-        // ★ 只认最后一段：`/.well-known/acme-challenge/a/b` 不是一个 token。
+        // ★ 只認最後一段：`/.well-known/acme-challenge/a/b` 不是一個 token。
         if token.is_empty() || token.contains('/') {
             return None;
         }
         self.tokens.read().ok()?.get(token).cloned()
     }
 
-    /// 当前挂着几个 token。给日志与测试用。
+    /// 當前掛著幾個 token。給紀錄與測試用。
     pub fn len(&self) -> usize {
         self.tokens.read().map(|t| t.len()).unwrap_or(0)
     }
@@ -73,7 +73,7 @@ impl Http01Store {
     }
 }
 
-/// 一个挂在表上的 token。析构时摘掉。
+/// 一個掛在表上的 token。析構時摘掉。
 pub struct Provisioned {
     store: Arc<Http01Store>,
     token: String,
@@ -104,7 +104,7 @@ mod tests {
                 Some("tok123.thumbprint")
             );
         }
-        // ★ 判据是「守卫掉了就没了」，而不是「记得调用 remove」。
+        // ★ 判據是「守衛掉了就沒了」，而不是「記得呼叫 remove」。
         assert!(s.is_empty());
         assert!(s.answer("/.well-known/acme-challenge/tok123").is_none());
     }
@@ -113,17 +113,17 @@ mod tests {
     fn 不认识的路径与不认识的_token_一律返回_none() {
         let s = Arc::new(Http01Store::new());
         let _g = s.provision("tok", "value");
-        // 不是挑战路径
+        // 不是挑戰路徑
         assert!(s.answer("/").is_none());
         assert!(s.answer("/.well-known/").is_none());
         assert!(s.answer("/.well-known/acme-challenge").is_none());
         // 空 token
         assert!(s.answer("/.well-known/acme-challenge/").is_none());
-        // 不认识的 token
+        // 不認識的 token
         assert!(s.answer("/.well-known/acme-challenge/other").is_none());
-        // ⚠ 多一段就不是 token 了 —— 否则 `…/tok/../../x` 这类东西会进到查表里
+        // ⚠ 多一段就不是 token 了 —— 否則 `…/tok/../../x` 這類東西會進到查表裡
         assert!(s.answer("/.well-known/acme-challenge/tok/more").is_none());
-        // 前缀必须完整匹配，不能只是包含
+        // 前綴必須完整匹配，不能只是包含
         assert!(s.answer("/x/.well-known/acme-challenge/tok").is_none());
     }
 
@@ -135,7 +135,7 @@ mod tests {
             let _g2 = s.provision("b", "B");
             assert_eq!(s.len(), 2);
         }
-        // b 走了，a 还在
+        // b 走了，a 還在
         assert_eq!(s.len(), 1);
         assert_eq!(
             s.answer("/.well-known/acme-challenge/a").as_deref(),
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn 空表什么都不接() {
-        // ★ 这条是「没开自动签发时数据面行为不变」的判据。
+        // ★ 這條是「沒開自動簽發時資料面行為不變」的判據。
         let s = Http01Store::new();
         assert!(s.answer("/.well-known/acme-challenge/anything").is_none());
     }

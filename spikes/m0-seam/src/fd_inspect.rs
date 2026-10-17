@@ -1,15 +1,15 @@
-//! 只读的 fd 表探查服务——**什么都不认领**，只把收到的整张表打出来。
+//! 唯讀的 fd 表探查服務——**什麼都不認領**，只把收到的整張表打出來。
 //!
-//! 存在理由：`Server::listen_fds()` 是私有的，从 `main` 里看不到 fd 表。而
-//! [`docs/verification/open-seams.md`](../../../docs/verification/open-seams.md) 要验的
-//! 「未被认领的 fd 会怎样」，第一步就是**证明那个 fd 确实还在表里**。
+//! 存在理由：`Server::listen_fds()` 是私有的，從 `main` 裡看不到 fd 表。而
+//! [`docs/verification/open-seams.md`](../../../docs/verification/open-seams.md) 要驗的
+//! 「未被認領的 fd 會怎樣」，第一步就是**證明那個 fd 確實還在表裡**。
 //!
-//! ★ 它同时也证明了一件事：`Fds::get()` **不会把条目移走**（`server/transfer_fd/mod.rs:51`
-//! 返回的是引用），所以「被认领」与「留在表里」是两回事——整张表都会原样传给下一代。
+//! ★ 它同時也證明了一件事：`Fds::get()` **不會把條目移走**（`server/transfer_fd/mod.rs:51`
+//! 回傳的是引用），所以「被認領」與「留在表裡」是兩回事——整張表都會原樣傳給下一代。
 //!
-//! ⚠ **它看到的是自己启动那一刻的快照，不是最终状态。** 首次启动（非升级）时它多半
-//! 报告 `table has 0 entries`——因为别的服务还没来得及把自己 bind 出来的 fd 注册进表。
-//! 判据要写成「跨代的增量」而不是「绝对条数」，否则会随服务启动顺序变化。
+//! ⚠ **它看到的是自己啟動那一刻的快照，不是最終狀態。** 首次啟動（非升級）時它多半
+//! 報告 `table has 0 entries`——因為別的服務還沒來得及把自己 bind 出來的 fd 註冊進表。
+//! 判據要寫成「跨代的增量」而不是「絕對條數」，否則會隨服務啟動順序變化。
 
 use async_trait::async_trait;
 use pingora_core::server::{ListenFds, ShutdownWatch};
@@ -17,7 +17,7 @@ use pingora_core::services::Service;
 
 pub struct FdInspectService;
 
-/// 日志前缀。测试脚本按它抓行，改动前先看 `tests/m0/unclaimed.sh`。
+/// 紀錄前綴。測試指令碼按它抓行，改動前先看 `tests/m0/unclaimed.sh`。
 pub const TAG: &str = "[fd-inspect]";
 
 #[async_trait]
@@ -26,8 +26,8 @@ impl Service for FdInspectService {
         &mut self,
         #[cfg(unix)] fds: Option<ListenFds>,
         mut shutdown: ShutdownWatch,
-        // ★ 本服务不持有任何监听器，所以 `listener_tasks_per_fd` 对它**确实不适用**——
-        //   这与 raw_tcp/raw_udp 那两处「不支持就拒绝启动」是两回事，别照抄。
+        // ★ 本服務不持有任何監聽器，所以 `listener_tasks_per_fd` 對它**確實不適用**——
+        //   這與 raw_tcp/raw_udp 那兩處「不支援就拒絕啟動」是兩回事，別照抄。
         _listeners_per_fd: usize,
     ) {
         match fds {
@@ -41,7 +41,7 @@ impl Service for FdInspectService {
             }
         }
 
-        // 什么都不做，等停机。它不持有任何监听器，所以不影响别的服务。
+        // 什麼都不做，等停機。它不持有任何監聽器，所以不影響別的服務。
         let _ = shutdown.changed().await;
         log::info!("{TAG} shutdown");
     }
@@ -50,14 +50,14 @@ impl Service for FdInspectService {
         "m0-fd-inspect"
     }
 
-    /// pingora 0.9.0：本服务不持有任何监听器 ⇒ 声明一个**空**集合（⛔ 不是 `None` ——
-    /// 那会让整个进程的未认领 fd 清理静默关闭，`unclaimed.sh` 就又回到复现旧缺陷了）。
+    /// pingora 0.9.0：本服務不持有任何監聽器 ⇒ 宣告一個**空**集合（⛔ 不是 `None` ——
+    /// 那會讓整個處理程序的未認領 fd 清理靜默關閉，`unclaimed.sh` 就又回到重現舊缺陷了）。
     fn listen_addresses(&self) -> Option<Vec<String>> {
         Some(vec![])
     }
 
     fn threads(&self) -> Option<usize> {
-        // G35：线程不跨 service 共享，纯日志服务给 1 个就够。
+        // G35：執行緒不跨 service 共享，純紀錄服務給 1 個就夠。
         Some(1)
     }
 }

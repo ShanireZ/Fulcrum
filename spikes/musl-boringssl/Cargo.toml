@@ -1,16 +1,16 @@
-# musl + BoringSSL 静态链接探针（G103/G104 的未验前置，`PLAN.md` §10）
+# musl + BoringSSL 靜態連結探針（G103/G104 的未驗前置，`PLAN.md` §10）
 #
-# ★ ★ **它是自己的一个 workspace**（下面那个空的 `[workspace]` 表），
-#   故意不进根 workspace 的 `members`。理由有两条，都不是风格：
-#   ① 进了根 workspace，`cargo build` / `cargo test --workspace` 就会在**十九场景门禁的
-#      每一次跑**里编一遍 BoringSSL —— 为一个产品目前一行都没依赖的 C 库付这个代价；
-#   ② 它会把 `boring-sys` 拖进根 `Cargo.lock`，而 `crates/fulcrum/tests/supply_gates.rs`
-#      门 1 扫的正是那把锁。⚠ 那道门今天说不出 boring 的话（它只认 aws-lc-rs），
-#      于是「产物里有几套 TLS」会在没有任何门看着的情况下变成两套。
-#      ⇒ 等 G104 真的落到产品里时，那道门要一起改；在那之前不要提前污染那把锁。
+# ★ ★ **它是自己的一個 workspace**（下面那個空的 `[workspace]` 表），
+#   故意不進根 workspace 的 `members`。理由有兩條，都不是風格：
+#   ① 進了根 workspace，`cargo build` / `cargo test --workspace` 就會在**十九場景門禁的
+#      每一次跑**裡編一遍 BoringSSL —— 為一個產品目前一行都沒依賴的 C 庫付這個代價；
+#   ② 它會把 `boring-sys` 拖進根 `Cargo.lock`，而 `crates/fulcrum/tests/supply_gates.rs`
+#      門 1 掃的正是那把鎖。⚠ 那道門今天說不出 boring 的話（它只認 aws-lc-rs），
+#      於是「產物裡有幾套 TLS」會在沒有任何門看著的情況下變成兩套。
+#      ⇒ 等 G104 真的落到產品裡時，那道門要一起改；在那之前不要提前汙染那把鎖。
 #
-# ⚠ ⚠ **它自己的 `Cargo.lock` 没有任何门看着** —— 已登记在
-#   `docs/verification/musl-boringssl.md`「这份探针证不了什么」一节。
+# ⚠ ⚠ **它自己的 `Cargo.lock` 沒有任何門看著** —— 已登記在
+#   `docs/verification/musl-boringssl.md`「這份探針證不了什麼」一節。
 
 [workspace]
 
@@ -22,26 +22,26 @@ publish = false
 description = "验 BoringSSL 能否与 musl 静态链接，并在 musl 上真的跑一次 QUIC 握手"
 
 [dependencies]
-# ★ 探针**故意直接取产品将来要用的那两个 crate**，不取一个「随便什么用 BoringSSL 的东西」。
-#   D11 的判据是 quiche 这条路走不走得通，而不是「BoringSSL 一般而言能不能静态链接」。
-#   quiche 的 default feature 就是 `boringssl-boring-crate`（实测 0.29.3；2026-09-24 随产品升到 0.30.0 后复核仍是），
+# ★ 探針**故意直接取產品將來要用的那兩個 crate**，不取一個「隨便什麼用 BoringSSL 的東西」。
+#   D11 的判據是 quiche 這條路走不走得通，而不是「BoringSSL 一般而言能不能靜態連結」。
+#   quiche 的 default feature 就是 `boringssl-boring-crate`（實測 0.29.3；2026-09-24 隨產品升到 0.30.0 後複核仍是），
 #   `Config::with_boring_ssl_ctx_builder` 走的正是它。
 quiche = "0.30.0"
-# G104 的那个回调（`set_select_certificate_callback`）住在这里。
+# G104 的那個回呼（`set_select_certificate_callback`）住在這裡。
 #
-# ⚠ ⚠ **版本必须跟着 quiche 走，不能按 G29「追新」写。** 实测：
-#   crates.io 上 `boring` 的最新版是 **5.2.0**，而 quiche 0.29.3 解出来的是 **4.22.0**。
-#   照追新写一行 `boring = "5"`，cargo 会**同时**留下两份 boring ——
-#   `SslContextBuilder` 同名却是两个类型，`with_boring_ssl_ctx_builder` 当场编不过。
-#   ★ 本仓库在 `pingora-http` 那条上栽过一模一样的形状（见根 Cargo.toml 的 [patch] 注释）。
-#   ★ 2026-09-24 随产品升到 5.2.0（与产品那把锁相同）：quiche 0.30.0 的 boring 区间是 `>=4.19, <6`，
-#     4 与 5 都能与它合成**一份**，于是这一次「跟着 quiche 走」恰好也等于最新版。
-#     ⚠ 规矩本身不变：写到 quiche 的区间**之外**（比如将来的 6），照样会同时留下两份。
+# ⚠ ⚠ **版本必須跟著 quiche 走，不能按 G29「追新」寫。** 實測：
+#   crates.io 上 `boring` 的最新版是 **5.2.0**，而 quiche 0.29.3 解出來的是 **4.22.0**。
+#   照追新寫一行 `boring = "5"`，cargo 會**同時**留下兩份 boring ——
+#   `SslContextBuilder` 同名卻是兩個類型，`with_boring_ssl_ctx_builder` 當場編不過。
+#   ★ 本儲存庫在 `pingora-http` 那條上栽過一模一樣的形狀（見根 Cargo.toml 的 [patch] 註解）。
+#   ★ 2026-09-24 隨產品升到 5.2.0（與產品那把鎖相同）：quiche 0.30.0 的 boring 區間是 `>=4.19, <6`，
+#     4 與 5 都能與它合成**一份**，於是這一次「跟著 quiche 走」恰好也等於最新版。
+#     ⚠ 規矩本身不變：寫到 quiche 的區間**之外**（比如將來的 6），照樣會同時留下兩份。
 boring = "5.2.0"
-# 只为量一件事：握手那条线程真实的栈大小（`pthread_getattr_np`）。
-# ★ **新增 0 个包** —— `quiche` 本来就把 libc 拉进来了（实测在同一份 Cargo.lock 里）。
+# 只為量一件事：握手那條執行緒真實的棧大小（`pthread_getattr_np`）。
+# ★ **新增 0 個包** —— `quiche` 本來就把 libc 拉進來了（實測在同一份 Cargo.lock 裡）。
 libc = "0.2"
 
 [profile.release]
-# 与产品无关，只为让探针二进制小一点、跑得快一点。
+# 與產品無關，只為讓探針二進位小一點、跑得快一點。
 opt-level = 1

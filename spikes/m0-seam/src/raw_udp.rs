@@ -1,12 +1,12 @@
-//! 自建的裸 UDP 回声服务。
+//! 自建的裸 UDP 回聲服務。
 //!
-//! ★ **这是整个 M0 里最不确定、也最值钱的一条。** Pingora 自己只移交 TCP/Unix 监听器；
-//! 但它的 fd 表 `Fds` 是 `HashMap<String, RawFd>`，对协议零假设，而 `RawFd` 只是个 `i32`，
-//! 传输走 `SCM_RIGHTS`——本来就能传任意 fd。这里要用真流量把这个推断坐实。
+//! ★ **這是整個 M0 裡最不確定、也最值錢的一條。** Pingora 自己只移交 TCP/Unix 監聽器；
+//! 但它的 fd 表 `Fds` 是 `HashMap<String, RawFd>`，對協定零假設，而 `RawFd` 只是個 `i32`，
+//! 傳輸走 `SCM_RIGHTS`——本來就能傳任意 fd。這裡要用真流量把這個推斷坐實。
 //!
-//! ⚠ **一个 UDP 独有、TCP 没有的性质**：升级窗口内两代进程持有的是**同一个** socket，
-//! 于是两边都会 `recv_from`，数据报会在两代之间被**分流**。对回声服务无所谓（谁答都一样，
-//! 因此零丢失），但对 QUIC 是真问题——连接状态只存在于某一代进程里。这条要带给 M2（D11）。
+//! ⚠ **一個 UDP 獨有、TCP 沒有的性質**：升級視窗內兩代處理程序持有的是**同一個** socket，
+//! 於是兩邊都會 `recv_from`，資料報會在兩代之間被**分流**。對回聲服務無所謂（誰答都一樣，
+//! 因此零丟失），但對 QUIC 是真問題——連接狀態只存在於某一代處理程序裡。這條要帶給 M2（D11）。
 
 use crate::raw_tcp::backoff_if_fd_exhausted;
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use tokio::net::UdpSocket;
 pub struct UdpEchoService {
     bind: String,
     key: String,
-    /// 见 `raw_tcp.rs` 同名字段：用来区分「首次启动没有 fd 表」与「升级时交接失败」。
+    /// 見 `raw_tcp.rs` 同名欄位：用來區分「首次啟動沒有 fd 表」與「升級時交接失敗」。
     upgrading: bool,
 }
 
@@ -40,7 +40,7 @@ async fn build_socket(
     upgrading: bool,
 ) -> std::io::Result<UdpSocket> {
     let Some(table) = fds else {
-        // ★ 理由同 raw_tcp：表缺失时新 bind 的 socket 不会被注册，也就不参与下一次移交。
+        // ★ 理由同 raw_tcp：表缺失時新 bind 的 socket 不會被註冊，也就不參與下一次移交。
         if upgrading {
             return Err(std::io::Error::other(format!(
                 "以 -u 升级启动却拿不到 fd 表，无法继承 {bind}：socket 移交已经失败了"
@@ -53,15 +53,15 @@ async fn build_socket(
         return UdpSocket::bind(bind).await;
     };
 
-    // 0.9.0：ListenFds 换成 parking_lot 锁 ⇒ 守卫不许跨 `.await`，只在查表、登记两个瞬间持锁。
+    // 0.9.0：ListenFds 換成 parking_lot 鎖 ⇒ 守衛不許跨 `.await`，只在查表、登記兩個瞬間持鎖。
     let inherited = table.lock().get(key).copied();
 
     if let Some(fd) = inherited {
         log::info!("[raw-udp] INHERITED fd={fd} for key={key}");
-        // SAFETY: 同 raw_tcp——fd 由上一代经 SCM_RIGHTS 传来，此处接管所有权且只接管一次。
-        // ★ ManuallyDrop 的理由完全同 raw_tcp：提前析构 = close(fd)，而表里那条记录还在。
+        // SAFETY: 同 raw_tcp——fd 由上一代經 SCM_RIGHTS 傳來，此處接管所有權且只接管一次。
+        // ★ ManuallyDrop 的理由完全同 raw_tcp：提前析構 = close(fd)，而表裡那條記錄還在。
         let std_sock = ManuallyDrop::new(unsafe { std::net::UdpSocket::from_raw_fd(fd) });
-        std_sock.set_nonblocking(true)?; // 失败时不析构，fd 保持有效
+        std_sock.set_nonblocking(true)?; // 失敗時不析構，fd 保持有效
 
         let owned = ManuallyDrop::into_inner(std_sock);
         return match UdpSocket::from_std(owned) {
@@ -91,8 +91,8 @@ impl Service for UdpEchoService {
         mut shutdown: ShutdownWatch,
         listeners_per_fd: usize,
     ) {
-        // ★ 理由同 raw_tcp：不实现就不要假装支持。UDP 这边尤其要注意——多个任务
-        //   在同一个 socket 上 `recv_from` 会把数据报分流，语义与 TCP 的多 accept 不同。
+        // ★ 理由同 raw_tcp：不實作就不要假裝支援。UDP 這邊尤其要注意——多個任務
+        //   在同一個 socket 上 `recv_from` 會把資料報分流，語義與 TCP 的多 accept 不同。
         if listeners_per_fd > 1 {
             log::error!(
                 "[raw-udp] listener_tasks_per_fd={listeners_per_fd} 不被本服务支持（它只会开 1 个接收任务）。\
@@ -119,12 +119,12 @@ impl Service for UdpEchoService {
                 received = sock.recv_from(&mut buf) => {
                     match received {
                         Ok((n, peer)) => {
-                            // ★ 这里的 `.await` **是有意保留的**，不是漏了优化。
-                            //   socket 是非阻塞的，send_to 只在内核发送缓冲写满时才真的等；
-                            //   而那意味着下游拥塞——此刻停下收包正是**正确的背压**。
-                            //   改成 spawn 只会把拥塞变成无界内存增长。
-                            //   ⚠ QUIC 不能照抄这个结构（一条连接的状态不能被另一条的发送卡住），
-                            //     那是 D11 选库时要单独设计的事。
+                            // ★ 這裡的 `.await` **是有意保留的**，不是漏了優化。
+                            //   socket 是非阻塞的，send_to 只在核心傳送緩衝寫滿時才真的等；
+                            //   而那意味著下游擁塞——此刻停下收包正是**正確的背壓**。
+                            //   改成 spawn 只會把擁塞變成無界記憶體增長。
+                            //   ⚠ QUIC 不能照抄這個結構（一條連接的狀態不能被另一條的傳送卡住），
+                            //     那是 D11 選庫時要單獨設計的事。
                             if let Err(e) = sock.send_to(&buf[..n], peer).await {
                                 log::error!("[raw-udp] send_to {peer} failed: {e}");
                             }
@@ -143,7 +143,7 @@ impl Service for UdpEchoService {
         "m0-raw-udp"
     }
 
-    /// pingora 0.9.0：声明本服务认领的 fd 表键（理由同 raw_tcp）。
+    /// pingora 0.9.0：宣告本服務認領的 fd 表鍵（理由同 raw_tcp）。
     fn listen_addresses(&self) -> Option<Vec<String>> {
         Some(vec![self.key.clone()])
     }

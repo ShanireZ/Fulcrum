@@ -1,32 +1,32 @@
-//! HTTP 面的 PROXY protocol —— **「收」那半边**（M2 批 L 第 ① 步）。
+//! HTTP 面的 PROXY protocol —— **「收」那半邊**（M2 批 L 第 ① 步）。
 //!
-//! # 它是什么
+//! # 它是什麼
 //!
-//! 全局块的 `proxy_protocol_from <网段…>` 声明「**这些网段的流量是经代理来的**」。
-//! 落到这里，就是：这条连接的对端在清单里时，**在 TLS 握手之前**读掉它的 PROXY 头，
-//! 并把这条连接的「对端地址」换成头里报的那个真实客户端。
+//! 全域塊的 `proxy_protocol_from <网段…>` 宣告「**這些網段的流量是經代理來的**」。
+//! 落到這裡，就是：這條連接的對端在清單裡時，**在 TLS 握手之前**讀掉它的 PROXY 頭，
+//! 並把這條連接的「對端位址」換成頭裡報的那個真實用戶端。
 //!
-//! ⇒ 于是 `remote_ip` 匹配器与（批 L 第 ② 步的）访问日志拿到的是**真实客户端**，
-//! 而不是那台 LB 自己的地址。
+//! ⇒ 於是 `remote_ip` 匹配器與（批 L 第 ② 步的）訪問紀錄拿到的是**真實用戶端**，
+//! 而不是那臺 LB 自己的位址。
 //!
-//! # ★ ★ 本模块只有「接线」，没有「解析」，也没有「判断」
+//! # ★ ★ 本模組只有「串接」，沒有「解析」，也沒有「判斷」
 //!
-//! | 谁 | 干什么 |
+//! | 誰 | 幹什麼 |
 //! |---|---|
-//! | [`fulcrum_runtime::proxyproto`] | v1/v2 **编解码**（纯逻辑，28 条单测）|
-//! | [`fulcrum_runtime::Runtime::trusts_proxy_protocol`] | **唯一**的信任判断入口 |
-//! | `pingora_core::listeners`（fork 改动 12，形状 B）| 只做一件事：上游的 pre-TLS 回调在**明文端口也调** |
-//! | **本模块** | 实现上游的 `PreTlsProcess`：循环读 + 把多读的字节还回去 + 覆盖地址，**一行协议逻辑都没有** |
+//! | [`fulcrum_runtime::proxyproto`] | v1/v2 **編解碼**（純邏輯，28 條單測）|
+//! | [`fulcrum_runtime::Runtime::trusts_proxy_protocol`] | **唯一**的信任判斷入口 |
+//! | `pingora_core::listeners`（fork 改動 12，形狀 B）| 只做一件事：上游的 pre-TLS 回呼在**明文連接埠也調** |
+//! | **本模組** | 實作上游的 `PreTlsProcess`：循環讀 + 把多讀的位元組還回去 + 覆蓋位址，**一行協定邏輯都沒有** |
 //!
-//! ★ 2026-09-24（pingora 0.9.0）起，循环读与覆盖地址从 fork 搬到了这里：上游 0.9.0 自己加了
-//!   `PreTlsProcess` 接缝，只是只在 TLS 分支里调 ⇒ fork 只剩「挪到 TLS 分支之前」那几行，见 FORK.md §12。
+//! ★ 2026-09-24（pingora 0.9.0）起，循環讀與覆蓋位址從 fork 搬到了這裡：上游 0.9.0 自己加了
+//!   `PreTlsProcess` 接縫，只是只在 TLS 分支裡調 ⇒ fork 只剩「挪到 TLS 分支之前」那幾行，見 FORK.md §12。
 //!
-//! # ⚠ ⚠ 一条会被读错的语义：**清单内的来源不发头 ⇒ 关连接**
+//! # ⚠ ⚠ 一條會被讀錯的語義：**清單內的來源不發頭 ⇒ 關連接**
 //!
-//! 那不是缺陷，是 owner 拍板的口径（§10）：若允许清单内的来源**选择性地**
-//! 不发头，它就能让枢衡改用 socket 对端 —— 而那个地址正是 LB 自己，
-//! 于是一条 `remote_ip 10.0.0.0/8` 规则会**命中它**。
-//! ⇒ 「可选」把一个显式的信任声明，变成一个**可以被对端单方面关掉的开关**。
+//! 那不是缺陷，是 owner 拍板的口徑（§10）：若允許清單內的來源**選擇性地**
+//! 不發頭，它就能讓樞衡改用 socket 對端 —— 而那個位址正是 LB 自己，
+//! 於是一條 `remote_ip 10.0.0.0/8` 規則會**命中它**。
+//! ⇒ 「可選」把一個顯式的信任宣告，變成一個**可以被對端單方面關掉的開關**。
 
 use async_trait::async_trait;
 use fulcrum_runtime::SharedRuntime;
@@ -40,19 +40,19 @@ use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
-/// 挂到监听器上的策略。
+/// 掛到監聽器上的策略。
 ///
-/// # ★ ★ ★ 为什么拿的是 `SharedRuntime` 而不是一份 `Vec<Cidr>` 快照
+/// # ★ ★ ★ 為什麼拿的是 `SharedRuntime` 而不是一份 `Vec<Cidr>` 快照
 ///
-/// 快照会在**装载时**定死，于是改了 `proxy_protocol_from` 再 `POST /load`
-/// **不生效** —— 而配置文件上完全看不出来。
-/// ⚠ 那正是 **D19** 那个形状（`cache { capacity }` 改了要重启）—— 它已由 **G135** 结案。
-/// ⛔ **这条交叉引用有意留着**：结案的是那一个实例，**形状本身照旧会复发** ——
-/// 「装载时定死一份快照」这种写法在任何新代码里都会长回同一个样子。
-/// ⇒ 这里每条连接现读一次当前快照，**换配置立刻生效**，不新欠一条 D 号。
+/// 快照會在**裝載時**定死，於是改了 `proxy_protocol_from` 再 `POST /load`
+/// **不生效** —— 而設定檔案上完全看不出來。
+/// ⚠ 那正是 **D19** 那個形狀（`cache { capacity }` 改了要重新啟動）—— 它已由 **G135** 結案。
+/// ⛔ **這條交叉引用有意留著**：結案的是那一個執行個體，**形狀本身照舊會復發** ——
+/// 「裝載時定死一份快照」這種寫法在任何新程式碼裡都會長回同一個樣子。
+/// ⇒ 這裡每條連接現讀一次當前快照，**換設定立刻生效**，不新欠一條 D 號。
 ///
-/// ★ 代价写在明处：每条**新连接**多一次 `RwLock` 读锁 + 一次 `Arc` 克隆。
-/// 它落在 accept 之后、TLS 握手之前那一步上，而那一步本来就要做几十微秒的密码学。
+/// ★ 代價寫在明處：每條**新連接**多一次 `RwLock` 讀鎖 + 一次 `Arc` 克隆。
+/// 它落在 accept 之後、TLS 握手之前那一步上，而那一步本來就要做幾十微秒的密碼學。
 pub(crate) struct HttpProxyProtocol {
     rt: Arc<SharedRuntime>,
 }
@@ -64,9 +64,9 @@ impl HttpProxyProtocol {
 }
 
 impl std::fmt::Debug for HttpProxyProtocol {
-    /// ⚠ 手写而不是 `derive`：`SharedRuntime` 里是整张运行时图，
-    /// 把它打进日志既没用又可能带出配置内容（安全基线：配置预览必须脱敏）。
-    /// ★ 打出来的是**当前清单有几条** —— 那才是排障时想知道的。
+    /// ⚠ 手寫而不是 `derive`：`SharedRuntime` 裡是整張執行環境圖，
+    /// 把它打進紀錄既沒用又可能帶出設定內容（安全基線：設定預覽必須脫敏）。
+    /// ★ 打出來的是**當前清單有幾條** —— 那才是疑難排解時想知道的。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -77,11 +77,11 @@ impl std::fmt::Debug for HttpProxyProtocol {
 }
 
 impl HttpProxyProtocol {
-    /// 这个对端在信任清单里吗？
+    /// 這個對端在信任清單裡嗎？
     ///
-    /// ⚠ ⚠ `peer` 为 `None`（拿不到 inet 对端，例如 Unix domain socket）⇒ **不信任**。
+    /// ⚠ ⚠ `peer` 為 `None`（拿不到 inet 對端，例如 Unix domain socket）⇒ **不信任**。
     ///
-    /// ★ 与「清单为空时恒 false」同一条纪律：**拿不到证据不等于证据成立**。
+    /// ★ 與「清單為空時恆 false」同一條紀律：**拿不到證據不等於證據成立**。
     pub(crate) fn trusts(&self, peer: Option<&std::net::SocketAddr>) -> bool {
         match peer {
             Some(a) => self.rt.current().trusts_proxy_protocol(a.ip()),
@@ -90,42 +90,42 @@ impl HttpProxyProtocol {
     }
 }
 
-/// 本模块的错误类型（原来在 fork 里，随读取逻辑一起搬过来）。
+/// 本模組的錯誤類型（原來在 fork 裡，隨讀取邏輯一起搬過來）。
 const PROXY_PROTOCOL_ERR: ErrorType = ErrorType::Custom("ProxyProtocolError");
 
-/// 读 PROXY 头时缓冲区的**硬上界**。
+/// 讀 PROXY 頭時緩衝區的**硬上界**。
 ///
-/// ★ 它不是协议上界（那由 [`proxyproto::decode`] 自己的 `Invalid` 给：v1 ≤ 107 字节，
-/// v2 ≤ [`proxyproto::MAX_HEADER`]），而是**这个循环一定会停**的最后一道保证。
-/// ⚠ 经真实解码器走不到（`MAX_HEADER` 远小于它）—— 留着是防线，⛔ 不是判据。
+/// ★ 它不是協定上界（那由 [`proxyproto::decode`] 自己的 `Invalid` 給：v1 ≤ 107 位元組，
+/// v2 ≤ [`proxyproto::MAX_HEADER`]），而是**這個循環一定會停**的最後一道保證。
+/// ⚠ 經真實解碼器走不到（`MAX_HEADER` 遠小於它）—— 留著是防線，⛔ 不是判據。
 const PROXY_PROTOCOL_HARD_CAP: usize = 4096;
 
 #[async_trait]
 impl PreTlsProcess for HttpProxyProtocol {
-    /// 在 TLS 握手之前（明文端口：在 HTTP 解析之前）读掉一个 PROXY 头，并把对端地址换成它报的那个。
+    /// 在 TLS 握手之前（明文連接埠：在 HTTP 解析之前）讀掉一個 PROXY 頭，並把對端位址換成它報的那個。
     ///
-    /// 返回 `Err` = **关掉这条连接**。⚠ 这与「不在清单里」有意相反：一个**在信任清单里**的
-    /// 对端发来坏头（或干脆不发完），说明配置或对端出了问题，而此时我们**已经吃掉了一部分字节、
-    /// 还原不回去** —— 把残缺的流交给上层只会把问题推远。
+    /// 回傳 `Err` = **關掉這條連接**。⚠ 這與「不在清單裡」有意相反：一個**在信任清單裡**的
+    /// 對端發來壞頭（或乾脆不發完），說明設定或對端出了問題，而此時我們**已經吃掉了一部分位元組、
+    /// 還原不回去** —— 把殘缺的流交給上層只會把問題推遠。
     async fn process(&self, stream: &mut L4Stream) -> pingora_core::Result<()> {
         let peer = stream
             .get_socket_digest()
             .and_then(|d| d.peer_addr().and_then(|a| a.as_inet().copied()));
         if !self.trusts(peer.as_ref()) {
-            // ★ ★ 一个字节都不读，原样交给上层。
+            // ★ ★ 一個位元組都不讀，原樣交給上層。
             return Ok(());
         }
 
         let mut buf: Vec<u8> = Vec::with_capacity(64);
         let mut chunk = [0u8; 256];
         loop {
-            // ★ 先拿已有的字节问一次 —— `decode` 是纯函数，重复问不要钱。
+            // ★ 先拿已有的位元組問一次 —— `decode` 是純函式，重複問不要錢。
             match proxyproto::decode(&buf) {
                 Verdict::Done { client, consumed } => {
-                    // ★ ★ ★ **多读到的字节必须还回去。** TCP 是流，一次 read 很可能把
-                    //   PROXY 头与它后面的 ClientHello（或请求行）**一起**读回来。
-                    //   少了这一步，上层拿到的流就从半截开始 —— 而那不会有任何报错，
-                    //   只表现为「TLS 握手莫名其妙失败」。
+                    // ★ ★ ★ **多讀到的位元組必須還回去。** TCP 是流，一次 read 很可能把
+                    //   PROXY 頭與它後面的 ClientHello（或請求行）**一起**讀回來。
+                    //   少了這一步，上層拿到的流就從半截開始 —— 而那不會有任何回報錯誤，
+                    //   只表現為「TLS 握手莫名其妙失敗」。
                     if consumed < buf.len() {
                         stream.rewind(&buf[consumed..]);
                     }
@@ -150,8 +150,8 @@ impl PreTlsProcess for HttpProxyProtocol {
                 );
             }
 
-            // ⚠ 这里**故意没有自己的超时**：pingora 的 `services/listening.rs` 已经把整个
-            //   `handshake()` 包在一个 60s 的 timeout 里，本回调就在 `handshake()` 里被调。
+            // ⚠ 這裡**故意沒有自己的超時**：pingora 的 `services/listening.rs` 已經把整個
+            //   `handshake()` 包在一個 60s 的 timeout 裡，本回呼就在 `handshake()` 裡被調。
             match stream.read(&mut chunk).await {
                 Ok(0) => {
                     return Error::e_explain(
@@ -168,21 +168,21 @@ impl PreTlsProcess for HttpProxyProtocol {
     }
 }
 
-/// 把这条连接的对端地址换成 PROXY 头报的那个。
+/// 把這條連接的對端位址換成 PROXY 頭報的那個。
 ///
-/// # ⚠ ⚠ ★ 为什么是「换一整份 digest」而不是 `peer_addr.set(...)`
+/// # ⚠ ⚠ ★ 為什麼是「換一整份 digest」而不是 `peer_addr.set(...)`
 ///
-/// `SocketDigest.peer_addr` 是 `pub` 的 `OnceCell`，看起来 `set()` 一下就行 ——
-/// **而那行不通，因为它已经被填过了**：pingora 的 `services/listening.rs` 在
-/// `io.handshake()` **之前**调 `io.peer_addr()`（为了握手失败时那行日志里能带上地址），
+/// `SocketDigest.peer_addr` 是 `pub` 的 `OnceCell`，看起來 `set()` 一下就行 ——
+/// **而那行不通，因為它已經被填過了**：pingora 的 `services/listening.rs` 在
+/// `io.handshake()` **之前**調 `io.peer_addr()`（為了握手失敗時那行紀錄裡能帶上位址），
 /// 而 `SocketDigest::peer_addr()` 是 `get_or_init`。
-/// ⇒ `OnceCell::set()` 到这一步必然返回 `Err`，**而它的返回值很容易被忽略**，
-///    于是「地址没换成」会是一次完全无声的失效。
+/// ⇒ `OnceCell::set()` 到這一步必然回傳 `Err`，**而它的回傳值很容易被忽略**，
+///    於是「位址沒換成」會是一次完全無聲的失效。
 ///
-/// ⇒ 换一整份。`local_addr` / `original_dst` 都会从**同一个 fd** 重新惰性派生，什么都不丢。
+/// ⇒ 換一整份。`local_addr` / `original_dst` 都會從**同一個 fd** 重新惰性派生，什麼都不丟。
 fn override_peer_addr(stream: &mut L4Stream, client: std::net::SocketAddr) {
     let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
-    // ★ 新造的 digest，这个 `set` 一定成功；写成 `let _ =` 是因为返回值确实无话可说。
+    // ★ 新造的 digest，這個 `set` 一定成功；寫成 `let _ =` 是因為回傳值確實無話可說。
     let _ = digest.peer_addr.set(Some(SocketAddr::Inet(client)));
     stream.set_socket_digest(digest);
 }
@@ -205,8 +205,8 @@ mod tests {
     fn 清单为空时谁都不信() {
         let p = HttpProxyProtocol::new(rt_with(""));
         let a: std::net::SocketAddr = "10.0.0.5:1234".parse().unwrap();
-        // ★ ★ 一份空清单**不是**「信任所有人」—— 这条如果反了，
-        //   任何人都能自称是任意 IP，而 `remote_ip` 匹配器会当真。
+        // ★ ★ 一份空清單**不是**「信任所有人」—— 這條如果反了，
+        //   任何人都能自稱是任意 IP，而 `remote_ip` 匹配器會當真。
         assert!(!p.trusts(Some(&a)), "空清单必须谁都不信");
     }
 
@@ -222,8 +222,8 @@ mod tests {
     #[test]
     fn 拿不到对端地址时不信任() {
         let p = HttpProxyProtocol::new(rt_with("{\n  proxy_protocol_from 0.0.0.0/0\n}"));
-        // ⚠ 连 `0.0.0.0/0` 都不该让「拿不到对端」变成信任 ——
-        //   那是 UDS 之类的形态，它根本没有 inet 对端可比。
+        // ⚠ 連 `0.0.0.0/0` 都不該讓「拿不到對端」變成信任 ——
+        //   那是 UDS 之類的形態，它根本沒有 inet 對端可比。
         assert!(!p.trusts(None), "拿不到 inet 对端时必须不信任");
     }
 
@@ -234,11 +234,11 @@ mod tests {
         let a: std::net::SocketAddr = "10.1.2.3:1234".parse().unwrap();
         assert!(!p.trusts(Some(&a)), "换之前不该信任");
 
-        // ★ ★ ★ 这一条守的是 D19 那个形状：**改了配置再 load 却不生效**。
-        //   ⚠ D19 本身已由 G135 结案（缓存容量现在改得动），但**这条测试守的是形状
-        //   不是那个实例** —— 它在本文件里挡的是 `proxy_protocol_from`，与缓存无关。
+        // ★ ★ ★ 這一條守的是 D19 那個形狀：**改了設定再 load 卻不生效**。
+        //   ⚠ D19 本身已由 G135 結案（快取容量現在改得動），但**這條測試守的是形狀
+        //   不是那個執行個體** —— 它在本檔案裡擋的是 `proxy_protocol_from`，與快取無關。
         //   若 `HttpProxyProtocol` 拿的是一份快照而不是 `SharedRuntime`，
-        //   下面这次替换之后 `trusts` 仍然是 false —— 而配置文件上看不出任何问题。
+        //   下面這次替換之後 `trusts` 仍然是 false —— 而設定檔案上看不出任何問題。
         let src =
             "{\n  proxy_protocol_from 10.0.0.0/8\n}\nhttp://a.com {\n  respond 200 \"ok\"\n}\n";
         let o = compile_str("t.Fulcrumfile", src);
@@ -248,13 +248,13 @@ mod tests {
         assert!(p.trusts(Some(&a)), "★ 换过配置之后必须立刻生效");
     }
 
-    // ── `PreTlsProcess` 的实现（2026-09-24 从 fork 搬来的循环读 + 覆盖地址）─────────────
+    // ── `PreTlsProcess` 的實作（2026-09-24 從 fork 搬來的循環讀 + 覆蓋位址）─────────────
     //
-    // ★ 夹具是**真的一对 TCP 连接**，⛔ 不是假流：「多读的字节还回去」（`rewind`）与
-    //   「换掉对端地址」都是 pingora `L4Stream` / `SocketDigest` 自己的行为，用替身测等于没测。
-    // ★ 头用真样本而不是自己造的形状 —— 夹具写错时，一个更宽的断言会让它悄悄通过。
+    // ★ 夾具是**真的一對 TCP 連接**，⛔ 不是假流：「多讀的位元組還回去」（`rewind`）與
+    //   「換掉對端位址」都是 pingora `L4Stream` / `SocketDigest` 自己的行為，用替身測等於沒測。
+    // ★ 頭用真樣本而不是自己造的形狀 —— 夾具寫錯時，一個更寬的斷言會讓它悄悄通過。
 
-    // `GetSocketDigest` / `SocketDigest` / `AsRawFd` / `AsyncReadExt` 经 `use super::*` 拿到。
+    // `GetSocketDigest` / `SocketDigest` / `AsRawFd` / `AsyncReadExt` 經 `use super::*` 拿到。
     use tokio::io::AsyncWriteExt;
 
     const V1: &[u8] = b"PROXY TCP4 192.0.2.7 10.0.0.1 56324 443\r\n";
@@ -264,9 +264,9 @@ mod tests {
         HttpProxyProtocol::new(rt_with("{\n  proxy_protocol_from 127.0.0.0/8\n}"))
     }
 
-    /// 一对真的 TCP 连接：（服务端那头的 `L4Stream`，客户端那头）。
-    /// ★ 服务端那头**自己装上 `SocketDigest`**：监听器路径上 pingora 在 accept 时装，
-    ///   测试里不装的话 `get_socket_digest()` 是 `None`，信任判断根本拿不到对端地址。
+    /// 一對真的 TCP 連接：（伺服器端那頭的 `L4Stream`，用戶端那頭）。
+    /// ★ 伺服器端那頭**自己裝上 `SocketDigest`**：監聽器路徑上 pingora 在 accept 時裝，
+    ///   測試裡不裝的話 `get_socket_digest()` 是 `None`，信任判斷根本拿不到對端位址。
     async fn 一对连接() -> (L4Stream, tokio::net::TcpStream) {
         let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = tokio::net::TcpStream::connect(ln.local_addr().unwrap())
@@ -284,7 +284,7 @@ mod tests {
             .and_then(|d| d.peer_addr().and_then(|a| a.as_inet().copied()))
     }
 
-    /// `process()` 之后流里还剩什么：关掉客户端，读到 EOF。
+    /// `process()` 之後流裡還剩什麼：關掉用戶端，讀到 EOF。
     async fn 剩下的(s: &mut L4Stream, client: tokio::net::TcpStream) -> Vec<u8> {
         drop(client);
         let mut out = Vec::new();
@@ -296,7 +296,7 @@ mod tests {
     async fn 清单内的对端_读掉头_换掉对端地址_后面的字节一个不少() {
         let p = 信任回环();
         let (mut s, mut c) = 一对连接().await;
-        // ★ 一次写完：头与后续数据多半在**同一次** read 里回来 —— 正是「多读的必须还回去」那种情形。
+        // ★ 一次寫完：頭與後續資料多半在**同一次** read 裡回來 —— 正是「多讀的必須還回去」那種情形。
         c.write_all(&[V1, 后续].concat()).await.unwrap();
         p.process(&mut s).await.expect("合法的头不该关连接");
         assert_eq!(
@@ -344,8 +344,8 @@ mod tests {
         let (mut s, mut c) = 一对连接().await;
         c.write_all(b"PROXY TCP4 ").await.unwrap();
         c.shutdown().await.unwrap();
-        // ★ 清单内的来源不发完整的头 ⇒ 关连接（owner 拍板的口径，见模块头）；
-        //   ⛔ 不能退回用 socket 对端 —— 那个地址正是 LB 自己。
+        // ★ 清單內的來源不發完整的頭 ⇒ 關連接（owner 拍板的口徑，見模組頭）；
+        //   ⛔ 不能退回用 socket 對端 —— 那個位址正是 LB 自己。
         assert!(p.process(&mut s).await.is_err(), "头没发完就断开必须关连接");
     }
 
@@ -358,7 +358,7 @@ mod tests {
             .await
             .unwrap();
         p.process(&mut s).await.expect("PROXY UNKNOWN 是合法的头");
-        // ★ `UNKNOWN` / `LOCAL` = 这条连接没有真实客户端 ⇒ 照旧用 socket 对端。
+        // ★ `UNKNOWN` / `LOCAL` = 這條連接沒有真實用戶端 ⇒ 照舊用 socket 對端。
         assert_eq!(对端(&s), Some(客户端地址), "UNKNOWN 头不该动对端地址");
         assert_eq!(剩下的(&mut s, c).await, 后续, "UNKNOWN 头本身也要被读掉");
     }
@@ -372,8 +372,8 @@ mod tests {
         c.write_all(&全部).await.unwrap();
         p.process(&mut s).await.expect("清单外的对端不该被关");
         assert_eq!(对端(&s), Some(客户端地址), "清单外的对端，地址必须原样不动");
-        // ★ ★ 「一个字节都不读」（⛔ 不是「读掉丢弃」）：v2 头的长度字段由攻击者控制，
-        //   「读掉丢弃」必须先解析那两个字节才知道丢多少，而「不读」完全不碰。
+        // ★ ★ 「一個位元組都不讀」（⛔ 不是「讀掉丟棄」）：v2 頭的長度欄位由攻擊者控制，
+        //   「讀掉丟棄」必須先解析那兩個位元組才知道丟多少，而「不讀」完全不碰。
         assert_eq!(
             剩下的(&mut s, c).await,
             全部,

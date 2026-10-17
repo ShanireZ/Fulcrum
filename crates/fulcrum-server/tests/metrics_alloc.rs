@@ -1,14 +1,14 @@
-//! 指标写入在稳态下**一次都不分配**（G156）。
+//! 指標寫入在穩態下**一次都不分配**（G156）。
 //!
-//! ★ 单独一个测试二进制：`#[global_allocator]` 是整个二进制一份，放进 `fulcrum-server`
-//! 的单测二进制里会替换掉那几百条测试的分配器。
+//! ★ 單獨一個測試二進位：`#[global_allocator]` 是整個二進位一份，放進 `fulcrum-server`
+//! 的單測二進位裡會替換掉那幾百條測試的分配器。
 //!
-//! ★ ★ 计数器**只数打开了开关的那个线程**：测试框架自己还有别的线程，它们的分配
-//! 与被测无关，数进来就是一把时准时不准的尺子。开关与计数都是 const 初始化、
-//! 无析构的 thread-local ⇒ 取值不分配，分配器里可以安全地用。
+//! ★ ★ 計數器**只數打開了開關的那個執行緒**：測試框架自己還有別的執行緒，它們的分配
+//! 與被測無關，數進來就是一把時準時不準的尺子。開關與計數都是 const 初始化、
+//! 無析構的 thread-local ⇒ 取值不分配，分配器裡可以安全地用。
 //!
-//! ⚠ 「稳态」的意思是：一条 series **第一次**出现时分配是正当的（要插一条键），
-//! 之后每次写都不许分配 —— 那是请求路径上每条请求都要走的那几笔。
+//! ⚠ 「穩態」的意思是：一條 series **第一次**出現時分配是正當的（要插一條鍵），
+//! 之後每次寫都不許分配 —— 那是請求路徑上每條請求都要走的那幾筆。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -20,7 +20,7 @@ thread_local! {
     static N: Cell<u64> = const { Cell::new(0) };
 }
 
-/// 本线程开着开关时记一次。`try_with`：线程拆 TLS 的时候分配器照样会被调到。
+/// 本執行緒開著開關時記一次。`try_with`：執行緒拆 TLS 的時候分配器照樣會被調到。
 fn bump() {
     let _ = ON.try_with(|on| {
         if on.get() {
@@ -39,7 +39,7 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.dealloc(p, l) }
     }
 
-    // ⚠ realloc 也算一次分配：一个「先小后大」的实现会在这里而不是 alloc 里花钱。
+    // ⚠ realloc 也算一次分配：一個「先小後大」的實作會在這裡而不是 alloc 裡花錢。
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         bump();
         unsafe { System.realloc(p, l, n) }
@@ -49,7 +49,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
-/// 只数 `f` 在本线程里的分配次数。
+/// 只數 `f` 在本執行緒裡的分配次數。
 fn count_allocs(f: impl FnOnce()) -> u64 {
     N.with(|n| n.set(0));
     ON.with(|on| on.set(true));
@@ -58,7 +58,7 @@ fn count_allocs(f: impl FnOnce()) -> u64 {
     N.with(|n| n.get())
 }
 
-/// ★ 内置反证：分配器真的在数。少了它，下面那条的 0 也可能只是「什么都没数」。
+/// ★ 內置反證：分配器真的在數。少了它，下面那條的 0 也可能只是「什麼都沒數」。
 #[test]
 fn 计数分配器自己数得到分配() {
     let n = count_allocs(|| {
@@ -75,7 +75,7 @@ fn 稳态下写指标一次都不分配() {
     use fulcrum_server::metrics::{REQUEST_DURATION_SECONDS, REQUESTS_TOTAL};
     let req = ["<alloc-test>", "metrics", "2xx", "HTTP/1.1"];
     let dur = ["<alloc-test>", "metrics"];
-    // 预热：这两条 series 第一次出现时分配是正当的。
+    // 預熱：這兩條 series 第一次出現時分配是正當的。
     REQUESTS_TOTAL.inc(&req);
     REQUEST_DURATION_SECONDS.observe(&dur, 0.25);
 

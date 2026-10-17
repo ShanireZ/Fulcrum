@@ -1,45 +1,45 @@
-//! 出站 HTTPS 的连接器：**BoringSSL**（G104 第 ③ 处）。
+//! 出站 HTTPS 的連接器：**BoringSSL**（G104 第 ③ 處）。
 //!
-//! §5.1 第 1 条「三处全换」的第 ③ 处：本 crate 往外发的两类请求
-//! （ACME 协议本身与原生 DNS 供应商的 HTTPS API）共用这一个连接器，
-//! 也就共用同一套信任库、同一套校验、同一份 ALPN。
+//! §5.1 第 1 條「三處全換」的第 ③ 處：本 crate 往外發的兩類請求
+//! （ACME 協定本身與原生 DNS 供應商的 HTTPS API）共用這一個連接器，
+//! 也就共用同一套信任庫、同一套檢核、同一份 ALPN。
 //!
-//! # ★ 我们写的是**连接器胶水**，不是 TLS
+//! # ★ 我們寫的是**連接器膠水**，不是 TLS
 //!
-//! 校验全部交给 [`SslConnector`]：证书链走 `builder()` 里那句 `set_default_verify_paths()`，
-//! 主机名走 `configure()?.verify_hostname(true)` → `into_ssl(domain)`。
-//! ⚠ **安全基线点名不许手写的就是这一类** —— 这个文件里没有一行在比对名字或验链。
+//! 檢核全部交給 [`SslConnector`]：證書鏈走 `builder()` 裡那句 `set_default_verify_paths()`，
+//! 主機名走 `configure()?.verify_hostname(true)` → `into_ssl(domain)`。
+//! ⚠ **安全基線點名不許手寫的就是這一類** —— 這個檔案裡沒有一行在比對名字或驗鏈。
 //!
-//! # ⛔ 为什么不用 `hyper-boring`
+//! # ⛔ 為什麼不用 `hyper-boring`
 //!
-//! 实测 **+9 个包**（整套旧版 hyper 0.14）。根因：它的 feature 表写的是
-//! `runtime = [hyper_old/runtime]` —— **没有 `dep:` 前缀**，意思是 hyper 0.14 本身是必需依赖，
-//! `default-features = false` 拦不住。⇒ 自己写一个 [`tower_service::Service<Uri>`]，
-//! 底下用 fork 里已有的 [`pingora_boringssl::tokio_ssl::SslStream`]，**新增 0 个包**。
+//! 實測 **+9 個包**（整套舊版 hyper 0.14）。根因：它的 feature 表寫的是
+//! `runtime = [hyper_old/runtime]` —— **沒有 `dep:` 前綴**，意思是 hyper 0.14 本身是必需依賴，
+//! `default-features = false` 攔不住。⇒ 自己寫一個 [`tower_service::Service<Uri>`]，
+//! 底下用 fork 裡已有的 [`pingora_boringssl::tokio_ssl::SslStream`]，**新增 0 個包**。
 //!
-//! ★ 可带走的一条：**看 feature 表要看有没有 `dep:` 前缀**，而识破它要**真加进去 resolve
-//! 一遍再 diff 锁** —— 清单上写着 `hyper1 = [dep:http, dep:hyper, …]`，
-//! 读起来像是「不开就不进来」。
+//! ★ 可帶走的一條：**看 feature 表要看有沒有 `dep:` 前綴**，而識破它要**真加進去 resolve
+//! 一遍再 diff 鎖** —— 清單上寫著 `hyper1 = [dep:http, dep:hyper, …]`，
+//! 讀起來像是「不開就不進來」。
 //!
-//! # ⚠ 三处「不写就悄悄错」的地方
+//! # ⚠ 三處「不寫就悄悄錯」的地方
 //!
-//! 1. **`HttpConnector` 默认 `enforce_http = true`** —— 它一看见 `https://` 就报
-//!    「invalid URL, scheme is not http」。必须 `enforce_http(false)`，
-//!    ⇒ **明文的那道闸就得由我们自己守**（[`BoringHttpsConnector::call`] 第一件事
-//!    就是拒非 `https`）。★ 这两条是同一枚硬币：关掉上游的检查就必须自己接住。
-//! 2. **ALPN 钉死 `http/1.1`**。产品这一侧只开了 `hyper/http1`，
-//!    协商到 h2 的话拿到的是一条我们不会说的协议。
-//!    ⚠ 不设 ALPN 多数服务器也会回落到 HTTP/1.1，但那是**对端的默认值**，不是我们的判据。
-//! 3. **主机名要去掉 IPv6 字面量的方括号**：`Uri::host()` 给的是 `[::1]`，
-//!    而 `into_ssl` 要的是 `::1`（它自己按 `IpAddr::from_str` 判断要不要发 SNI）。
+//! 1. **`HttpConnector` 預設 `enforce_http = true`** —— 它一看見 `https://` 就報
+//!    「invalid URL, scheme is not http」。必須 `enforce_http(false)`，
+//!    ⇒ **明文的那道閘就得由我們自己守**（[`BoringHttpsConnector::call`] 第一件事
+//!    就是拒非 `https`）。★ 這兩條是同一枚硬幣：關掉上游的檢查就必須自己接住。
+//! 2. **ALPN 釘死 `http/1.1`**。產品這一側只開了 `hyper/http1`，
+//!    協商到 h2 的話拿到的是一條我們不會說的協定。
+//!    ⚠ 不設 ALPN 多數伺服器也會回落到 HTTP/1.1，但那是**對端的預設值**，不是我們的判據。
+//! 3. **主機名要去掉 IPv6 字面值的方括號**：`Uri::host()` 給的是 `[::1]`，
+//!    而 `into_ssl` 要的是 `::1`（它自己按 `IpAddr::from_str` 判斷要不要發 SNI）。
 //!
-//! # ★ 判据都配对照
+//! # ★ 判據都配對照
 //!
-//! 每一条反向都配一条「把被测性质关掉」的对照，否则说明它根本没测到被测性质：
-//! 自签证书连不上 / 关掉验证就连得上 · 名字不对连不上 / 同一个 CA 名字对的连得上。
+//! 每一條反向都配一條「把被測性質關掉」的對照，否則說明它根本沒測到被測性質：
+//! 自簽證書連不上 / 關掉驗證就連得上 · 名字不對連不上 / 同一個 CA 名字對的連得上。
 //!
-//! ⚠ ⚠ **「关掉验证」只存在于 `#[cfg(test)]` 里** —— 产品面上
-//! [`BoringHttpsConnector::new`] 是唯一构造入口，没有任何旋钮。
+//! ⚠ ⚠ **「關掉驗證」只存在於 `#[cfg(test)]` 裡** —— 產品面上
+//! [`BoringHttpsConnector::new`] 是唯一建構入口，沒有任何旋鈕。
 
 use hyper::Uri;
 use hyper::body::Bytes;
@@ -57,19 +57,19 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tower_service::Service;
 
-/// ALPN 的线上格式：一个长度字节 + 协议名。
+/// ALPN 的線上格式：一個長度位元組 + 協定名。
 ///
-/// ★ 只提供 `http/1.1`，理由见模块文档第 2 条。
+/// ★ 只提供 `http/1.1`，理由見模組文件第 2 條。
 const ALPN_HTTP11: &[u8] = b"\x08http/1.1";
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// 出站 TLS 的上下文。★ 一个进程建一次，之后每条连接从它 `configure()` 派生。
+/// 出站 TLS 的上下文。★ 一個處理程序建一次，之後每條連接從它 `configure()` 派生。
 ///
-/// ⚠ 这里**什么都不放宽**：`SslConnector::builder` 自己就调了
-/// `set_default_verify_paths()` 并把 `SSL_VERIFY_PEER` 打开
-/// （boring 5.2.0 `ssl/connector.rs`，4.22.0 起就如此），我们只额外钉一条 ALPN。
-/// ★ boring 5 删了 `SslMethod::tls_client()` ⇒ 用 `tls()`；客户端 / 服务端由 `connect()` 自己设，行为不变。
+/// ⚠ 這裡**什麼都不放寬**：`SslConnector::builder` 自己就調了
+/// `set_default_verify_paths()` 並把 `SSL_VERIFY_PEER` 打開
+/// （boring 5.2.0 `ssl/connector.rs`，4.22.0 起就如此），我們只額外釘一條 ALPN。
+/// ★ boring 5 刪了 `SslMethod::tls_client()` ⇒ 用 `tls()`；用戶端 / 伺服器端由 `connect()` 自己設，行為不變。
 fn client_context() -> Result<SslConnector, String> {
     let mut b = SslConnector::builder(SslMethod::tls())
         .map_err(|e| format!("建不出出站 TLS 上下文：{e}"))?;
@@ -78,28 +78,28 @@ fn client_context() -> Result<SslConnector, String> {
     Ok(b.build())
 }
 
-/// 一个把 TCP 连接升级成 TLS 的 [`tower_service::Service`]，喂给
-/// [`hyper_util::client::legacy::Client`] 当连接器用。
+/// 一個把 TCP 連接升級成 TLS 的 [`tower_service::Service`]，餵給
+/// [`hyper_util::client::legacy::Client`] 當連接器用。
 #[derive(Clone)]
 pub struct BoringHttpsConnector {
     http: HttpConnector,
-    /// ★ [`SslConnector`] 是 `Clone` 的（内部就是一次 `SSL_CTX` 引用计数），
-    ///   所以不需要再包一层 `Arc`。
+    /// ★ [`SslConnector`] 是 `Clone` 的（內部就是一次 `SSL_CTX` 引用計數），
+    ///   所以不需要再包一層 `Arc`。
     ssl: SslConnector,
 }
 
 impl BoringHttpsConnector {
-    /// **产品面唯一的构造入口**：系统信任库 + 链校验 + 主机名校验，全部开着。
+    /// **產品面唯一的建構入口**：系統信任庫 + 鏈檢核 + 主機名檢核，全部開著。
     pub fn new() -> Result<BoringHttpsConnector, String> {
         Ok(BoringHttpsConnector::with_context(client_context()?))
     }
 
-    /// ⚠ 私有：给 [`BoringHttpsConnector::new`] 与本文件的判据共用。
-    /// 判据要拿一个**故意配坏的**上下文来做对照，而那条路不许出现在产品面上。
+    /// ⚠ 私有：給 [`BoringHttpsConnector::new`] 與本檔案的判據共用。
+    /// 判據要拿一個**故意配壞的**上下文來做對照，而那條路不許出現在產品面上。
     fn with_context(ssl: SslConnector) -> BoringHttpsConnector {
         let mut http = HttpConnector::new();
-        // ⚠ 见模块文档第 1 条：不关掉它，`https://` 在建 TCP 之前就被上游拒了。
-        //   关掉之后拒明文是我们自己的事，见 `call()` 的第一句。
+        // ⚠ 見模組文件第 1 條：不關掉它，`https://` 在建 TCP 之前就被上游拒了。
+        //   關掉之後拒明文是我們自己的事，見 `call()` 的第一句。
         http.enforce_http(false);
         BoringHttpsConnector { http, ssl }
     }
@@ -114,8 +114,8 @@ impl std::fmt::Debug for BoringHttpsConnector {
 impl Service<Uri> for BoringHttpsConnector {
     type Response = TokioIo<BoringStream>;
     type Error = BoxError;
-    /// ⚠ `Pin<Box<…>>` 不只是图省事：`hyper_util` 的 `Connect` 要求
-    /// `S::Future: Unpin + Send`，而 `Pin<Box<dyn Future + Send>>` 两条都满足。
+    /// ⚠ `Pin<Box<…>>` 不只是圖省事：`hyper_util` 的 `Connect` 要求
+    /// `S::Future: Unpin + Send`，而 `Pin<Box<dyn Future + Send>>` 兩條都滿足。
     type Future = Pin<Box<dyn Future<Output = Result<TokioIo<BoringStream>, BoxError>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
@@ -126,14 +126,14 @@ impl Service<Uri> for BoringHttpsConnector {
         let ssl = self.ssl.clone();
         let mut http = self.http.clone();
         Box::pin(async move {
-            // ⚠ ⚠ 这一句是 `enforce_http(false)` 的另一半，见模块文档第 1 条。
+            // ⚠ ⚠ 這一句是 `enforce_http(false)` 的另一半，見模組文件第 1 條。
             if uri.scheme_str() != Some("https") {
                 return Err(BoxError::from(format!("拒绝发非 HTTPS 请求：{uri}")));
             }
             let Some(host) = uri.host() else {
                 return Err(BoxError::from(format!("URL 里没有主机名：{uri}")));
             };
-            // IPv6 字面量在 `Uri::host()` 里是带方括号的，见模块文档第 3 条。
+            // IPv6 字面值在 `Uri::host()` 裡是帶方括號的，見模組文件第 3 條。
             let host = host
                 .trim_start_matches('[')
                 .trim_end_matches(']')
@@ -141,7 +141,7 @@ impl Service<Uri> for BoringHttpsConnector {
 
             let tcp = http.call(uri).await?.into_inner();
 
-            // ★ 校验全在这三行里，而这三行一个字都不是我们自己写的逻辑。
+            // ★ 檢核全在這三行裡，而這三行一個字都不是我們自己寫的邏輯。
             let ssl = ssl
                 .configure()
                 .map_err(|e| format!("出站 TLS 派生会话失败：{e}"))?
@@ -160,17 +160,17 @@ impl Service<Uri> for BoringHttpsConnector {
     }
 }
 
-/// 一条已经握完手的出站 TLS 连接。
+/// 一條已經握完手的出站 TLS 連接。
 ///
-/// ★ ★ **它存在的唯一理由是孤儿规则**：`hyper_util` 的 [`Connection`] 与
-/// `pingora-boringssl` 的 [`SslStream`] 都是外部类型，本 crate 只能给自己的类型实现它。
-/// 而 `hyper_util` 那条 `impl<T: Connection> Connection for TokioIo<T>` 会把它接上去。
+/// ★ ★ **它存在的唯一理由是孤兒規則**：`hyper_util` 的 [`Connection`] 與
+/// `pingora-boringssl` 的 [`SslStream`] 都是外部類型，本 crate 只能給自己的類型實作它。
+/// 而 `hyper_util` 那條 `impl<T: Connection> Connection for TokioIo<T>` 會把它接上去。
 pub struct BoringStream(SslStream<TcpStream>);
 
 impl Connection for BoringStream {
     fn connected(&self) -> Connected {
-        // ★ 转交给底下那条 TCP：`Connected` 里带的是本地/对端地址，
-        //   与 TLS 无关，而 hyper 的连接池要用它。
+        // ★ 轉交給底下那條 TCP：`Connected` 裡帶的是本機/對端位址，
+        //   與 TLS 無關，而 hyper 的連接池要用它。
         self.0.get_ref().connected()
     }
 }
@@ -203,17 +203,17 @@ impl AsyncWrite for BoringStream {
     }
 }
 
-/// 给 `instant-acme` 用的 HTTP 客户端。
+/// 給 `instant-acme` 用的 HTTP 用戶端。
 ///
-/// # ★ ★ 为什么要有这个类型
+/// # ★ ★ 為什麼要有這個類型
 ///
-/// `instant-acme` 的 `hyper-rustls` feature 一关，`Account::builder()` 与
-/// `BytesResponse::try_from` 就一起没了（两者都挂在那个 feature 上）
-/// ⇒ 必须自己实现 [`instant_acme::HttpClient`]，并走
-/// `Account::builder_with_http()` 那个入口。
+/// `instant-acme` 的 `hyper-rustls` feature 一關，`Account::builder()` 與
+/// `BytesResponse::try_from` 就一起沒了（兩者都掛在那個 feature 上）
+/// ⇒ 必須自己實作 [`instant_acme::HttpClient`]，並走
+/// `Account::builder_with_http()` 那個入口。
 ///
-/// ★ 而 `BytesResponse` 的 `From<http::Response<B>>` **不在 feature 门里**，
-/// 所以这一层只有十来行：把 `hyper` 的响应交出去，把错误包成 `Error::Other`。
+/// ★ 而 `BytesResponse` 的 `From<http::Response<B>>` **不在 feature 門裡**，
+/// 所以這一層只有十來行：把 `hyper` 的回應交出去，把錯誤包成 `Error::Other`。
 pub struct AcmeHttpClient {
     inner: Client<BoringHttpsConnector, BodyWrapper<Bytes>>,
 }
@@ -255,30 +255,30 @@ mod tests {
     use pingora_boringssl::x509::X509;
     use tokio::net::TcpListener;
 
-    /// 一个测试用的 CA + 一张由它签出来的叶子证书。
+    /// 一個測試用的 CA + 一張由它簽出來的葉子證書。
     struct TestPki {
         ca_der: Vec<u8>,
         leaf_der: Vec<u8>,
         leaf_key_der: Vec<u8>,
     }
 
-    /// 一个只有 CN 的主体名。
+    /// 一個只有 CN 的主體名。
     fn dn(cn: &str) -> rcgen::DistinguishedName {
         let mut d = rcgen::DistinguishedName::new();
         d.push(rcgen::DnType::CommonName, cn);
         d
     }
 
-    /// 造一张 SAN 为 `san` 的叶子证书，外加签它的那个 CA。
+    /// 造一張 SAN 為 `san` 的葉子證書，外加簽它的那個 CA。
     ///
-    /// ★ 用 `rcgen`，它**已经在依赖图里**（`instant-acme` 拉的，见 `tlsalpn01.rs`）。
+    /// ★ 用 `rcgen`，它**已經在依賴圖裡**（`instant-acme` 拉的，見 `tlsalpn01.rs`）。
     ///
-    /// ⚠ ⚠ **两个主体名必须不一样，而这是被一次红教出来的**：`CertificateParams`
-    /// 的默认主体名是同一个常量，于是 CA 与叶子的 subject **逐字相同** ——
-    /// 校验器会把叶子当成自签（issuer == subject）、根本不去找那个 CA，
-    /// 报的是 `CERTIFICATE_VERIFY_FAILED`。
-    /// ★ 抓到它的是**正向那一条**（名字对的也该连得上），而不是被测的反向那一条 ——
-    /// 没有它，一次「CA 根本没生效」会被读成「主机名校验生效了」。
+    /// ⚠ ⚠ **兩個主體名必須不一樣，而這是被一次紅教出來的**：`CertificateParams`
+    /// 的預設主體名是同一個常數，於是 CA 與葉子的 subject **逐字相同** ——
+    /// 檢核器會把葉子當成自籤（issuer == subject）、根本不去找那個 CA，
+    /// 報的是 `CERTIFICATE_VERIFY_FAILED`。
+    /// ★ 抓到它的是**正向那一條**（名字對的也該連得上），而不是被測的反向那一條 ——
+    /// 沒有它，一次「CA 根本沒生效」會被讀成「主機名檢核生效了」。
     fn make_pki(san: &str) -> TestPki {
         let ca_key = rcgen::KeyPair::generate().expect("CA 密钥");
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("CA 参数");
@@ -304,7 +304,7 @@ mod tests {
         }
     }
 
-    /// 一张**自签**证书（没有 CA）。用来做「链校验开着没有」那一条。
+    /// 一張**自籤**證書（沒有 CA）。用來做「鏈檢核開著沒有」那一條。
     fn make_self_signed(san: &str) -> (Vec<u8>, Vec<u8>) {
         let key = rcgen::KeyPair::generate().expect("自签密钥");
         let params = rcgen::CertificateParams::new(vec![san.to_string()]).expect("自签参数");
@@ -312,7 +312,7 @@ mod tests {
         (cert.der().to_vec(), key.serialize_der())
     }
 
-    /// 服务端上下文：出示 `cert_der` / `key_der`，不要求客户端证书。
+    /// 伺服器端上下文：出示 `cert_der` / `key_der`，不要求用戶端證書。
     fn server_ctx(cert_der: &[u8], key_der: &[u8]) -> SslContext {
         let mut b = SslContextBuilder::new(SslMethod::tls()).expect("服务端 ctx");
         let cert = X509::from_der(cert_der).expect("服务端证书");
@@ -322,8 +322,8 @@ mod tests {
         b.build()
     }
 
-    /// ⚠ **只在测试里存在的对照**：把证书校验整个关掉。
-    /// 产品面上没有任何一条路能造出这样一个连接器。
+    /// ⚠ **只在測試裡存在的對照**：把證書檢核整個關掉。
+    /// 產品面上沒有任何一條路能造出這樣一個連接器。
     fn insecure_connector() -> BoringHttpsConnector {
         let mut b = SslConnector::builder(SslMethod::tls()).expect("客户端 ctx");
         b.set_verify(SslVerifyMode::NONE);
@@ -331,9 +331,9 @@ mod tests {
         BoringHttpsConnector::with_context(b.build())
     }
 
-    /// ⚠ **只在测试里存在**：只信 `ca_der` 这一个根，**校验照常全开**。
-    /// ★ 它是「名字不对要红」那一条的**正向对照**：同一个客户端、同一个 CA，
-    ///   名字对的时候必须是绿的 —— 否则那条红说明不了任何事。
+    /// ⚠ **只在測試裡存在**：只信 `ca_der` 這一個根，**檢核照常全開**。
+    /// ★ 它是「名字不對要紅」那一條的**正向對照**：同一個用戶端、同一個 CA，
+    ///   名字對的時候必須是綠的 —— 否則那條紅說明不了任何事。
     fn ca_pinned_connector(ca_der: &[u8]) -> BoringHttpsConnector {
         let mut b = SslConnector::builder(SslMethod::tls()).expect("客户端 ctx");
         let ca = X509::from_der(ca_der).expect("CA 证书");
@@ -349,8 +349,8 @@ mod tests {
             .expect("建不出 runtime")
     }
 
-    /// 起一台只接一条连接的 TLS 服务器，让 `connector` 去连 `https://<host>:<port>/`，
-    /// 返回客户端这一侧的结果。
+    /// 起一臺只接一條連接的 TLS 伺服器，讓 `connector` 去連 `https://<host>:<port>/`，
+    /// 回傳用戶端這一側的結果。
     fn handshake(
         mut connector: BoringHttpsConnector,
         host: &str,
@@ -365,7 +365,7 @@ mod tests {
                 let (tcp, _) = listener.accept().await.expect("accept");
                 let ssl = Ssl::new(&ctx).expect("服务端 SSL");
                 let mut s = SslStream::new(ssl, tcp).expect("服务端流");
-                // ⚠ 客户端拒绝时这里必然报错，而那正是被测的情形 —— 不能 unwrap。
+                // ⚠ 用戶端拒絕時這裡必然回報錯誤，而那正是被測的情形 —— 不能 unwrap。
                 let _ = Pin::new(&mut s).accept().await;
             });
             let uri: Uri = format!("https://{host}:{port}/").parse().expect("URL 解析");
@@ -383,7 +383,7 @@ mod tests {
     fn 自签证书连不上_而关掉验证的对照连得上() {
         let (cert, key) = make_self_signed("localhost");
 
-        // ★ 被测的那一条：产品面的连接器（系统信任库）。
+        // ★ 被測的那一條：產品面的連接器（系統信任庫）。
         let e = handshake(
             BoringHttpsConnector::new().expect("产品连接器"),
             "localhost",
@@ -391,20 +391,20 @@ mod tests {
             key.clone(),
         )
         .expect_err("自签证书竟然连上了 —— 链校验没开");
-        // ⚠ 钉 `CERTIFICATE_VERIFY_FAILED` 而不是「握手失败」：后者连
-        //   「对端根本没出示证书」也算，而那与本条要测的性质无关。
+        // ⚠ 釘 `CERTIFICATE_VERIFY_FAILED` 而不是「握手失敗」：後者連
+        //   「對端根本沒出示證書」也算，而那與本條要測的性質無關。
         assert!(e.contains("CERTIFICATE_VERIFY_FAILED"), "{e}");
 
-        // ★ ★ ★ 对照：把「被测性质」关掉，同一台服务器必须连得上。
-        //   ⚠ 没有这一条，上面那条红可能只是「服务器根本没起来 / 端口不通」，
-        //     而**红色比绿色更容易让人停止追问**（§10）。
+        // ★ ★ ★ 對照：把「被測性質」關掉，同一臺伺服器必須連得上。
+        //   ⚠ 沒有這一條，上面那條紅可能只是「伺服器根本沒起來 / 連接埠不通」，
+        //     而**紅色比綠色更容易讓人停止追問**（§10）。
         handshake(insecure_connector(), "localhost", cert, key)
             .expect("关掉验证之后还是连不上 —— 那说明上面那条红与证书校验无关");
     }
 
     #[test]
     fn 证书名字不对连不上_而同一个_ca_下名字对的连得上() {
-        // 正向：SAN 就是我们要连的名字。
+        // 正向：SAN 就是我們要連的名字。
         let good = make_pki("localhost");
         handshake(
             ca_pinned_connector(&good.ca_der),
@@ -414,7 +414,7 @@ mod tests {
         )
         .expect("名字对的都连不上 —— 那下面那条红说明不了任何事");
 
-        // 反向：**同一套机制**，只把 SAN 换成另一个名字。
+        // 反向：**同一套機制**，只把 SAN 換成另一個名字。
         let bad = make_pki("wrong.example");
         let e = handshake(
             ca_pinned_connector(&bad.ca_der),
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn 非_https_一律拒绝() {
-        // ⚠ `HttpConnector` 的 `enforce_http` 被我们关掉了，这道闸就只剩这一条。
+        // ⚠ `HttpConnector` 的 `enforce_http` 被我們關掉了，這道閘就只剩這一條。
         let mut c = BoringHttpsConnector::new().expect("产品连接器");
         let e = rt().block_on(async move {
             c.call("http://example.invalid/x".parse::<Uri>().expect("URL"))

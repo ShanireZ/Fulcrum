@@ -8,8 +8,8 @@ members = [
     "pingora-runtime",
     "pingora-timeout",
     "pingora-rustls",
-    # ★ 2026-08-25（G104）：加回来的第八个 crate。fork 当初把它删掉的理由是
-    #   「PLAN.md §5.1 第 1 条锁死 rustls」，而那条约束已被 G104 推翻。
+    # ★ 2026-08-25（G104）：加回來的第八個 crate。fork 當初把它刪掉的理由是
+    #   「PLAN.md §5.1 第 1 條鎖死 rustls」，而那條約束已被 G104 推翻。
     "pingora-boringssl",
 ]
 
@@ -20,7 +20,7 @@ tokio-stream = { version = "0.1" }
 async-trait = "0.1.42"
 httparse = "1"
 bytes = "1.0"
-# ★ 替代已失维的 derivative（RUSTSEC-2024-0388）。见 FORK.md。
+# ★ 替代已失維的 derivative（RUSTSEC-2024-0388）。見 FORK.md。
 educe = "0.7.6"
 http = "1"
 log = "0.4"
@@ -31,11 +31,11 @@ lru = "0.18.2"
 ahash = ">=0.8.9"
 
 [workspace.lints.rust]
-# ★ 枢衡 fork（2026-09-24）：第二行是 fork 从 pingora-core 的 [features] 里删掉、而源码里仍有
-#   #[cfg(feature = "…")] 分支的特性名（openssl / s2n：没被 vendor 的 TLS 后端；dial9 两条：见
-#   pingora-core/Cargo.toml 那段）。不登记的话每次编译刷出 58 条 unexpected_cfgs，真的警告会被淹掉。
-#   ⚠ 这里只是「已知的值」，不是「声明了特性」：`--features s2n` 仍当场报「没有这个特性」，这正是想要的。
-#   ⚠ dial9-cpu-profiling 源码里没有 cfg 引用，故意不列。
+# ★ 樞衡 fork（2026-09-24）：第二行是 fork 從 pingora-core 的 [features] 裡刪掉、而原始碼裡仍有
+#   #[cfg(feature = "…")] 分支的特性名（openssl / s2n：沒被 vendor 的 TLS 後端；dial9 兩條：見
+#   pingora-core/Cargo.toml 那段）。不登記的話每次編譯刷出 58 條 unexpected_cfgs，真的警告會被淹掉。
+#   ⚠ 這裡只是「已知的值」，不是「宣告了特性」：`--features s2n` 仍當場報「沒有這個特性」，這正是想要的。
+#   ⚠ dial9-cpu-profiling 原始碼裡沒有 cfg 引用，故意不列。
 unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(tokio_unstable)',
   'cfg(feature, values("openssl", "s2n", "dial9", "dial9-worker-s3"))',

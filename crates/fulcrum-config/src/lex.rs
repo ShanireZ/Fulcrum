@@ -1,27 +1,27 @@
-//! 词法：把 DSL 文本切成 token。
+//! 詞法：把 DSL 文字切成 token。
 //!
-//! 形状照 Caddyfile（G20）：**空白分隔的词** + `{` / `}` + **有意义的换行**。
+//! 形狀照 Caddyfile（G20）：**空白分隔的詞** + `{` / `}` + **有意義的換行**。
 //!
-//! ★ ★ **`{` 只有在它自己单独成词的时候才是块的开始。** 这条不是实现细节，
-//! 它是占位符能存在的前提——`{host}` 与 `{"a":1}` 都是**一个词**，
-//! 而 `reverse_proxy 127.0.0.1:3000 {` 里最后那个才是块。
-//! 若按「见到 `{` 就当块开始」来切，`respond 403 {"error":"x"}` 会变成一个开块，
-//! 而它会一路吃到文件末尾才报「块没闭合」——错误提示指向的位置离真凶十几行远。
+//! ★ ★ **`{` 只有在它自己單獨成詞的時候才是塊的開始。** 這條不是實作細節，
+//! 它是佔位符能存在的前提——`{host}` 與 `{"a":1}` 都是**一個詞**，
+//! 而 `reverse_proxy 127.0.0.1:3000 {` 裡最後那個才是塊。
+//! 若按「見到 `{` 就當塊開始」來切，`respond 403 {"error":"x"}` 會變成一個開塊，
+//! 而它會一路吃到檔案末尾才報「塊沒閉合」——錯誤提示指向的位置離真兇十幾行遠。
 //!
-//! ★ 换行有意义：一条指令到行尾为止。这让「少写一个参数」这类错误能就地报出来，
-//! 而不是把下一行的指令名当成本行的参数（那正是 nginx 缺了分号时的体验）。
+//! ★ 換行有意義：一條指令到行尾為止。這讓「少寫一個參數」這類錯誤能就地報出來，
+//! 而不是把下一行的指令名當成本行的參數（那正是 nginx 缺了分號時的體驗）。
 
 use crate::diag::{DiagCode, Diagnostic, Diagnostics, Span};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
-    /// 一个词（裸词或引号串，`text` 里是**去引号、解转义后**的值）。
+    /// 一個詞（裸詞或引號串，`text` 裡是**去引號、解轉義後**的值）。
     Word,
-    /// 单独成词的 `{`。
+    /// 單獨成詞的 `{`。
     OpenBrace,
-    /// 单独成词的 `}`。
+    /// 單獨成詞的 `}`。
     CloseBrace,
-    /// 一个或多个换行（连续空行折叠成一个）。
+    /// 一個或多個換行（連續空行摺疊成一個）。
     Newline,
     Eof,
 }
@@ -30,12 +30,12 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
-    /// 词的值。`OpenBrace` / `CloseBrace` / `Newline` / `Eof` 为空串。
+    /// 詞的值。`OpenBrace` / `CloseBrace` / `Newline` / `Eof` 為空串。
     pub text: String,
-    /// 这个词原文是不是带引号的。
+    /// 這個詞原文是不是帶引號的。
     ///
-    /// ★ 有用：带引号的 `"{"` **不是**块的开始，而占位符校验也要知道
-    /// 一个值是不是用户显式引起来的。
+    /// ★ 有用：帶引號的 `"{"` **不是**塊的開始，而佔位符檢核也要知道
+    /// 一個值是不是使用者顯式引起來的。
     pub quoted: bool,
 }
 
@@ -80,10 +80,10 @@ impl Lexer<'_> {
             let b = self.bytes[self.pos];
             if b == b'\n' {
                 let start = self.pos;
-                // 连续空行折叠：它们对语法没有意义。顺带吃掉下一行开头的缩进也没关系。
-                // ★ 注释不在这里处理——下一轮 `skip_blanks_and_comments` 会吃掉它，
-                //   于是「空行 + 注释行 + 空行」可能切出两个 Newline。**解析器必须容忍
-                //   连续的 Newline**，这比在词法里再多一层状态便宜。
+                // 連續空行摺疊：它們對語法沒有意義。順帶吃掉下一行開頭的縮進也沒關係。
+                // ★ 註解不在這裡處理——下一輪 `skip_blanks_and_comments` 會吃掉它，
+                //   於是「空行 + 註解行 + 空行」可能切出兩個 Newline。**解析器必須容忍
+                //   連續的 Newline**，這比在詞法裡再多一層狀態便宜。
                 while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
                     self.pos += 1;
                 }
@@ -104,7 +104,7 @@ impl Lexer<'_> {
         }
     }
 
-    /// 跳过行内空白与注释。★ **不跳换行**——换行是 token。
+    /// 跳過行內空白與註解。★ **不跳換行**——換行是 token。
     fn skip_blanks_and_comments(&mut self) {
         loop {
             while self.pos < self.bytes.len()
@@ -126,12 +126,12 @@ impl Lexer<'_> {
 
     fn quoted_word(&mut self) -> Token {
         let start = self.pos;
-        self.pos += 1; // 开引号
+        self.pos += 1; // 開引號
         let mut value = String::new();
         loop {
             if self.pos >= self.bytes.len() || self.bytes[self.pos] == b'\n' {
-                // ★ 引号不跨行。跨行的引号几乎总是漏打了一个引号，而按「一直找到下一个引号」
-                //   处理会把后面好几行吞进一个字符串里，报错位置离真凶很远。
+                // ★ 引號不跨行。跨行的引號幾乎總是漏打了一個引號，而按「一直找到下一個引號」
+                //   處理會把後面好幾行吞進一個字串裡，回報錯誤位置離真兇很遠。
                 let span = Span::new(start, self.pos);
                 self.diags.push(
                     Diagnostic::error(DiagCode::UNCLOSED_QUOTE, span, "引号没有闭合")
@@ -164,7 +164,7 @@ impl Lexer<'_> {
                     quoted: true,
                 };
             }
-            // 逐**字符**推进，不能逐字节：多字节字符会被劈开，push 出来是乱码。
+            // 逐**字元**推進，不能逐位元組：多位元組字元會被劈開，push 出來是亂碼。
             let ch = self.text[self.pos..].chars().next().unwrap_or('\u{fffd}');
             value.push(ch);
             self.pos += ch.len_utf8();
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn brace_is_structural_only_when_alone() {
-        // ★ 这条是占位符能存在的前提。
+        // ★ 這條是佔位符能存在的前提。
         let (k, d) = kinds("respond 403 {\"error\":\"x\"}\n");
         assert!(d.is_empty(), "{}", d.items().len());
         assert_eq!(
@@ -273,13 +273,13 @@ mod tests {
         let toks = tokenize("respond \"没闭合\nheader X 1\n", &mut d);
         assert_eq!(d.error_count(), 1);
         assert_eq!(d.items()[0].code, DiagCode::UNCLOSED_QUOTE);
-        // ★ 关键：下一行仍然被正常切开，而不是被吞进字符串。
+        // ★ 關鍵：下一行仍然被正常切開，而不是被吞進字串。
         assert!(toks.iter().any(|t| t.text == "header"));
     }
 
     #[test]
     fn crlf_survives() {
-        // 配置文件在 Windows 上被编辑过就会带 CRLF。它不该改变词法结果。
+        // 設定檔案在 Windows 上被編輯過就會帶 CRLF。它不該改變詞法結果。
         let mut d = Diagnostics::new();
         let a = tokenize("a b\nc\n", &mut d);
         let mut d2 = Diagnostics::new();

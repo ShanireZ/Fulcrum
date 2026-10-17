@@ -51,7 +51,7 @@ def probe(host, port, path, timeout=TIMEOUT):
             while True:
                 chunk = s.recv(65536)
                 if not chunk:
-                    break  # EOF：对端关了
+                    break  # EOF：對端關了
                 data += chunk
         except socket.timeout:
             return 3
@@ -102,7 +102,7 @@ def _serve_once(listener, status, close_after):
     try:
         conn, _ = listener.accept()
     except OSError:
-        return  # 探针根本没连上来（监听端已被关掉）：由那一条断言去说，⛔ 不在这里再抛一次
+        return  # 探針根本沒連上來（監聽端已被關掉）：由那一條斷言去說，⛔ 不在這裡再拋一次
     with conn:
         conn.settimeout(5)
         buf = b""
@@ -113,7 +113,7 @@ def _serve_once(listener, status, close_after):
             buf += chunk
         conn.sendall(b"HTTP/1.1 %d X\r\nContent-Length: 2\r\n\r\nok" % status)
         if not close_after:
-            # ⛔ 不关：一直等到对端先走（探针超时后关掉它那一侧）。
+            # ⛔ 不關：一直等到對端先走（探針超時後關掉它那一側）。
             try:
                 while conn.recv(4096):
                     pass
@@ -141,7 +141,7 @@ def self_check():
             fails += 1
             print("✗ %s（该是 %s，实得 %s）" % (label, expected, got), file=sys.stderr)
 
-    # ★ 两个方向都要有：少了「不关」那一条，这个探针与一个恒报「关了」的坏探针分不开。
+    # ★ 兩個方向都要有：少了「不關」那一條，這個探針與一個恆報「關了」的壞探針分不開。
     for label, status, close_after, expected in (
         ("回完就关的合成被测没被判成「关了」", 200, True, 0),
         ("回完不关的合成被测被判成了「关了」—— 这个探针是空操作", 200, False, 3),
@@ -153,15 +153,15 @@ def self_check():
             want(label, expected, probe("127.0.0.1", port, "/p", timeout=0.5))
         t.join(timeout=5)
 
-    # 连不上 ⇒ 1。⚠ 先绑一个端口拿到号再关掉，⛔ 不猜一个「应该没人用」的端口。
+    # 連不上 ⇒ 1。⚠ 先綁一個連接埠拿到號再關掉，⛔ 不猜一個「應該沒人用」的連接埠。
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     dead = s.getsockname()[1]
     s.close()
     want("连不上的端口没被判成 1", 1, probe("127.0.0.1", dead, "/p", timeout=0.5))
 
-    # 抓请求头：先来一条**空连接**（连上就断 —— 编排脚本的 wait_port 就是这样），再来一条真请求
-    #   ⇒ 必须跳过前者、只存后者的**请求头**（正文不存）、并回 200 + Connection: close。
+    # 抓請求頭：先來一條**空連接**（連上就斷 —— 編排指令碼的 wait_port 就是這樣），再來一條真請求
+    #   ⇒ 必須跳過前者、只存後者的**請求頭**（正文不存）、並回 200 + Connection: close。
     with tempfile.TemporaryDirectory() as tmp:
         out = pathlib.Path(tmp) / "req.txt"
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

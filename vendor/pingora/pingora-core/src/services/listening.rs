@@ -23,7 +23,7 @@ use crate::listeners::tls::TlsSettings;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
 use crate::listeners::{
-    // ★ 枢衡改动 15：`ConnGuard`。
+    // ★ 樞衡改動 15：`ConnGuard`。
     ConnGuard,
     ConnectionFilter,
     ListenerConfig,
@@ -211,10 +211,10 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         mut stack: TransportStack,
         mut shutdown: ShutdownWatch,
     ) {
-        // ── ★ 枢衡改动 15：连接计数 ────────────────────────────────────────────
+        // ── ★ 樞衡改動 15：連接計數 ────────────────────────────────────────────
         //
-        // ★ 句柄与地址都在**循环外**取一次 ⇒ 每条连接只 clone 两个 `Arc`，
-        //   accept 这条热路径上**零分配**。
+        // ★ 句柄與位址都在**循環外**取一次 ⇒ 每條連接只 clone 兩個 `Arc`，
+        //   accept 這條熱路徑上**零分配**。
         let conn_counter = stack.connection_counter().cloned();
         let listen_addr: std::sync::Arc<str> = std::sync::Arc::from(stack.as_str());
 
@@ -243,18 +243,18 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                 Ok(io) => {
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
-                    // ★ ★ ★ 枢衡改动 15：**`enter` 在 spawn 之前、握手之前**。
-                    //   于是「还在握手的连接」也算进 active —— TLS 握手被打爆时
-                    //   那条路上的堆积正是最该看得见的东西。
+                    // ★ ★ ★ 樞衡改動 15：**`enter` 在 spawn 之前、握手之前**。
+                    //   於是「還在握手的連接」也算進 active —— TLS 握手被打爆時
+                    //   那條路上的堆積正是最該看得見的東西。
                     let conn_guard = conn_counter
                         .as_ref()
                         .map(|c| ConnGuard::new(c.clone(), listen_addr.clone()));
                     current_handle().spawn(async move {
-                        // ⚠ ⚠ ⚠ **必须绑一个有名字的变量。** 写成 `let _ = conn_guard;`
-                        //   会让它**当场 drop**，于是 gauge 恒为 0 而 counter 照涨 ——
-                        //   ★ 而那种失效**不会有任何东西红**：正文格式合法、
-                        //     counter 在动、系列也都在，只有一个数字永远是 0。
-                        //   ⇒ 逮它的是枢衡那侧的端到端判据（连上 TLS 端口什么都不发 ⇒ active +1）。
+                        // ⚠ ⚠ ⚠ **必須綁一個有名字的變數。** 寫成 `let _ = conn_guard;`
+                        //   會讓它**當場 drop**，於是 gauge 恆為 0 而 counter 照漲 ——
+                        //   ★ 而那種失效**不會有任何東西紅**：正文格式合法、
+                        //     counter 在動、系列也都在，只有一個數字永遠是 0。
+                        //   ⇒ 逮它的是樞衡那側的端到端判據（連上 TLS 連接埠什麼都不發 ⇒ active +1）。
                         let _conn_guard = conn_guard;
                         let peer_addr = io.peer_addr();
                         match timeout(Duration::from_secs(60), io.handshake()).await {

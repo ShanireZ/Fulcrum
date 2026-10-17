@@ -1,59 +1,59 @@
-# 投稿四 · `test_connect_uds` 的短读
+# 投稿四 · `test_connect_uds` 的短讀
 
-> ✅ **2026-08-20 已按 G40 重审并发出。** 下面「正文」一节是**逐字发出去的英文**，
-> 上面的中文是给我们自己看的账。
+> ✅ **2026-08-20 已按 G40 重審並行出。** 下面「正文」一節是**逐字發出去的英文**，
+> 上面的中文是給我們自己看的賬。
 
-## ★ 发之前重查的三件事（2026-08-20，实测，不是读网页）
+## ★ 發之前重查的三件事（2026-08-20，實測，不是讀網頁）
 
-1. **上游修了没有** —— 克隆 `cloudflare/pingora`，`main` 仍停在 `0046038`
-   （2026-08-07 起未动），`pingora-core/src/connectors/mod.rs:659` 一字未改。
-2. **有没有人报过** —— 搜 `test_connect_uds` / `read_exact` / `short read`：
+1. **上游修了沒有** —— 克隆 `cloudflare/pingora`，`main` 仍停在 `0046038`
+   （2026-08-07 起未動），`pingora-core/src/connectors/mod.rs:659` 一字未改。
+2. **有沒有人報過** —— 搜 `test_connect_uds` / `read_exact` / `short read`：
    **零命中**；搜 `flaky` 命中的是 `#591`/`#740`（`test_eviction`，另一回事）
-   与我们自己那几条。
-3. **上游规范** —— `.github/CONTRIBUTING.md` 说小修可以不开 issue，但这一条带
-   根因与复现，开 issue 更有价值（也与前三份投稿一致）；正文按
-   `.github/ISSUE_TEMPLATE/bug_report.md` 的小标题排。
+   與我們自己那幾條。
+3. **上游規範** —— `.github/CONTRIBUTING.md` 說小修可以不開 issue，但這一條帶
+   根因與重現，開 issue 更有價值（也與前三份投稿一致）；正文按
+   `.github/ISSUE_TEMPLATE/bug_report.md` 的小標題排。
 
-## ★ ★ ★ 复审推翻了草稿里的一句话：**不能说「你们 CI 会红」**
+## ★ ★ ★ 複審推翻了草稿裡的一句話：**不能說「你們 CI 會紅」**
 
-草稿原本把它写成一条会间歇性打红构建的 flaky 测试。**实测下来那句话是错的**：
+草稿原本把它寫成一條會間歇性打紅建置的 flaky 測試。**實測下來那句話是錯的**：
 
-- 这个测试整块在 `#[cfg(feature = "any_tls")]` 里（`connectors/mod.rs:584-586`）；
-- 而 `pingora-core` 与 `pingora` 的 `default` **都是 `[]`**，
-  上游 CI 跑的 `cargo test --workspace --lib --bins --tests` 用的就是默认 feature。
-- **实测**：`cargo test --workspace --lib --bins --tests -- --list | grep -c test_connect_uds`
-  → **0**。它在上游 CI 里**根本没被编译**。
+- 這個測試整塊在 `#[cfg(feature = "any_tls")]` 裡（`connectors/mod.rs:584-586`）；
+- 而 `pingora-core` 與 `pingora` 的 `default` **都是 `[]`**，
+  上游 CI 跑的 `cargo test --workspace --lib --bins --tests` 用的就是預設 feature。
+- **實測**：`cargo test --workspace --lib --bins --tests -- --list | grep -c test_connect_uds`
+  → **0**。它在上游 CI 裡**根本沒被編譯**。
 
-★ 所以立论必须是「**任何带 TLS backend 跑测试的人**会撞上」，而不是「你们 CI 红了」。
-⚠ 这与投稿一那条教训是同一个形状：**把立论写成一件审阅者一查就知道是假的事，
-会当场失去可信度**。
+★ 所以立論必須是「**任何帶 TLS backend 跑測試的人**會撞上」，而不是「你們 CI 紅了」。
+⚠ 這與投稿一那條教訓是同一個形狀：**把立論寫成一件審閱者一查就知道是假的事，
+會當場失去可信度**。
 
-## ★ 实测矩阵（上游 `main` `0046038`，容器内，rustc 1.97.1，`--features rustls`）
+## ★ 實測矩陣（上游 `main` `0046038`，容器內，rustc 1.97.1，`--features rustls`）
 
-| | 无扰动 | 扰动（`write_all` 拆成 1 字节 + 20ms + 8 字节）|
+| | 無擾動 | 擾動（`write_all` 拆成 1 位元組 + 20ms + 8 位元組）|
 |---|---|---|
-| 未打补丁 | 通过（偶发才红）| ★ **3/3 全红**，`left: [105, 0, 0, 0, 0, 0, 0, 0, 0]` |
-| 打了补丁 | **5/5 绿** | **5/5 绿** |
+| 未打補丁 | 通過（偶發才紅）| ★ **3/3 全紅**，`left: [105, 0, 0, 0, 0, 0, 0, 0, 0]` |
+| 打了補丁 | **5/5 綠** | **5/5 綠** |
 
-## ★ 上游 CI 那几道门（同一棵树，打补丁前后各跑一遍）
+## ★ 上游 CI 那幾道門（同一棵樹，打補丁前後各跑一遍）
 
-| 门 | 结果 |
+| 門 | 結果 |
 |---|---|
 | `cargo fmt --all -- --check` | ✅ rc=0 |
 | `cargo check --workspace` | ✅ rc=0 |
 | `cargo clippy --all-targets --all -- --allow=unknown-lints --deny=warnings` | ✅ rc=0 |
-| `cargo test -p pingora-core --lib --features rustls --no-fail-fast` | **572 passed / 1 failed / 2 ignored，前后逐项相同** |
-| `cargo +1.85.0 check`（MSRV）| 未跑（容器里只有 1.97.1）。★ 但 MSRV 那档跑的是 `cargo check`，**不编译测试代码**，而本改动只动测试 ⇒ 结构上够不到 |
-| `cargo audit` / `cargo machete` | 未跑（本地没装），留给上游 CI |
-| `git am` 回放 | ✅ 在 `0046038` 上干净应用，且与分支树**逐字节一致** |
+| `cargo test -p pingora-core --lib --features rustls --no-fail-fast` | **572 passed / 1 failed / 2 ignored，前後逐項相同** |
+| `cargo +1.85.0 check`（MSRV）| 未跑（容器裡只有 1.97.1）。★ 但 MSRV 那檔跑的是 `cargo check`，**不編譯測試程式碼**，而本改動只動測試 ⇒ 結構上夠不到 |
+| `cargo audit` / `cargo machete` | 未跑（本機沒裝），留給上游 CI |
+| `git am` 重播 | ✅ 在 `0046038` 上乾淨應用，且與分支樹**逐位元組一致** |
 
-⚠ ★ **那唯一一条失败（`test_bind_to_port_range_on_connect`）在基线上也失败**，与本改动无关。
-★ ★ 而第一次跑出来的是「基线 7 条、打补丁后 6 条」——**差集不为空**。
-没有把它解释掉，而是**把环境修对**：容器里没装
-`iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`，于是那批拿 RFC 5737 地址当黑洞的连接超时测试
-被 Docker 的网络替它应答（实测 1.7ms 就 CONNECTED）而恒红且**抖**。
-装上之后两侧都变成 572/1/2，**差集为空**。
-> ★ 「把环境修对，比把名单加长强」——名单越长，判据越钝。
+⚠ ★ **那唯一一條失敗（`test_bind_to_port_range_on_connect`）在基線上也失敗**，與本改動無關。
+★ ★ 而第一次跑出來的是「基線 7 條、打補丁後 6 條」——**差集不為空**。
+沒有把它解釋掉，而是**把環境修對**：容器裡沒裝
+`iptables -A OUTPUT -d 192.0.2.0/24 -j DROP`，於是那批拿 RFC 5737 位址當黑洞的連接超時測試
+被 Docker 的網路替它應答（實測 1.7ms 就 CONNECTED）而恆紅且**抖**。
+裝上之後兩側都變成 572/1/2，**差集為空**。
+> ★ 「把環境修對，比把名單加長強」——名單越長，判據越鈍。
 
 ---
 

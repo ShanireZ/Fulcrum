@@ -1,39 +1,39 @@
-//! 防惊群（request coalescing）——**M2 批 G**，G95 拍进这一批。
+//! 防驚群（request coalescing）——**M2 批 G**，G95 拍進這一批。
 //!
-//! ## 它挡的是什么
+//! ## 它擋的是什麼
 //!
-//! 一条热门 URL 的缓存过期的**那一瞬间**，此刻在飞的每一个请求都会发现「不新鲜」，
-//! 于是**同时**打到上游。★ 缓存命中率越高、这条 URL 越热，这一下就越猛 ——
-//! 一个平时被缓存挡住 99% 流量的上游，会在过期瞬间收到全部 100%。
+//! 一條熱門 URL 的快取過期的**那一瞬間**，此刻在飛的每一個請求都會發現「不新鮮」，
+//! 於是**同時**打到上游。★ 快取命中率越高、這條 URL 越熱，這一下就越猛 ——
+//! 一個平時被快取擋住 99% 流量的上游，會在過期瞬間收到全部 100%。
 //!
-//! ⚠ ⚠ **它不是正确性问题，所以不会有任何东西报错** —— 现场是「上游每隔 N 秒
-//! 抖一下」，而 N 恰好等于 TTL。★ 这一条与本仓库反复点名的那一族同形：
-//! 坏掉的时候它不出声，只是把代价转移到别处。
+//! ⚠ ⚠ **它不是正確性問題，所以不會有任何東西回報錯誤** —— 現場是「上游每隔 N 秒
+//! 抖一下」，而 N 恰好等於 TTL。★ 這一條與本儲存庫反覆點名的那一族同形：
+//! 壞掉的時候它不出聲，只是把代價轉移到別處。
 //!
-//! ## 做法：**每个键一把闸**
+//! ## 做法：**每個鍵一把閘**
 //!
-//! 第一个到的请求拿到「我去取」的许可（leader），其余的等它。
-//! leader 取回来存进缓存之后叫醒大家，大家**重新查一次缓存**。
+//! 第一個到的請求拿到「我去取」的授權（leader），其餘的等它。
+//! leader 取回來存進快取之後叫醒大家，大家**重新查一次快取**。
 //!
-//! ⚠ ⚠ **等的人必须重新查缓存，而不是直接用 leader 递过来的东西**：
-//! leader 可能取回了一个**不可缓存**的响应（`no-store`），那时缓存里什么都没有，
-//! 等的人必须自己回源。★ 直接复用 leader 的结果，等于把一个 `private` 响应
-//! 发给了另外 N 个客户端 —— 而那正是「偶尔给错内容」里最贵的一种。
+//! ⚠ ⚠ **等的人必須重新查快取，而不是直接用 leader 遞過來的東西**：
+//! leader 可能取回了一個**不可快取**的回應（`no-store`），那時快取裡什麼都沒有，
+//! 等的人必須自己回源。★ 直接重複使用 leader 的結果，等於把一個 `private` 回應
+//! 發給了另外 N 個用戶端 —— 而那正是「偶爾給錯內容」裡最貴的一種。
 //!
-//! ⚠ **leader 必须在任何路径上都放闸**：它出错、被取消、上游超时都要放。
-//! ⇒ 用 RAII 守卫，与 `Inflight` 那处同一条理由（每一步都可能提前返回）。
+//! ⚠ **leader 必須在任何路徑上都放閘**：它出錯、被取消、上游超時都要放。
+//! ⇒ 用 RAII 守衛，與 `Inflight` 那處同一條理由（每一步都可能提前回傳）。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
-/// 一把「按键」的闸。
+/// 一把「按鍵」的閘。
 #[derive(Debug, Default)]
 pub struct Coalescer {
     inner: Mutex<HashMap<String, Arc<Notify>>>,
 }
 
-/// leader 的许可。**Drop 时放闸并叫醒所有等的人。**
+/// leader 的授權。**Drop 時放閘並叫醒所有等的人。**
 pub struct Leader<'a> {
     c: &'a Coalescer,
     key: String,
@@ -46,17 +46,17 @@ impl Drop for Leader<'_> {
             let mut g = self.c.lock();
             g.remove(&self.key);
         }
-        // ★ `notify_waiters` 只叫醒**此刻已经在等**的；而闸已经先移出表了，
-        //   所以之后来的人会直接拿到新的 leader 位，不会永远等下去。
+        // ★ `notify_waiters` 只叫醒**此刻已經在等**的；而閘已經先移出表了，
+        //   所以之後來的人會直接拿到新的 leader 位，不會永遠等下去。
         self.notify.notify_waiters();
     }
 }
 
-/// 抢闸的结果。
+/// 搶閘的結果。
 pub enum Slot<'a> {
     /// 你是 leader，去取吧。
     Leader(Leader<'a>),
-    /// 已经有人在取了 —— `await` 这个再**重新查一次缓存**。
+    /// 已經有人在取了 —— `await` 這個再**重新查一次快取**。
     Follower(Arc<Notify>),
 }
 
@@ -65,12 +65,12 @@ impl Coalescer {
         Coalescer::default()
     }
 
-    // 锁中毒不 panic：最坏的结果是多回一次源。
+    // 鎖中毒不 panic：最壞的結果是多回一次源。
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Notify>>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 抢这个键的闸。
+    /// 搶這個鍵的閘。
     pub fn acquire(&self, key: &str) -> Slot<'_> {
         let mut g = self.lock();
         match g.get(key) {
@@ -87,7 +87,7 @@ impl Coalescer {
         }
     }
 
-    /// 现在有几个键在飞（给日志与判据用）。
+    /// 現在有幾個鍵在飛（給紀錄與判據用）。
     pub fn inflight(&self) -> usize {
         self.lock().len()
     }
@@ -104,12 +104,12 @@ mod tests {
         let a = c.acquire("k");
         assert!(matches!(a, Slot::Leader(_)));
         assert!(matches!(c.acquire("k"), Slot::Follower(_)));
-        // 不同的键互不影响。
+        // 不同的鍵互不影響。
         assert!(matches!(c.acquire("other"), Slot::Leader(_)));
     }
 
-    // ★ ★ leader 走了就要放闸 —— ⚠ 忘了放的话，这个键此后**永远**是 Follower，
-    //   而所有请求会永远等下去。那是一次彻底的服务停摆，且只影响那一条 URL。
+    // ★ ★ leader 走了就要放閘 —— ⚠ 忘了放的話，這個鍵此後**永遠**是 Follower，
+    //   而所有請求會永遠等下去。那是一次徹底的服務停擺，且隻影響那一條 URL。
     #[test]
     fn leader_drop_之后闸放开了() {
         let c = Coalescer::new();
@@ -124,8 +124,8 @@ mod tests {
         );
     }
 
-    // ★ ★ ★ 就算 leader 是**panic 着**走的，闸也要放。
-    //   ⚠ RAII 守卫存在的全部理由就是这一条：转发路径上每一步都可能提前返回。
+    // ★ ★ ★ 就算 leader 是**panic 著**走的，閘也要放。
+    //   ⚠ RAII 守衛存在的全部理由就是這一條：轉發路徑上每一步都可能提前回傳。
     #[test]
     fn leader_panic_了闸照样放() {
         let c = Coalescer::new();
@@ -137,8 +137,8 @@ mod tests {
         assert_eq!(c.inflight(), 0, "panic 之后闸没放");
     }
 
-    // ★ follower 等到之后必须**重新查缓存**，这一点由调用方保证；
-    //   这里钉的是通知真的到得了（否则 follower 会一直挂着）。
+    // ★ follower 等到之後必須**重新查快取**，這一點由呼叫方保證；
+    //   這裡釘的是通知真的到得了（否則 follower 會一直掛著）。
     #[tokio::test]
     async fn follower_等得到通知() {
         let c = Arc::new(Coalescer::new());
@@ -154,7 +154,7 @@ mod tests {
             n.notified().await;
             w.fetch_add(1, Ordering::SeqCst);
         });
-        // 给 follower 一点时间真的挂到 notified() 上。
+        // 給 follower 一點時間真的掛到 notified() 上。
         tokio::task::yield_now().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(woken.load(Ordering::SeqCst), 0, "还没放闸就被叫醒了");
@@ -167,8 +167,8 @@ mod tests {
         assert_eq!(woken.load(Ordering::SeqCst), 1);
     }
 
-    // ⚠ 闸是**按键**的：一个键在飞不该挡住另一个键。
-    //   ★ 少了这条判据，一个「全局一把锁」的实现会让整个缓存退化成串行。
+    // ⚠ 閘是**按鍵**的：一個鍵在飛不該擋住另一個鍵。
+    //   ★ 少了這條判據，一個「全域一把鎖」的實作會讓整個快取退化成串行。
     #[test]
     fn 闸是按键的不是全局一把() {
         let c = Coalescer::new();

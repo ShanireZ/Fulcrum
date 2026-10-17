@@ -1,19 +1,19 @@
-//! 连接计数的登记处（**M2 批 O**，G122 的**连接那半**）。
+//! 連接計數的登記處（**M2 批 O**，G122 的**連接那半**）。
 //!
-//! 两个族的全部标签与计数都在这里；fork 那一侧（**改动 15**）只知道
-//! 「这个监听器上多了一条 / 少了一条」，它不认识标签、也不知道 Prometheus 存在。
+//! 兩個族的全部標籤與計數都在這裡；fork 那一側（**改動 15**）只知道
+//! 「這個監聽器上多了一條 / 少了一條」，它不認識標籤、也不知道 Prometheus 存在。
 //!
-//! # ★ ★ 为什么是「抓取时问活体」而不是事件点记账
+//! # ★ ★ 為什麼是「抓取時問活體」而不是事件點記賬
 //!
-//! fork 够不到我们的 [`crate::metrics`] 模块（依赖方向是反的）⇒ 只能由它把数加到
-//! 我们递过去的对象上，我们在渲染那一刻现问 —— 与 `upstream_inflight` 同一条路子。
+//! fork 夠不到我們的 [`crate::metrics`] 模組（依賴方向是反的）⇒ 只能由它把數加到
+//! 我們遞過去的物件上，我們在繪製那一刻現問 —— 與 `upstream_inflight` 同一條路子。
 //!
-//! # ⚠ ⚠ 一个视图要按 `listen` 分格，⛔ 不能一格一视图
+//! # ⚠ ⚠ 一個視圖要按 `listen` 分格，⛔ 不能一格一視圖
 //!
-//! `Listeners::set_connection_counter` 给**所有**端点设的是同一个实现，而一个
-//! `Listeners` 可以有多个监听地址。⇒ [`ConnView::enter`] 必须按收到的 `listen` 查表。
-//! ★ 那正是这一批否掉「fork 只暴露一对原子计数」那个方案的全部理由：
-//! 那个方案的粒度只到 `Listeners`，而「一个 Service 只有一个地址」是**今天的巧合**。
+//! `Listeners::set_connection_counter` 給**所有**端點設的是同一個實作，而一個
+//! `Listeners` 可以有多個監聽位址。⇒ [`ConnView::enter`] 必須按收到的 `listen` 查表。
+//! ★ 那正是這一批否掉「fork 只暴露一對原子計數」那個方案的全部理由：
+//! 那個方案的粒度只到 `Listeners`，而「一個 Service 只有一個位址」是**今天的巧合**。
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -22,51 +22,51 @@ use std::sync::{Arc, Once, RwLock};
 use log::warn;
 use pingora_core::listeners::{ConnGuard, ConnectionCounter};
 
-/// 接线漏了一个监听器时那一笔落在哪一格。
+/// 串接漏了一個監聽器時那一筆落在哪一格。
 ///
-/// ★ ⛔ **不许丢掉那一笔**：丢掉的话，「接线漏了」表现为**指标上什么都没有**，
-/// 而那与「那个端口没人连」长得一模一样。⇒ 记成一个记号，让它在正文里看得见。
-/// ★ 尖括号形状随 G118 的 `<other>` / G121 的 `<none>` / G127 的 `<unknown>`：
-/// 尖括号在合法的监听地址里不可能出现，撞不上真值。
+/// ★ ⛔ **不許丟掉那一筆**：丟掉的話，「串接漏了」表現為**指標上什麼都沒有**，
+/// 而那與「那個連接埠沒人連」長得一模一樣。⇒ 記成一個記號，讓它在正文裡看得見。
+/// ★ 尖括號形狀隨 G118 的 `<other>` / G121 的 `<none>` / G127 的 `<unknown>`：
+/// 尖括號在合法的監聽位址裡不可能出現，撞不上真值。
 pub const UNDECLARED: &str = "<undeclared>";
 
-/// 这条连接是从哪个入口进来的（**闭集**，`fulcrum_connections_*` 的 `entrypoint` 标签）。
+/// 這條連接是從哪個入口進來的（**閉集**，`fulcrum_connections_*` 的 `entrypoint` 標籤）。
 ///
-/// ⚠ ⚠ **⛔ 不叫 `proto`**：`fulcrum_requests_total` 已经有一个 `proto` 标签，取值是
-/// `HTTP/1.1` 那一族。同名不同值域会让运维跨族写同一个过滤器时**拿到空集而不报错**。
-/// ★ 本仓对这种「同名纯属巧合」有前例：见 `access_log::Record` 的 `site` / `site_addr`。
+/// ⚠ ⚠ **⛔ 不叫 `proto`**：`fulcrum_requests_total` 已經有一個 `proto` 標籤，取值是
+/// `HTTP/1.1` 那一族。同名不同值域會讓維運跨族寫同一個過濾器時**拿到空集而不回報錯誤**。
+/// ★ 本儲存庫對這種「同名純屬巧合」有前例：見 `access_log::Record` 的 `site` / `site_addr`。
 ///
-/// ⚠ 每个监听器**只属于一个** entrypoint ⇒ 这两个族的 series 数 = **监听器数**，
-/// ⛔ 不是 5 × 监听器数。
+/// ⚠ 每個監聽器**只屬於一個** entrypoint ⇒ 這兩個族的 series 數 = **監聽器數**，
+/// ⛔ 不是 5 × 監聽器數。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Entrypoint {
-    /// pingora 的 `ListeningService` 上的数据面（h1/h2）。
+    /// pingora 的 `ListeningService` 上的資料面（h1/h2）。
     Http,
-    /// 同一个 `ListeningService`，但那是管理面的 Unix socket（G14）。
+    /// 同一個 `ListeningService`，但那是管理面的 Unix socket（G14）。
     ///
-    /// ★ 单列一格而不是并进 [`Entrypoint::Http`]：跨平面求和之前先按 entrypoint 过滤，
-    /// 是抓取端唯一能把两个平面分开的办法。
+    /// ★ 單列一格而不是並進 [`Entrypoint::Http`]：跨平面求和之前先按 entrypoint 過濾，
+    /// 是抓取端唯一能把兩個平面分開的辦法。
     Admin,
-    /// HTTP/3 入口（`quic::listener`，自己的 `recv_from` 循环）。
+    /// HTTP/3 入口（`quic::listener`，自己的 `recv_from` 循環）。
     Quic,
-    /// L4 TCP 透传（`l4.rs` 自己的 accept 循环）。
+    /// L4 TCP 透傳（`l4.rs` 自己的 accept 循環）。
     L4Tcp,
-    /// L4 UDP 透传。⚠ 它**没有连接**，这一格数的是**会话**，见 [`ConnRegistry::set_active`]。
+    /// L4 UDP 透傳。⚠ 它**沒有連接**，這一格數的是**工作階段**，見 [`ConnRegistry::set_active`]。
     L4Udp,
 }
 
-/// `fulcrum_connections_*{entrypoint}` 的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+/// `fulcrum_connections_*{entrypoint}` 的**取值閉集**，`metrics.rs` 的基數表判據按它算上界。
 ///
-/// ⚠ ⚠ ⛔ **不是手抄**：单测把 [`Entrypoint::ALL`] 逐个过 [`Entrypoint::as_str`]，
-/// 与本常量互为子集；而 `as_str` 那条 match 是穷尽的 ⇒ 加一种入口就编不过。
+/// ⚠ ⚠ ⛔ **不是手抄**：單測把 [`Entrypoint::ALL`] 逐個過 [`Entrypoint::as_str`]，
+/// 與本常數互為子集；而 `as_str` 那條 match 是窮盡的 ⇒ 加一種入口就編不過。
 pub const ENTRYPOINTS: &[&str] = &["http", "admin", "quic", "l4_tcp", "l4_udp"];
 
 impl Entrypoint {
-    /// ⚠ ⚠ **这个函数存在的唯一理由是让编译器守住 [`Entrypoint::ALL`] 的完整性。**
-    /// 加一种入口 ⇒ 这条 match 编不过 ⇒ 人被逼着回来同时改 `ALL`。
-    /// ⛔ 别给它加 `_ =>` 兜底臂，那样它就什么都不守了。
-    /// ★ 只靠 [`Entrypoint::as_str`] 的穷尽性是不够的：那只逼人改 `as_str`，
-    /// 而「顺手也改 `ALL`」是**一句写在注释里的话，没有门守着**。
+    /// ⚠ ⚠ **這個函式存在的唯一理由是讓編譯器守住 [`Entrypoint::ALL`] 的完整性。**
+    /// 加一種入口 ⇒ 這條 match 編不過 ⇒ 人被逼著回來同時改 `ALL`。
+    /// ⛔ 別給它加 `_ =>` 備援臂，那樣它就什麼都不守了。
+    /// ★ 只靠 [`Entrypoint::as_str`] 的窮盡性是不夠的：那隻逼人改 `as_str`，
+    /// 而「順手也改 `ALL`」是**一句寫在註解裡的話，沒有門守著**。
     #[cfg(test)]
     pub(crate) fn 穷尽性自证(self) -> Self {
         match self {
@@ -78,7 +78,7 @@ impl Entrypoint {
         }
     }
 
-    /// 全部入口。⚠ 完整性由 [`Entrypoint::穷尽性自证`] 那条穷尽 match 守着。
+    /// 全部入口。⚠ 完整性由 [`Entrypoint::穷尽性自证`] 那條窮盡 match 守著。
     pub const ALL: [Entrypoint; 5] = [
         Entrypoint::Http,
         Entrypoint::Admin,
@@ -87,10 +87,10 @@ impl Entrypoint {
         Entrypoint::L4Udp,
     ];
 
-    /// 标签里那个词。
+    /// 標籤裡那個詞。
     ///
-    /// ⚠ `match` 是**穷尽**的 ⇒ 将来加一种入口时**这里编不过**，
-    /// 而不是静默地多出一个没人认得的标签值。
+    /// ⚠ `match` 是**窮盡**的 ⇒ 將來加一種入口時**這裡編不過**，
+    /// 而不是靜默地多出一個沒人認得的標籤值。
     pub fn as_str(self) -> &'static str {
         match self {
             Entrypoint::Http => "http",
@@ -102,34 +102,34 @@ impl Entrypoint {
     }
 }
 
-/// 一格的键：**入口种类 + 监听地址原样**。
+/// 一格的鍵：**入口種類 + 監聽位址原樣**。
 ///
-/// ★ 两截缺一不可：只按 `listen` 分的话，G110 下同一个端口号上的 TCP 与 QUIC
-/// 会合并成一条 series；只按 `ep` 分的话，一个 `Listeners` 的多个地址会合并。
+/// ★ 兩截缺一不可：只按 `listen` 分的話，G110 下同一個連接埠號上的 TCP 與 QUIC
+/// 會合併成一條 series；只按 `ep` 分的話，一個 `Listeners` 的多個位址會合並。
 type CellKey = (Entrypoint, Box<str>);
 
 type CellMap = BTreeMap<CellKey, Arc<ConnCell>>;
 
-/// 渲染那一刻，一格的读数：入口 · 监听地址 · `total` · `active`。
+/// 繪製那一刻，一格的讀數：入口 · 監聽位址 · `total` · `active`。
 pub type ConnReading = (Entrypoint, Box<str>, u64, i64);
 
-/// 一个监听器的两个数。
+/// 一個監聽器的兩個數。
 #[derive(Debug, Default)]
 struct ConnCell {
-    /// 累计接进来过多少条。**只增**。
+    /// 累計接進來過多少條。**只增**。
     total: AtomicU64,
-    /// 此刻有多少条还活着。⚠ 含**还在握手**的那些（`enter` 在握手之前）。
+    /// 此刻有多少條還活著。⚠ 含**還在握手**的那些（`enter` 在握手之前）。
     active: AtomicI64,
 }
 
-/// 全部监听器的连接计数。
+/// 全部監聽器的連接計數。
 ///
-/// ★ ★ 格子由 [`ConnRegistry::view`] / [`ConnRegistry::guard_for`] 在**接线那一刻**声明 ——
-/// ⛔ **有意不预先枚举一遍监听器**：那会是第二条枚举路径，而
-/// `fulcrum_runtime::Runtime::all_proxy_targets` 的文档正是为这个形状写的警告
-/// （「⚠ ⚠ **有意不自己再走一遍**……走法分家的表现是某条在某一张清单里不存在」）。
+/// ★ ★ 格子由 [`ConnRegistry::view`] / [`ConnRegistry::guard_for`] 在**串接那一刻**宣告 ——
+/// ⛔ **有意不預先枚舉一遍監聽器**：那會是第二條枚舉路徑，而
+/// `fulcrum_runtime::Runtime::all_proxy_targets` 的文件正是為這個形狀寫的警告
+/// （「⚠ ⚠ **有意不自己再走一遍**……走法分家的表現是某條在某一張清單裡不存在」）。
 ///
-/// ⚠ 写只发生在启动期（接线），读发生在每条连接与每次抓取 ⇒ 读锁无竞争。
+/// ⚠ 寫只發生在啟動期（串接），讀發生在每條連接與每次抓取 ⇒ 讀鎖無競爭。
 #[derive(Debug, Default)]
 pub struct ConnRegistry {
     cells: RwLock<CellMap>,
@@ -140,7 +140,7 @@ impl ConnRegistry {
         Arc::new(ConnRegistry::default())
     }
 
-    /// 声明一个格子并把它取出来（幂等）。
+    /// 宣告一個格子並把它取出來（冪等）。
     fn declare(&self, ep: Entrypoint, listen: &str) -> Arc<ConnCell> {
         {
             let map = self.cells.read().unwrap_or_else(|e| e.into_inner());
@@ -154,7 +154,7 @@ impl ConnRegistry {
             .clone()
     }
 
-    /// 取一个格子；没声明过就落到 [`UNDECLARED`] 那一格并**喊一次**。
+    /// 取一個格子；沒宣告過就落到 [`UNDECLARED`] 那一格並**喊一次**。
     fn cell(&self, ep: Entrypoint, listen: &str) -> Arc<ConnCell> {
         {
             let map = self.cells.read().unwrap_or_else(|e| e.into_inner());
@@ -162,8 +162,8 @@ impl ConnRegistry {
                 return c.clone();
             }
         }
-        // ⚠ **只喊一次**：这是每条连接都会走的路，不限流的话一次配置错误会让
-        //   日志本身变成第二个故障。
+        // ⚠ **只喊一次**：這是每條連接都會走的路，不限流的話一次設定錯誤會讓
+        //   紀錄本身變成第二個故障。
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
             warn!(
@@ -175,9 +175,9 @@ impl ConnRegistry {
         self.declare(ep, UNDECLARED)
     }
 
-    /// 给 fork 那一侧用的视图：**声明这一格**，并返回一个绑定了 `ep` 的计数器。
+    /// 給 fork 那一側用的視圖：**宣告這一格**，並回傳一個綁定了 `ep` 的計數器。
     ///
-    /// ★ ★ ★ `entrypoint` 由视图带、`listen` 由 fork 递 ⇒ **贴错标签在结构上做不到**。
+    /// ★ ★ ★ `entrypoint` 由視圖帶、`listen` 由 fork 遞 ⇒ **貼錯標籤在結構上做不到**。
     pub fn view(self: &Arc<Self>, ep: Entrypoint, listen: &str) -> Arc<dyn ConnectionCounter> {
         self.declare(ep, listen);
         Arc::new(ConnView {
@@ -186,10 +186,10 @@ impl ConnRegistry {
         })
     }
 
-    /// 给我们自己那三条循环用：**声明这一格**，并返回一个已经绑好 `(ep, listen)` 的句柄。
+    /// 給我們自己那三條循環用：**宣告這一格**，並回傳一個已經綁好 `(ep, listen)` 的句柄。
     ///
-    /// ★ ★ 绑一次、用很多次 ⇒ 「声明的那一格」与「写入的那一格」**在结构上是同一个**，
-    /// ⛔ 不会出现「声明了 A 却往 B 上写」那种在今天的配置上全绿的错法。
+    /// ★ ★ 綁一次、用很多次 ⇒ 「宣告的那一格」與「寫入的那一格」**在結構上是同一個**，
+    /// ⛔ 不會出現「宣告了 A 卻往 B 上寫」那種在今天的設定上全綠的錯法。
     pub fn bind(self: &Arc<Self>, ep: Entrypoint, listen: &str) -> BoundConn {
         BoundConn {
             counter: self.view(ep, listen),
@@ -198,10 +198,10 @@ impl ConnRegistry {
         }
     }
 
-    /// 渲染那一刻的读数，**按键排序**（`BTreeMap` 天然如此）。
+    /// 繪製那一刻的讀數，**按鍵排序**（`BTreeMap` 天然如此）。
     ///
-    /// ⚠ 顺序确定这件事没有任何断言会因它变红，代价是**两次抓取的 diff 里全是噪声** ——
-    /// 而人正是靠 diff 看指标出没出新东西的（`metrics` 模块顶部那条纪律）。
+    /// ⚠ 順序確定這件事沒有任何斷言會因它變紅，代價是**兩次抓取的 diff 裡全是噪聲** ——
+    /// 而人正是靠 diff 看指標出沒出新東西的（`metrics` 模組頂部那條紀律）。
     pub fn snapshot(&self) -> Vec<ConnReading> {
         let map = self.cells.read().unwrap_or_else(|e| e.into_inner());
         map.iter()
@@ -217,9 +217,9 @@ impl ConnRegistry {
     }
 }
 
-/// 已经绑好 `(entrypoint, listen)` 的一格 —— 我们自己那三条 accept 循环拿的是它。
+/// 已經綁好 `(entrypoint, listen)` 的一格 —— 我們自己那三條 accept 循環拿的是它。
 ///
-/// ★ 它与 fork 那条路**共用同一个 [`ConnGuard`]** ⇒ 减一仍然只有那一个调用点。
+/// ★ 它與 fork 那條路**共用同一個 [`ConnGuard`]** ⇒ 減一仍然只有那一個呼叫點。
 #[derive(Clone)]
 pub struct BoundConn {
     counter: Arc<dyn ConnectionCounter>,
@@ -228,27 +228,27 @@ pub struct BoundConn {
 }
 
 impl BoundConn {
-    /// 拿一个守卫：构造即 `+1`，`Drop` 即 `-1`。
+    /// 拿一個守衛：建構即 `+1`，`Drop` 即 `-1`。
     ///
-    /// ⚠ ⚠ 调用方**必须把它绑到一个有名字的变量上**（`let _g = …;`）——
-    /// 写成裸 `let _ = …;` 会当场 drop，于是 `active` 恒为 0 而 `total` 照涨，
-    /// **且不会有任何东西红**。
+    /// ⚠ ⚠ 呼叫方**必須把它綁到一個有名字的變數上**（`let _g = …;`）——
+    /// 寫成裸 `let _ = …;` 會當場 drop，於是 `active` 恆為 0 而 `total` 照漲，
+    /// **且不會有任何東西紅**。
     pub fn guard(&self) -> ConnGuard {
         ConnGuard::new(self.counter.clone(), self.listen.clone())
     }
 
-    /// 把 `active` **设成**这个数（⛔ 不是加上）。★ 只服务 L4 UDP 的会话表派生。
+    /// 把 `active` **設成**這個數（⛔ 不是加上）。★ 只服務 L4 UDP 的工作階段表派生。
     pub fn set_active(&self, n: usize) {
         self.cell.active.store(n as i64, Ordering::Relaxed);
     }
 
-    /// 只把 `total` 加一（⛔ 不动 `active`）。★ 只服务 L4 UDP 的「新建了一条会话」。
+    /// 只把 `total` 加一（⛔ 不動 `active`）。★ 只服務 L4 UDP 的「新建了一條工作階段」。
     pub fn bump_total(&self) {
         self.cell.total.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-/// 绑定了一个 `entrypoint` 的计数器视图 —— fork 那一侧拿到的就是它。
+/// 綁定了一個 `entrypoint` 的計數器視圖 —— fork 那一側拿到的就是它。
 #[derive(Debug)]
 struct ConnView {
     reg: Arc<ConnRegistry>,
@@ -278,8 +278,8 @@ mod tests {
     fn 声明过的格子从一开始就有样本_而且守卫一进一出() {
         let reg = ConnRegistry::new();
         let v = reg.view(Entrypoint::Http, "0.0.0.0:80");
-        // ★ 「建成就出样本」：声明完立刻就该有一条 0/0，而不是等第一条连接。
-        //   ⇒ 「监听器在、只是没人连」与「配置里根本没有它」因此分得开。
+        // ★ 「建成就出樣本」：宣告完立刻就該有一條 0/0，而不是等第一條連接。
+        //   ⇒ 「監聽器在、只是沒人連」與「設定里根本沒有它」因此分得開。
         assert_eq!(
             reg.snapshot(),
             vec![(Entrypoint::Http, "0.0.0.0:80".into(), 0, 0)]
@@ -290,7 +290,7 @@ mod tests {
             vec![(Entrypoint::Http, "0.0.0.0:80".into(), 1, 1)]
         );
         v.leave("0.0.0.0:80");
-        // ★ ★ counter 只增、gauge 会降 —— 一条断言同时钉住两者。
+        // ★ ★ counter 只增、gauge 會降 —— 一條斷言同時釘住兩者。
         assert_eq!(
             reg.snapshot(),
             vec![(Entrypoint::Http, "0.0.0.0:80".into(), 1, 0)]
@@ -299,9 +299,9 @@ mod tests {
 
     #[test]
     fn 同一个视图上不同的_listen_分成两格() {
-        // ⚠ ⚠ 这一条守的是**方案选型的全部理由**：一个 `Listeners` 可以有多个监听
-        //   地址，而它们共用同一个视图 ⇒ 视图必须按 `listen` 分格，
-        //   ⛔ 不能「一个视图一个格子」。少了这一条，那个错法在今天的配置上全绿。
+        // ⚠ ⚠ 這一條守的是**方案選型的全部理由**：一個 `Listeners` 可以有多個監聽
+        //   位址，而它們共用同一個視圖 ⇒ 視圖必須按 `listen` 分格，
+        //   ⛔ 不能「一個視圖一個格子」。少了這一條，那個錯法在今天的設定上全綠。
         let reg = ConnRegistry::new();
         let v = reg.view(Entrypoint::L4Tcp, "0.0.0.0:1");
         reg.view(Entrypoint::L4Tcp, "0.0.0.0:2");
@@ -315,9 +315,9 @@ mod tests {
 
     #[test]
     fn 没声明过的_listen_记进_undeclared_而不是丢掉() {
-        // ★ 丢掉的话，一个「接线漏了一个监听器」的缺陷会表现为**指标上什么都没有** ——
-        //   而那与「那个端口没人连」长得一模一样。⇒ 记成一个撞不上真地址的记号，
-        //   与 G118 的 `<other>` / G121 的 `<none>` / G127 的 `<unknown>` 同一族写法。
+        // ★ 丟掉的話，一個「串接漏了一個監聽器」的缺陷會表現為**指標上什麼都沒有** ——
+        //   而那與「那個連接埠沒人連」長得一模一樣。⇒ 記成一個撞不上真位址的記號，
+        //   與 G118 的 `<other>` / G121 的 `<none>` / G127 的 `<unknown>` 同一族寫法。
         let reg = ConnRegistry::new();
         let v = reg.view(Entrypoint::Http, "0.0.0.0:80");
         v.enter("0.0.0.0:999");
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn entrypoint_的标签值逐个钉住() {
-        // ⚠ 闭集：加一种入口时 `as_str` 的 `match` 编不过，而不是静默多出一个值。
+        // ⚠ 閉集：加一種入口時 `as_str` 的 `match` 編不過，而不是靜默多出一個值。
         assert_eq!(Entrypoint::Http.as_str(), "http");
         assert_eq!(Entrypoint::Admin.as_str(), "admin");
         assert_eq!(Entrypoint::Quic.as_str(), "quic");
@@ -341,9 +341,9 @@ mod tests {
 
     #[test]
     fn set_active_是覆盖不是累加() {
-        // ★ ★ UDP 那一格是从 `sessions.len()` **派生**的 ⇒ 它必须是「设成这个数」，
-        //   ⛔ 不是「加上这个数」。累加的话它只涨不降 —— 而那正是「不用 +1/-1」
-        //   要躲开的东西，写成累加等于把躲开的坑原样挖回来。
+        // ★ ★ UDP 那一格是從 `sessions.len()` **派生**的 ⇒ 它必須是「設成這個數」，
+        //   ⛔ 不是「加上這個數」。累加的話它只漲不降 —— 而那正是「不用 +1/-1」
+        //   要躲開的東西，寫成累加等於把躲開的坑原樣挖回來。
         let reg = ConnRegistry::new();
         let b = reg.bind(Entrypoint::L4Udp, "0.0.0.0:53");
         b.set_active(3);
@@ -353,8 +353,8 @@ mod tests {
 
     #[test]
     fn bump_total_只动_total_不动_active() {
-        // ★ UDP 的 total 是事件点（新建会话那一处），而 active 是派生的 ——
-        //   两者有意走不同的路，这一条把「别顺手把 active 也加了」钉住。
+        // ★ UDP 的 total 是事件點（新建工作階段那一處），而 active 是派生的 ——
+        //   兩者有意走不同的路，這一條把「別順手把 active 也加了」釘住。
         let reg = ConnRegistry::new();
         let b = reg.bind(Entrypoint::L4Udp, "0.0.0.0:53");
         b.bump_total();

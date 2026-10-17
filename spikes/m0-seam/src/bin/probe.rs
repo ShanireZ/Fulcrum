@@ -1,9 +1,9 @@
-//! M0 探针：在优雅升级窗口前后持续打三类流量，统计中断。
+//! M0 探針：在優雅升級視窗前後持續打三類流量，統計中斷。
 //!
-//! 判据（PLAN.md §7 M0 退出条件）：
-//!   - `http_failures  == 0`  新建连接的 HTTP 请求全部成功
-//!   - `tcp_disconnects == 0` 那条**跨越升级**的长连接一次都没断
-//!   - `udp_losses     == 0`  UDP 回声零丢失（跑在回环、无拥塞，丢了就只可能是 socket 失守）
+//! 判據（PLAN.md §7 M0 退出條件）：
+//!   - `http_failures  == 0`  新建連接的 HTTP 請求全部成功
+//!   - `tcp_disconnects == 0` 那條**跨越升級**的長連接一次都沒斷
+//!   - `udp_losses     == 0`  UDP 回聲零丟失（跑在迴環、無擁塞，丟了就只可能是 socket 失守）
 //!
 //! 用法：
 //!   m0-probe <duration_ms> <interval_ms> <http_addr> <tcp_addr> <udp_addr>
@@ -59,7 +59,7 @@ async fn main() {
     );
 }
 
-/// 每轮新建一条连接 —— 这条打的是 **accept 路径**，升级期间由哪一代 accept 都算成功。
+/// 每輪新建一條連接 —— 這條打的是 **accept 路徑**，升級期間由哪一代 accept 都算成功。
 async fn http_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline: Instant) {
     let req = format!("GET /m0 HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     while Instant::now() < deadline {
@@ -82,7 +82,7 @@ async fn http_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline
     }
 }
 
-/// 一条**贯穿全程**的长连接 —— 这条打的是「升级时已建立的连接会不会被切断」。
+/// 一條**貫穿全程**的長連接 —— 這條打的是「升級時已建立的連接會不會被切斷」。
 async fn tcp_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline: Instant) {
     let mut conn: Option<TcpStream> = TcpStream::connect(&addr).await.ok();
     if conn.is_none() {
@@ -118,14 +118,14 @@ async fn tcp_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline:
             c.tcp_ok.fetch_add(1, Ordering::Relaxed);
         } else {
             c.tcp_disconnects.fetch_add(1, Ordering::Relaxed);
-            // 断了就重连，好让后续统计仍有意义（但 disconnects>0 已经判失败）
+            // 斷了就重連，好讓後續統計仍有意義（但 disconnects>0 已經判失敗）
             conn = TcpStream::connect(&addr).await.ok();
         }
         tokio::time::sleep(interval).await;
     }
 }
 
-/// UDP 回声 —— 这条打的是**自建 UDP 监听器的 fd 有没有被交接过去**。
+/// UDP 回聲 —— 這條打的是**自建 UDP 監聽器的 fd 有沒有被交接過去**。
 async fn udp_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline: Instant) {
     let sock = match UdpSocket::bind("0.0.0.0:0").await {
         Ok(s) => s,
@@ -150,12 +150,12 @@ async fn udp_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline:
             tokio::time::sleep(interval).await;
             continue;
         }
-        // ★ ★ 必须**丢弃迟到的旧回声**再判本轮。
+        // ★ ★ 必須**丟棄遲到的舊回聲**再判本輪。
         //
-        // tokio 的 `UdpSocket::recv` 是 cancel-safe：超时把它取消掉时**数据报并没有被消费**，
-        // 仍留在接收队列里。若直接拿下一轮的 recv 结果去比对，读到的会是上一轮的 payload，
-        // 比对失败又记一次丢包，而本轮的回声再排到队尾——**一次抖动会被放大成
-        // 「剩余所有轮次全部丢包」**，让 `udp_losses == 0` 这道判据变成间歇性红。
+        // tokio 的 `UdpSocket::recv` 是 cancel-safe：超時把它取消掉時**資料報並沒有被消費**，
+        // 仍留在接收佇列裡。若直接拿下一輪的 recv 結果去比對，讀到的會是上一輪的 payload，
+        // 比對失敗又記一次丟包，而本輪的回聲再排到隊尾——**一次抖動會被放大成
+        // 「剩餘所有輪次全部丟包」**，讓 `udp_losses == 0` 這道判據變成間歇性紅。
         let want = payload.as_bytes();
         let round_deadline = Instant::now() + Duration::from_millis(1000);
         let mut matched = false;
@@ -169,9 +169,9 @@ async fn udp_probe(c: Arc<Counters>, addr: String, interval: Duration, deadline:
                     matched = true;
                     break;
                 }
-                // 收到的是别的东西（几乎一定是上一轮迟到的回声）：丢掉，继续等本轮的
+                // 收到的是別的東西（幾乎一定是上一輪遲到的回聲）：丟掉，繼續等本輪的
                 Ok(Ok(_)) => continue,
-                // 超时或 socket 出错
+                // 超時或 socket 出錯
                 _ => break,
             }
         }

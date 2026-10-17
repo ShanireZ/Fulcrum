@@ -1,9 +1,9 @@
 ---
-type: 技术基线
-title: 技术与运维
-description: 选了什么、依赖怎么管、供应链现状如何、怎么构建、安全底线在哪。
+type: 技術基線
+title: 技術與維運
+description: 選了什麼、依賴怎麼管、供應鏈現狀如何、怎麼建置、安全底線在哪。
 resource: ../../Cargo.toml
-tags: [技术, 索引]
+tags: [技術, 索引]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -11,15 +11,15 @@ generated:
 sources:
   - id: plan
     resource: /references/plan.md
-    title: PLAN.md §5 技术底盘、§10 G26 与 G29
+    title: PLAN.md §5 技術底盤、§10 G26 與 G29
 ---
 
-* [技术栈](/platform/tech-stack.md) - Rust + Pingora 0.8.1 + **quiche** + **BoringSSL**（G103/G104）；★ 两处决策与清单之间的差距
-* [依赖策略](/platform/dependency-policy.md) - G29；★ **绝不裸跑 `cargo update`**；★ dep-check 看不见被上游上界卡住的东西
-* [供应链现状](/platform/supply-chain.md) - ★ **必读**：脱字号需求自带上界、pingora 的十条天花板、4 条公告与可达性分析
-* [HTTP/3 库选型事实表](/platform/http3-libraries.md) - D11 拍板前摆出来的事实，**不给推荐项**；★ quiche 用 BoringSSL 不是 rustls、s2n-quic 根本不带 HTTP/3、`h3` 是「没发版」不是「没人开发」
-* [向上游提 PR 的流程清单](/platform/upstream-pr.md) - G32；★ **必须先开 issue**；★ MSRV 1.85.0 正好卡住 `lru 0.18.2`；★ 上游改面比枢衡 fork 大得多
-* [构建与验证](/platform/build-and-test.md) - 一切在 Docker 里跑；★ 三个 Windows 宿主机上的坑
-* [宿主机陷阱、门禁纪律、场景开关与端口表](/platform/host-and-gate-traps.md) - 从 `AGENTS.md` 拆出来的细则，**仍然逐条是硬规矩**；★ 绿了也可能什么都不说明的五种形态；★ 加场景要同时改三处；★ 端口分配表
-* [部署](/platform/deploy.md) - G31/G33/G37/G78 的落地形状；★ **`TimeoutStopSec` 小于停机预算＝硬杀连接**；★ 换二进制必须 rename
-* [安全基线](/platform/security-baseline.md) - 七条；★ 第 5 条（不手写协议栈）是整个安全论证的支点
+* [技術棧](/platform/tech-stack.md) - Rust + Pingora 0.8.1 + **quiche** + **BoringSSL**（G103/G104）；★ 兩處決策與清單之間的差距
+* [依賴策略](/platform/dependency-policy.md) - G29；★ **絕不裸跑 `cargo update`**；★ dep-check 看不見被上游上界卡住的東西
+* [供應鏈現狀](/platform/supply-chain.md) - ★ **必讀**：脫字號需求自帶上界、pingora 的十條天花板、4 條公告與可達性分析
+* [HTTP/3 庫選型事實表](/platform/http3-libraries.md) - D11 拍板前擺出來的事實，**不給推薦項**；★ quiche 用 BoringSSL 不是 rustls、s2n-quic 根本不帶 HTTP/3、`h3` 是「沒發版」不是「沒人開發」
+* [向上遊提 PR 的流程清單](/platform/upstream-pr.md) - G32；★ **必須先開 issue**；★ MSRV 1.85.0 正好卡住 `lru 0.18.2`；★ 上游改面比樞衡 fork 大得多
+* [建置與驗證](/platform/build-and-test.md) - 一切在 Docker 裡跑；★ 三個 Windows 宿主機上的坑
+* [宿主機陷阱、門禁紀律、場景開關與連接埠表](/platform/host-and-gate-traps.md) - 從 `AGENTS.md` 拆出來的細則，**仍然逐條是硬規矩**；★ 綠了也可能什麼都不說明的五種形態；★ 加場景要同時改三處；★ 連接埠分配表
+* [部署](/platform/deploy.md) - G31/G33/G37/G78 的完成實作形狀；★ **`TimeoutStopSec` 小於停機預算＝硬殺連接**；★ 換二進位必須 rename
+* [安全基線](/platform/security-baseline.md) - 七條；★ 第 5 條（不手寫協定棧）是整個安全論證的支點

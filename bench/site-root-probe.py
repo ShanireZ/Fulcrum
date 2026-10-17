@@ -29,7 +29,7 @@ import ctypes.util
 import os
 import sys
 
-# uapi/linux/fs.h。⛔ 不从别处取：只要一个数，而多一层依赖多一处会漂的东西。
+# uapi/linux/fs.h。⛔ 不從別處取：只要一個數，而多一層依賴多一處會漂的東西。
 RWF_NOWAIT = 0x00000008
 
 
@@ -80,7 +80,7 @@ def rwf_nowait_works(path: str) -> str:
             os.close(fd)
         return "yes" if rc == 6 and buf.raw[:6] == b"nowait" else "no"
     except (OSError, AttributeError, TypeError):
-        # ⛔ 「探不了」不等于「不认」—— 两件事必须分得开。
+        # ⛔ 「探不了」不等於「不認」—— 兩件事必須分得開。
         return "unknown"
     finally:
         try:

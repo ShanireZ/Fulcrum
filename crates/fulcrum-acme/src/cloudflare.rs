@@ -1,26 +1,26 @@
-//! 原生 Cloudflare（G57 两家之一 —— `example.net` 就在这家）。
+//! 原生 Cloudflare（G57 兩家之一 —— `example.net` 就在這家）。
 //!
-//! 用的是 API v4 的 bearer token 形态：
+//! 用的是 API v4 的 bearer token 形態：
 //!
-//! | 干什么 | 请求 |
+//! | 幹什麼 | 請求 |
 //! |---|---|
-//! | 校验凭据（**G59 第 2 条**）| `GET /client/v4/zones?name=<声明的每个 zone>` |
+//! | 檢核憑證（**G59 第 2 條**）| `GET /client/v4/zones?name=<声明的每个 zone>` |
 //! | 查 zone id | `GET /client/v4/zones?name=<zone>` |
-//! | 挂 TXT | `POST /client/v4/zones/<id>/dns_records` |
+//! | 掛 TXT | `POST /client/v4/zones/<id>/dns_records` |
 //! | 摘 TXT | `DELETE /client/v4/zones/<id>/dns_records/<record>` |
 //!
-//! # ⚠ ⚠ 这个模块的判据到哪儿为止
+//! # ⚠ ⚠ 這個模組的判據到哪兒為止
 //!
-//! 单测能证明的是**内部自洽**：我们发出去的 URL / 方法 / 头 / body 正是我们以为的那些，
-//! 给定一段文档里那种形状的响应、解析出来的东西正是我们以为的那些。
+//! 單測能證明的是**內部自洽**：我們發出去的 URL / 方法 / 頭 / body 正是我們以為的那些，
+//! 給定一段文件裡那種形狀的回應、解析出來的東西正是我們以為的那些。
 //!
-//! > **它证不了「我们对 Cloudflare API 的理解是对的」** —— 那要拿真的对端来测，
-//! > 而门禁里没有。★ 那一条的判据是真域名上的一次真签发（G57）。
+//! > **它證不了「我們對 Cloudflare API 的理解是對的」** —— 那要拿真的對端來測，
+//! > 而門禁裡沒有。★ 那一條的判據是真網域上的一次真簽發（G57）。
 //!
-//! # ★ 摘 TXT 失败不让签发失败
+//! # ★ 摘 TXT 失敗不讓簽發失敗
 //!
-//! 与 exec hook 那条同一个理由：证书已经到手了，一条留在那里的 TXT 是**卫生问题**
-//! 不是可用性问题。升级成错误会把一次**成功**的签发记成失败 ⇒ 进退避、进计数、进告警。
+//! 與 exec hook 那條同一個理由：證書已經到手了，一條留在那裡的 TXT 是**衛生問題**
+//! 不是可用性問題。升級成錯誤會把一次**成功**的簽發記成失敗 ⇒ 進退避、進計數、進告警。
 
 use crate::credential::CredentialSource;
 use crate::http::{HttpRequest, HttpTransport};
@@ -30,17 +30,17 @@ use std::sync::Arc;
 
 const API: &str = "https://api.cloudflare.com/client/v4";
 
-/// TXT 记录的 TTL。★ 取最小值：挑战记录活不过一次签发，
-/// 而 TTL 大了会让**下一次**签发被缓存里的旧值绊住。
+/// TXT 記錄的 TTL。★ 取最小值：挑戰記錄活不過一次簽發，
+/// 而 TTL 大了會讓**下一次**簽發被快取裡的舊值絆住。
 const TTL: u32 = 60;
 
 #[derive(Debug, Clone)]
 pub struct Cloudflare {
     transport: Arc<dyn HttpTransport>,
     source: CredentialSource,
-    /// 这份凭据被**声明**覆盖哪些 zone（G59 第 3 条）。
+    /// 這份憑證被**宣告**覆蓋哪些 zone（G59 第 3 條）。
     zones: Vec<String>,
-    /// 覆盖 API 根，只给测试用。⚠ 产品里没有任何配置项能改它。
+    /// 覆蓋 API 根，只給測試用。⚠ 產品裡沒有任何設定項能改它。
     base: String,
 }
 
@@ -68,39 +68,39 @@ impl Cloudflare {
         Ok(format!("Bearer {}", self.source.load()?))
     }
 
-    /// 这条记录名落在被声明的 zone 里吗（**G59 第 3 条**）。
+    /// 這條記錄名落在被宣告的 zone 裡嗎（**G59 第 3 條**）。
     ///
-    /// ★ 与 DNSPod 那份**共用同一份实现**（[`crate::zone_scope::zone_for`]），
-    /// 不是各写一遍——理由与 G66 同族：两份迟早会分叉，而分叉之后两边都还是绿的。
+    /// ★ 與 DNSPod 那份**共用同一份實作**（[`crate::zone_scope::zone_for`]），
+    /// 不是各寫一遍——理由與 G66 同族：兩份遲早會分叉，而分叉之後兩邊都還是綠的。
     pub fn zone_for(&self, record: &str) -> Option<&str> {
         crate::zone_scope::zone_for(&self.zones, record)
     }
 
-    /// **G59 第 2 条**：启动时校验凭据。
+    /// **G59 第 2 條**：啟動時檢核憑證。
     ///
-    /// # ★ ★ ★ 验的是「我们接下来真要做的那件事」，不是「有没有某个接口认它」
+    /// # ★ ★ ★ 驗的是「我們接下來真要做的那件事」，不是「有沒有某個介面認它」
     ///
     /// 在 `example.net` 上撞到的：本方法原先打的是
-    /// `GET /user/tokens/verify` —— 而 Cloudflare 2026 年起把令牌分成了
-    /// **用户级 `cfut_`** 与 **账号级 `cfat_`** 两种，后者在用户级端点上**必然**
-    /// 回 `1000 Invalid API Token`。⚠ 而 G59 把「对端说不行」判成 Fatal ⇒
-    /// **一把完全好用的账号级令牌会让枢衡拒绝启动**，错误信息还指着「凭据不可用」。
+    /// `GET /user/tokens/verify` —— 而 Cloudflare 2026 年起把權杖分成了
+    /// **使用者級 `cfut_`** 與 **帳號級 `cfat_`** 兩種，後者在使用者級端點上**必然**
+    /// 回 `1000 Invalid API Token`。⚠ 而 G59 把「對端說不行」判成 Fatal ⇒
+    /// **一把完全好用的帳號級權杖會讓樞衡拒絕啟動**，錯誤資訊還指著「憑證不可用」。
     ///
-    /// ⇒ 改成对**声明过的每一个 zone** 做一次 `GET /zones?name=<zone>`。这条判据严格更强：
+    /// ⇒ 改成對**宣告過的每一個 zone** 做一次 `GET /zones?name=<zone>`。這條判據嚴格更強：
     ///
-    /// | 它顺带证明了 | 原来那条证不了 |
+    /// | 它順帶證明了 | 原來那條證不了 |
     /// |---|---|
-    /// | 令牌真的能用（两种令牌都走得通）| — |
-    /// | 令牌**够得着这个 zone**（Zone:Read 有、范围包含它）| ✅ 原来要等第一次签发才发现 |
-    /// | `zones` 声明里的名字**真的存在**（打错一个字母立刻现形）| ✅ 同上 |
+    /// | 權杖真的能用（兩種權杖都走得通）| — |
+    /// | 權杖**夠得著這個 zone**（Zone:Read 有、範圍包含它）| ✅ 原來要等第一次簽發才發現 |
+    /// | `zones` 宣告裡的名字**真的存在**（打錯一個字母立刻現形）| ✅ 同上 |
     ///
-    /// ★ 「查 zone id」正是签发路径上的第一步（见 [`Self::zone_id`]），
-    /// 所以这条校验与真实用法**共用同一个请求形状** —— 校验过而签发挂不了。
+    /// ★ 「查 zone id」正是簽發路徑上的第一步（見 [`Self::zone_id`]），
+    /// 所以這條檢核與真實用法**共用同一個請求形狀** —— 檢核過而簽發掛不了。
     pub async fn verify(&self) -> Result<(), VerifyError> {
-        // ⚠ 凭据读不出来是**本机的、确定的**问题 ⇒ Fatal，不是 Inconclusive。
+        // ⚠ 憑證讀不出來是**本機的、確定的**問題 ⇒ Fatal，不是 Inconclusive。
         let auth = self.auth().map_err(VerifyError::Fatal)?;
-        // ⚠ 一个 zone 都没声明时不该悄悄通过：G59 第 3 条要求原生供应商必填 zones，
-        //   走到这里说明上游校验漏了，说出来比默默放行强。
+        // ⚠ 一個 zone 都沒宣告時不該悄悄通過：G59 第 3 條要求原生供應商必填 zones，
+        //   走到這裡說明上游檢核漏了，說出來比默默放行強。
         if self.zones.is_empty() {
             return Err(VerifyError::Fatal(
                 "没有声明 `zones` —— 原生供应商必填（G59 第 3 条），无从校验".to_string(),
@@ -110,7 +110,7 @@ impl Cloudflare {
             let req = HttpRequest::get(format!("{}/zones?name={zone}", self.base))
                 .header("authorization", auth.clone())
                 .header("accept", "application/json");
-            // 发不出去 / 收不到 ⇒ 分不出是对端挂了还是我们这儿网不通 ⇒ Inconclusive。
+            // 發不出去 / 收不到 ⇒ 分不出是對端掛了還是我們這兒網不通 ⇒ Inconclusive。
             let rsp = self
                 .transport
                 .send(req)
@@ -125,8 +125,8 @@ impl Cloudflare {
                     first_error(&text)
                 )));
             }
-            // ⚠ 光看 200 不够：Cloudflare 在**成功的 HTTP 状态里**也会返回 `success:false`。
-            //   一个只看状态码的实现会把一份坏凭据判成好的，而症状要到第一次签发才出现。
+            // ⚠ 光看 200 不夠：Cloudflare 在**成功的 HTTP 狀態裡**也會回傳 `success:false`。
+            //   一個只看狀態碼的實作會把一份壞憑證判成好的，而症狀要到第一次簽發才出現。
             if !text.contains("\"success\":true") && !text.contains("\"success\": true") {
                 return Err(VerifyError::Fatal(format!(
                     "Cloudflare 说这份凭据不可用（来自 {}）：{}",
@@ -134,10 +134,10 @@ impl Cloudflare {
                     first_error(&text)
                 )));
             }
-            // ★ ★ success:true **但列不出这个 zone** 是一种独立的失败，且最常见：
-            //   令牌有效、但没有 Zone:Read，或者资源范围里没圈上这个 zone，
-            //   又或者 `zones` 里的名字打错了。⚠ 三种的处置都是「现在就说」，
-            //   而不是等第一次签发时得到一句「查 zone 失败」。
+            // ★ ★ success:true **但列不出這個 zone** 是一種獨立的失敗，且最常見：
+            //   權杖有效、但沒有 Zone:Read，或者資源範圍裡沒圈上這個 zone，
+            //   又或者 `zones` 裡的名字打錯了。⚠ 三種的處置都是「現在就說」，
+            //   而不是等第一次簽發時得到一句「查 zone 失敗」。
             if json_str_field(&text, "id").is_none() {
                 return Err(VerifyError::Fatal(format!(
                     "这份凭据（来自 {}）列不出 zone {zone} —— \
@@ -178,8 +178,8 @@ impl Cloudflare {
             .ok_or_else(|| crate::zone_scope::out_of_scope(name, &self.zones))?
             .to_string();
         let id = self.zone_id(&zone).await?;
-        // ⚠ 用 serde_json 拼 body，不手拼字符串：值是 base64url，虽然不含引号，
-        //   但「这次不含」不是判据 —— 手拼的注入面永远只差一个新调用点。
+        // ⚠ 用 serde_json 拼 body，不手拼字串：值是 base64url，雖然不含引號，
+        //   但「這次不含」不是判據 —— 手拼的注入面永遠只差一個新呼叫點。
         let body = serde_json::json!({
             "type": "TXT",
             "name": name,
@@ -209,8 +209,8 @@ impl Cloudflare {
             .ok_or_else(|| crate::zone_scope::out_of_scope(name, &self.zones))?
             .to_string();
         let id = self.zone_id(&zone).await?;
-        // 先查出 record id。★ 带上 content：同一个记录名下可能同时挂着**多条** TXT
-        //   （两张证书并行签发时就会），删错一条会让另一条签发失败。
+        // 先查出 record id。★ 帶上 content：同一個記錄名下可能同時掛著**多條** TXT
+        //   （兩張證書並行簽發時就會），刪錯一條會讓另一條簽發失敗。
         let req = HttpRequest::get(format!(
             "{}/zones/{id}/dns_records?type=TXT&name={name}&content={value}",
             self.base
@@ -220,7 +220,7 @@ impl Cloudflare {
         let rsp = self.transport.send(req).await?;
         let text = rsp.body_text();
         let Some(rec) = json_str_field(&text, "id") else {
-            // 查不到就当已经没了 —— 这是清理，不是可用性。
+            // 查不到就當已經沒了 —— 這是清理，不是可用性。
             debug!("Cloudflare 上没找到 {name} 的那条 TXT，当作已经摘掉");
             return Ok(());
         };
@@ -238,13 +238,13 @@ impl Cloudflare {
     }
 }
 
-/// 从一段 JSON 里抠出第一个 `"<field>": "<值>"`。
+/// 從一段 JSON 裡摳出第一個 `"<field>": "<值>"`。
 ///
-/// ⚠ ⚠ **这是一个刻意做小的取值器，不是 JSON 解析器**，而它的取舍要说清楚：
-/// 这几家的响应里 `result` 是数组或对象，我们只要里面第一条的 `id`。
-/// 用 `serde_json::Value` 走一遍也行，但那要为每家的嵌套结构写一份路径，
-/// 而路径写错的表现与这里取错的表现完全一样。
-/// ★ 所以判据不在「怎么取」，在**「取出来的东西对不对」由单测逐字段钉住**。
+/// ⚠ ⚠ **這是一個刻意做小的取值器，不是 JSON 解析器**，而它的取捨要說清楚：
+/// 這幾家的回應裡 `result` 是陣列或物件，我們只要裡面第一條的 `id`。
+/// 用 `serde_json::Value` 走一遍也行，但那要為每家的嵌套結構寫一份路徑，
+/// 而路徑寫錯的表現與這裡取錯的表現完全一樣。
+/// ★ 所以判據不在「怎麼取」，在**「取出來的東西對不對」由單測逐欄位釘住**。
 fn json_str_field(text: &str, field: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     fn walk(v: &serde_json::Value, field: &str) -> Option<String> {
@@ -262,8 +262,8 @@ fn json_str_field(text: &str, field: &str) -> Option<String> {
     walk(&v, field)
 }
 
-/// 把对端给的第一条错误消息带出来。★ 一个只说「失败」的错误，
-/// 等于让人自己去猜是凭据错了、zone 不对、还是被限流了。
+/// 把對端給的第一條錯誤訊息帶出來。★ 一個只說「失敗」的錯誤，
+/// 等於讓人自己去猜是憑證錯了、zone 不對、還是被限流了。
 fn first_error(text: &str) -> String {
     if let Some(m) = json_str_field(text, "message") {
         return m;
@@ -277,7 +277,7 @@ mod tests {
     use crate::http::{HttpResponse, HttpTransport};
     use std::sync::Mutex;
 
-    /// 记录型假实现。★ 它证明的是**内部自洽**，不是「我们对它家 API 的理解是对的」。
+    /// 記錄型假實作。★ 它證明的是**內部自洽**，不是「我們對它家 API 的理解是對的」。
     #[derive(Debug, Default)]
     struct Fake {
         seen: Mutex<Vec<HttpRequest>>,
@@ -324,7 +324,7 @@ mod tests {
     }
 
     fn cf(fake: Arc<Fake>, zones: &[&str]) -> Cloudflare {
-        // SAFETY-ish：测试进程内设环境变量。★ 用一个测试专用的名字，避免与别的测试互相踩。
+        // SAFETY-ish：測試處理程序內設環境變數。★ 用一個測試專用的名字，避免與別的測試互相踩。
         unsafe { std::env::set_var("FULCRUM_TEST_CF_TOKEN", "tok-abc") };
         Cloudflare::new(
             fake,
@@ -334,12 +334,12 @@ mod tests {
         .with_base("https://api.example/client/v4")
     }
 
-    // ── G59 第 3 条：zone 范围 ───────────────────────────────────────────────
+    // ── G59 第 3 條：zone 範圍 ───────────────────────────────────────────────
 
     #[test]
     fn zone_范围按标签边界判而不是后缀() {
-        // ★ ★ 这条判据存在的全部理由，就是不让凭据被用在没声明的域上。
-        //   ⚠ `ends_with("example.net")` 会把 `evilexample.net` 算进来 —— 那正是要防的。
+        // ★ ★ 這條判據存在的全部理由，就是不讓憑證被用在沒宣告的域上。
+        //   ⚠ `ends_with("example.net")` 會把 `evilexample.net` 算進來 —— 那正是要防的。
         let c = cf(Fake::with(vec![]), &["example.net"]);
         assert_eq!(
             c.zone_for("_acme-challenge.example.net"),
@@ -371,9 +371,9 @@ mod tests {
             .block_on(c.set_txt("_acme-challenge.example.com", "v"))
             .unwrap_err();
         assert!(e.contains("G59"), "{e}");
-        // ⚠ 判据的第二半：**一个请求都不许发出去**。
-        //   一个「先发出去、再看返回」的实现在这条上表现完全不同，
-        //   而它已经把凭据用在了没声明的域上。
+        // ⚠ 判據的第二半：**一個請求都不許發出去**。
+        //   一個「先發出去、再看回傳」的實作在這條上表現完全不同，
+        //   而它已經把憑證用在了沒宣告的域上。
         assert!(
             fake.seen().is_empty(),
             "越权时不该发任何请求：{:?}",
@@ -381,16 +381,16 @@ mod tests {
         );
     }
 
-    // ── G59 第 2 条：启动时校验 ─────────────────────────────────────────────
+    // ── G59 第 2 條：啟動時檢核 ─────────────────────────────────────────────
 
     #[test]
     fn 令牌有效但列不出那个_zone_也要拒绝启动() {
-        // ⚠ ⚠ 这是最常见的那一种，而之前**校验根本看不见它**：
-        //   `/user/tokens/verify` 只回答「这把钥匙存在吗」，不回答「它开得了这扇门吗」。
-        //   现场表现因此被推迟到第一次签发：一句「查 zone 失败」，
-        //   而那时人已经在查 ACME、查 DNS、查防火墙了。
+        // ⚠ ⚠ 這是最常見的那一種，而之前**檢核根本看不見它**：
+        //   `/user/tokens/verify` 只回答「這把鑰匙存在嗎」，不回答「它開得了這扇門嗎」。
+        //   現場表現因此被推遲到第一次簽發：一句「查 zone 失敗」，
+        //   而那時人已經在查 ACME、查 DNS、查防火牆了。
         //
-        //   三种成因共用这一条错：没有 Zone:Read / 资源范围不含它 / `zones` 名字打错。
+        //   三種成因共用這一條錯：沒有 Zone:Read / 資源範圍不含它 / `zones` 名字打錯。
         let fake = Fake::with(vec![(200, r#"{"success":true,"result":[]}"#)]);
         let c = cf(fake.clone(), &["example.net"]);
         let e = match rt().block_on(c.verify()) {
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn 声明了多个_zone_就每个都要验() {
-        // ★ 判据挂在「请求条数」上：少验一个 zone 的实现，
-        //   会让那个 zone 的问题一路潜伏到它第一次要签证书的那天。
+        // ★ 判據掛在「請求條數」上：少驗一個 zone 的實作，
+        //   會讓那個 zone 的問題一路潛伏到它第一次要簽證書的那天。
         let fake = Fake::with(vec![
             (
                 200,
@@ -433,9 +433,9 @@ mod tests {
 
     #[test]
     fn 校验通过时请求形状是我们以为的那个() {
-        // ★ ★ 换了判据：从 `/user/tokens/verify` 换成对**声明的每个 zone**
-        //   查一次 id。理由见 `verify()` 的文档注释 —— 账号级令牌（`cfat_`）在
-        //   用户级端点上必然被判 Invalid，而 G59 把那个判成 Fatal ⇒ 拒绝启动。
+        // ★ ★ 換了判據：從 `/user/tokens/verify` 換成對**宣告的每個 zone**
+        //   查一次 id。理由見 `verify()` 的文件註解 —— 帳號級權杖（`cfat_`）在
+        //   使用者級端點上必然被判 Invalid，而 G59 把那個判成 Fatal ⇒ 拒絕啟動。
         let fake = Fake::with(vec![(
             200,
             r#"{"success":true,"result":[{"id":"zone-1","name":"example.net"}]}"#,
@@ -461,8 +461,8 @@ mod tests {
 
     #[test]
     fn 状态码_200_但_success_false_也要判失败() {
-        // ★ ★ Cloudflare 在**成功的 HTTP 状态里**也会返回 `success:false`。
-        //   一个只看状态码的实现会把坏凭据判成好的，而症状要到第一次签发才出现。
+        // ★ ★ Cloudflare 在**成功的 HTTP 狀態裡**也會回傳 `success:false`。
+        //   一個只看狀態碼的實作會把壞憑證判成好的，而症狀要到第一次簽發才出現。
         let fake = Fake::with(vec![(
             200,
             r#"{"success":false,"errors":[{"code":1000,"message":"Invalid API Token"}]}"#,
@@ -475,7 +475,7 @@ mod tests {
         );
         let e = e.message().to_string();
         assert!(e.contains("不可用"), "{e}");
-        // ★ 把对端说的话带出来 —— 否则排查时只能猜。
+        // ★ 把對端說的話帶出來 —— 否則排查時只能猜。
         assert!(e.contains("Invalid API Token"), "{e}");
     }
 
@@ -494,7 +494,7 @@ mod tests {
         assert!(!e.contains("tok-abc"), "凭据的**值**漏进错误信息了：{e}");
     }
 
-    // ── 挂 / 摘 TXT ─────────────────────────────────────────────────────────
+    // ── 掛 / 摘 TXT ─────────────────────────────────────────────────────────
 
     #[test]
     fn 挂_txt_先查_zone_id_再发_post_而且_body_逐字段对() {
@@ -529,8 +529,8 @@ mod tests {
 
     #[test]
     fn 摘_txt_按_内容_定位而不是只按记录名() {
-        // ⚠ 同一个记录名下可能同时挂着多条 TXT（两张证书并行签发时就会），
-        //   只按名字删会把别人那条删掉，而那次签发会失败得毫无头绪。
+        // ⚠ 同一個記錄名下可能同時掛著多條 TXT（兩張證書並行簽發時就會），
+        //   只按名字刪會把別人那條刪掉，而那次簽發會失敗得毫無頭緒。
         let fake = Fake::with(vec![
             (200, r#"{"success":true,"result":[{"id":"zone123"}]}"#),
             (200, r#"{"success":true,"result":[{"id":"rec789"}]}"#),
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn 摘_txt_时对端说没有就当已经摘了() {
-        // 清理是卫生问题不是可用性问题 —— 找不到不该报错。
+        // 清理是衛生問題不是可用性問題 —— 找不到不該回報錯誤。
         let fake = Fake::with(vec![
             (200, r#"{"success":true,"result":[{"id":"zone123"}]}"#),
             (200, r#"{"success":true,"result":[]}"#),

@@ -57,7 +57,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# Windows 控制台默认不是 UTF-8，中文输出会变乱码。强制一下。
+# Windows 控制檯預設不是 UTF-8，中文輸出會變亂碼。強制一下。
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -68,19 +68,19 @@ REPO = Path(__file__).resolve().parent.parent
 UA = "fulcrum-supply-audit (https://github.com/ShanireZ/Fulcrum)"
 DEFAULT_TARGET = "x86_64-unknown-linux-gnu"
 
-# ★ 已登记并接受的公告：照常打印，但不改退出码。
-#   每一条都必须写清「为什么接受」和「出路在哪」——没有理由的条目等于偷偷降噪。
+# ★ 已登記並接受的公告：照常列印，但不改結束代碼。
+#   每一條都必須寫清「為什麼接受」和「出路在哪」——沒有理由的條目等於偷偷降噪。
 ACCEPTED: dict[str, str] = {
-    # （2026-09-24）RUSTSEC-2025-0069（daemonize 失维）那条已撤：pingora 0.9.0 把 daemonize 换成了
-    #   daemonix，两把锁里都不再有它 ⇒ 它成了一条永远不命中的死条目（本脚本与 dep-check.py 的反向校验
-    #   都会报「应当删掉」）。⛔ 死条目不留：它与没有这条豁免在门上看不出区别，却会让人以为还在看着。
+    # （2026-09-24）RUSTSEC-2025-0069（daemonize 失維）那條已撤：pingora 0.9.0 把 daemonize 換成了
+    #   daemonix，兩把鎖裡都不再有它 ⇒ 它成了一條永遠不命中的死條目（本指令碼與 dep-check.py 的反向檢核
+    #   都會報「應當刪掉」）。⛔ 死條目不留：它與沒有這條豁免在門上看不出區別，卻會讓人以為還在看著。
 }
 
-# Cargo.lock 的 [[package]] 块
+# Cargo.lock 的 [[package]] 塊
 PKG_BLOCK = re.compile(r"\[\[package\]\]\n(.*?)(?=\n\[\[package\]\]|\n\[metadata|\Z)", re.S)
 FIELD = {k: re.compile(rf'^{k} = "(.*)"$', re.M) for k in ("name", "version", "source")}
 
-# cargo tree --prefix none 的输出形如 "tokio v1.53.1" 或 "tokio v1.53.1 (*)"
+# cargo tree --prefix none 的輸出形如 "tokio v1.53.1" 或 "tokio v1.53.1 (*)"
 TREE_LINE = re.compile(r"^(\S+) v(\S+)")
 
 
@@ -131,9 +131,9 @@ def max_stable(name: str) -> tuple[str | None, str | None]:
       supply-chain.md 当依据的，一次静默的网络抖动会让某个陈旧包凭空消失。
     """
     url = f"https://crates.io/api/v1/crates/{name}"
-    # ★ 有界重试。原先 429 时是 `return max_stable(name)` 的无限递归：
-    #   本脚本要连着请求 crates.io 一百多次，被限流是常态，持续 429 会一路递归到
-    #   RecursionError 崩掉，而不是给出「被限流了」这个真正的诊断。
+    # ★ 有界重試。原先 429 時是 `return max_stable(name)` 的無限遞歸：
+    #   本指令碼要連著請求 crates.io 一百多次，被限流是常態，持續 429 會一路遞歸到
+    #   RecursionError 崩掉，而不是給出「被限流了」這個真正的診斷。
     attempts = 3
     for attempt in range(1, attempts + 1):
         req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -175,7 +175,7 @@ def osv_batch(
     """
     hits: dict[tuple[str, str], list[str]] = {}
     unqueried: list[tuple[tuple[str, str], str]] = []
-    CHUNK = 500  # querybatch 一次别塞太多
+    CHUNK = 500  # querybatch 一次別塞太多
     for i in range(0, len(pkgs), CHUNK):
         chunk = pkgs[i : i + CHUNK]
         body = {
@@ -206,18 +206,18 @@ def osv_batch(
         if results is None:
             continue
 
-        # ★ `zip` 会在短的那一边**静默停下**。OSV 正常是等长返回，但「正常」不是判据——
-        #   真短了的话，尾巴上那批包会一声不响地变成「查过且干净」。宁可显式记成没查成。
+        # ★ `zip` 會在短的那一邊**靜默停下**。OSV 正常是等長回傳，但「正常」不是判據——
+        #   真短了的話，尾巴上那批包會一聲不響地變成「查過且乾淨」。寧可顯式記成沒查成。
         if len(results) != len(chunk):
             for pkg in chunk[len(results) :]:
                 unqueried.append((pkg, f"OSV 只回了 {len(results)}/{len(chunk)} 条结果"))
         for (n, v), res in zip(chunk, results):
             ids = [x["id"] for x in (res.get("vulns") or [])]
-            # ★ `querybatch` 单条结果的 vuln 列表可能被截断，此时带 `next_page_token`。
-            #   本脚本只关心「有没有未登记的公告」，而截断后的列表**只会漏、不会多**——
-            #   漏掉的那条恰好是未登记的，`unregistered` 就少算了。
-            #   实测：单包 16 条公告仍是完整返回、不带 token，所以现实中很少触发；
-            #   但「很少触发」不是「不会触发」，触发了就把这个包记成没查成，别让它冒充干净。
+            # ★ `querybatch` 單條結果的 vuln 列表可能被截斷，此時帶 `next_page_token`。
+            #   本指令碼只關心「有沒有未登記的公告」，而截斷後的列表**只會漏、不會多**——
+            #   漏掉的那條恰好是未登記的，`unregistered` 就少算了。
+            #   實測：單包 16 條公告仍是完整回傳、不帶 token，所以現實中很少觸發；
+            #   但「很少觸發」不是「不會觸發」，觸發了就把這個包記成沒查成，別讓它冒充乾淨。
             if res.get("next_page_token"):
                 unqueried.append(((n, v), "OSV 的公告列表被分页截断（next_page_token）"))
             if ids:
@@ -291,7 +291,7 @@ def main() -> int:
               + "；".join(whys[:3]))
         print("  ★ 这一栏非空时，「零公告」与「没有未登记的公告」都**不成立**——没查过不等于干净。")
     unregistered = 0
-    seen_accepted: set[str] = set()  # ★ 反向校验用：这次真正命中过的已登记条目
+    seen_accepted: set[str] = set()  # ★ 反向檢核用：這次真正命中過的已登記條目
     if not hits:
         print("  查到的包里零公告" if osv_unqueried else "  零公告")
     for pkg, ids in sorted(hits.items()):
@@ -308,14 +308,14 @@ def main() -> int:
             if aid in ACCEPTED:
                 print(f"           接受理由：{ACCEPTED[aid]}")
 
-    # ★ 反向校验忽略名单：只查「命中时是否已登记」是不够的，还要查
-    #   「已登记的条目是不是还命中得上」。否则依赖被删掉之后条目会静默留存，
-    #   将来某个依赖把它拉回来时这道门会直接放行。
-    #   （同一条教训当初登记为 **D10**：过期的声明比过期的状态更危险。
-    #     ⚠ 那一条已经结案，不在 `PLAN.md` §11 里了。）
-    # ★ 但这条反向校验**只在公告确实查过时才成立**：一次 OSV 失败会让所有 ACCEPTED 条目
-    #   看起来都「没命中」，从而建议把它们全删掉——那是把「没查到」当成「不存在」，
-    #   方向正好和这条校验想防的错误相反。
+    # ★ 反向檢核忽略名單：只查「命中時是否已登記」是不夠的，還要查
+    #   「已登記的條目是不是還命中得上」。否則依賴被刪掉之後條目會靜默留存，
+    #   將來某個依賴把它拉回來時這道門會直接放行。
+    #   （同一條教訓當初登記為 **D10**：過期的宣告比過期的狀態更危險。
+    #     ⚠ 那一條已經結案，不在 `PLAN.md` §11 裡了。）
+    # ★ 但這條反向檢核**只在公告確實查過時才成立**：一次 OSV 失敗會讓所有 ACCEPTED 條目
+    #   看起來都「沒命中」，從而建議把它們全刪掉——那是把「沒查到」當成「不存在」，
+    #   方向正好和這條檢核想防的錯誤相反。
     dead = sorted(set(ACCEPTED) - seen_accepted) if not osv_unqueried else []
     if osv_unqueried and ACCEPTED:
         print(f"\n（本次有包没查成公告，跳过 ACCEPTED 的反向校验——"
@@ -326,10 +326,10 @@ def main() -> int:
             print(f"  · {aid}")
         print("  留着它们等于给未来埋一个「静默放行」的口子。")
 
-    # ── 陈旧包 ──────────────────────────────────────────────────────────────
+    # ── 陳舊包 ──────────────────────────────────────────────────────────────
     print("\n── 逐包对比 crates.io 的 max_stable_version ──")
     stale: list[tuple[str, str, str, str]] = []
-    unresolved: list[tuple[str, str]] = []  # ★ 查不到的单列一类，绝不当成「已是最新」
+    unresolved: list[tuple[str, str]] = []  # ★ 查不到的單列一類，絕不當成「已是最新」
     names = sorted({n for n, _ in pkgs})
     by_name: dict[str, list[str]] = {}
     for n, v in pkgs:
@@ -357,8 +357,8 @@ def main() -> int:
     if compiled is not None and lock_only:
         print(f"  （另有 {len(lock_only)} 个仅在 lock 里，不进产物，已折叠）")
 
-    # ★ 查不到的必须显式报出来。它们既不是「陈旧」也不是「最新」，而是**没查证**；
-    #   混进任何一边都会让贴回文档的数字失真。
+    # ★ 查不到的必須顯式報出來。它們既不是「陳舊」也不是「最新」，而是**沒查證**；
+    #   混進任何一邊都會讓貼回文件的數字失真。
     unresolved_pct = (100.0 * len(unresolved) / len(names)) if names else 0.0
     if unresolved:
         print(f"\n⚠ {len(unresolved)} 个包**未能查证**（不计入上面的陈旧数）"
@@ -390,21 +390,21 @@ def main() -> int:
         print(f"★ {unregistered} 条**未登记**的安全公告——要么修，要么写进本脚本的 ACCEPTED 并说明理由。")
         rc += 20
     elif osv_unqueried:
-        # ★ 不能说「没有未登记的安全公告」——有包根本没查过，这句话会是一句**有依据感的假话**。
+        # ★ 不能說「沒有未登記的安全公告」——有包根本沒查過，這句話會是一句**有依據感的假話**。
         print(f"★ 在查成的那部分里没有未登记的公告；但有 {len(osv_unqueried)} 个包没查成，结论不完整。")
     else:
         print("没有未登记的安全公告。")
 
-    # ★ ★ 「什么都没查到」不许记成绿。
-    #   crates.io 整体不可达时（公司网络、DNS、限流），全部包都会落进 unresolved，
-    #   而这一栏原先**只影响打印、不影响退出码**——每周的 cron / CI 只看退出码，
-    #   于是一次**什么都没查证**的运行会被记成一次通过。这正是本项目复审两轮
-    #   反复抓到的那个形状：把「没能检查」当成「检查通过」。
+    # ★ ★ 「什麼都沒查到」不許記成綠。
+    #   crates.io 整體不可達時（公司網路、DNS、限流），全部包都會落進 unresolved，
+    #   而這一欄原先**隻影響列印、不影響結束代碼**——每週的 cron / CI 只看結束代碼，
+    #   於是一次**什麼都沒查證**的執行會被記成一次通過。這正是本專案複審兩輪
+    #   反覆抓到的那個形狀：把「沒能檢查」當成「檢查通過」。
     #
-    #   ★ 但它不能变成常红：被限流是常态，零星几个包查不到不该拦人。所以卡的是**比例**，
-    #     默认留 10% 的余量，可用 --max-unresolved-pct 调整。
-    #   ★ 同一条纪律作用在两侧：**版本**查不到（crates.io）与**公告**查不到（OSV）
-    #     都会让本次结论变成下界，都用同一个阈值卡。
+    #   ★ 但它不能變成常紅：被限流是常態，零星幾個包查不到不該攔人。所以卡的是**比例**，
+    #     預設留 10% 的餘量，可用 --max-unresolved-pct 調整。
+    #   ★ 同一條紀律作用在兩側：**版本**查不到（crates.io）與**公告**查不到（OSV）
+    #     都會讓本次結論變成下界，都用同一個閾值卡。
     short = []
     if unresolved_pct > args.max_unresolved_pct:
         short.append(f"版本：{len(unresolved)}/{len(names)} 个包未查证（{unresolved_pct:.1f}%）"

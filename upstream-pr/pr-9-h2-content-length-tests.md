@@ -1,16 +1,16 @@
-# PR — 投稿九（⏳ **材料已备，未发**；owner 2026-10-16 拍「改准材料＋备投稿九」，发不发另拍）
+# PR — 投稿九（⏳ **材料已備，未發**；owner 2026-10-16 拍「改準材料＋備投稿九」，發不發另拍）
 
-> ★ 本目录纪律：**先 issue、后 PR**。先发 [`issue-9-h2-content-length-tests.md`](issue-9-h2-content-length-tests.md)，
-> 拿到编号后把正文第一行的 `#<ISSUE_NUMBER>` 换掉。
+> ★ 本目錄紀律：**先 issue、後 PR**。先發 [`issue-9-h2-content-length-tests.md`](issue-9-h2-content-length-tests.md)，
+> 拿到編號後把正文第一行的 `#<ISSUE_NUMBER>` 換掉。
 >
-> 补丁（基于上游 `main` = `4487f7b`，带 `Signed-off-by`，**一份 PR、一个提交**）：
+> 補丁（基於上游 `main` = `4487f7b`，帶 `Signed-off-by`，**一份 PR、一個提交**）：
 > [`0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch`](0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch)。
-> 验证见 [`README.md`](README.md) 投稿九一节。
+> 驗證見 [`README.md`](README.md) 投稿九一節。
 >
-> ⚠ 机制上发 PR 前还要先把补丁推成 `ShanireZ/pingora` 上的一个分支（建议名 `h2-0420-content-length-tests`）——
-> 那也是一次以 owner 名义的外部写入，⛔ 未做。
+> ⚠ 機制上發 PR 前還要先把補丁推成 `ShanireZ/pingora` 上的一個分支（建議名 `h2-0420-content-length-tests`）——
+> 那也是一次以 owner 名義的外部寫入，⛔ 未做。
 >
-> ⚠ ★ **发送顺序**：它最好先于投稿七、八 —— 在它落地之前，任何新 PR 的 CI 都会红在这两条上。
+> ⚠ ★ **傳送順序**：它最好先於投稿七、八 —— 在它完成實作之前，任何新 PR 的 CI 都會紅在這兩條上。
 
 **Title**
 

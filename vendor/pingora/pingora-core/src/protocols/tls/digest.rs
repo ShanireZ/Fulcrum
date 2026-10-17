@@ -33,13 +33,13 @@ pub struct SslDigest {
     pub cert_digest: Vec<u8>,
     /// The user-defined TLS data
     pub extension: SslDigestExtension,
-    /// ★ 枢衡改动 14：客户端在 ClientHello 里发的 **SNI**（小写）。`None` = 它没发。
+    /// ★ 樞衡改動 14：用戶端在 ClientHello 裡發的 **SNI**（小寫）。`None` = 它沒發。
     ///
-    /// ⚠ 上游没有这一格，而它是访问日志契约里的 `tls_sni`。
-    /// 见 `vendor/pingora/FORK.md` 改动 14。
+    /// ⚠ 上游沒有這一格，而它是訪問紀錄契約裡的 `tls_sni`。
+    /// 見 `vendor/pingora/FORK.md` 改動 14。
     pub sni: Option<String>,
-    /// ★ 枢衡改动 14：**协商出来的 ALPN**（`h2` / `http/1.1` / `acme-tls/1`）。
-    /// `None` = 客户端没提供 ALPN，或者没协商出交集。
+    /// ★ 樞衡改動 14：**協商出來的 ALPN**（`h2` / `http/1.1` / `acme-tls/1`）。
+    /// `None` = 用戶端沒提供 ALPN，或者沒協商出交集。
     pub alpn: Option<String>,
 }
 
@@ -62,9 +62,9 @@ impl SslDigest {
             serial_number,
             cert_digest,
             extension: SslDigestExtension::default(),
-            // ★ 枢衡改动 14：**有意不进 `new()` 的签名** —— 那样 rustls / s2n 两个
-            //   后端的调用点一个字都不用改，而它们本来就填不出这两格。
-            //   ⇒ 由各后端的 `from_ssl()` 在建好之后按字段赋值。
+            // ★ 樞衡改動 14：**有意不進 `new()` 的簽名** —— 那樣 rustls / s2n 兩個
+            //   後端的呼叫點一個字都不用改，而它們本來就填不出這兩格。
+            //   ⇒ 由各後端的 `from_ssl()` 在建好之後按欄位賦值。
             sni: None,
             alpn: None,
         }

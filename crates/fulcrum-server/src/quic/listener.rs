@@ -1,32 +1,32 @@
-//! QUIC 监听器（**M2 批 J 第四步**）—— 自建 `Service` + **参与 socket 移交**。
+//! QUIC 監聽器（**M2 批 J 第四步**）—— 自建 `Service` + **參與 socket 移交**。
 //!
-//! # 这一页分成三层，而分层本身是判据的前提
+//! # 這一頁分成三層，而分層本身是判據的前提
 //!
-//! | 层 | 内容 | 测得动吗 |
+//! | 層 | 內容 | 測得動嗎 |
 //! |---|---|---|
-//! | **判定** | [`decide`]：一个数据报进来该做什么 —— **纯函数，不做任何 I/O** | ✅ 单测 |
-//! | **配置** | [`build_quic_config`]：G104 的落点，把 `SniResolver` 挂进 quiche | ✅ 单测 |
-//! | **I/O** | [`QuicListenerService`]：收包、按判定分发、per-连接任务 | ✅ 端到端 |
+//! | **判定** | [`decide`]：一個資料報進來該做什麼 —— **純函式，不做任何 I/O** | ✅ 單測 |
+//! | **設定** | [`build_quic_config`]：G104 的落點，把 `SniResolver` 掛進 quiche | ✅ 單測 |
+//! | **I/O** | [`QuicListenerService`]：收包、按判定散布、per-連接任務 | ✅ 端到端 |
 //!
-//! ★ ★ **把判定从 I/O 里拆出来，与 `fulcrum-runtime`「纯逻辑不引用 pingora」是同一条理由**：
-//! 它一旦长在收包循环里，就只能靠真流量去测，而那样红了指不到具体哪条规则。
+//! ★ ★ **把判定從 I/O 裡拆出來，與 `fulcrum-runtime`「純邏輯不引用 pingora」是同一條理由**：
+//! 它一旦長在收包循環裡，就只能靠真流量去測，而那樣紅了指不到具體哪條規則。
 //!
-//! # 这里做了什么
+//! # 這裡做了什麼
 //!
-//! - fd 移交、Retry、版本协商、归属分发、**QUIC 传输层握手真的能走完**；
-//! - **h3 事件循环** —— 见 [`super::h3_conn`]，请求经 [`H3RequestHandler`] 交出去；
-//! - **按 G110 接线**：有 `tls` 的端口自动开，接线在 `crate::run` 里，
-//!   端到端判据是 `tests/h3/run.sh`；
-//! - **[`Action::Relay`] 把数据报送给它那一代**（[`super::relay`]）——
-//!   而**老一代收到停机信号之后继续收转交，直到自己的连接排空**。
+//! - fd 移交、Retry、版本協商、歸屬散布、**QUIC 傳輸層握手真的能走完**；
+//! - **h3 事件循環** —— 見 [`super::h3_conn`]，請求經 [`H3RequestHandler`] 交出去；
+//! - **按 G110 串接**：有 `tls` 的連接埠自動開，串接在 `crate::run` 裡，
+//!   端到端判據是 `tests/h3/run.sh`；
+//! - **[`Action::Relay`] 把資料報送給它那一代**（[`super::relay`]）——
+//!   而**老一代收到停機信號之後繼續收轉交，直到自己的連接排空**。
 //!
-//! # ★ 一条会影响 G109 的硬约束：**本批不签发额外的连接 ID**
+//! # ★ 一條會影響 G109 的硬約束：**本批不簽發額外的連接 ID**
 //!
-//! 连接表按**我们在 accept 时铸的那一个 SCID** 索引。这成立的前提是我们**从不**调用
-//! `Connection::new_source_cid()` —— 一旦签发额外 CID，客户端可能换用它，
-//! 而那个 CID 不在表里、也**不一定带 `gen_id` 前缀**。
-//! ⇒ ★ ★ **将来要签发额外 CID 时，它必须同样出自 [`GenId::mint_scid`]**，
-//! 否则换代时那条连接会认不出来 —— 这与「SCID 前缀必须在批 J 就做」是同一条理由。
+//! 連接表按**我們在 accept 時鑄的那一個 SCID** 索引。這成立的前提是我們**從不**呼叫
+//! `Connection::new_source_cid()` —— 一旦簽發額外 CID，用戶端可能換用它，
+//! 而那個 CID 不在表裡、也**不一定帶 `gen_id` 前綴**。
+//! ⇒ ★ ★ **將來要簽發額外 CID 時，它必須同樣出自 [`GenId::mint_scid`]**，
+//! 否則換代時那條連接會認不出來 —— 這與「SCID 前綴必須在批 J 就做」是同一條理由。
 
 use crate::quic::gen_id::{GenId, Ownership, SCID_LEN, ownership};
 use crate::quic::h3_conn::{self, H3RequestHandler};
@@ -47,62 +47,62 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-/// 一个 UDP 数据报的上限。
+/// 一個 UDP 資料報的上限。
 ///
-/// ⚠ 取 1500 是不够的：QUIC 允许对端用更大的 MTU，而**读短了会把包截断**，
-/// 截断之后 `Header::from_slice` 仍可能成功 ⇒ 得到一个「看起来正常」的坏包。
-/// ⇒ 取 65535（UDP 载荷上限），宁可多占一点栈外内存。
+/// ⚠ 取 1500 是不夠的：QUIC 允許對端用更大的 MTU，而**讀短了會把包截斷**，
+/// 截斷之後 `Header::from_slice` 仍可能成功 ⇒ 得到一個「看起來正常」的壞包。
+/// ⇒ 取 65535（UDP 載荷上限），寧可多佔一點棧外記憶體。
 const DATAGRAM_MAX: usize = 65535;
 
-/// 每条连接的入站队列深度。★ 满了就丢 —— QUIC 自己会重传，而无界队列会被用来打内存。
+/// 每條連接的入站佇列深度。★ 滿了就丟 —— QUIC 自己會重傳，而無界佇列會被用來打記憶體。
 const CONN_QUEUE: usize = 128;
 
-/// 一个数据报被丢弃的原因。
+/// 一個資料報被丟棄的原因。
 ///
-/// ⚠ ⚠ ★ **只给日志与判据用，绝不影响回给对端的东西** —— 与 [`retry::Reject`] 同一条纪律。
-/// ★ 它存在的理由也一样：断言「被丢了」**太宽**，一个把所有输入都丢掉的实现照样全绿。
+/// ⚠ ⚠ ★ **只給紀錄與判據用，絕不影響回給對端的東西** —— 與 [`retry::Reject`] 同一條紀律。
+/// ★ 它存在的理由也一樣：斷言「被丟了」**太寬**，一個把所有輸入都丟掉的實作照樣全綠。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropWhy {
-    /// 包头解析不出来。
+    /// 包頭解析不出來。
     Unparseable,
-    /// 判不出归属（DCID 太短、或服务端本就不该收到这种包）。
+    /// 判不出歸屬（DCID 太短、或伺服器端本就不該收到這種包）。
     Undecidable,
-    /// Retry token 没通过。★ 带上原因**只为日志**。
+    /// Retry token 沒通過。★ 帶上原因**只為紀錄**。
     BadToken(retry::Reject),
-    /// 前缀是本代、但表里没有这条连接（老连接的残包、或已经关掉了）。
+    /// 前綴是本代、但表裡沒有這條連接（老連接的殘包、或已經關掉了）。
     NoSuchConnection,
 }
 
-/// 收到一个数据报之后该做什么。**纯判定的产物，不含任何 I/O。**
+/// 收到一個資料報之後該做什麼。**純判定的產物，不含任何 I/O。**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// 客户端要的 QUIC 版本我们不支持 ⇒ 回一个版本协商包。
+    /// 用戶端要的 QUIC 版本我們不支援 ⇒ 回一個版本協商包。
     NegotiateVersion,
-    /// 首发 Initial ⇒ 回一个 Retry（地址验证）。**G109 要求必须开。**
+    /// 首度推出 Initial ⇒ 回一個 Retry（位址驗證）。**G109 要求必須開。**
     Retry,
-    /// 交给本代已有的那条连接。
+    /// 交給本代已有的那條連接。
     Existing,
-    /// 建一条新连接。`odcid` 是从 token 里取回来的**客户端第一发 Initial 的 DCID**
-    /// （RFC 9000 §7.3 要求它进 `original_destination_connection_id`）。
+    /// 建一條新連接。`odcid` 是從 token 裡取回來的**用戶端第一發 Initial 的 DCID**
+    /// （RFC 9000 §7.3 要求它進 `original_destination_connection_id`）。
     Accept { odcid: Vec<u8> },
-    /// 属于另一代 ⇒ 转交：走 [`super::relay`] 那条 unix datagram 通道（**M2 批 K**）。
+    /// 屬於另一代 ⇒ 轉交：走 [`super::relay`] 那條 unix datagram 通道（**M2 批 K**）。
     Relay(GenId),
-    /// 丢弃，并说清为什么。
+    /// 丟棄，並說清為什麼。
     Drop(DropWhy),
 }
 
-/// 一个数据报该怎么处置 —— **纯函数**。
+/// 一個資料報該怎麼處置 —— **純函式**。
 ///
-/// `known` 回答「本代的连接表里有没有这个 DCID」。
+/// `known` 回答「本代的連接表裡有沒有這個 DCID」。
 ///
-/// # 判定顺序，以及为什么是这个顺序
+/// # 判定順序，以及為什麼是這個順序
 ///
-/// 1. **版本**只对 `Initial` 查。⚠ 短包没有版本字段（`hdr.version` 是 0），
-///    对它查版本会把每一个正常的短包都判成「版本不支持」——
-///    ★ 而那个错误**看起来完全像是对端的问题**。
-/// 2. 然后才是归属（[`ownership`]）。
-/// 3. `Local` 且表里有 ⇒ 交给它；表里没有 ⇒ 只有「带 token 的 Initial」才可能是
-///    Retry 之后那一发，验票通过才 accept；其余一律丢。
+/// 1. **版本**只對 `Initial` 查。⚠ 短包沒有版本欄位（`hdr.version` 是 0），
+///    對它查版本會把每一個正常的短包都判成「版本不支援」——
+///    ★ 而那個錯誤**看起來完全像是對端的問題**。
+/// 2. 然後才是歸屬（[`ownership`]）。
+/// 3. `Local` 且表裡有 ⇒ 交給它；表裡沒有 ⇒ 只有「帶 token 的 Initial」才可能是
+///    Retry 之後那一發，驗票通過才 accept；其餘一律丟。
 pub fn decide(
     me: &GenId,
     key: &RetryKey,
@@ -111,7 +111,7 @@ pub fn decide(
     hdr: &quiche::Header<'_>,
     known: &dyn Fn(&[u8]) -> bool,
 ) -> Action {
-    // ① 版本 —— 只对 Initial。
+    // ① 版本 —— 只對 Initial。
     if hdr.ty == quiche::Type::Initial && !quiche::version_is_supported(hdr.version) {
         return Action::NegotiateVersion;
     }
@@ -119,17 +119,17 @@ pub fn decide(
     let token = hdr.token.as_deref().unwrap_or(&[]);
     let has_token = !token.is_empty();
 
-    // ② 归属。
+    // ② 歸屬。
     match ownership(me, hdr.ty, &hdr.dcid, has_token) {
         Ownership::Relay(g) => Action::Relay(g),
         Ownership::Undecidable => Action::Drop(DropWhy::Undecidable),
-        // 首发 Initial：客户端自选的 DCID，它还没有状态 ⇒ 本代回 Retry。
+        // 首度推出 Initial：用戶端自選的 DCID，它還沒有狀態 ⇒ 本代回 Retry。
         Ownership::NewConnection => Action::Retry,
         Ownership::Local => {
             if known(&hdr.dcid) {
                 return Action::Existing;
             }
-            // 表里没有：只有 Retry 之后那一发 Initial 才该在这里出现。
+            // 表裡沒有：只有 Retry 之後那一發 Initial 才該在這裡出現。
             if hdr.ty == quiche::Type::Initial && has_token {
                 match key.validate(peer, token, now_secs) {
                     Ok(odcid) => Action::Accept { odcid },
@@ -142,16 +142,16 @@ pub fn decide(
     }
 }
 
-/// 建一份 QUIC 配置 —— ★ ★ ★ **G104 的机械落点就在这里**。
+/// 建一份 QUIC 設定 —— ★ ★ ★ **G104 的機械落點就在這裡**。
 ///
-/// h1/h2 入口与 h3 入口挂的是**同一个** [`SniResolver`]，
-/// 于是「两个入口各有一套挑证书实现」在结构上做不到
-/// （`crates/fulcrum-server/src/lib.rs` 里那行 `plan.resolver.install_into(&mut settings)`
-/// 与这里这行 `resolver.install_into(&mut builder)` 收的是**同一个类型**）。
+/// h1/h2 入口與 h3 入口掛的是**同一個** [`SniResolver`]，
+/// 於是「兩個入口各有一套挑證書實作」在結構上做不到
+/// （`crates/fulcrum-server/src/lib.rs` 裡那行 `plan.resolver.install_into(&mut settings)`
+/// 與這裡這行 `resolver.install_into(&mut builder)` 收的是**同一個類型**）。
 ///
-/// ⚠ **`SslContextBuilder::new(SslMethod::tls())` 是照着 quiche 自己 `Context::new()` 来的**
-/// （它内部就是 `SSL_CTX_new(TLS_method())`）。⚠ 它**不加载 CA 证书** ——
-/// quiche 的 `from_boring()` 也不加载，而服务端本就不验客户端证书。
+/// ⚠ **`SslContextBuilder::new(SslMethod::tls())` 是照著 quiche 自己 `Context::new()` 來的**
+/// （它內部就是 `SSL_CTX_new(TLS_method())`）。⚠ 它**不載入 CA 證書** ——
+/// quiche 的 `from_boring()` 也不載入，而伺服器端本就不驗用戶端證書。
 pub fn build_quic_config(resolver: &Arc<SniResolver>) -> Result<quiche::Config, String> {
     let mut builder =
         SslContextBuilder::new(SslMethod::tls()).map_err(|e| format!("建不出 SSL context：{e}"))?;
@@ -160,13 +160,13 @@ pub fn build_quic_config(resolver: &Arc<SniResolver>) -> Result<quiche::Config, 
     let mut cfg = quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, builder)
         .map_err(|e| format!("建不出 quiche 配置：{e}"))?;
 
-    // ALPN：h3 只有这一个。★ 与 h1/h2 入口那份**有意分开** —— 那边要
-    //   `h2` / `http/1.1` / `acme-tls/1`，而它们在 QUIC 上一个都不成立。
-    //   ⚠ `APPLICATION_PROTOCOL` 本身就是 `&[&[u8]]`（＝那张清单），**不要再包一层**。
+    // ALPN：h3 只有這一個。★ 與 h1/h2 入口那份**有意分開** —— 那邊要
+    //   `h2` / `http/1.1` / `acme-tls/1`，而它們在 QUIC 上一個都不成立。
+    //   ⚠ `APPLICATION_PROTOCOL` 本身就是 `&[&[u8]]`（＝那張清單），**不要再包一層**。
     cfg.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
         .map_err(|e| format!("设不上 ALPN：{e}"))?;
 
-    // 传输参数。★ 这几个数与 h1/h2 那侧的 keep-alive 不是一回事，别照抄。
+    // 傳輸參數。★ 這幾個數與 h1/h2 那側的 keep-alive 不是一回事，別照抄。
     cfg.set_max_idle_timeout(30_000);
     cfg.set_max_recv_udp_payload_size(1350);
     cfg.set_max_send_udp_payload_size(1350);
@@ -175,21 +175,21 @@ pub fn build_quic_config(resolver: &Arc<SniResolver>) -> Result<quiche::Config, 
     cfg.set_initial_max_stream_data_bidi_remote(1_000_000);
     cfg.set_initial_max_stream_data_uni(1_000_000);
     cfg.set_initial_max_streams_bidi(100);
-    // ⚠ h3 要三条单向流（控制流 + QPACK 编/解码器），**给少了握不完手**。
+    // ⚠ h3 要三條單向流（控制流 + QPACK 編/解碼器），**給少了握不完手**。
     cfg.set_initial_max_streams_uni(100);
-    // ⚠ ⚠ **不禁用主动迁移**：客户端换网（Wi-Fi → 蜂窝）时 QUIC 的整个卖点就在这儿。
+    // ⚠ ⚠ **不禁用主動遷移**：用戶端換網（Wi-Fi → 蜂窩）時 QUIC 的整個賣點就在這兒。
     cfg.set_disable_active_migration(false);
 
     Ok(cfg)
 }
 
-/// 取 fd（继承）或新建 UDP 监听 socket，并把新建的放回表里供下一代继承。
+/// 取 fd（繼承）或新建 UDP 監聽 socket，並把新建的放回表裡供下一代繼承。
 ///
-/// ⚠ ⚠ **这段与 `l4.rs::build_udp_listener` 逐字同构，而两份都留着是有意的** ——
-/// 那里的注释每一条都在描述一个**已经发生过**的失效（`ManuallyDrop`、`from_std` 失败后的
-/// 残余风险、拿不到 fd 表时不许装作没事）。抽成泛型只会把那几段注释挤走。
-/// ★ 唯一的实质差别是 `key` 的前缀：`fulcrum-quic:` 与 `fulcrum-l4-udp:` **必须分开**，
-/// 否则同一个端口上的两种服务会互相抢对方的 fd。
+/// ⚠ ⚠ **這段與 `l4.rs::build_udp_listener` 逐字同構，而兩份都留著是有意的** ——
+/// 那裡的註解每一條都在描述一個**已經發生過**的失效（`ManuallyDrop`、`from_std` 失敗後的
+/// 殘餘風險、拿不到 fd 表時不許裝作沒事）。抽成泛型只會把那幾段註解擠走。
+/// ★ 唯一的實質差別是 `key` 的前綴：`fulcrum-quic:` 與 `fulcrum-l4-udp:` **必須分開**，
+/// 否則同一個連接埠上的兩種服務會互相搶對方的 fd。
 async fn build_quic_listener(
     bind: &str,
     key: &str,
@@ -206,16 +206,16 @@ async fn build_quic_listener(
         return UdpSocket::bind(bind).await;
     };
 
-    // ★ 0.9.0（上游 1d93711）：ListenFds 换成 parking_lot 锁 ⇒ 守卫不 Send、⛔ 不许跨 `.await`。
-    //   只在两个同步的瞬间持锁（查表、登记）；bind 期间不持锁 —— 每个服务的键独占，不需要按地址串行。
+    // ★ 0.9.0（上游 1d93711）：ListenFds 換成 parking_lot 鎖 ⇒ 守衛不 Send、⛔ 不許跨 `.await`。
+    //   只在兩個同步的瞬間持鎖（查表、登記）；bind 期間不持鎖 —— 每個服務的鍵獨佔，不需要按位址串行。
     let inherited = table.lock().get(key).copied();
 
     if let Some(fd) = inherited {
         info!("[quic] 继承了 UDP 监听 fd={fd}（{key}）—— 升级窗口内这个端口没有重新 bind 过");
-        // SAFETY: fd 由上一代经 SCM_RIGHTS 传来，此处接管其所有权，且同一个键只取用一次。
-        // ★ ManuallyDrop 的理由与 l4.rs 那两份完全相同：提前析构会 `close(fd)`，
-        //   而表里那条记录仍指着这个号码 —— 号码随后会被任意 `open()` 复用，
-        //   下一次升级就把一个无关的 fd 当成监听 socket 发给下一代。`Fds` 没有 `remove()`。
+        // SAFETY: fd 由上一代經 SCM_RIGHTS 傳來，此處接管其所有權，且同一個鍵只取用一次。
+        // ★ ManuallyDrop 的理由與 l4.rs 那兩份完全相同：提前析構會 `close(fd)`，
+        //   而表裡那條記錄仍指著這個號碼 —— 號碼隨後會被任意 `open()` 重複使用，
+        //   下一次升級就把一個無關的 fd 當成監聽 socket 發給下一代。`Fds` 沒有 `remove()`。
         let std_sock = ManuallyDrop::new(unsafe { std::net::UdpSocket::from_raw_fd(fd) });
         std_sock.set_nonblocking(true)?;
         let owned = ManuallyDrop::into_inner(std_sock);
@@ -238,45 +238,45 @@ async fn build_quic_listener(
     Ok(sock)
 }
 
-/// 表里的一条连接。
+/// 表裡的一條連接。
 struct LiveConn {
-    /// 入站数据报送给连接任务。
+    /// 入站資料報送給連接任務。
     ///
-    /// ★ ★ **每一个数据报都带上自己的 `(from, to)`**（**M2 批 K**）——
-    /// 而不是让连接任务用建连时那一对。⚠ 两个理由：
-    /// ① 转交进来的数据报是**别的进程**收到的，它的 `from` 只能由报文自己带；
-    /// ② 顺带把「客户端换了地址」这件事做对了 —— 此前 `RecvInfo` 恒用建连时那一对，
-    ///    一次连接迁移会被算成原来那个对端，而**那是一处此前没人看见的旧缺口**。
+    /// ★ ★ **每一個資料報都帶上自己的 `(from, to)`**（**M2 批 K**）——
+    /// 而不是讓連接任務用建連時那一對。⚠ 兩個理由：
+    /// ① 轉交進來的資料報是**別的處理程序**收到的，它的 `from` 只能由訊息自己帶；
+    /// ② 順帶把「用戶端換了位址」這件事做對了 —— 此前 `RecvInfo` 恆用建連時那一對，
+    ///    一次連接遷移會被算成原來那個對端，而**那是一處此前沒人看見的舊缺口**。
     tx: mpsc::Sender<(Vec<u8>, SocketAddr, SocketAddr)>,
     task: tokio::task::AbortHandle,
 }
 
-/// QUIC/h3 的监听服务。
+/// QUIC/h3 的監聽服務。
 pub struct QuicListenerService {
-    /// 这个 service 用几个线程（**G35 / G140**）。`None` = 跟全局 `conf.threads`。
+    /// 這個 service 用幾個執行緒（**G35 / G140**）。`None` = 跟全域 `conf.threads`。
     ///
-    /// ★ 与 pingora `ListeningService.threads` 同名同义 —— 自建 service 也参与
-    /// 同一套角色分配，⛔ 不许在这里另立一套。由 `serve()` 在建好之后设。
+    /// ★ 與 pingora `ListeningService.threads` 同名同義 —— 自建 service 也參與
+    /// 同一套角色分配，⛔ 不許在這裡另立一套。由 `serve()` 在建好之後設。
     pub threads: Option<usize>,
     bind: String,
     fd_key: String,
     name: String,
     upgrading: bool,
-    /// 本代的身份 —— SCID 的前缀与转交路径都由它推导（G109 ①）。
-    /// ⚠ 字段名不能叫 `gen`：它在 Rust 2024 edition 里是保留字。
+    /// 本代的身分 —— SCID 的前綴與轉交路徑都由它推導（G109 ①）。
+    /// ⚠ 欄位名不能叫 `gen`：它在 Rust 2024 edition 裡是保留字。
     gen_id: GenId,
-    /// Retry 的签发密钥。★ **每代一把**，理由见 [`retry`] 那一页。
+    /// Retry 的簽發金鑰。★ **每代一把**，理由見 [`retry`] 那一頁。
     retry_key: Arc<RetryKey>,
     resolver: Arc<SniResolver>,
-    /// 一条 h3 请求交给谁去跑。
-    /// ★ 监听器**不认识** `FulcrumApp` —— 那会让 HTTP/3 入口反向依赖数据面本体。
+    /// 一條 h3 請求交給誰去跑。
+    /// ★ 監聽器**不認識** `FulcrumApp` —— 那會讓 HTTP/3 入口反向依賴資料面本體。
     handler: Arc<dyn H3RequestHandler>,
-    /// 换代转交 socket 落在哪个目录（**M2 批 K**，G109 ②）。
+    /// 換代轉交 socket 落在哪個目錄（**M2 批 K**，G109 ②）。
     ///
-    /// ★ 取的是**换代 socket 的父目录** —— 两者本来就是同一件事的两半
-    /// （都只在升级窗口里有意义），⇒ 一个能换代的部署，这个目录必然可写。
+    /// ★ 取的是**換代 socket 的父目錄** —— 兩者本來就是同一件事的兩半
+    /// （都只在升級視窗裡有意義），⇒ 一個能換代的部署，這個目錄必然可寫。
     run_dir: std::path::PathBuf,
-    /// 这个监听器的连接计数格（**M2 批 O**）。★ 与 HTTP 那一侧共用同一个 `ConnGuard`。
+    /// 這個監聽器的連接計數格（**M2 批 O**）。★ 與 HTTP 那一側共用同一個 `ConnGuard`。
     conn: crate::conn_stats::BoundConn,
 }
 
@@ -291,10 +291,10 @@ impl QuicListenerService {
         run_dir: std::path::PathBuf,
         conn_reg: Arc<crate::conn_stats::ConnRegistry>,
     ) -> Self {
-        // ★ `bind()` 顺手声明这一格 ⇒ 从第一秒起就有一条 `0` 的样本。
+        // ★ `bind()` 順手宣告這一格 ⇒ 從第一秒起就有一條 `0` 的樣本。
         let conn = conn_reg.bind(crate::conn_stats::Entrypoint::Quic, &bind);
         QuicListenerService {
-            // ★ 缺省 `None` = 跟全局；由 `serve()` 按角色设（G140）。
+            // ★ 預設 `None` = 跟全域；由 `serve()` 按角色設（G140）。
             threads: None,
             fd_key: format!("fulcrum-quic:{bind}"),
             name: format!("fulcrum-quic-{bind}"),
@@ -310,15 +310,15 @@ impl QuicListenerService {
     }
 }
 
-/// 换代转交 socket 落在哪个目录：**换代 socket 的父目录**。
+/// 換代轉交 socket 落在哪個目錄：**換代 socket 的父目錄**。
 ///
-/// ⚠ ⚠ **这是一条推导，所以它有自己的判据**（见本页测试）——
-/// 而不是「反正 `/run/fulcrum` 就在那儿」。
-/// ★ 取父目录而不是新加一个 CLI 参数，理由是两者**必然同生共死**：
-/// 转交只在升级窗口里有意义，而升级本身就要那个目录可写。
-/// ⇒ 多一个参数只会多一个「两个路径配到两个地方」的失效形态。
+/// ⚠ ⚠ **這是一條推導，所以它有自己的判據**（見本頁測試）——
+/// 而不是「反正 `/run/fulcrum` 就在那兒」。
+/// ★ 取父目錄而不是新加一個 CLI 參數，理由是兩者**必然同生共死**：
+/// 轉交只在升級視窗裡有意義，而升級本身就要那個目錄可寫。
+/// ⇒ 多一個參數只會多一個「兩個路徑配到兩個地方」的失效形態。
 ///
-/// `upgrade_sock` 没有父目录（例如只写了个文件名）时回 `.` —— ★ 那是它实际会落的地方。
+/// `upgrade_sock` 沒有父目錄（例如只寫了個檔案名）時回 `.` —— ★ 那是它實際會落的地方。
 pub fn run_dir_of(upgrade_sock: &str) -> std::path::PathBuf {
     std::path::Path::new(upgrade_sock)
         .parent()
@@ -331,8 +331,8 @@ fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        // ⚠ 钟在 1970 之前 ⇒ 判成 0。它会让所有票立刻过期（安全的那一侧），
-        //   而不是 panic 或恒久有效。
+        // ⚠ 鍾在 1970 之前 ⇒ 判成 0。它會讓所有票立刻過期（安全的那一側），
+        //   而不是 panic 或恆久有效。
         .unwrap_or(0)
 }
 
@@ -373,14 +373,14 @@ impl Service for QuicListenerService {
             self.gen_id.hex()
         );
 
-        // ── 换代转交（**M2 批 K**，G109 ②）────────────────────────────────
+        // ── 換代轉交（**M2 批 K**，G109 ②）────────────────────────────────
         //
-        // ⚠ ⚠ **绑不上时说一句、然后照常服务 h3** —— 而这与访问日志那条
-        //   「打不开就装不上」的口径**有意不同**，理由要写清楚：
-        //   拒绝启动会把一个 `/run` 的权限问题变成「整个 h3 入口不存在」，
-        //   而那损失更大；★ 而这条错误在**启动日志里当场可见**，
-        //   不是那种「没有任何东西会说」的失效。
-        // ⚠ 代价说全：没有转交口 ⇒ **换代时在飞的 h3 连接会断**。
+        // ⚠ ⚠ **綁不上時說一句、然後照常服務 h3** —— 而這與訪問紀錄那條
+        //   「打不開就裝不上」的口徑**有意不同**，理由要寫清楚：
+        //   拒絕啟動會把一個 `/run` 的權限問題變成「整個 h3 入口不存在」，
+        //   而那損失更大；★ 而這條錯誤在**啟動紀錄裡當場可見**，
+        //   不是那種「沒有任何東西會說」的失效。
+        // ⚠ 代價說全：沒有轉交口 ⇒ **換代時在飛的 h3 連接會斷**。
         let relay = match RelayInbox::bind(&self.run_dir, &self.gen_id) {
             Ok(inbox) => {
                 info!("[quic] 换代转交口：{}", inbox.path().display());
@@ -412,8 +412,8 @@ impl Service for QuicListenerService {
         .await;
     }
 
-    /// 这个 service 用几个线程（**G35 / G140**）。⚠ 返回 `Some` 时 pingora
-    /// **不再看**全局 `conf.threads` —— 见 `server/mod.rs` 的
+    /// 這個 service 用幾個執行緒（**G35 / G140**）。⚠ 回傳 `Some` 時 pingora
+    /// **不再看**全域 `conf.threads` —— 見 `server/mod.rs` 的
     /// `service.threads().unwrap_or(conf.threads)`。
     fn threads(&self) -> Option<usize> {
         self.threads
@@ -423,66 +423,66 @@ impl Service for QuicListenerService {
         &self.name
     }
 
-    /// pingora 0.9.0（上游 `f82478a`）：新一代据此关掉「没有任何服务认领」的继承 fd。
-    /// ⚠ 必须是 fd 表的**键**（带前缀），⛔ 不是 bind 地址 —— 写成地址，新一代会先关掉自己要继承的
-    ///   那个 fd；不实现（缺省 `None`）会让**整个进程**的清理静默关闭。钉在单测 `*_服务声明的正是它的_fd_表键`。
+    /// pingora 0.9.0（上游 `f82478a`）：新一代據此關掉「沒有任何服務認領」的繼承 fd。
+    /// ⚠ 必須是 fd 表的**鍵**（帶前綴），⛔ 不是 bind 位址 —— 寫成位址，新一代會先關掉自己要繼承的
+    ///   那個 fd；不實作（預設 `None`）會讓**整個處理程序**的清理靜默關閉。釘在單測 `*_服务声明的正是它的_fd_表键`。
     fn listen_addresses(&self) -> Option<Vec<String>> {
         Some(vec![self.fd_key.clone()])
     }
 }
 
-/// 一代进程的转交两半（**M2 批 K**，G109 ②）。
+/// 一代處理程序的轉交兩半（**M2 批 K**，G109 ②）。
 ///
-/// ★ **收件口与发件口捆在一起交给 [`serve`]**，而不是各传各的：
-/// 一代要么两半都有，要么一半都没有 —— 拆成两个 `Option` 会多出两个说不出意义的状态。
+/// ★ **收件口與發件口捆在一起交給 [`serve`]**，而不是各傳各的：
+/// 一代要麼兩半都有，要麼一半都沒有 —— 拆成兩個 `Option` 會多出兩個說不出意義的狀態。
 pub struct Relay {
     pub inbox: RelayInbox,
     pub outbox: RelayOutbox,
 }
 
-/// 排空阶段的轮询间隔。
+/// 排空階段的輪詢間隔。
 ///
-/// ⚠ 收到停机信号之后**不再 `recv_from`**，于是那条 `select!` 只剩转交一支 ——
-/// 而如果没有任何转交进来，它会一直等下去、永远不回头看「连接排空了没有」。
-/// ★ 这个 tick 就是那一眼。
+/// ⚠ 收到停機信號之後**不再 `recv_from`**，於是那條 `select!` 只剩轉交一支 ——
+/// 而如果沒有任何轉交進來，它會一直等下去、永遠不回頭看「連接排空了沒有」。
+/// ★ 這個 tick 就是那一眼。
 const DRAIN_POLL: Duration = Duration::from_millis(200);
 
-/// 从转交口收进来的一份数据报，交给本代的连接表。
+/// 從轉交口收進來的一份資料報，交給本代的連接表。
 ///
-/// # ★ ★ ★ G109 ④「转交只走一跳」的**结构性**落点
+/// # ★ ★ ★ G109 ④「轉交只走一跳」的**結構性**落點
 ///
-/// ⚠ ⚠ **本函数拿不到 `GenId`、`RetryKey`，也拿不到 [`RelayOutbox`]** ——
-/// 于是「再判一次归属」「再转交一次」这两件事在这里**写不出来**。
-/// ★ 那比一句「记得别再转交」可靠：环路不是靠自觉避免的，是靠**手上没有那个东西**。
+/// ⚠ ⚠ **本函式拿不到 `GenId`、`RetryKey`，也拿不到 [`RelayOutbox`]** ——
+/// 於是「再判一次歸屬」「再轉交一次」這兩件事在這裡**寫不出來**。
+/// ★ 那比一句「記得別再轉交」可靠：環路不是靠自覺避免的，是靠**手上沒有那個東西**。
 ///
-/// 返回 `true` = 送进了某条连接。`false` = 不认识这个 DCID（丢弃）。
+/// 回傳 `true` = 送進了某條連接。`false` = 不認識這個 DCID（丟棄）。
 fn dispatch_relayed(
     conns: &HashMap<Vec<u8>, LiveConn>,
     from: SocketAddr,
     to: SocketAddr,
     pkt: &mut [u8],
 ) -> bool {
-    // ⚠ 只为读 DCID 而解析包头 —— 解析不出来就丢，**不猜**。
+    // ⚠ 只為讀 DCID 而解析包頭 —— 解析不出來就丟，**不猜**。
     let Ok(hdr) = quiche::Header::from_slice(pkt, SCID_LEN) else {
         return false;
     };
     match conns.get(hdr.dcid.as_ref()) {
-        // ⚠ `try_send` 而不是 `send`：与本代自己收包那条逐字同一条理由 ——
-        //   队列满了就丢这一个数据报，绝不能把收包循环卡住。
+        // ⚠ `try_send` 而不是 `send`：與本代自己收包那條逐字同一條理由 ——
+        //   佇列滿了就丟這一個資料報，絕不能把收包循環卡住。
         Some(c) => c.tx.try_send((pkt.to_vec(), from, to)).is_ok(),
         None => false,
     }
 }
 
-/// 从转交口收一份报文。
+/// 從轉交口收一份訊息。
 ///
-/// * `None` 收件口不存在或已被摘掉 ⇒ **永远不完成**（那一支在 `select!` 里等于不存在）。
+/// * `None` 收件口不存在或已被摘掉 ⇒ **永遠不完成**（那一支在 `select!` 裡等於不存在）。
 /// * `Some(frame)` 收到一份。
-/// * 读出错 ⇒ `None` ⇒ 调用方摘掉它。
+/// * 讀出錯 ⇒ `None` ⇒ 呼叫方摘掉它。
 ///
-/// ⚠ 写成一个 helper 而不是把 `if inbox.is_some()` 塞进 `select!` 的前置条件：
-/// 那样写在 `inbox` 为 `None` 时会**没有任何分支可选**，而 `tokio::select!` 在那种情况下
-/// 会 panic。★ 这里让它「永远 pending」，于是那一支只是安静地不参与。
+/// ⚠ 寫成一個 helper 而不是把 `if inbox.is_some()` 塞進 `select!` 的前置條件：
+/// 那樣寫在 `inbox` 為 `None` 時會**沒有任何分支可選**，而 `tokio::select!` 在那種情況下
+/// 會 panic。★ 這裡讓它「永遠 pending」，於是那一支只是安靜地不參與。
 async fn recv_relay(inbox: Option<&RelayInbox>, broken: bool) -> Option<Vec<u8>> {
     let Some(inbox) = inbox.filter(|_| !broken) else {
         return std::future::pending().await;
@@ -497,13 +497,13 @@ async fn recv_relay(inbox: Option<&RelayInbox>, broken: bool) -> Option<Vec<u8>>
     }
 }
 
-/// 收包循环本体 —— **socket 与配置都由调用方给**。
+/// 收包循環本體 —— **socket 與設定都由呼叫方給**。
 ///
-/// ★ ★ 把「取 socket」与「在它上面服务」拆开，与本页开头那张表是同一条理由：
-/// `start_service` 里那一段要 fd 表、要 `SniResolver`、要一整个 `Service` 生命周期，
-/// 而**收包循环本身只需要一个 socket** —— 焊在一起的话，
-/// 判据就只能从 `Service` 那一头进去，那意味着**没法给它一个自己挑的端口**。
-/// ⇒ 拆开之后判据可以 bind `127.0.0.1:0`、拿到真端口，再拿真客户端打过来。
+/// ★ ★ 把「取 socket」與「在它上面服務」拆開，與本頁開頭那張表是同一條理由：
+/// `start_service` 裡那一段要 fd 表、要 `SniResolver`、要一整個 `Service` 生命週期，
+/// 而**收包循環本身只需要一個 socket** —— 焊在一起的話，
+/// 判據就只能從 `Service` 那一頭進去，那意味著**沒法給它一個自己挑的連接埠**。
+/// ⇒ 拆開之後判據可以 bind `127.0.0.1:0`、拿到真連接埠，再拿真用戶端打過來。
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
     sock: Arc<UdpSocket>,
@@ -513,8 +513,8 @@ pub async fn serve(
     mut config: quiche::Config,
     handler: Arc<dyn H3RequestHandler>,
     relay: Option<Relay>,
-    // 这个监听器的连接计数格（**M2 批 O**）。`None` = 不数（单测走这条）。
-    // ⚠ 名字不叫 `conn`：这个函数里 `conn` 已经是**一条 quiche 连接**了。
+    // 這個監聽器的連接計數格（**M2 批 O**）。`None` = 不數（單測走這條）。
+    // ⚠ 名字不叫 `conn`：這個函式里 `conn` 已經是**一條 quiche 連接**了。
     conn_stats_slot: Option<crate::conn_stats::BoundConn>,
 ) {
     let local: SocketAddr = match sock.local_addr() {
@@ -532,21 +532,21 @@ pub async fn serve(
         Some(r) => (Some(r.inbox), Some(r.outbox)),
         None => (None, None),
     };
-    // ⚠ ⚠ **收到停机信号之后不是 `break`，是转进「排空」**（**M2 批 K**）。
-    //   ★ 那一段里本代**不再 `recv_from`**，但**继续收转交** ——
-    //     否则新一代转回来的数据报没人接，而那正是「换代零中断」要防的事。
+    // ⚠ ⚠ **收到停機信號之後不是 `break`，是轉進「排空」**（**M2 批 K**）。
+    //   ★ 那一段裡本代**不再 `recv_from`**，但**繼續收轉交** ——
+    //     否則新一代轉回來的資料報沒人接，而那正是「換代零中斷」要防的事。
     let mut draining = false;
-    // ⚠ 转交口自己读不下去了（fd 坏了那一类）⇒ 摘掉它，**而不是把整个监听器停掉**：
-    //   ★ 那样至少 h3 还在服务，只是换代时会断 —— 比「h3 整个不存在」小得多。
+    // ⚠ 轉交口自己讀不下去了（fd 壞了那一類）⇒ 摘掉它，**而不是把整個監聽器停掉**：
+    //   ★ 那樣至少 h3 還在服務，只是換代時會斷 —— 比「h3 整個不存在」小得多。
     let mut relay_broken = false;
 
     loop {
         tokio::select! {
             _ = shutdown.changed(), if !draining => {
-                // ★ ★ ★ **与 L4 UDP 那条纪律逐字相同**：停机信号一到就**不再 `recv_from`**。
-                //   ⚠ 继续收的话，老一代会与新一代抢同一个 socket 上的数据报
-                //   （两代持有的是同一个 fd），把本该属于新一代的首包吃掉。
-                //   ⇒ 已建立的连接任务**不动**，它们只 `send_to`，不抢 `recv`。
+                // ★ ★ ★ **與 L4 UDP 那條紀律逐字相同**：停機信號一到就**不再 `recv_from`**。
+                //   ⚠ 繼續收的話，老一代會與新一代搶同一個 socket 上的資料報
+                //   （兩代持有的是同一個 fd），把本該屬於新一代的首包吃掉。
+                //   ⇒ 已建立的連接任務**不動**，它們只 `send_to`，不搶 `recv`。
                 info!(
                     "[quic] {} 收到停机信号，停止收包（{} 条连接的任务继续；\
                      转交口继续收，直到它们排空）",
@@ -555,22 +555,22 @@ pub async fn serve(
                 );
                 draining = true;
             }
-            // ★ 排空阶段的那一眼：没有它，只剩转交一支的 `select!` 会一直等下去，
-            //   永远不回头看「连接排空了没有」。
+            // ★ 排空階段的那一眼：沒有它，只剩轉交一支的 `select!` 會一直等下去，
+            //   永遠不回頭看「連接排空了沒有」。
             _ = tokio::time::sleep(DRAIN_POLL), if draining => {}
-            // ★ ★ ★ **转交进来的那一支。** 它**不经过 `decide`** —— G109 ④ 的「只走一跳」。
+            // ★ ★ ★ **轉交進來的那一支。** 它**不經過 `decide`** —— G109 ④ 的「只走一跳」。
             //
-            // ⚠ ⚠ 这里收成一个**自有的 `Vec`** 而不是借外面那份缓冲，理由是
-            //   `tokio::select!` 的规矩：分支的 future 会一直借着它捕获的东西，
-            //   而处理体要用同一份缓冲 —— 借用检查器不让。
-            //   ★ 代价是每一份**转交进来的**数据报一次分配，而它只在换代窗口里出现。
+            // ⚠ ⚠ 這裡收成一個**自有的 `Vec`** 而不是借外面那份緩衝，理由是
+            //   `tokio::select!` 的規矩：分支的 future 會一直藉著它捕獲的東西，
+            //   而處理體要用同一份緩衝 —— 借用檢查器不讓。
+            //   ★ 代價是每一份**轉交進來的**資料報一次分配，而它只在換代視窗裡出現。
             got = recv_relay(inbox.as_ref(), relay_broken) => {
                 match got {
                     Some(mut frame) => {
                         let n = frame.len();
                         let ok = match crate::quic::relay::decode(&frame) {
                             Some((from, to, _)) => {
-                                // ⚠ 拆完头之后把载荷**原地**交出去
+                                // ⚠ 拆完頭之後把載荷**原地**交出去
                                 //   （`quiche::Header::from_slice` 要 `&mut [u8]`）。
                                 let body = &mut frame[crate::quic::relay::HEADER_LEN..];
                                 dispatch_relayed(&conns, from, to, body)
@@ -580,8 +580,8 @@ pub async fn serve(
                                 false
                             }
                         };
-                        // ⚠ **成功那一半也要说一句** —— 只在失败时打日志的话，
-                        //   **「没有日志」既可能是「没收到」、也可能是「收到并且一切正常」**。
+                        // ⚠ **成功那一半也要說一句** —— 只在失敗時打紀錄的話，
+                        //   **「沒有紀錄」既可能是「沒收到」、也可能是「收到並且一切正常」**。
                         if ok {
                             debug!("[quic] 转交进来一个数据报（{n} 字节）⇒ 已送进那条连接");
                         } else {
@@ -602,7 +602,7 @@ pub async fn serve(
                     Ok(v) => v,
                     Err(e) => {
                         error!("[quic] {local} recv_from 出错：{e}");
-                        // fd 耗尽时这个循环会满速空转 —— 与 l4.rs 同一条防护。
+                        // fd 耗盡時這個循環會滿速空轉 —— 與 l4.rs 同一條防護。
                         if matches!(e.raw_os_error(), Some(24) | Some(23)) {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
@@ -642,8 +642,8 @@ pub async fn serve(
                         }
                     }
                     Action::Retry => {
-                        // ★ 这里铸的 SCID 就是客户端此后要用的 DCID ——
-                        //   它**必须带 gen_id 前缀**，否则换代时那条连接认不出来（G109 ①）。
+                        // ★ 這裡鑄的 SCID 就是用戶端此後要用的 DCID ——
+                        //   它**必須帶 gen_id 前綴**，否則換代時那條連接認不出來（G109 ①）。
                         let new_scid = gen_id.mint_scid();
                         let token = match retry_key.mint(&peer, &hdr.dcid, now_secs()) {
                             Ok(t) => t,
@@ -665,9 +665,9 @@ pub async fn serve(
                     Action::Existing => {
                         let dcid = hdr.dcid.to_vec();
                         let dead = match conns.get(&dcid) {
-                            // ⚠ `try_send` 而不是 `send`：队列满了就丢这一个数据报，
-                            //   **绝不能把收包循环卡住** —— 一条慢连接会拖垮整个监听器。
-                            //   ★ QUIC 自己会重传，丢一个是可恢复的。
+                            // ⚠ `try_send` 而不是 `send`：佇列滿了就丟這一個資料報，
+                            //   **絕不能把收包循環卡住** —— 一條慢連接會拖垮整個監聽器。
+                            //   ★ QUIC 自己會重傳，丟一個是可恢復的。
                             Some(c) => c.tx.try_send((pkt.to_vec(), peer, local)).is_err(),
                             None => false,
                         };
@@ -676,7 +676,7 @@ pub async fn serve(
                         }
                     }
                     Action::Accept { odcid } => {
-                        // 客户端现在用的 DCID 就是我们在 Retry 里给它的 SCID。
+                        // 用戶端現在用的 DCID 就是我們在 Retry 裡給它的 SCID。
                         let scid = quiche::ConnectionId::from_ref(&hdr.dcid).into_owned();
                         let odcid = quiche::ConnectionId::from_ref(&odcid).into_owned();
                         let conn = match quiche::accept(
@@ -689,18 +689,18 @@ pub async fn serve(
                             }
                         };
                         let (tx, rx) = mpsc::channel(CONN_QUEUE);
-                        // ★ 连接计数（**M2 批 O**）：包一层而不改 `h3_conn::run` 的签名。
+                        // ★ 連接計數（**M2 批 O**）：包一層而不改 `h3_conn::run` 的簽名。
                         let g = conn_stats_slot.as_ref().map(|b| b.guard());
                         let sock_c = sock.clone();
                         let handler_c = handler.clone();
                         let handle = tokio::spawn(async move {
-                            // ⚠ ⚠ **必须绑名字**：写成 `let _ = g;` 会当场 drop，
-                            //   于是 active 恒为 0 而 total 照涨，且不会有东西红。
+                            // ⚠ ⚠ **必須綁名字**：寫成 `let _ = g;` 會當場 drop，
+                            //   於是 active 恆為 0 而 total 照漲，且不會有東西紅。
                             let _g = g;
                             h3_conn::run(conn, sock_c, rx, local, peer, handler_c).await
                         });
                         let key = scid.to_vec();
-                        // 首包要立刻喂给它，否则握手不会开始。
+                        // 首包要立刻餵給它，否則握手不會開始。
                         let _ = tx.try_send((pkt.to_vec(), peer, local));
                         conns.insert(
                             key,
@@ -709,23 +709,23 @@ pub async fn serve(
                         debug!("[quic] 接受了来自 {peer} 的新连接（现共 {} 条）", conns.len());
                     }
                     Action::Relay(g) => {
-                        // ✅ ✅ ✅ **M2 批 K：这一支从「丢弃」换成「送给它真正的主人」。**
-                        //   ⚠ 批 J 时这里只有一行 debug，而那一行是「换代零中断不成立」
-                        //     这句话唯一的落点。★ 现在它成立了 —— 改它之前先读 G109 ②③④。
+                        // ✅ ✅ ✅ **M2 批 K：這一支從「丟棄」換成「送給它真正的主人」。**
+                        //   ⚠ 批 J 時這裡只有一行 debug，而那一行是「換代零中斷不成立」
+                        //     這句話唯一的落點。★ 現在它成立了 —— 改它之前先讀 G109 ②③④。
                         match outbox.as_mut() {
                             Some(ob) => match ob.send(g, &peer, &local, pkt).await {
                                 Relayed::Sent => {
                                     debug!("[quic] {peer} 的包转交给了 {}", g.hex());
                                 }
-                                // ★ 「那一代已经退出」是换代的**常态**：它一走，
-                                //   那条连接本来就没了 ⇒ 丢一个包，不是错误。
+                                // ★ 「那一代已經退出」是換代的**常態**：它一走，
+                                //   那條連接本來就沒了 ⇒ 丟一個包，不是錯誤。
                                 Relayed::Gone => {
                                     debug!(
                                         "[quic] {peer} 的包属于 {}，而那一代已经退出，丢弃",
                                         g.hex()
                                     );
                                 }
-                                // ⚠ 而这一种要有人看：它不是换代的常态。
+                                // ⚠ 而這一種要有人看：它不是換代的常態。
                                 Relayed::Failed => {
                                     warn!("[quic] 往 {} 转交失败（不是「它已退出」那一种）", g.hex());
                                 }
@@ -741,20 +741,20 @@ pub async fn serve(
                     }
                 }
             }
-            // ⚠ 所有分支都被前置条件关掉时 `tokio::select!` 会 panic ——
-            //   这一支是那种情况的出口（没有转交口 + 已进入排空）。
+            // ⚠ 所有分支都被前置條件關掉時 `tokio::select!` 會 panic ——
+            //   這一支是那種情況的出口（沒有轉交口 + 已進入排空）。
             else => break,
         }
 
-        // 顺手收掉已经结束的连接任务。★ 不做的话这张表只增不减。
-        // ⚠ ⚠ **移到 `select!` 外面**（批 K）：排空阶段要靠它才看得见「排完了没有」，
-        //   而它此前只在「收到一个数据报」那一支里跑。
+        // 順手收掉已經結束的連接任務。★ 不做的話這張表只增不減。
+        // ⚠ ⚠ **移到 `select!` 外面**（批 K）：排空階段要靠它才看得見「排完了沒有」，
+        //   而它此前只在「收到一個資料報」那一支裡跑。
         conns.retain(|_, c| !c.task.is_finished());
 
-        // ★ 排空完成 —— 本代该走了。
-        //   ⚠ 上界不由这里定：pingora 停机时**不等 service 返回**，
-        //     它 sleep 完宽限期就强关 runtime（`server/mod.rs` 那一段）。
-        //     ⇒ 这里只负责「排完就早点走」，走不掉也不会拖住谁。
+        // ★ 排空完成 —— 本代該走了。
+        //   ⚠ 上界不由這裡定：pingora 停機時**不等 service 回傳**，
+        //     它 sleep 完寬限期就強關 runtime（`server/mod.rs` 那一段）。
+        //     ⇒ 這裡只負責「排完就早點走」，走不掉也不會拖住誰。
         if draining && conns.is_empty() {
             info!("[quic] {local} 的连接已排空，收包任务退出");
             break;
@@ -762,17 +762,17 @@ pub async fn serve(
     }
 }
 
-/// 判定层的判据。**全部脱网**：一个 socket 都不开，而客户端那一半是**真的 quiche**。
+/// 判定層的判據。**全部脫網**：一個 socket 都不開，而用戶端那一半是**真的 quiche**。
 ///
-/// ⚠ ⚠ ★ **首包不手工拼**：让 **quiche 自己**去造 Initial、去消化我们的 Retry
-/// （`l4.rs::peek_tests` 让 BoringSSL 自己造 ClientHello，同一条纪律）。
-/// ★ 一份手工拼的报文只能证明「我对格式的理解与我的实现一致」，那是同义反复。
+/// ⚠ ⚠ ★ **首包不手動拼**：讓 **quiche 自己**去造 Initial、去消化我們的 Retry
+/// （`l4.rs::peek_tests` 讓 BoringSSL 自己造 ClientHello，同一條紀律）。
+/// ★ 一份手動拼的訊息只能證明「我對格式的理解與我的實作一致」，那是同義反復。
 #[cfg(test)]
 mod tests {
     use super::*;
     use fulcrum_tls::cert_key_from_der;
     use pingora_core::protocols::http::ServerSession;
-    // ★ `h3::Header` 的 `name()` / `value()` 挂在这个 trait 上。
+    // ★ `h3::Header` 的 `name()` / `value()` 掛在這個 trait 上。
     use quiche::h3::NameValue;
 
     const SNI: &str = "h3.test";
@@ -785,7 +785,7 @@ mod tests {
         "192.0.2.9:44300".parse().expect("常量地址")
     }
 
-    /// 一份自签证书 + 挂上它的 resolver + 服务端 quiche 配置。
+    /// 一份自簽證書 + 掛上它的 resolver + 伺服器端 quiche 設定。
     fn server_config() -> quiche::Config {
         let key = rcgen::KeyPair::generate().expect("测试密钥");
         let params = rcgen::CertificateParams::new(vec![SNI.to_string()]).expect("测试参数");
@@ -793,17 +793,17 @@ mod tests {
         let ck = cert_key_from_der(cert.der().to_vec(), key.serialize_der()).expect("造 CertKey");
 
         let resolver = Arc::new(SniResolver::new());
-        // ★ 按名字装，而不是塞进 default 槽：下面的客户端**报了 SNI**（`quiche::connect`
-        //   的第一个参数），所以这里走的是与真流量同一条挑证书的路。
-        //   ⚠ 之前这里用的是 `set_default` —— 而那是全仓**唯一**的调用方，
-        //   于是「default 槽有人填」这件事只在测试里成立过。
+        // ★ 按名字裝，而不是塞進 default 槽：下面的用戶端**報了 SNI**（`quiche::connect`
+        //   的第一個參數），所以這裡走的是與真流量同一條挑證書的路。
+        //   ⚠ 之前這裡用的是 `set_default` —— 而那是全倉**唯一**的呼叫方，
+        //   於是「default 槽有人填」這件事只在測試裡成立過。
         resolver.install(&[SNI.to_string()], ck);
         build_quic_config(&resolver).expect("服务端配置")
     }
 
     fn client_config() -> quiche::Config {
         let mut c = quiche::Config::new(quiche::PROTOCOL_VERSION).expect("客户端配置");
-        // 自签证书，测试里不验链 —— ★ 被测的是**我们的**分发与握手，不是 PKI。
+        // 自簽證書，測試裡不驗鏈 —— ★ 被測的是**我們的**散布與握手，不是 PKI。
         c.verify_peer(false);
         c.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
             .expect("客户端 ALPN");
@@ -819,9 +819,9 @@ mod tests {
         c
     }
 
-    /// 造一个真的客户端，并拿到它的第一个数据报。
+    /// 造一個真的用戶端，並拿到它的第一個資料報。
     ///
-    /// 返回 `(连接, 首包, 它自选的 DCID)` —— 那个 DCID 就是 RFC 9000 §7.3 的 `odcid`。
+    /// 回傳 `(连接, 首包, 它自选的 DCID)` —— 那個 DCID 就是 RFC 9000 §7.3 的 `odcid`。
     fn client_first_flight(ccfg: &mut quiche::Config) -> (quiche::Connection, Vec<u8>, Vec<u8>) {
         let mut scid = [0u8; SCID_LEN];
         rand::Rng::fill_bytes(&mut rand::rng(), &mut scid);
@@ -857,10 +857,10 @@ mod tests {
         assert_eq!(judge(&me, &key, &pkt, &none_known), Action::Retry);
     }
 
-    /// ★★★ 这一条走完 **Retry 那一整轮**，并且钉住 `odcid` 被原样带了回来 ——
-    /// RFC 9000 §7.3 要求它进 `original_destination_connection_id`，
-    /// 少带或带错的话客户端会在握手末尾判传输参数不符而断开，
-    /// ⚠ **而那个失败看起来像「TLS 出了问题」**。
+    /// ★★★ 這一條走完 **Retry 那一整輪**，並且釘住 `odcid` 被原樣帶了回來 ——
+    /// RFC 9000 §7.3 要求它進 `original_destination_connection_id`，
+    /// 少帶或帶錯的話用戶端會在握手末尾判傳輸參數不符而斷開，
+    /// ⚠ **而那個失敗看起來像「TLS 出了問題」**。
     #[test]
     fn retry_之后那一发判成_accept_并且_odcid_原样带回() {
         let (me, key) = (GenId::random(), RetryKey::random());
@@ -868,7 +868,7 @@ mod tests {
         let (mut c, pkt1, odcid) = client_first_flight(&mut ccfg);
         assert_eq!(judge(&me, &key, &pkt1, &none_known), Action::Retry);
 
-        // 我们回一个真的 Retry。
+        // 我們回一個真的 Retry。
         let new_scid = me.mint_scid();
         let token = key.mint(&c_addr(), &odcid, NOW).expect("签票");
         let mut out = vec![0u8; DATAGRAM_MAX];
@@ -887,7 +887,7 @@ mod tests {
         )
         .expect("造 Retry");
 
-        // 交给真客户端消化 —— ★ 它认不认，是它说了算，不是我们说了算。
+        // 交給真用戶端消化 —— ★ 它認不認，是它說了算，不是我們說了算。
         c.recv(
             &mut out[..n],
             quiche::RecvInfo {
@@ -905,11 +905,11 @@ mod tests {
         }
     }
 
-    /// ★★★ **端到端：一条真的 QUIC 连接握完手。**
+    /// ★★★ **端到端：一條真的 QUIC 連接握完手。**
     ///
-    /// 它证的不是某一条判定，而是**整条链条合得上**：判定 → Retry → 判定 → accept →
-    /// 握手。⚠ 每一步都可以单独是绿的而链条断掉（`odcid` 带错、ALPN 不匹配、
-    /// 单向流给少了）—— 那几种失败**全都表现为「握手就是不完成」**，而单测看不见。
+    /// 它證的不是某一條判定，而是**整條鏈條合得上**：判定 → Retry → 判定 → accept →
+    /// 握手。⚠ 每一步都可以單獨是綠的而鏈條斷掉（`odcid` 帶錯、ALPN 不匹配、
+    /// 單向流給少了）—— 那幾種失敗**全都表現為「握手就是不完成」**，而單測看不見。
     #[test]
     fn 走完_retry_之后真的能握完手() {
         let (me, key) = (GenId::random(), RetryKey::random());
@@ -952,7 +952,7 @@ mod tests {
             other => panic!("应当 Accept，实际 {other:?}"),
         };
 
-        // 按判定的产物 accept —— ★ 这几行与 `start_service` 里那几行是同一套。
+        // 按判定的產物 accept —— ★ 這幾行與 `start_service` 裡那幾行是同一套。
         let mut s = quiche::accept(
             &new_scid,
             Some(&quiche::ConnectionId::from_ref(&got_odcid)),
@@ -970,7 +970,7 @@ mod tests {
         )
         .expect("服务端收第二发");
 
-        // 手工把两边的数据报倒来倒去，直到都握完手。
+        // 手動把兩邊的資料報倒來倒去，直到都握完手。
         for _ in 0..40 {
             if c.is_established() && s.is_established() {
                 break;
@@ -986,14 +986,14 @@ mod tests {
             b"h3",
             "ALPN 没协商到 h3 —— 那样 h3 层根本起不来"
         );
-        // ★ 而这条连接的 CID **必须带本代的前缀**，否则换代时它认不出来（G109 ①）。
+        // ★ 而這條連接的 CID **必須帶本代的前綴**，否則換代時它認不出來（G109 ①）。
         assert!(
             me.owns(&new_scid),
             "握成的这条连接，CID 前缀不是本代 —— G109 的整条判定会落空"
         );
     }
 
-    /// 把 `from` 排着的包全部搬给 `to`。
+    /// 把 `from` 排著的包全部搬給 `to`。
     fn pump(
         from: &mut quiche::Connection,
         to: &mut quiche::Connection,
@@ -1018,25 +1018,25 @@ mod tests {
         }
     }
 
-    /// ★★★ **短包不许被判成「版本不支持」。**
+    /// ★★★ **短包不許被判成「版本不支援」。**
     ///
-    /// 短包没有版本字段（`hdr.version` 是 0），而 0 不在支持列表里 ——
-    /// 少了 `ty == Initial` 那道闸，**每一个正常的短包都会被回一个版本协商**，
-    /// ⚠ 而那个错误看起来**完全像是对端的问题**。
+    /// 短包沒有版本欄位（`hdr.version` 是 0），而 0 不在支援列表裡 ——
+    /// 少了 `ty == Initial` 那道閘，**每一個正常的短包都會被回一個版本協商**，
+    /// ⚠ 而那個錯誤看起來**完全像是對端的問題**。
     #[test]
     fn 短包不许被判成版本不支持() {
         let (me, key) = (GenId::random(), RetryKey::random());
         let cid = me.mint_scid();
-        // 一个最小的短包：首字节最高位为 0（短包），后面跟 DCID。
+        // 一個最小的短包：首位元組最高位為 0（短包），後面跟 DCID。
         let mut pkt = vec![0x40u8];
         pkt.extend_from_slice(&cid);
         pkt.extend_from_slice(&[0u8; 16]);
 
         let action = judge(&me, &key, &pkt, &none_known);
         assert_ne!(action, Action::NegotiateVersion, "短包被判成了版本不支持");
-        // 表里没有这条连接 ⇒ 该判「没有这条连接」，而不是别的。
+        // 表裡沒有這條連接 ⇒ 該判「沒有這條連接」，而不是別的。
         assert_eq!(action, Action::Drop(DropWhy::NoSuchConnection));
-        // 表里有的话就该交给它。
+        // 表裡有的話就該交給它。
         let known = |_: &[u8]| true;
         assert_eq!(judge(&me, &key, &pkt, &known), Action::Existing);
     }
@@ -1052,7 +1052,7 @@ mod tests {
         assert_eq!(judge(&me, &key, &pkt, &none_known), Action::Relay(other));
     }
 
-    /// 票是别人签的 / 过期了 / 被改过 ⇒ 一律 `BadToken`，而**不是** `Accept`。
+    /// 票是別人籤的 / 過期了 / 被改過 ⇒ 一律 `BadToken`，而**不是** `Accept`。
     #[test]
     fn 坏票判成_badtoken_而不是_accept() {
         let (me, key) = (GenId::random(), RetryKey::random());
@@ -1060,7 +1060,7 @@ mod tests {
         let mut ccfg = client_config();
         let (mut c, pkt1, odcid) = client_first_flight(&mut ccfg);
 
-        // 用**另一把钥匙**签票，其余流程一模一样。
+        // 用**另一把鑰匙**籤票，其餘流程一模一樣。
         let new_scid = me.mint_scid();
         let token = other_key.mint(&c_addr(), &odcid, NOW).expect("签票");
         let mut out = vec![0u8; DATAGRAM_MAX];
@@ -1095,18 +1095,18 @@ mod tests {
         );
     }
 
-    /// 客户端要一个我们不支持的 QUIC 版本 ⇒ 回版本协商。
+    /// 用戶端要一個我們不支援的 QUIC 版本 ⇒ 回版本協商。
     ///
-    /// ⚠ ★ **写成 `if let Ok(hdr) = Header::from_slice(…) { assert!(…) }` 是错的** ——
-    /// 解析失败时它一条断言都不跑，而测试照样是绿的。
-    /// ★ **一道门写完后要问：它自己有没有静默分支。**
-    /// ⇒ 这一条用**真客户端发一个真的坏版本**，它没有可以静默的分支。
-    /// （「DCID 太短」那一条由 `gen_id::tests::dcid_短于八字节判不出来而不是判成本代`
-    /// 直接钉在 `ownership` 上，而 `decide` 的版本闸只对 `Initial` 生效、绕不过它。）
+    /// ⚠ ★ **寫成 `if let Ok(hdr) = Header::from_slice(…) { assert!(…) }` 是錯的** ——
+    /// 解析失敗時它一條斷言都不跑，而測試照樣是綠的。
+    /// ★ **一道門寫完後要問：它自己有沒有靜默分支。**
+    /// ⇒ 這一條用**真用戶端發一個真的壞版本**，它沒有可以靜默的分支。
+    /// （「DCID 太短」那一條由 `gen_id::tests::dcid_短于八字节判不出来而不是判成本代`
+    /// 直接釘在 `ownership` 上，而 `decide` 的版本閘只對 `Initial` 生效、繞不過它。）
     #[test]
     fn 不支持的版本判成版本协商() {
         let (me, key) = (GenId::random(), RetryKey::random());
-        // ★ `0xbabababa` 是 quiche 自己文档里用的那个「保留给测试」的版本号。
+        // ★ `0xbabababa` 是 quiche 自己文件裡用的那個「保留給測試」的版本號。
         let mut ccfg = quiche::Config::new(0xbabababa).expect("坏版本的客户端配置");
         ccfg.verify_peer(false);
         ccfg.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
@@ -1124,8 +1124,8 @@ mod tests {
             judge(&me, &key, &buf[..n], &none_known),
             Action::NegotiateVersion
         );
-        // ★ 反向的一半：**同一条链路上**版本对的客户端不能也被判成版本协商，
-        //   否则这条判据与「恒返回 NegotiateVersion」无法区分。
+        // ★ 反向的一半：**同一條連線路徑上**版本對的用戶端不能也被判成版本協商，
+        //   否則這條判據與「恆回傳 NegotiateVersion」無法區分。
         let mut ok_cfg = client_config();
         let (_c2, pkt_ok, _) = client_first_flight(&mut ok_cfg);
         assert_eq!(judge(&me, &key, &pkt_ok, &none_known), Action::Retry);
@@ -1133,24 +1133,24 @@ mod tests {
 
     #[test]
     fn 配置真的把_h3_设成了_alpn() {
-        // ★ 直接的判据是上面那条端到端里 `application_proto() == b"h3"`；
-        //   这里只确认配置本身建得出来（证书装得上、context 建得成）。
+        // ★ 直接的判據是上面那條端到端裡 `application_proto() == b"h3"`；
+        //   這裡只確認設定本身建得出來（證書裝得上、context 建得成）。
         let _ = server_config();
     }
 
-    // ── 端到端：真 UDP、真 quiche 客户端、真 h3 请求与响应 ──────────────────
+    // ── 端到端：真 UDP、真 quiche 用戶端、真 h3 請求與回應 ──────────────────
     //
-    // ★ ★ ★ 上面那些判据各自只声称自己那一格；这一条把**整条链**跑通：
-    //   收包 → 判定 → Retry → accept → 握手 → h3 层 → 翻请求头 → 执行链 →
-    //   翻响应头（**滤掉逐跳头**）→ 发体 → 客户端读到。
-    // ⚠ 走的是 `127.0.0.1` 上一对真 socket，**端口由内核挑**（bind `:0` 再问它） ——
-    //   写死端口会在并行跑测试时互相撞，而那种红看起来像产品缺陷。
+    // ★ ★ ★ 上面那些判據各自只聲稱自己那一格；這一條把**整條鏈**跑通：
+    //   收包 → 判定 → Retry → accept → 握手 → h3 層 → 翻請求頭 → 執行鏈 →
+    //   翻回應頭（**濾掉逐跳頭**）→ 發體 → 用戶端讀到。
+    // ⚠ 走的是 `127.0.0.1` 上一對真 socket，**連接埠由核心挑**（bind `:0` 再問它） ——
+    //   寫死連接埠會在並行跑測試時互相撞，而那種紅看起來像產品缺陷。
 
-    /// 判据用的处理器：回一个固定响应，并把它看见的请求头**回传**出来。
+    /// 判據用的處理器：回一個固定回應，並把它看見的請求頭**回傳**出來。
     ///
-    /// ⚠ ⚠ ★ 它**故意插一个 `connection` 逐跳头** —— 客户端如果看得见它，
-    /// 说明 RFC 9114 §4.2 那道过滤器在真链路上没生效
-    /// （而单测里它是绿的：那只证明函数本身对，证不了它被接在链上）。
+    /// ⚠ ⚠ ★ 它**故意插一個 `connection` 逐跳頭** —— 用戶端如果看得見它，
+    /// 說明 RFC 9114 §4.2 那道過濾器在真連線路徑上沒生效
+    /// （而單測裡它是綠的：那隻證明函式本身對，證不了它被接在鏈上）。
     struct EchoHandler;
 
     #[async_trait]
@@ -1176,7 +1176,7 @@ mod tests {
             resp.insert_header("x-seen-path", path).expect("插");
             resp.insert_header("x-seen-host", host).expect("插");
             resp.insert_header("x-seen-ua", ua).expect("插");
-            // ★ 故意的：它必须在客户端那侧消失。
+            // ★ 故意的：它必須在用戶端那側消失。
             resp.insert_header("connection", "keep-alive").expect("插");
 
             let _ = session.write_response_header(Box::new(resp)).await;
@@ -1187,14 +1187,14 @@ mod tests {
         }
     }
 
-    /// 客户端读到的东西。
+    /// 用戶端讀到的東西。
     struct Got {
         status: String,
         headers: Vec<(String, String)>,
         body: Vec<u8>,
     }
 
-    /// 一个最小的真 h3 客户端：连上去、发一个请求、把响应读回来。
+    /// 一個最小的真 h3 用戶端：連上去、發一個請求、把回應讀回來。
     async fn one_h3_request(server: SocketAddr, path: &str) -> Got {
         let sock = UdpSocket::bind("127.0.0.1:0").await.expect("客户端 socket");
         let local = sock.local_addr().expect("客户端地址");
@@ -1218,7 +1218,7 @@ mod tests {
         let mut inbuf = vec![0u8; DATAGRAM_MAX];
 
         while !done {
-            // ① 发。
+            // ① 發。
             loop {
                 match conn.send(&mut out) {
                     Ok((n, info)) => {
@@ -1231,7 +1231,7 @@ mod tests {
             if conn.is_closed() {
                 break;
             }
-            // ② h3 层 + 发请求。
+            // ② h3 層 + 發請求。
             if h3.is_none() && conn.is_established() {
                 h3 = Some(
                     quiche::h3::Connection::with_transport(&mut conn, &h3_cfg).expect("客户端 h3"),
@@ -1249,7 +1249,7 @@ mod tests {
                 ];
                 h.send_request(&mut conn, &req, true).expect("客户端发请求");
                 sent = true;
-                continue; // 让它先发出去
+                continue; // 讓它先發出去
             }
             // ③ 收 h3 事件。
             if let Some(h) = h3.as_mut() {
@@ -1283,7 +1283,7 @@ mod tests {
             if done {
                 break;
             }
-            // ④ 等一个数据报，或者等定时器。
+            // ④ 等一個資料報，或者等定時器。
             let t = conn.timeout().unwrap_or(Duration::from_millis(20));
             match tokio::time::timeout(t, sock.recv_from(&mut inbuf)).await {
                 Ok(Ok((n, from))) => {
@@ -1297,7 +1297,7 @@ mod tests {
         got
     }
 
-    /// ★★★ **整条链跑通：一个真的 h3 请求进来，一个真的 h3 响应回去。**
+    /// ★★★ **整條鏈跑通：一個真的 h3 請求進來，一個真的 h3 回應回去。**
     #[tokio::test]
     async fn 一个真的_h3_请求端到端走通() {
         let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("服务端 socket"));
@@ -1313,8 +1313,8 @@ mod tests {
             Arc::new(RetryKey::random()),
             cfg,
             Arc::new(EchoHandler),
-            // ★ 这两条端到端只验 h3 本体，不验换代 ⇒ 不给转交口。
-            //   ⚠ 而「没有转交口时 select! 不许 panic」正好被它们顺带钉住。
+            // ★ 這兩條端到端只驗 h3 本體，不驗換代 ⇒ 不給轉交口。
+            //   ⚠ 而「沒有轉交口時 select! 不許 panic」正好被它們順帶釘住。
             None,
             None,
         ));
@@ -1334,28 +1334,28 @@ mod tests {
                 .find(|(n, _)| n == k)
                 .map(|(_, v)| v.clone())
         };
-        // ★ 请求头真的翻译过去了（:path / :authority→host / 普通头）。
+        // ★ 請求頭真的翻譯過去了（:path / :authority→host / 普通頭）。
         assert_eq!(find("x-seen-path").as_deref(), Some("/hi"));
         assert_eq!(find("x-seen-host").as_deref(), Some(SNI));
         assert_eq!(find("x-seen-ua").as_deref(), Some("fulcrum-test"));
-        // ★ 响应头也翻回来了。
+        // ★ 回應頭也翻回來了。
         assert_eq!(find("content-type").as_deref(), Some("text/plain"));
-        // ★ ★ ★ 而处理器**故意插的那个逐跳头必须消失** ——
-        //   单测里那条过滤器是绿的，但那只证明函数本身对，证不了它接在链上。
+        // ★ ★ ★ 而處理器**故意插的那個逐跳頭必須消失** ——
+        //   單測裡那條過濾器是綠的，但那隻證明函式本身對，證不了它接在鏈上。
         assert!(
             find("connection").is_none(),
             "逐跳头 connection 漏到了客户端 —— RFC 9114 §4.2 的过滤器没接在链上"
         );
     }
 
-    /// 把请求体原样回显的处理器。
+    /// 把請求體原樣回顯的處理器。
     struct EchoBodyHandler;
 
     #[async_trait]
     impl H3RequestHandler for EchoBodyHandler {
         async fn handle(&self, mut session: ServerSession) {
             let mut body = Vec::new();
-            // ⚠ 读到 `None` 为止 —— 少读一次就少一段。
+            // ⚠ 讀到 `None` 為止 —— 少讀一次就少一段。
             while let Ok(Some(chunk)) = session.read_request_body().await {
                 body.extend_from_slice(&chunk);
             }
@@ -1370,7 +1370,7 @@ mod tests {
         }
     }
 
-    /// 客户端：发一个带体的请求，把响应体读回来。
+    /// 用戶端：發一個帶體的請求，把回應體讀回來。
     async fn one_h3_post(server: SocketAddr, payload: &[u8]) -> Got {
         let sock = UdpSocket::bind("127.0.0.1:0").await.expect("客户端 socket");
         let local = sock.local_addr().expect("客户端地址");
@@ -1422,7 +1422,7 @@ mod tests {
                     ];
                     req_sid = Some(h.send_request(&mut conn, &req, false).expect("发请求头"));
                 }
-                // ★ ★ 客户端这一侧同样会短写 —— 写不完就留着下一轮。
+                // ★ ★ 用戶端這一側同樣會短寫 —— 寫不完就留著下一輪。
                 if let Some(sid) = req_sid
                     && !left.is_empty()
                 {
@@ -1432,7 +1432,7 @@ mod tests {
                         Err(e) => panic!("客户端发体出错：{e}"),
                     }
                     if left.is_empty() {
-                        // 体发完了，补一个空的 fin。
+                        // 體發完了，補一個空的 fin。
                         let _ = h.send_body(&mut conn, sid, &[], true);
                     }
                 }
@@ -1478,16 +1478,16 @@ mod tests {
         got
     }
 
-    /// ★★★ **一次覆盖两条已写进文档、而此前一条判据都没有的陷阱**：
+    /// ★★★ **一次覆蓋兩條已寫進文件、而此前一條判據都沒有的陷阱**：
     ///
-    /// 1. `recv_body` **必须读到 `Done`** —— `Data` 事件不会重新武装，
-    ///    少读一次这条流剩下的体就再也不会来通知；
-    /// 2. `send_body` **会短写** —— 不留待发队列的话，**大响应会被静默截断**。
+    /// 1. `recv_body` **必須讀到 `Done`** —— `Data` 事件不會重新武裝，
+    ///    少讀一次這條流剩下的體就再也不會來通知；
+    /// 2. `send_body` **會短寫** —— 不留待發佇列的話，**大回應會被靜默截斷**。
     ///
-    /// ⚠ 两者的失效表现**都是「内容少了一截，而连接看起来好好的」** ——
-    /// 小响应的判据（上面那条）**原理上看不见它们**：一次就写完了、一次就读完了。
-    /// ⇒ 体积必须**大于一次收发能装下的量**，这里取 **256 KiB**
-    /// （远大于 `BODY_CHUNK` 的 16 KiB，也大于初始流控窗口）。
+    /// ⚠ 兩者的失效表現**都是「內容少了一截，而連接看起來好好的」** ——
+    /// 小回應的判據（上面那條）**原理上看不見它們**：一次就寫完了、一次就讀完了。
+    /// ⇒ 體積必須**大於一次收發能裝下的量**，這裡取 **256 KiB**
+    /// （遠大於 `BODY_CHUNK` 的 16 KiB，也大於初始流控視窗）。
     #[tokio::test]
     async fn 大体积请求与响应不被截断() {
         let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("服务端 socket"));
@@ -1505,8 +1505,8 @@ mod tests {
             None,
         ));
 
-        // 一段可校验的载荷：每个字节都由它的位置决定 ⇒ **错位也看得出来**，
-        // 而不只是「长度对不对」。
+        // 一段可檢核的載荷：每個位元組都由它的位置決定 ⇒ **錯位也看得出來**，
+        // 而不只是「長度對不對」。
         let payload: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
 
         let got = tokio::time::timeout(Duration::from_secs(30), one_h3_post(server, &payload))
@@ -1538,12 +1538,12 @@ mod tests {
         );
     }
 
-    // ── M2 批 K：转交接线的两条判据 ─────────────────────────────────────────
+    // ── M2 批 K：轉交串接的兩條判據 ─────────────────────────────────────────
 
-    /// `run_dir` 是**推导**出来的，所以它有自己的判据。
+    /// `run_dir` 是**推導**出來的，所以它有自己的判據。
     ///
-    /// ⚠ 「取 `upgrade_sock` 的父目录」是一条**推导**，要么坐实它、要么加一个显式字段，
-    /// 别默认它成立 —— 这条判据就是坐实它的那一半。
+    /// ⚠ 「取 `upgrade_sock` 的父目錄」是一條**推導**，要麼坐實它、要麼加一個顯式欄位，
+    /// 別預設它成立 —— 這條判據就是坐實它的那一半。
     #[test]
     fn 转交目录取的是换代_socket_的父目录() {
         use std::path::Path;
@@ -1551,37 +1551,37 @@ mod tests {
             run_dir_of("/run/fulcrum/upgrade.sock"),
             Path::new("/run/fulcrum")
         );
-        // 判据里两个实例共用一个 $WORK，各给一个不同的 sock 名 —— 那时目录是同一个，
-        // ★ 而它们的 `gen_id` 不同 ⇒ 路径仍然不撞。
+        // 判據裡兩個執行個體共用一個 $WORK，各給一個不同的 sock 名 —— 那時目錄是同一個，
+        // ★ 而它們的 `gen_id` 不同 ⇒ 路徑仍然不撞。
         assert_eq!(run_dir_of("/tmp/x/a.sock"), Path::new("/tmp/x"));
-        // ⚠ 没有父目录时回 `.` —— **那是它实际会落的地方**，不是一个占位。
+        // ⚠ 沒有父目錄時回 `.` —— **那是它實際會落的地方**，不是一個佔位。
         assert_eq!(run_dir_of("upgrade.sock"), Path::new("."));
         assert_eq!(run_dir_of(""), Path::new("."));
     }
 
-    /// ★ ★ ★ G109 ④「转交只走一跳」—— **行为那一半**。
+    /// ★ ★ ★ G109 ④「轉交只走一跳」—— **行為那一半**。
     ///
-    /// 结构那一半由 [`dispatch_relayed`] 的签名保证（它拿不到 `GenId` / `RetryKey` /
-    /// `RelayOutbox`，所以「再转交一次」写不出来）；这一条量的是它**认不出来就丢**，
-    /// ⚠ 而不是「顺手当成新连接」——那样一个畸形数据报就能让我们建一份状态。
+    /// 結構那一半由 [`dispatch_relayed`] 的簽名保證（它拿不到 `GenId` / `RetryKey` /
+    /// `RelayOutbox`，所以「再轉交一次」寫不出來）；這一條量的是它**認不出來就丟**，
+    /// ⚠ 而不是「順手當成新連接」——那樣一個畸形資料報就能讓我們建一份狀態。
     #[tokio::test]
     async fn 转交进来的包认不出_dcid_就丢_而不是走别的路() {
         let conns: HashMap<Vec<u8>, LiveConn> = HashMap::new();
         let from: SocketAddr = "192.0.2.9:44300".parse().expect("测试地址");
         let to: SocketAddr = "192.0.2.1:443".parse().expect("测试地址");
 
-        // ① 完全不是 QUIC 包 ⇒ 包头解析不出来 ⇒ 丢。
+        // ① 完全不是 QUIC 包 ⇒ 包頭解析不出來 ⇒ 丟。
         let mut junk = *b"not-a-quic-datagram-at-all";
         assert!(!dispatch_relayed(&conns, from, to, &mut junk));
 
-        // ② 是个像样的短包头、DCID 也够长，但**没有人认领** ⇒ 丢。
-        //   ★ 这一条才是「只走一跳」的正体：认不出来时**没有任何后路**。
+        // ② 是個像樣的短包頭、DCID 也夠長，但**沒有人認領** ⇒ 丟。
+        //   ★ 這一條才是「只走一跳」的正體：認不出來時**沒有任何後路**。
         let mut short = vec![0u8; 1 + SCID_LEN + 8];
-        short[0] = 0x40; // 短包头（固定位置 1、长包头位 0）
+        short[0] = 0x40; // 短包頭（固定位置 1、長包頭位 0）
         short[1..1 + SCID_LEN].copy_from_slice(&[0xab; SCID_LEN]);
         assert!(!dispatch_relayed(&conns, from, to, &mut short));
 
-        // ③ 反向的一半：**认得出来的就该送进去** —— 否则上面两条与「恒回 false」无法区分。
+        // ③ 反向的一半：**認得出來的就該送進去** —— 否則上面兩條與「恆回 false」無法區分。
         let (tx, mut rx) = mpsc::channel(4);
         let task = tokio::spawn(async {});
         let mut conns2: HashMap<Vec<u8>, LiveConn> = HashMap::new();
@@ -1598,13 +1598,13 @@ mod tests {
             "认得出的 DCID 必须送进那条连接 —— 否则上面两条什么都没证明"
         );
         let (_pkt, f, t) = rx.recv().await.expect("那条连接该收到它");
-        // ★ ★ 送进去的是**报文自带的那一对地址**，不是建连时那一对 ——
-        //   转交进来的数据报是别的进程收到的，只有它自己知道 `from`。
+        // ★ ★ 送進去的是**訊息自帶的那一對位址**，不是建連時那一對 ——
+        //   轉交進來的資料報是別的處理程序收到的，只有它自己知道 `from`。
         assert_eq!((f, t), (from, to));
     }
 
-    /// ★ ★ pingora 0.9.0（上游 `f82478a`）：QUIC 服务也必须声明它的 fd 表键 —— 只要开了
-    /// TLS 端口就会挂上它，而它返回 `None`（缺省）就会让**整个进程**的未认领 fd 清理静默关闭。
+    /// ★ ★ pingora 0.9.0（上游 `f82478a`）：QUIC 服務也必須宣告它的 fd 表鍵 —— 只要開了
+    /// TLS 連接埠就會掛上它，而它回傳 `None`（預設）就會讓**整個處理程序**的未認領 fd 清理靜默關閉。
     #[test]
     fn quic_服务声明的正是它的_fd_表键() {
         let s = QuicListenerService::new(

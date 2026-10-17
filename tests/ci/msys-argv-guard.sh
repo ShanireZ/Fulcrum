@@ -1,45 +1,45 @@
 #!/usr/bin/env bash
-# 门：`MSYS_NO_PATHCONV=1` 生效的那片区域里，**git 的 argv 里不许出现路径**。
+# 門：`MSYS_NO_PATHCONV=1` 生效的那片區域裡，**git 的 argv 裡不許出現路徑**。
 #
-# ## 它拦的是什么（2026-09-08 实付一次，代价是一份说不出出处的验证记录）
+# ## 它攔的是什麼（2026-09-08 實付一次，代價是一份說不出出處的驗證記錄）
 #
-#   `tests/m0/docker-run.sh` 为了让 docker 收到未转换的容器路径，`export MSYS_NO_PATHCONV=1`。
-#   ⚠ 那是 **export** ⇒ 此后由它调起／source 进来的一切都继承。
-#   而 MSYS 一旦停止翻译 argv，原生 `git.exe` 收到的就是字面量 `/d/Workspace/Fulcrum`：
+#   `tests/m0/docker-run.sh` 為了讓 docker 收到未轉換的容器路徑，`export MSYS_NO_PATHCONV=1`。
+#   ⚠ 那是 **export** ⇒ 此後由它調起／source 進來的一切都繼承。
+#   而 MSYS 一旦停止翻譯 argv，原生 `git.exe` 收到的就是字面值 `/d/Workspace/Fulcrum`：
 #
 #       fatal: cannot change to '/d/Workspace/Fulcrum': No such file or directory   (rc=128)
 #
-#   `61b867a` 那份 `tests/musl/arm64-verified.txt` 里的 `verified_commit=unknown` 就是这么来的。
+#   `61b867a` 那份 `tests/musl/arm64-verified.txt` 裡的 `verified_commit=unknown` 就是這麼來的。
 #
-# ★ ★ ★ **本仓早就写下过这条**（`tests/m0/docker-run.sh` 顶部那段「位置是硬要求，不是风格」），
-#   ⚠ 然而只有**一个**消费者被排到 export 前面，其余三处 git 调用留在后面没人回来扫。
-#   ⇒ 这道门存在的理由就是那句自己写下的话：
-#     「修完一个形状要当场把同形的全扫一遍，靠人眼扫是扫不干净的，得有工具。」
+# ★ ★ ★ **本儲存庫早就寫下過這條**（`tests/m0/docker-run.sh` 頂部那段「位置是硬要求，不是風格」），
+#   ⚠ 然而只有**一個**消費者被排到 export 前面，其餘三處 git 呼叫留在後面沒人回來掃。
+#   ⇒ 這道門存在的理由就是那句自己寫下的話：
+#     「修完一個形狀要當場把同形的全掃一遍，靠人眼掃是掃不乾淨的，得有工具。」
 #
-# ## 判据形状：**默认拒绝**，⛔ 不维护一张「禁止写法」清单
+# ## 判據形狀：**預設拒絕**，⛔ 不維護一張「禁止寫法」清單
 #
-#   一张手写的禁止清单，漏一项就静默放行，而且没人会发现漏了（本仓在别处栽过）。
-#   ⇒ 这里反过来：**区域内 git 的 argv 里只要出现「路径形状」的东西就判红** ——
-#     `/` 开头的字面量、`$VAR` / `"$VAR"` / `"${VAR}"`、以及 `-C` / `--git-dir` / `--work-tree`
-#     这三个**按定义就吃路径**的选项。⇒ 将来有人发明新写法，失败方向是**新增即受禁**。
+#   一張手寫的禁止清單，漏一項就靜默放行，而且沒人會發現漏了（本儲存庫在別處栽過）。
+#   ⇒ 這裡反過來：**區域內 git 的 argv 裡只要出現「路徑形狀」的東西就判紅** ——
+#     `/` 開頭的字面值、`$VAR` / `"$VAR"` / `"${VAR}"`、以及 `-C` / `--git-dir` / `--work-tree`
+#     這三個**按定義就吃路徑**的選項。⇒ 將來有人發明新寫法，失敗方向是**新增即受禁**。
 #
-#   ⛔ **重定向不是 argv**：`git hash-object --stdin < "$f"` 是对的（重定向由 bash 做），
-#     所以扫描到 `<` / `>` 就停止取 argv。这条**有专门的自测钉着**。
-#   ⛔ 本门只管 `git`。`docker` 正相反 —— 它**需要**未转换的路径，那正是那句 export 的目的。
+#   ⛔ **重定向不是 argv**：`git hash-object --stdin < "$f"` 是對的（重定向由 bash 做），
+#     所以掃描到 `<` / `>` 就停止取 argv。這條**有專門的自測釘著**。
+#   ⛔ 本門只管 `git`。`docker` 正相反 —— 它**需要**未轉換的路徑，那正是那句 export 的目的。
 #
-# ## 区域怎么来：**推导**，⛔ 不手写清单
+# ## 區域怎麼來：**推導**，⛔ 不手寫清單
 #
-#   ① `tests/m0/docker-run.sh` 里 `export MSYS_NO_PATHCONV=1` 那一行**之后**的部分；
-#   ② 该文件里以 `$REPO_UNIX/….sh` 形式引用到的**每个**脚本，整份都算
-#      （调起的、source 的都算 —— source 进来的函数体是在同一个 shell 里跑的，
-#       它写在 export 之前不代表它**执行**在 export 之前）。
-#   ⚠ **用相对路径调起的那些有意不算**（`bash tests/ci/…`、`bash tests/serve/…`）：
-#     它们跑在**容器里**（`$CMD` / `$LINT_CMD` 是喂给 `docker run` 的），那儿是 Linux、
-#     没有 MSYS，这个危害原理上不存在。⇒ 区分的判据是「宿主侧还是容器侧」，
-#     而 `$REPO_UNIX/` 这个前缀恰好就是宿主侧路径的标记。
-#     ⛔ 别把它读成「相对路径比较安全」——它只是跑在另一个世界里。
-#   ⚠ ② 是**有意放宽**的：宁可多管，也不要因为「这个脚本只在 export 前跑」这种
-#     需要逐个论证的判断而漏掉。多管的代价是写法受限，漏掉的代价是又一份 `unknown`。
+#   ① `tests/m0/docker-run.sh` 裡 `export MSYS_NO_PATHCONV=1` 那一行**之後**的部分；
+#   ② 該檔案裡以 `$REPO_UNIX/….sh` 形式引用到的**每個**指令碼，整份都算
+#      （調起的、source 的都算 —— source 進來的函式體是在同一個 shell 裡跑的，
+#       它寫在 export 之前不代表它**執行**在 export 之前）。
+#   ⚠ **用相對路徑調起的那些有意不算**（`bash tests/ci/…`、`bash tests/serve/…`）：
+#     它們跑在**容器裡**（`$CMD` / `$LINT_CMD` 是餵給 `docker run` 的），那兒是 Linux、
+#     沒有 MSYS，這個危害原理上不存在。⇒ 區分的判據是「宿主側還是容器側」，
+#     而 `$REPO_UNIX/` 這個前綴恰好就是宿主側路徑的標記。
+#     ⛔ 別把它讀成「相對路徑比較安全」——它只是跑在另一個世界裡。
+#   ⚠ ② 是**有意放寬**的：寧可多管，也不要因為「這個指令碼只在 export 前跑」這種
+#     需要逐個論證的判斷而漏掉。多管的代價是寫法受限，漏掉的代價是又一份 `unknown`。
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -48,24 +48,24 @@ DRUN="$REPO/tests/m0/docker-run.sh"
 fail_n=0
 say_bad() { printf '  ✗ %s\n' "$*" >&2; fail_n=$((fail_n + 1)); }
 
-# ── 取 export 那一行的行号 ───────────────────────────────────────────────────
-# ⚠ 找不到就**判红**，⛔ 不是「那就没什么可查的」——本门的前提没了，
-#   而一道前提消失后仍然报绿的门，比没有这道门更坏。
+# ── 取 export 那一行的行號 ───────────────────────────────────────────────────
+# ⚠ 找不到就**判紅**，⛔ 不是「那就沒什麼可查的」——本門的前提沒了，
+#   而一道前提消失後仍然報綠的門，比沒有這道門更壞。
 export_line_of() {
   grep -n '^[[:space:]]*export[[:space:]]\+MSYS_NO_PATHCONV=1' "$1" | head -1 | cut -d: -f1
 }
 
-# ── 从一行里取出 git 的 argv（遇到重定向/管道/分隔符就停）────────────────────
-# 打出该行里每个 git 调用的参数，一行一个 token。
-# ⚠ ⚠ ★ **必须跟踪引号状态**：`echo "… && git rev-parse …"` 里那个 git 是**字符串正文**，
-#   不是一次调用。第一版没跟踪，于是本门上线第一次真扫就误伤了自己的报错文案。
-#   ⛔ 不能改成「先剥掉所有引号内容」——那会把 `git -C "$REPO_UNIX"` 的 `"$REPO_UNIX"`
-#   一起剥掉，正好把**最该拦的那一种**变成瞎的。
-#   ⇒ 起作用的机制是：**只在引号外按空白切 token** ⇒ 一整个带引号的字符串是**一个** token，
-#     里面的 `git` 永远不会以命令词的身份单独出现；而 `git -C "$X"` 的 `"$X"` 是引号外
-#     起头的独立 token ⇒ 照样看得见。★ 这条机制由 `selftest` 的最后两行阴性样本钉着，
-#     ⛔ 别以为「多加一个 token 起始引号状态的判断」还能再防一层 —— 实测那是**死代码**
-#     （撤掉它自测一条都不变），而一条看起来在防守、实际恒真的判断比没有更坏。
+# ── 從一行裡取出 git 的 argv（遇到重定向/管道/分隔符就停）────────────────────
+# 打出該行裡每個 git 呼叫的參數，一行一個 token。
+# ⚠ ⚠ ★ **必須跟蹤引號狀態**：`echo "… && git rev-parse …"` 裡那個 git 是**字串正文**，
+#   不是一次呼叫。第一版沒跟蹤，於是本門上線第一次真掃就誤傷了自己的回報錯誤文案。
+#   ⛔ 不能改成「先剝掉所有引號內容」——那會把 `git -C "$REPO_UNIX"` 的 `"$REPO_UNIX"`
+#   一起剝掉，正好把**最該攔的那一種**變成瞎的。
+#   ⇒ 起作用的機制是：**只在引號外按空白切 token** ⇒ 一整個帶引號的字串是**一個** token，
+#     裡面的 `git` 永遠不會以命令詞的身分單獨出現；而 `git -C "$X"` 的 `"$X"` 是引號外
+#     起頭的獨立 token ⇒ 照樣看得見。★ 這條機制由 `selftest` 的最後兩行陰性樣本釘著，
+#     ⛔ 別以為「多加一個 token 起始引號狀態的判斷」還能再防一層 —— 實測那是**死程式碼**
+#     （撤掉它自測一條都不變），而一條看起來在防守、實際恆真的判斷比沒有更壞。
 git_argv_tokens() {
   awk '
     {
@@ -95,19 +95,19 @@ git_argv_tokens() {
   ' "$1"
 }
 
-scan_file() {                                   # $1=文件 $2=起始行（1=整份）
+scan_file() {                                   # $1=檔案 $2=起始行（1=整份）
   local f=$1 start=${2:-1} rel=${1#"$REPO"/}
   local tmp line_no=0
   tmp=$(mktemp)
   awk -v s="$start" 'NR>=s' "$f" > "$tmp"
-  # 逐行扫，报出行号（换算回原文件）
+  # 逐行掃，報出行號（換算回原檔案）
   while IFS= read -r line; do
     line_no=$((line_no + 1))
     case "$line" in *git*) ;; *) continue ;; esac
     printf '%s\n' "$line" > "$tmp.one"
-    # ⚠ **一行最多报一条**。同一处写法常同时命中两条理由（`git -C "$X"` 既有 `-C`
-    #   又有 `$X`）⇒ 逐 token 报会让「几处问题」和「几条理由」混成一个数，
-    #   而自测正是按**处数**对的。★ 这是自测当场逮出来的，⛔ 不是事后想到的。
+    # ⚠ **一行最多報一條**。同一處寫法常同時命中兩條理由（`git -C "$X"` 既有 `-C`
+    #   又有 `$X`）⇒ 逐 token 報會讓「幾處問題」和「幾條理由」混成一個數，
+    #   而自測正是按**處數**對的。★ 這是自測當場逮出來的，⛔ 不是事後想到的。
     local tok reason=''
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue
@@ -127,23 +127,23 @@ scan_file() {                                   # $1=文件 $2=起始行（1=整
   rm -f "$tmp"
 }
 
-# ── 自测：先证明这把刀砍得动、也砍不错 ──────────────────────────────────────
+# ── 自測：先證明這把刀砍得動、也砍不錯 ──────────────────────────────────────
 #
-# ★ 顺序与本仓其它几道门一致：**判据先自证，再去判真东西**。
-#   一把恒返回「没问题」的刀，和一次真的干净扫描，输出一模一样。
+# ★ 順序與本儲存庫其它幾道門一致：**判據先自證，再去判真東西**。
+#   一把恆回傳「沒問題」的刀，和一次真的乾淨掃描，輸出一模一樣。
 selftest() {
   local d rc=0
   d=$(mktemp -d)
 
-  # ① 阳性：该拦的三种写法，一条都不许漏
+  # ① 陽性：該攔的三種寫法，一條都不許漏
   cat > "$d/bad.sh" <<'SH'
 git -C "$REPO_UNIX" rev-parse --short HEAD
 git hash-object "$DOCKERFILE"
 git --git-dir=/w/.git log -1
 SH
-  # ② 阴性：该放的写法，一条都不许误伤。
-  #    ★ 最后两行是**回归钉**：字符串正文里的 git、注释里的 git 都**不是调用**。
-  #      本门第一次真扫时正是误伤了自己的报错文案 ⇒ 这两行撤掉即红。
+  # ② 陰性：該放的寫法，一條都不許誤傷。
+  #    ★ 最後兩行是**迴歸釘**：字串正文裡的 git、註解裡的 git 都**不是呼叫**。
+  #      本門第一次真掃時正是誤傷了自己的回報錯誤文案 ⇒ 這兩行撤掉即紅。
   cat > "$d/good.sh" <<'SH'
 ( cd "$_root" && git rev-parse --short HEAD )
 git hash-object --stdin < "$DOCKERFILE"
@@ -152,7 +152,7 @@ git -c core.quotePath=false ls-files --eol
 echo "改法： git -C $d rev-parse HEAD 是不许的"
 # git -C "$X" rev-parse HEAD
 SH
-  # ③ 重定向不是 argv：目标是 `/` 开头的字面量也不许判红
+  # ③ 重定向不是 argv：目標是 `/` 開頭的字面值也不許判紅
   cat > "$d/redir.sh" <<'SH'
 git hash-object --stdin < /w/docker/Dockerfile.build
 SH
@@ -172,8 +172,8 @@ SH
     cat "$d/r.err" >&2; rc=1
   fi
 
-  # ④ 区域推导：export **之前**的 git -C 不该被管，**之后**的必须被管。
-  #    ★ 这一条两个方向都钉，⛔ 否则「区域算错成整份」和「区域算对」输出一样。
+  # ④ 區域推導：export **之前**的 git -C 不該被管，**之後**的必須被管。
+  #    ★ 這一條兩個方向都釘，⛔ 否則「區域算錯成整份」和「區域算對」輸出一樣。
   cat > "$d/drun.sh" <<'SH'
 git -C "$BEFORE" rev-parse HEAD
 export MSYS_NO_PATHCONV=1
@@ -187,8 +187,8 @@ SH
   if [ "$fail_n" -ne 1 ]; then
     echo "★ 自测未过：区域该只盖住 export 之后那一条，实得 $fail_n 条" >&2; cat "$d/d.err" >&2; rc=1
   fi
-  # ⚠ 这里断的是**行号**，⛔ 不是报文里出现哪个变量名 —— `-C` 那条理由先命中，
-  #   报文里根本不会有 `AFTER` 字样。★ 第一版断错了对象，被这条自测自己逮住。
+  # ⚠ 這裡斷的是**行號**，⛔ 不是訊息裡出現哪個變數名 —— `-C` 那條理由先命中，
+  #   訊息里根本不會有 `AFTER` 字樣。★ 第一版斷錯了物件，被這條自測自己逮住。
   if ! grep -q 'drun\.sh:3:' "$d/d.err" || grep -q 'drun\.sh:1:' "$d/d.err"; then
     echo "★ 自测未过：区域盖错了行（该报第 3 行、不该报第 1 行）" >&2; cat "$d/d.err" >&2; rc=1
   fi
@@ -201,7 +201,7 @@ SH
 
 selftest || { echo "MSYS ARGV GUARD FAILED: 判据自己没过自测" >&2; exit 1; }
 
-# ── 真扫 ────────────────────────────────────────────────────────────────────
+# ── 真掃 ────────────────────────────────────────────────────────────────────
 EXPORT_LINE=$(export_line_of "$DRUN" || true)
 if [ -z "${EXPORT_LINE:-}" ]; then
   echo "MSYS ARGV GUARD FAILED: 在 $DRUN 里找不到 \`export MSYS_NO_PATHCONV=1\`。" >&2
@@ -210,14 +210,14 @@ if [ -z "${EXPORT_LINE:-}" ]; then
   exit 1
 fi
 
-# 区域②：docker-run.sh 里引用到的每个 $REPO_UNIX/….sh
-# shellcheck disable=SC2016  # ★ 这里要的**正是字面量** `$REPO_UNIX` —— 我们在源码文本里
-#   找它，⛔ 不是要展开它（展开了反而什么都找不到）。
+# 區域②：docker-run.sh 裡引用到的每個 $REPO_UNIX/….sh
+# shellcheck disable=SC2016  # ★ 這裡要的**正是字面值** `$REPO_UNIX` —— 我們在原始碼文字里
+#   找它，⛔ 不是要展開它（展開了反而什麼都找不到）。
 mapfile -t REFED < <(grep -oE '\$REPO_UNIX/[A-Za-z0-9_./-]+\.sh' "$DRUN" | sed 's|^\$REPO_UNIX/||' | sort -u)
 
 echo "[msys-argv-guard] 区域：docker-run.sh 第 $((EXPORT_LINE + 1)) 行起 + 它引用的 ${#REFED[@]} 个脚本（推导，⛔ 非手写清单）"
 
-# ⚠ 区域必须真的包含那个**出过事**的脚本；算空了要判红，⛔ 不许「没扫到就算过」。
+# ⚠ 區域必須真的包含那個**出過事**的指令碼；算空了要判紅，⛔ 不許「沒掃到就算過」。
 case " ${REFED[*]} " in
   *" tests/musl/arm64-trigger.sh "*) ;;
   *) echo "MSYS ARGV GUARD FAILED: 区域推导没算到 tests/musl/arm64-trigger.sh —— 推导坏了" >&2; exit 1 ;;

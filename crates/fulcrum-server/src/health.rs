@@ -1,30 +1,30 @@
-//! 主动健康检查（`health_uri`）—— **M1 功能清单的最后一项**。
+//! 主動健康檢查（`health_uri`）—— **M1 功能清單的最後一項**。
 //!
-//! # 它与 `dns_refresh`（批 10）共用同一套机械，但**分开两批做**
+//! # 它與 `dns_refresh`（批 10）共用同一套機械，但**分開兩批做**
 //!
-//! 两者的形状确实一样：**每上游一格状态 + 一个后台任务 + `pick()` 里多一条筛子**。
-//! owner 明确要求分开：**各自可审、各自有门**。★ 事后看这个要求是对的 ——
-//! 批 10 那一趟真正值钱的东西（每请求一次 panic、夹具里全是 IP 字面量）
-//! 与「定期刷新」几乎无关，混在一批里会被健康检查的篇幅盖掉。
+//! 兩者的形狀確實一樣：**每上游一格狀態 + 一個後台任務 + `pick()` 裡多一條篩子**。
+//! owner 明確要求分開：**各自可審、各自有門**。★ 事後看這個要求是對的 ——
+//! 批 10 那一趟真正值錢的東西（每請求一次 panic、夾具裡全是 IP 字面值）
+//! 與「定期刷新」幾乎無關，混在一批裡會被健康檢查的篇幅蓋掉。
 //!
-//! # ⚠ 它**不是**被动熔断
+//! # ⚠ 它**不是**被動熔斷
 //!
-//! `passive_fail` / `passive_window`（按真实流量的失败率摘上游）仍在 [`UNWIRED`] 里，
-//! 而且**不在 M1 清单上**。两者的差别不是程度而是种类：
-//! 主动检查打的是一个**专门的探测路径**，一个「`/health` 回 200 而真实业务在 500」
-//! 的上游，本模块**判它健康**。写下来是因为「以为已经会绕过挂掉的上游」
-//! 是这一批最容易产生的误解。
+//! `passive_fail` / `passive_window`（按真實流量的失敗率摘上游）仍在 [`UNWIRED`] 裡，
+//! 而且**不在 M1 清單上**。兩者的差別不是程度而是種類：
+//! 主動檢查打的是一個**專門的探測路徑**，一個「`/health` 回 200 而真實業務在 500」
+//! 的上游，本模組**判它健康**。寫下來是因為「以為已經會繞過掛掉的上游」
+//! 是這一批最容易產生的誤解。
 //!
 //! [`UNWIRED`]: fulcrum_runtime::UNWIRED
 //!
-//! # 三条有意的取舍
+//! # 三條有意的取捨
 //!
-//! 1. **初值健康**（见 `Upstream::healthy` 的文档）：否则进程刚起来到第一次探测
-//!    之间是**全站 502**。代价是那一个周期内 `health_uri` 等于没有。
-//! 2. **每个目标各记自己的到期时刻**，而不是像 `dns_refresh` 那样全库取最小值。
-//!    ⚠ 那边刷得更勤只是多几次 `getaddrinfo`；这边刷得更勤是**打在别人服务上的流量**。
-//! 3. **一个上游只要有任意一个候选地址应答就算活**（与转发路径的候选回退一致）。
-//!    ⚠ 反过来（要求全部候选都活）会让一台双栈机器上 IPv6 没通就整台被摘掉。
+//! 1. **初值健康**（見 `Upstream::healthy` 的文件）：否則處理程序剛起來到第一次探測
+//!    之間是**全站 502**。代價是那一個週期內 `health_uri` 等於沒有。
+//! 2. **每個目標各記自己的到期時刻**，而不是像 `dns_refresh` 那樣全庫取最小值。
+//!    ⚠ 那邊刷得更勤只是多幾次 `getaddrinfo`；這邊刷得更勤是**打在別人服務上的流量**。
+//! 3. **一個上游只要有任意一個候選位址應答就算活**（與轉發路徑的候選退回一致）。
+//!    ⚠ 反過來（要求全部候選都活）會讓一臺雙棧機器上 IPv6 沒通就整臺被摘掉。
 
 use fulcrum_runtime::{ProxyTarget, SharedRuntime, Upstream};
 use log::{debug, info, warn};
@@ -34,17 +34,17 @@ use pingora_http::RequestHeader;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 打点间隔的下界。★ 防一份写了 `health_interval 100ms` 的配置把上游打爆。
+/// 打點間隔的下界。★ 防一份寫了 `health_interval 100ms` 的設定把上游打爆。
 pub const MIN_TICK: Duration = Duration::from_millis(500);
-/// 没有任何目标配了 `health_uri` 时的兜底（那时任务根本不会起）。
+/// 沒有任何目標配了 `health_uri` 時的備援（那時任務根本不會起）。
 pub const DEFAULT_TICK: Duration = Duration::from_secs(5);
 
-/// 打点节奏 = 所有 `health_interval` 里最小的那个，再夹上下界。
+/// 打點節奏 = 所有 `health_interval` 裡最小的那個，再夾上下界。
 ///
-/// ★ **注意这与「多久探一次」不是一回事**：打点只是「醒来看看谁到期了」，
-/// 真正的节奏由每个目标自己的 `health_interval` 决定
-/// （[`ProxyTarget::take_probe_slot`]）。⚠ 打点比最小间隔慢的话，
-/// 那个最小的目标就永远达不到它配的频率 —— 所以这里取 min 而不是别的。
+/// ★ **注意這與「多久探一次」不是一回事**：打點只是「醒來看看誰到期了」，
+/// 真正的節奏由每個目標自己的 `health_interval` 決定
+/// （[`ProxyTarget::take_probe_slot`]）。⚠ 打點比最小間隔慢的話，
+/// 那個最小的目標就永遠達不到它配的頻率 —— 所以這裡取 min 而不是別的。
 pub fn tick_interval(cfg: &fulcrum_config::StructuredConfig) -> Duration {
     match min_health_interval_ms(cfg) {
         Some(ms) => Duration::from_millis(ms).max(MIN_TICK),
@@ -52,20 +52,20 @@ pub fn tick_interval(cfg: &fulcrum_config::StructuredConfig) -> Duration {
     }
 }
 
-/// 这份配置里有没有任何一个目标配了 `health_uri`。没有就不起这个任务。
+/// 這份設定裡有沒有任何一個目標配了 `health_uri`。沒有就不起這個任務。
 ///
-/// ★ ★ 它与 [`tick_interval`] **共用同一次判定**（`min_health_interval_ms`），
-/// 不是各写一套。⚠ 各写一套的两种烂法都完全无声：
-/// 「起了任务但打点取的是兜底值」／「有目标却根本不起任务」。
-/// 本仓库对「同一个判定绝不抄两份」有过明确的教训（D18/G66）。
+/// ★ ★ 它與 [`tick_interval`] **共用同一次判定**（`min_health_interval_ms`），
+/// 不是各寫一套。⚠ 各寫一套的兩種爛法都完全無聲：
+/// 「起了任務但打點取的是備援值」／「有目標卻根本不起任務」。
+/// 本儲存庫對「同一個判定絕不抄兩份」有過明確的教訓（D18/G66）。
 pub fn any_health_check(cfg: &fulcrum_config::StructuredConfig) -> bool {
     min_health_interval_ms(cfg).is_some()
 }
 
-/// 所有**配了 `health_uri`** 的目标里，`health_interval` 最小的那个。
+/// 所有**配了 `health_uri`** 的目標裡，`health_interval` 最小的那個。
 ///
-/// ⚠ 只有真配了 `health_uri` 的才算数：`health_interval` 有默认值（10s），
-/// 让一个**永远不会被探测**的目标参与取最小，会把打点拉快而什么都不多做。
+/// ⚠ 只有真配了 `health_uri` 的才算數：`health_interval` 有預設值（10s），
+/// 讓一個**永遠不會被探測**的目標參與取最小，會把打點拉快而什麼都不多做。
 fn min_health_interval_ms(cfg: &fulcrum_config::StructuredConfig) -> Option<u64> {
     let mut best: Option<u64> = None;
     fn walk(steps: &[fulcrum_config::model::Step], best: &mut Option<u64>) {
@@ -83,15 +83,15 @@ fn min_health_interval_ms(cfg: &fulcrum_config::StructuredConfig) -> Option<u64>
                     }
                 }
                 fulcrum_config::model::StepBody::Route { steps } => walk(steps, best),
-                // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
-                //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
-                //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
-                //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
-                // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
-                //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
-                //   —— 要名单就现场 grep 这两个枚举名。
-                // ★ 这一处漏下钻的后果正是上面 `any_health_check` 点名要防的那两种
-                //   无声烂法之一：配置里写着 `health_uri`，而探测任务一次都不起。
+                // ⚠ 不寫 `_`：這類「走遍整張圖找某一類步驟」的 match 裡，`_` 還兼著
+                //   「這個變體不裝步驟、不用下鑽」這層意思 —— 而新增一個裝步驟的容器
+                //   變體會讓那層意思悄悄變假，夾具裡只有當時已有的容器，擋不住它。
+                //   ⇒ 規則：新增變體時這一族 match 必須一起改，由編譯期窮舉來逼。
+                // ★ 這一族**跨兩層**：執行環境圖 `BodyRt` 與設定圖 `StepBody` 各有一批
+                //   同形遍歷。⛔ 名單不抄進註解（寫死的名單沒有門守著，當天就會過期）
+                //   —— 要名單就現場 grep 這兩個枚舉名。
+                // ★ 這一處漏下鑽的後果正是上面 `any_health_check` 點名要防的那兩種
+                //   無聲爛法之一：設定裡寫著 `health_uri`，而探測任務一次都不起。
                 fulcrum_config::model::StepBody::Tracing
                 | fulcrum_config::model::StepBody::Header { .. }
                 | fulcrum_config::model::StepBody::Rewrite { .. }
@@ -111,11 +111,11 @@ fn min_health_interval_ms(cfg: &fulcrum_config::StructuredConfig) -> Option<u64>
     best
 }
 
-/// 探一个上游。`Ok(status)` = 拿到了响应头；`Err(理由)` = 连不上 / 超时 / 协议错。
+/// 探一個上游。`Ok(status)` = 拿到了回應頭；`Err(理由)` = 連不上 / 超時 / 協定錯。
 ///
-/// ⚠ **它绝不接受 `&str` 形式的地址**：`HttpPeer::new` 对字符串会做一次
+/// ⚠ **它絕不接受 `&str` 形式的位址**：`HttpPeer::new` 對字串會做一次
 /// **阻塞** `to_socket_addrs().unwrap()`（批 10 修的就是那件事）。
-/// 这里只吃 [`Upstream::dial_candidates`] 给出的 `SocketAddr`。
+/// 這裡只吃 [`Upstream::dial_candidates`] 給出的 `SocketAddr`。
 async fn probe_one(
     connector: &Connector,
     up: &Upstream,
@@ -125,9 +125,9 @@ async fn probe_one(
 ) -> Result<u16, String> {
     let candidates = up.dial_candidates();
     if candidates.is_empty() {
-        // ★ 解析不出地址**不算探测失败**：`pick()` 已经按第一条筛子跳过它了，
-        //   在这里再判一次「不健康」只会让日志上出现两条起因不同的同义警告，
-        //   而 DNS 恢复之后还要等一个探测周期才回来。
+        // ★ 解析不出位址**不算探測失敗**：`pick()` 已經按第一條篩子跳過它了，
+        //   在這裡再判一次「不健康」只會讓紀錄上出現兩條起因不同的同義警告，
+        //   而 DNS 恢復之後還要等一個探測週期才回來。
         return Err("还没解析出地址（本轮跳过，不改判定）".to_string());
     }
     let sni = up.addr.split(':').next().unwrap_or("").to_string();
@@ -135,9 +135,9 @@ async fn probe_one(
     for dial in &candidates {
         let peer = HttpPeer::new(*dial, target.tls, sni.clone());
         match tokio::time::timeout(timeout, probe_peer(connector, &peer, uri, &up.addr)).await {
-            // ⚠ 超时要罩住**整趟**（连接 + 写 + 读），不是只罩其中一段。
-            //   本仓库在 exec hook 上栽过一次：`timeout` 只罩了 `wait()`，
-            //   而读输出那一步先阻塞了 30 秒 —— 判据是「那条测试跑了 30.01 秒」。
+            // ⚠ 超時要罩住**整趟**（連接 + 寫 + 讀），不是隻罩其中一段。
+            //   本儲存庫在 exec hook 上栽過一次：`timeout` 只罩了 `wait()`，
+            //   而讀輸出那一步先阻塞了 30 秒 —— 判據是「那條測試跑了 30.01 秒」。
             Err(_) => last = format!("{dial}：超过 {timeout:?} 没回话"),
             Ok(Ok(code)) => return Ok(code),
             Ok(Err(e)) => last = format!("{dial}：{e}"),
@@ -157,9 +157,9 @@ async fn probe_peer(
         .await
         .map_err(|e| e.to_string())?;
     let mut req = RequestHeader::build("GET", uri.as_bytes(), None).map_err(|e| e.to_string())?;
-    // ⚠ `Host` 必须给：HTTP/1.1 少了它是非法请求，而很多后端会回 400 ——
-    //   那会被判成「不健康」，症状是「上游明明好好的却被摘掉」。
-    //   ★ 给的是**配置里写的那个 host:port**，不是解析出来的 IP。
+    // ⚠ `Host` 必須給：HTTP/1.1 少了它是非法請求，而很多後端會回 400 ——
+    //   那會被判成「不健康」，症狀是「上游明明好好的卻被摘掉」。
+    //   ★ 給的是**設定裡寫的那個 host:port**，不是解析出來的 IP。
     req.insert_header("Host", host).map_err(|e| e.to_string())?;
     req.insert_header("User-Agent", "fulcrum-healthcheck")
         .map_err(|e| e.to_string())?;
@@ -176,9 +176,9 @@ async fn probe_peer(
         .response_header()
         .map(|h| h.status.as_u16())
         .ok_or_else(|| "上游没给响应头".to_string())?;
-    // ★ 必须把响应体读干净再归还，否则那条连接下一次被复用时会读到上一次的残留。
-    //   ⚠ 探测请求很省事地「读完头就扔」的话，代价会落在**业务请求**上，
-    //   而现场看起来像是上游在乱回。
+    // ★ 必須把回應體讀乾淨再歸還，否則那條連接下一次被重複使用時會讀到上一次的殘留。
+    //   ⚠ 探測請求很省事地「讀完頭就扔」的話，代價會落在**業務請求**上，
+    //   而現場看起來像是上游在亂回。
     loop {
         match sess.read_response_body().await {
             Ok(Some(_)) => {}
@@ -190,10 +190,10 @@ async fn probe_peer(
     Ok(code)
 }
 
-/// 跑一轮：把所有**到期的**目标探一遍。返回这一轮真的探了几个上游。
+/// 跑一輪：把所有**到期的**目標探一遍。回傳這一輪真的探了幾個上游。
 ///
-/// ★ 拆成一个独立函数（而不是埋在 `start()` 的循环里）是为了让
-/// 「到期判定 + 翻转日志」这两件事可以被单独读；`now` 从参数进来。
+/// ★ 拆成一個獨立函式（而不是埋在 `start()` 的循環裡）是為了讓
+/// 「到期判定 + 翻轉紀錄」這兩件事可以被單獨讀；`now` 從參數進來。
 pub async fn sweep(
     rt: &fulcrum_runtime::Runtime,
     connector: &Connector,
@@ -212,7 +212,7 @@ pub async fn sweep(
                 Ok(code) => {
                     let ok = h.status.matches(code);
                     if up.set_healthy(ok) {
-                        // ★ **只在状态翻转时说话** —— 否则一个持续坏着的上游会刷屏。
+                        // ★ **只在狀態翻轉時說話** —— 否則一個持續壞著的上游會刷屏。
                         if ok {
                             info!("上游 {} 健康检查恢复了（{} → {code}）", up.addr, h.uri);
                         } else {
@@ -226,7 +226,7 @@ pub async fn sweep(
                     }
                 }
                 Err(why) if why.starts_with("还没解析出地址") => {
-                    // 见 `probe_one`：这一类**不改判定**。
+                    // 見 `probe_one`：這一類**不改判定**。
                     debug!("上游 {} 本轮跳过健康检查：{why}", up.addr);
                 }
                 Err(why) => {
@@ -242,7 +242,7 @@ pub async fn sweep(
     probed
 }
 
-/// 挂在 Pingora 上的后台任务。
+/// 掛在 Pingora 上的後台任務。
 pub struct HealthCheckService {
     rt: Arc<SharedRuntime>,
     tick: Duration,
@@ -254,8 +254,8 @@ impl HealthCheckService {
         HealthCheckService {
             rt,
             tick,
-            // ★ 探测**自己一个连接池**，不与业务流量共用 —— 否则一次探测
-            //   可能占掉业务的空闲连接，而探测的失败也会污染业务那边的池。
+            // ★ 探測**自己一個連接池**，不與業務流量共用 —— 否則一次探測
+            //   可能佔掉業務的空閒連接，而探測的失敗也會汙染業務那邊的池。
             connector: Connector::new(None),
         }
     }
@@ -273,7 +273,7 @@ impl pingora_core::services::background::BackgroundService for HealthCheckServic
                 info!("主动健康检查收到停机信号，退出");
                 return;
             }
-            // ★ `select!` 而不是先 sleep 再看信号（与 ACME 巡检、DNS 重解析同一条纪律）。
+            // ★ `select!` 而不是先 sleep 再看信號（與 ACME 巡檢、DNS 重解析同一條紀律）。
             tokio::select! {
                 _ = tokio::time::sleep(self.tick) => {}
                 changed = shutdown.changed() => {
@@ -283,8 +283,8 @@ impl pingora_core::services::background::BackgroundService for HealthCheckServic
                     }
                 }
             }
-            // ⚠ 快照只取一次：一轮扫描中途换配置的话，
-            //   「判定写到哪一份图上」会变得不确定 —— 而写错那一份是完全无声的。
+            // ⚠ 快照只取一次：一輪掃描中途換設定的話，
+            //   「判定寫到哪一份圖上」會變得不確定 —— 而寫錯那一份是完全無聲的。
             let snapshot = self.rt.current();
             let n = sweep(&snapshot, &self.connector, std::time::Instant::now()).await;
             if n > 0 {
@@ -314,9 +314,9 @@ mod tests {
 
     #[test]
     fn 没配health_uri的那条不参与取最小() {
-        // ⚠ 反向判据：`health_interval` 有默认值 10s，而一个**不会被探测**的目标
-        //   把它带进来取最小，会让打点无谓地变快。
-        //   ★ 这里 1s 那条没有 `health_uri`，所以答案必须是 9s 而不是 1s。
+        // ⚠ 反向判據：`health_interval` 有預設值 10s，而一個**不會被探測**的目標
+        //   把它帶進來取最小，會讓打點無謂地變快。
+        //   ★ 這裡 1s 那條沒有 `health_uri`，所以答案必須是 9s 而不是 1s。
         let c = cfg(
             "http://a.com {\n  handle /x/* {\n    reverse_proxy p:1 {\n      health_uri /h\n      health_interval 9s\n    }\n  }\n  handle /y/* {\n    reverse_proxy q:1 {\n      health_interval 1s\n    }\n  }\n}\n",
         );
@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn 容器里面的那条也要被看见() {
-        // ⚠ 与 `dns_refresh` 那边同一个盲区：只扫站点顶层的话，
-        //   一个藏在 `handle` 里的目标会**永远不被探测**，而它看起来只是「一直健康」。
+        // ⚠ 與 `dns_refresh` 那邊同一個盲區：只掃站台頂層的話，
+        //   一個藏在 `handle` 裡的目標會**永遠不被探測**，而它看起來只是「一直健康」。
         let c = cfg(
             "http://a.com {\n  handle /x/* {\n    reverse_proxy p:1 {\n      health_uri /h\n      health_interval 2s\n    }\n  }\n}\n",
         );

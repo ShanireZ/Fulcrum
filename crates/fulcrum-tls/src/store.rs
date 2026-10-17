@@ -1,20 +1,20 @@
-//! 证书存储（G55）：`<state>/certs/<issuer>/<domain>/{cert.pem, key.pem, meta.json}`。
+//! 證書儲存（G55）：`<state>/certs/<issuer>/<domain>/{cert.pem, key.pem, meta.json}`。
 //!
-//! ★ 选「每域一目录的 PEM」而不是某种自定义容器格式，理由是**出事时能手工救**：
-//! 人可以直接 `openssl x509 -in cert.pem -text` 看，可以直接 `cp` 备份，
-//! 可以直接把买来的证书放进去。
+//! ★ 選「每域一目錄的 PEM」而不是某種自定義容器格式，理由是**出事時能手動救**：
+//! 人可以直接 `openssl x509 -in cert.pem -text` 看，可以直接 `cp` 備份，
+//! 可以直接把買來的證書放進去。
 //!
-//! ★ 未选「兼容 Caddy 的目录布局」：那等于把别人的内部布局当成契约，他们改了我们就碎。
+//! ★ 未選「相容 Caddy 的目錄佈局」：那等於把別人的內部佈局當成契約，他們改了我們就碎。
 //!
-//! # ★ ★ 两条实现约束不是洁癖，是 M0 的直接后果
+//! # ★ ★ 兩條實作約束不是潔癖，是 M0 的直接後果
 //!
-//! **升级窗口内两代进程共享同一个证书目录**（M0 已证两代并存），
-//! 而 On-Demand 签发是**运行期**行为——两代可能同时写同一个域名。所以：
+//! **升級視窗內兩代處理程序共享同一個證書目錄**（M0 已證兩代並存），
+//! 而 On-Demand 簽發是**執行期**行為——兩代可能同時寫同一個網域。所以：
 //!
-//! 1. 写入一律**写临时文件再 `rename`**（同目录内原子替换）。半个文件被另一代读到，
-//!    表现是「证书解析失败」，而它只在升级窗口里出现，几乎不可能被复现。
-//! 2. 跨进程用 **`flock`** 串行化同一域名的签发。否则两代各签一张、互相覆盖，
-//!    **还各自消耗 CA 的速率配额**——而速率配额用完之后，签不出来的不只是这一个域名。
+//! 1. 寫入一律**寫臨時檔案再 `rename`**（同目錄內原子替換）。半個檔案被另一代讀到，
+//!    表現是「證書解析失敗」，而它只在升級視窗裡出現，幾乎不可能被複現。
+//! 2. 跨處理程序用 **`flock`** 串行化同一網域的簽發。否則兩代各簽一張、互相覆蓋，
+//!    **還各自消耗 CA 的速率配額**——而速率配額用完之後，籤不出來的不只是這一個網域。
 
 use crate::renewal::RenewalState;
 use log::debug;
@@ -27,51 +27,51 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// `meta.json` 的内容。
+/// `meta.json` 的內容。
 ///
-/// ★ 它记的是**证书里没有的东西**：ARI 给的窗口、续期失败计数、上次尝试时刻。
-/// 有效期与 SAN 不进来——那些从证书本身读，**两份会分叉**。
+/// ★ 它記的是**證書裡沒有的東西**：ARI 給的視窗、續期失敗計數、上次嘗試時刻。
+/// 有效期與 SAN 不進來——那些從證書本身讀，**兩份會分叉**。
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Meta {
-    /// 签发者目录名（如 `letsencrypt`）。
+    /// 簽發者目錄名（如 `letsencrypt`）。
     pub issuer: String,
-    /// ★ ★ 签发它的那个 **ACME 目录 URL 原文**。
+    /// ★ ★ 簽發它的那個 **ACME 目錄 URL 原文**。
     ///
-    /// 目录名是可读性优先的有损映射（`ca-<host>`），两个不同的 CA **可能落到同一个目录名**。
-    /// 与其去发明一套「保证不撞」的命名，不如把真实来源记下来：装载时比对，
-    /// 对不上就当成外来证书重签，并说出来。
-    /// ★ 这是本仓库那条纪律的一次应用——**判据挂在数据上，不挂在命名约定上**。
-    /// `None` = 这张证书不是本程序签的（手工放进来的、或旧版本写的）。
+    /// 目錄名是可讀性優先的有損映射（`ca-<host>`），兩個不同的 CA **可能落到同一個目錄名**。
+    /// 與其去發明一套「保證不撞」的命名，不如把真實來源記下來：裝載時比對，
+    /// 對不上就當成外來證書重籤，並說出來。
+    /// ★ 這是本儲存庫那條紀律的一次應用——**判據掛在資料上，不掛在命名約定上**。
+    /// `None` = 這張證書不是本處理程序籤的（手動放進來的、或舊版本寫的）。
     #[serde(default)]
     pub issuer_url: Option<String>,
-    /// ARI 建议的续期窗口（Unix 秒）。
+    /// ARI 建議的續期視窗（Unix 秒）。
     pub ari_start: Option<u64>,
     pub ari_end: Option<u64>,
     #[serde(default)]
     pub renewal: RenewalState,
-    /// 上一次**失败**的那次签发用的是哪种挑战（`"tls-alpn-01"` / `"http-01"`）。
+    /// 上一次**失敗**的那次簽發用的是哪種挑戰（`"tls-alpn-01"` / `"http-01"`）。
     ///
-    /// ★ ★ 这一格就是 G54 那句「HTTP-01 是**备**」的落点。没有它，「主/备」只是措辞：
-    /// 一个永远只试 TLS-ALPN-01 的实现，在 443 被挡住的机器上会**永远签不出来**，
-    /// 而日志里每一轮都只说「验不过」。
-    /// 成功即清空 —— 否则一次偶发失败会把这个域名永久钉在备用挑战上。
+    /// ★ ★ 這一格就是 G54 那句「HTTP-01 是**備**」的落點。沒有它，「主/備」只是措辭：
+    /// 一個永遠只試 TLS-ALPN-01 的實作，在 443 被擋住的機器上會**永遠籤不出來**，
+    /// 而紀錄裡每一輪都只說「驗不過」。
+    /// 成功即清空 —— 否則一次偶發失敗會把這個網域永久釘在備用挑戰上。
     #[serde(default)]
     pub last_challenge_failed: Option<String>,
 }
 
-/// 一张读出来的证书。
+/// 一張讀出來的證書。
 pub struct StoredCert {
-    /// 证书链，**leaf 在第一个**（PEM 文件里的顺序）。
+    /// 證書鏈，**leaf 在第一個**（PEM 檔案裡的順序）。
     ///
-    /// ⚠ ⚠ **（G104）：类型从 rustls 的 `CertificateDer` 换成 BoringSSL 的 `X509`。**
-    /// ★ 换的只是载体，**不是语义** —— 有效期与 SAN 仍然由 `validity_of()` 用
-    /// `x509-parser` 从 DER 里读，逐字未改。那一段是被 16 条特征化测试钉着的，
-    /// 换实现等于把「我们对证书的理解」也一起换掉，而这一批换的是 TLS 后端。
+    /// ⚠ ⚠ **（G104）：類型從 rustls 的 `CertificateDer` 換成 BoringSSL 的 `X509`。**
+    /// ★ 換的只是載體，**不是語義** —— 有效期與 SAN 仍然由 `validity_of()` 用
+    /// `x509-parser` 從 DER 裡讀，逐字未改。那一段是被 16 條特徵化測試釘著的，
+    /// 換實作等於把「我們對證書的理解」也一起換掉，而這一批換的是 TLS 後端。
     pub chain: Vec<X509>,
     pub key: PKey<Private>,
     pub not_before: SystemTime,
     pub not_after: SystemTime,
-    /// 证书里的 SAN（DNS 名），**不是**目录名。
+    /// 證書裡的 SAN（DNS 名），**不是**目錄名。
     pub domains: Vec<String>,
     pub meta: Meta,
 }
@@ -80,15 +80,15 @@ pub struct CertStore {
     root: PathBuf,
 }
 
-/// `flock` 守卫。★ 锁在 `Drop` 里释放（关闭 fd 即释放），所以
-/// 「签发路径上任何一处提前返回都会漏锁」这件事无从发生。
+/// `flock` 守衛。★ 鎖在 `Drop` 裡釋放（關閉 fd 即釋放），所以
+/// 「簽發路徑上任何一處提前回傳都會漏鎖」這件事無從發生。
 pub struct DomainLock {
     file: fs::File,
 }
 
 impl Drop for DomainLock {
     fn drop(&mut self) {
-        // SAFETY: fd 来自一个仍然活着的 File；LOCK_UN 对任意 fd 都是安全调用。
+        // SAFETY: fd 來自一個仍然活著的 File；LOCK_UN 對任意 fd 都是安全呼叫。
         unsafe {
             libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
@@ -108,10 +108,10 @@ impl CertStore {
         self.root.join(issuer).join(sanitize(domain))
     }
 
-    /// 拿住某个域名的签发锁。**阻塞**直到拿到。
+    /// 拿住某個網域的簽發鎖。**阻塞**直到拿到。
     ///
-    /// ⚠ 用阻塞而不是 `LOCK_NB`：拿不到锁说明**另一代进程正在给同一个域名签发**，
-    /// 那时正确的行为是等它签完然后用它的结果，而不是自己也去签一张。
+    /// ⚠ 用阻塞而不是 `LOCK_NB`：拿不到鎖說明**另一代處理程序正在給同一個網域簽發**，
+    /// 那時正確的行為是等它簽完然後用它的結果，而不是自己也去籤一張。
     pub fn lock(&self, issuer: &str, domain: &str) -> io::Result<DomainLock> {
         let dir = self.root.join("locks");
         fs::create_dir_all(&dir)?;
@@ -122,7 +122,7 @@ impl CertStore {
             .write(true)
             .mode(0o600)
             .open(&path)?;
-        // SAFETY: fd 来自上面刚打开的 File，在本作用域内一直活着。
+        // SAFETY: fd 來自上面剛打開的 File，在本作用域內一直活著。
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
         if rc != 0 {
             return Err(io::Error::last_os_error());
@@ -131,13 +131,13 @@ impl CertStore {
         Ok(DomainLock { file })
     }
 
-    /// 只读 `meta.json`，**不要求证书存在**。读不到或读坏了都给一份默认值。
+    /// 唯讀 `meta.json`，**不要求證書存在**。讀不到或讀壞了都給一份預設值。
     ///
-    /// ★ ★ **「证书还没签下来」与「这个域名的续期状态」是两件事**，而
-    /// [`CertStore::load`] 把它们绑在了一起：缺 `cert.pem` 就返回 `None`，
-    /// 于是连 `meta.json` 里那份**失败计数**也一起读不到了。
-    /// ⚠ 后果是退避在「从来没签成过」的域名上完全失效——每一轮都从「零次失败」重新开始。
-    /// 这条是 ACME 门禁的反证跑抓到的：连着三轮日志都写「连续第 1 次失败」。
+    /// ★ ★ **「證書還沒簽下來」與「這個網域的續期狀態」是兩件事**，而
+    /// [`CertStore::load`] 把它們綁在了一起：缺 `cert.pem` 就回傳 `None`，
+    /// 於是連 `meta.json` 裡那份**失敗計數**也一起讀不到了。
+    /// ⚠ 後果是退避在「從來沒簽成過」的網域上完全失效——每一輪都從「零次失敗」重新開始。
+    /// 這條是 ACME 門禁的反證跑抓到的：連著三輪紀錄都寫「連續第 1 次失敗」。
     pub fn load_meta(&self, issuer: &str, domain: &str) -> Meta {
         let dir = self.dir_for(issuer, domain);
         let fallback = || Meta {
@@ -146,8 +146,8 @@ impl CertStore {
         };
         match fs::read_to_string(dir.join("meta.json")) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-                // ⚠ meta 坏了**不该让证书不可用**：它只是续期状态，
-                //   而证书本身还好着。用默认值继续，并说出来。
+                // ⚠ meta 壞了**不該讓證書不可用**：它只是續期狀態，
+                //   而證書本身還好著。用預設值繼續，並說出來。
                 log::warn!(
                     "{} 的 meta.json 读不动（{e}），按默认续期状态处理",
                     dir.display()
@@ -158,10 +158,10 @@ impl CertStore {
         }
     }
 
-    /// 读一张证书。缺文件返回 `Ok(None)`；文件在但坏了返回 `Err`。
+    /// 讀一張證書。缺檔案回傳 `Ok(None)`；檔案在但壞了回傳 `Err`。
     ///
-    /// ★ 这两种情况必须分开：「还没签」是正常状态，「签了但读不出来」是要人看的问题。
-    /// 把后者也当成 `None` 会让一张坏证书表现为「反复重新签发」。
+    /// ★ 這兩種情況必須分開：「還沒簽」是正常狀態，「簽了但讀不出來」是要人看的問題。
+    /// 把後者也當成 `None` 會讓一張壞證書表現為「反覆重新簽發」。
     pub fn load(&self, issuer: &str, domain: &str) -> io::Result<Option<StoredCert>> {
         let dir = self.dir_for(issuer, domain);
         let cert_path = dir.join("cert.pem");
@@ -169,10 +169,10 @@ impl CertStore {
         if !cert_path.exists() || !key_path.exists() {
             return Ok(None);
         }
-        // ⚠ ⚠ **G104 之前这里调的是 `pingora_rustls::load_certs_and_key_files`。**
-        //   换成 BoringSSL 之后没有等价的一站式函数，于是两个文件各读各的 ——
-        //   ★ 而「证书为空」与「私钥为空」这两种情况仍然分开报，
-        //   因为它们指向的运维动作不同（前者是签发没成功，后者多半是文件被截断）。
+        // ⚠ ⚠ **G104 之前這裡調的是 `pingora_rustls::load_certs_and_key_files`。**
+        //   換成 BoringSSL 之後沒有等價的一站式函式，於是兩個檔案各讀各的 ——
+        //   ★ 而「證書為空」與「私鑰為空」這兩種情況仍然分開報，
+        //   因為它們指向的維運動作不同（前者是簽發沒成功，後者多半是檔案被截斷）。
         let cert_pem = fs::read(&cert_path)?;
         let key_pem = fs::read(&key_path)?;
         let chain = X509::stack_from_pem(&cert_pem)
@@ -203,12 +203,12 @@ impl CertStore {
         }))
     }
 
-    /// 原子地写一张证书。
+    /// 原子地寫一張證書。
     ///
-    /// ★ 三件事的顺序是有讲究的：**先写私钥、再写证书、最后写 meta**。
-    /// 中途崩溃时留下的组合分别是「只有私钥」（`load` 判缺证书 → `None`，会重签）、
-    /// 「私钥 + 证书」（可用，meta 走默认值）——两种都不会让服务拿到一张对不上的证书。
-    /// 反过来先写证书，崩溃就可能留下「证书 + 旧私钥」，**而那是能装载却握手失败的**。
+    /// ★ 三件事的順序是有講究的：**先寫私鑰、再寫證書、最後寫 meta**。
+    /// 中途崩潰時留下的組合分別是「只有私鑰」（`load` 判缺證書 → `None`，會重籤）、
+    /// 「私鑰 + 證書」（可用，meta 走預設值）——兩種都不會讓服務拿到一張對不上的證書。
+    /// 反過來先寫證書，崩潰就可能留下「證書 + 舊私鑰」，**而那是能裝載卻握手失敗的**。
     pub fn save(
         &self,
         issuer: &str,
@@ -226,7 +226,7 @@ impl CertStore {
         Ok(())
     }
 
-    /// 只更新续期状态，不动证书。
+    /// 只更新續期狀態，不動證書。
     pub fn save_meta(&self, issuer: &str, domain: &str, meta: &Meta) -> io::Result<()> {
         let dir = self.dir_for(issuer, domain);
         fs::create_dir_all(&dir)?;
@@ -234,7 +234,7 @@ impl CertStore {
         atomic_write(&dir.join("meta.json"), s.as_bytes(), 0o644)
     }
 
-    /// 列出某个签发者下已存的域名目录名（**已做过文件名转义**）。
+    /// 列出某個簽發者下已存的網域目錄名（**已做過檔案名轉義**）。
     pub fn list(&self, issuer: &str) -> io::Result<Vec<String>> {
         let dir = self.root.join(issuer);
         if !dir.is_dir() {
@@ -254,16 +254,16 @@ impl CertStore {
     }
 }
 
-/// 写临时文件再 `rename`。**同目录内**，否则 `rename` 不是原子的（跨设备会退化成拷贝）。
+/// 寫臨時檔案再 `rename`。**同目錄內**，否則 `rename` 不是原子的（跨設備會退化成拷貝）。
 ///
-/// ★ 公开出去是给 `fulcrum-acme` 写账户凭据用的：那也是一份**私钥**，
-/// 也要「权限在 create 时给」「写完再改名」。同一条规则有两份实现，迟早会分叉一份。
+/// ★ 公開出去是給 `fulcrum-acme` 寫帳戶憑證用的：那也是一份**私鑰**，
+/// 也要「權限在 create 時給」「寫完再改名」。同一條規則有兩份實作，遲早會分叉一份。
 pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "目标路径没有父目录"))?;
-    // ★ 临时名带 pid：升级窗口里两代同时写时，各写各的临时文件，
-    //   最后谁先 rename 谁的结果就是最终态——而任何一个都是完整的。
+    // ★ 臨時名帶 pid：升級視窗裡兩代同時寫時，各寫各的臨時檔案，
+    //   最後誰先 rename 誰的結果就是最終態——而任何一個都是完整的。
     let tmp = dir.join(format!(
         ".{}.tmp-{}",
         path.file_name().and_then(|s| s.to_str()).unwrap_or("f"),
@@ -271,8 +271,8 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     ));
     {
         use std::io::Write as _;
-        // ★ 权限在 **create 时**给，不是写完再 chmod：后者留下一个
-        //   「内容已经在里面、权限还是 0644」的窗口，而私钥在那个窗口里是可读的。
+        // ★ 權限在 **create 時**給，不是寫完再 chmod：後者留下一個
+        //   「內容已經在裡面、權限還是 0644」的視窗，而私鑰在那個視窗裡是可讀的。
         let mut f = fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -280,35 +280,35 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
             .mode(mode)
             .open(&tmp)?;
         f.write_all(bytes)?;
-        // ⚠ 不 fsync 就 rename，崩溃时可能得到一个「已改名但内容是空的」文件。
+        // ⚠ 不 fsync 就 rename，崩潰時可能得到一個「已改名但內容是空的」檔案。
         f.sync_all()?;
     }
     fs::rename(&tmp, path)?;
     Ok(())
 }
 
-/// 把域名变成一个安全的目录名。
+/// 把網域變成一個安全的目錄名。
 ///
-/// ⚠ ⚠ **必须是单射的**：两个不同的域名撞到同一个目录，就会共用一张证书——
-/// 那是**安全缺陷**，不是显示问题。
+/// ⚠ ⚠ **必須是單射的**：兩個不同的網域撞到同一個目錄，就會共用一張證書——
+/// 那是**安全缺陷**，不是顯示問題。
 ///
-/// 编码两步：先 `_` → `__`，再 `*` → `_wildcard_`。
+/// 編碼兩步：先 `_` → `__`，再 `*` → `_wildcard_`。
 ///
-/// ⚠ ⚠ **两步缺一不可。** 只做第二步的话，`_wildcard_.example.com`
-/// 与 `*.example.com` 会**撞到同一个目录** —— DNS 名里的下划线很常见
-/// （`_acme-challenge.`、SRV 记录），「不可能出现」那句话是错的。
+/// ⚠ ⚠ **兩步缺一不可。** 只做第二步的話，`_wildcard_.example.com`
+/// 與 `*.example.com` 會**撞到同一個目錄** —— DNS 名裡的下劃線很常見
+/// （`_acme-challenge.`、SRV 記錄），「不可能出現」那句話是錯的。
 ///
-/// ★ 证明方式不是「几个样本没撞」，而是 [`unsanitize`] 能把它**逐字还原** ——
-/// 存在反函数就等于单射。
+/// ★ 證明方式不是「幾個樣本沒撞」，而是 [`unsanitize`] 能把它**逐字還原** ——
+/// 存在反函式就等於單射。
 pub fn sanitize(domain: &str) -> String {
     domain.replace('_', "__").replace('*', "_wildcard_")
 }
 
-/// [`sanitize`] 的反函数。
+/// [`sanitize`] 的反函式。
 ///
-/// ⚠ 解码必须**从左到右扫**，而且 `__` 要先于 `_wildcard_` 判。
-/// 直接 `replace("_wildcard_", "*")` 会把 `__wildcard__`（即字面量 `_wildcard_`）
-/// 里从第 2 个字符开始的那一段也认成通配标记 —— 那时反函数就不成立了。
+/// ⚠ 解碼必須**從左到右掃**，而且 `__` 要先於 `_wildcard_` 判。
+/// 直接 `replace("_wildcard_", "*")` 會把 `__wildcard__`（即字面值 `_wildcard_`）
+/// 裡從第 2 個字元開始的那一段也認成通配標記 —— 那時反函式就不成立了。
 pub fn unsanitize(name: &str) -> String {
     let mut out = String::new();
     let mut i = 0usize;
@@ -331,13 +331,13 @@ pub fn unsanitize(name: &str) -> String {
     out
 }
 
-/// 从一张证书里读有效期与 DNS SAN。
+/// 從一張證書裡讀有效期與 DNS SAN。
 ///
-/// ★ ★ **G104 之后它收的是 `X509`（BoringSSL），而里面仍然走 `x509-parser` 读 DER。**
-/// ⚠ 这不是没顺手改干净 —— BoringSSL 自己也能读这两样，而**换掉它等于同时换掉
-/// 「我们对证书的理解」**：SAN 的取法、时间的边界、非 DNS 类型 SAN 怎么处理，
-/// 这些今天由一组测试钉着，换实现它们就要重新证一遍。
-/// ⇒ **这一批换的是 TLS 后端，不是证书解析。** 两件事分开做，红了才分得清是哪一件。
+/// ★ ★ **G104 之後它收的是 `X509`（BoringSSL），而裡面仍然走 `x509-parser` 讀 DER。**
+/// ⚠ 這不是沒順手改乾淨 —— BoringSSL 自己也能讀這兩樣，而**換掉它等於同時換掉
+/// 「我們對證書的理解」**：SAN 的取法、時間的邊界、非 DNS 類型 SAN 怎麼處理，
+/// 這些今天由一組測試釘著，換實作它們就要重新證一遍。
+/// ⇒ **這一批換的是 TLS 後端，不是證書解析。** 兩件事分開做，紅了才分得清是哪一件。
 pub fn validity_of(cert: &X509) -> Result<(SystemTime, SystemTime, Vec<String>), String> {
     use x509_parser::prelude::*;
     let der = cert.to_der().map_err(|e| e.to_string())?;
@@ -378,13 +378,13 @@ mod tests {
         p
     }
 
-    /// 会撞的与不会撞的都要覆盖到。★ 名单里那几个「看起来不像域名」的是重点。
+    /// 會撞的與不會撞的都要覆蓋到。★ 名單裡那幾個「看起來不像網域」的是重點。
     const NASTY: &[&str] = &[
         "example.com",
         "*.example.com",
         "a.example.com",
         "*.a.example.com",
-        // ⚠ 下面这些都是**合法的 DNS 名**，而一个不完整的转义会让它们与上面几个相撞
+        // ⚠ 下面這些都是**合法的 DNS 名**，而一個不完整的轉義會讓它們與上面幾個相撞
         "_wildcard_.example.com",
         "__wildcard__.example.com",
         "_acme-challenge.example.com",
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn 域名转义是单射的() {
-        // ★ ★ 判据不是「这几个样本没撞」，而是**存在反函数**：能逐字还原 ⇒ 一定单射。
+        // ★ ★ 判據不是「這幾個樣本沒撞」，而是**存在反函式**：能逐字還原 ⇒ 一定單射。
         for n in NASTY {
             assert_eq!(
                 unsanitize(&sanitize(n)),
@@ -404,7 +404,7 @@ mod tests {
                 sanitize(n)
             );
         }
-        // 顺带把「不撞」也直接验一遍，免得反函数写错时两条同时错。
+        // 順帶把「不撞」也直接驗一遍，免得反函式寫錯時兩條同時錯。
         let mut seen = std::collections::BTreeSet::new();
         for n in NASTY {
             assert!(
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn 通配符与字面量_wildcard_不得撞目录() {
-        // ⚠ 反向判据：这两个域名不同，目录必须不同。
+        // ⚠ 反向判據：這兩個網域不同，目錄必須不同。
         assert_ne!(
             sanitize("*.example.com"),
             sanitize("_wildcard_.example.com"),
@@ -463,8 +463,8 @@ mod tests {
 
     #[test]
     fn 缺文件是_none_而坏文件是_err() {
-        // ★ 这两种必须分开：「还没签」是正常状态，「签了但读不出来」要人看。
-        //   混在一起会让一张坏证书表现为「反复重新签发」。
+        // ★ 這兩種必須分開：「還沒簽」是正常狀態，「簽了但讀不出來」要人看。
+        //   混在一起會讓一張壞證書表現為「反覆重新簽發」。
         let root = tmpdir();
         let store = CertStore::new(&root);
         assert!(store.load("test", "nope.com").unwrap().is_none());
@@ -489,24 +489,24 @@ mod tests {
         let store = CertStore::new(&root);
         let dir = store.dir_for("test", "a.com");
         fs::create_dir_all(&dir).unwrap();
-        // 没有真证书，所以这里只验 meta 的容错路径不 panic
+        // 沒有真證書，所以這裡只驗 meta 的容錯路徑不 panic
         fs::write(dir.join("meta.json"), "{ not json").unwrap();
-        // 缺 cert/key → None（而不是因为 meta 坏了就 Err）
+        // 缺 cert/key → None（而不是因為 meta 壞了就 Err）
         assert!(store.load("test", "a.com").unwrap().is_none());
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn 同一进程里两次上锁不会自我死锁() {
-        // ⚠ `flock` 是**按 fd** 的，同一进程用两个不同的 fd 会真的互斥。
-        //   所以这里验的是：拿完释放之后还能再拿到，而不是「可重入」。
+        // ⚠ `flock` 是**按 fd** 的，同一處理程序用兩個不同的 fd 會真的互斥。
+        //   所以這裡驗的是：拿完釋放之後還能再拿到，而不是「可重入」。
         let root = tmpdir();
         let store = CertStore::new(&root);
         {
             let _g = store.lock("test", "a.com").unwrap();
         }
         let _g2 = store.lock("test", "a.com").unwrap();
-        // 不同域名互不影响
+        // 不同網域互不影響
         let _g3 = store.lock("test", "b.com").unwrap();
         drop(_g2);
         drop(_g3);
@@ -552,9 +552,9 @@ mod tests {
 
     #[test]
     fn 没有证书时失败计数也要读得回来() {
-        // ★ ★ 守的是那个缺陷的另一半：`load()` 缺 `cert.pem` 就返回 `None`，
-        //   于是**从来没签成过**的域名连自己的失败计数都读不回来，
-        //   每一轮都从「零次失败」重新开始 —— 退避永远长不大。
+        // ★ ★ 守的是那個缺陷的另一半：`load()` 缺 `cert.pem` 就回傳 `None`，
+        //   於是**從來沒簽成過**的網域連自己的失敗計數都讀不回來，
+        //   每一輪都從「零次失敗」重新開始 —— 退避永遠長不大。
         let root = tmpdir();
         let store = CertStore::new(&root);
         let meta = Meta {
@@ -565,18 +565,18 @@ mod tests {
             },
             ..Default::default()
         };
-        // 只写 meta，**不写证书** —— 正是一个签了四次都没签下来的域名的样子。
+        // 只寫 meta，**不寫證書** —— 正是一個簽了四次都沒簽下來的網域的樣子。
         store.save_meta("letsencrypt", "never.com", &meta).unwrap();
         assert!(
             store.load("letsencrypt", "never.com").unwrap().is_none(),
             "没有证书，load() 本来就该给 None"
         );
-        // ★ 而续期状态必须还在。
+        // ★ 而續期狀態必須還在。
         let back = store.load_meta("letsencrypt", "never.com");
         assert_eq!(back.renewal.failures, 4);
         assert_eq!(back.renewal.last_attempt, Some(1234));
-        // ★ 反向：一个**根本没记录过**的域名要拿到干净的默认值，
-        //   而不是继承上一个域名的计数（否则新域名一上来就被退避挡住）。
+        // ★ 反向：一個**根本沒記錄過**的網域要拿到乾淨的預設值，
+        //   而不是繼承上一個網域的計數（否則新網域一上來就被退避擋住）。
         let none = store.load_meta("letsencrypt", "fresh.com");
         assert_eq!(none.renewal.failures, 0);
         assert_eq!(none.renewal.last_attempt, None);
@@ -586,15 +586,15 @@ mod tests {
 
     #[test]
     fn 老的_meta_没有_issuer_url_也读得出来() {
-        // ⚠ 升级要向后兼容：批 4 之前写下的 `meta.json` 里没有 `issuer_url` 这个键。
-        //   读不出来的后果不是「少一个字段」，而是**整张证书被当成坏的**（`load` 返回 Err），
-        //   于是一次升级会让所有自动签发的站点同时握手失败。
+        // ⚠ 升級要向後相容：批 4 之前寫下的 `meta.json` 裡沒有 `issuer_url` 這個鍵。
+        //   讀不出來的後果不是「少一個欄位」，而是**整張證書被當成壞的**（`load` 回傳 Err），
+        //   於是一次升級會讓所有自動簽發的站台同時握手失敗。
         let old = r#"{"issuer":"letsencrypt","ari_start":null,"ari_end":null,
                       "renewal":{"failures":0,"last_attempt":null}}"#;
         let back: Meta = serde_json::from_str(old).expect("老格式的 meta 必须还读得出来");
         assert_eq!(back.issuer, "letsencrypt");
-        // ★ `None` 的语义是「不知道是谁签的」，而不是「不是我们签的」——
-        //   后者会让升级之后每个域名都被重签一遍。
+        // ★ `None` 的語義是「不知道是誰籤的」，而不是「不是我們籤的」——
+        //   後者會讓升級之後每個網域都被重籤一遍。
         assert_eq!(back.issuer_url, None);
     }
 }

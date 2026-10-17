@@ -93,43 +93,43 @@ pub use crate::protocols::tls::ALPN;
 use crate::protocols::GetSocketDigest;
 pub use l4::{ServerAddress, TcpSocketOptions};
 
-/// 这个监听器上多了一条 / 少了一条连接（**★ 枢衡改动 15**）。
+/// 這個監聽器上多了一條 / 少了一條連接（**★ 樞衡改動 15**）。
 ///
-/// ★ ★ **本 crate 只知道「多了一条 / 少了一条」**：它不认识 counter 与 gauge、
-/// 不认识标签、不知道 Prometheus 存在。`listen` 递的是 [`TransportStack::as_str`]
-/// 给出的那个**监听地址原样**，怎么用由使用方决定。
+/// ★ ★ **本 crate 只知道「多了一條 / 少了一條」**：它不認識 counter 與 gauge、
+/// 不認識標籤、不知道 Prometheus 存在。`listen` 遞的是 [`TransportStack::as_str`]
+/// 給出的那個**監聽位址原樣**，怎麼用由使用方決定。
 ///
-/// ⚠ 一个 [`Listeners`] 可以有多个监听地址，而 [`Listeners::set_connection_counter`]
-/// 给它们设的是**同一个**实现 ⇒ 实现方必须按 `listen` 分格，
-/// ⛔ 不能假设「一个计数器只服务一个地址」。
+/// ⚠ 一個 [`Listeners`] 可以有多個監聽位址，而 [`Listeners::set_connection_counter`]
+/// 給它們設的是**同一個**實作 ⇒ 實作方必須按 `listen` 分格，
+/// ⛔ 不能假設「一個計數器只服務一個位址」。
 pub trait ConnectionCounter: Send + Sync {
-    /// 一条连接开始了。
+    /// 一條連接開始了。
     ///
-    /// ⚠ 调用点在 **accept 之后、握手之前** —— 于是「还在握手的连接」也算在里面。
-    /// ★ 那是有意的：TLS 握手被打爆时，这条路上的堆积正是最该看得见的东西。
+    /// ⚠ 呼叫點在 **accept 之後、握手之前** —— 於是「還在握手的連接」也算在裡面。
+    /// ★ 那是有意的：TLS 握手被打爆時，這條路上的堆積正是最該看得見的東西。
     fn enter(&self, listen: &str);
 
-    /// 那条连接结束了。
+    /// 那條連接結束了。
     ///
-    /// ⛔ ⛔ **不要手写调用它** —— 唯一的调用点是 [`ConnGuard`] 的 `Drop`，理由见那里。
+    /// ⛔ ⛔ **不要手寫呼叫它** —— 唯一的呼叫點是 [`ConnGuard`] 的 `Drop`，理由見那裡。
     fn leave(&self, listen: &str);
 }
 
-/// [`ConnectionCounter::leave`] 的**唯一**调用点（**★ 枢衡改动 15**）。
+/// [`ConnectionCounter::leave`] 的**唯一**呼叫點（**★ 樞衡改動 15**）。
 ///
-/// ★ ★ ★ 它存在的全部理由：那条连接任务有**三条退出路径**
-/// （握手超时 / 握手失败 / 正常结束），手写三处减一是一个「三处迟早分家」的形状 ——
-/// ⚠ 而分家时的表现是 **gauge 只涨不降**，counter 照常，**没有任何东西会说**。
+/// ★ ★ ★ 它存在的全部理由：那條連接任務有**三條退出路徑**
+/// （握手超時 / 握手失敗 / 正常結束），手寫三處減一是一個「三處遲早分家」的形狀 ——
+/// ⚠ 而分家時的表現是 **gauge 只漲不降**，counter 照常，**沒有任何東西會說**。
 ///
-/// **构造即 `enter`，析构即 `leave`** —— 两半绑在同一个值的生命期上，
-/// 于是「加了没减」在结构上做不到。
+/// **建構即 `enter`，析構即 `leave`** —— 兩半綁在同一個值的生命期上，
+/// 於是「加了沒減」在結構上做不到。
 pub struct ConnGuard {
     counter: Arc<dyn ConnectionCounter>,
     listen: Arc<str>,
 }
 
 impl ConnGuard {
-    /// 构造即 [`ConnectionCounter::enter`]。
+    /// 建構即 [`ConnectionCounter::enter`]。
     pub fn new(counter: Arc<dyn ConnectionCounter>, listen: Arc<str>) -> ConnGuard {
         counter.enter(&listen);
         ConnGuard { counter, listen }
@@ -217,7 +217,7 @@ struct TransportStackBuilder {
     #[cfg(feature = "connection_filter")]
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
     pre_tls_callback: Option<PreTlsCallback>,
-    /// ★ 枢衡改动 15：连接计数。`None` = 这个端口不数。
+    /// ★ 樞衡改動 15：連接計數。`None` = 這個連接埠不數。
     connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
 
@@ -335,7 +335,7 @@ pub(crate) struct TransportStack {
     tls: Option<Arc<Acceptor>>,
     l4_buffer: L4BufferSettings,
     pre_tls_callback: Option<PreTlsCallback>,
-    /// ★ 枢衡改动 15。
+    /// ★ 樞衡改動 15。
     connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
 
@@ -344,7 +344,7 @@ impl TransportStack {
         self.l4.as_str()
     }
 
-    /// ★ 枢衡改动 15：这个端点上的连接计数器（`None` = 不数）。
+    /// ★ 樞衡改動 15：這個端點上的連接計數器（`None` = 不數）。
     pub fn connection_counter(&self) -> Option<&Arc<dyn ConnectionCounter>> {
         self.connection_counter.as_ref()
     }
@@ -374,9 +374,9 @@ pub(crate) struct UninitializedStream {
 impl UninitializedStream {
     pub async fn handshake(mut self) -> Result<Stream> {
         self.l4.set_buffer(self.l4_buffer);
-        // ★ 枢衡改动 12（形状 B，2026-09-24）：pre-TLS 回调挪到 TLS 分支**之前** ⇒ 明文端口也调。
-        //   上游 600c5c0 有意把它收进了 TLS 分支，而枢衡的明文端口同样要收 PROXY 头
-        //   （tests/proxyproto 的主场景就是明文 9800）。读取逻辑在 fulcrum-server，见 FORK.md §12。
+        // ★ 樞衡改動 12（形狀 B，2026-09-24）：pre-TLS 回呼挪到 TLS 分支**之前** ⇒ 明文連接埠也調。
+        //   上游 600c5c0 有意把它收進了 TLS 分支，而樞衡的明文連接埠同樣要收 PROXY 頭
+        //   （tests/proxyproto 的主場景就是明文 9800）。讀取邏輯在 fulcrum-server，見 FORK.md §12。
         if let Some(ref callback) = self.pre_tls_callback {
             callback.process(&mut self.l4).await?;
         }
@@ -402,7 +402,7 @@ pub struct Listeners {
     #[cfg(feature = "connection_filter")]
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
     pre_tls_callback: Option<PreTlsCallback>,
-    /// ★ 枢衡改动 15。
+    /// ★ 樞衡改動 15。
     connection_counter: Option<Arc<dyn ConnectionCounter>>,
 }
 
@@ -521,7 +521,7 @@ impl Listeners {
             #[cfg(feature = "connection_filter")]
             connection_filter: self.connection_filter.clone(),
             pre_tls_callback: self.pre_tls_callback.clone(),
-            // ★ 枢衡改动 15：0.9.0 的 add_tcp / add_uds / add_tls_with_settings 都走这里。
+            // ★ 樞衡改動 15：0.9.0 的 add_tcp / add_uds / add_tls_with_settings 都走這裡。
             connection_counter: self.connection_counter.clone(),
         });
     }
@@ -555,14 +555,14 @@ impl Listeners {
         }
     }
 
-    /// ★ 枢衡改动 15：给**所有**端点（已有的与之后加的）设连接计数器。
+    /// ★ 樞衡改動 15：給**所有**端點（已有的與之後加的）設連接計數器。
     ///
-    /// ⚠ 与上游自己的 `set_connection_filter` / `set_pre_tls_callback` 同一个形状，
-    /// 而这不是省事：连接计数是**连接级**的 —— 一条连接上还没有 Host，
-    /// 还不知道它会落到哪个站点。
+    /// ⚠ 與上游自己的 `set_connection_filter` / `set_pre_tls_callback` 同一個形狀，
+    /// 而這不是省事：連接計數是**連接級**的 —— 一條連接上還沒有 Host，
+    /// 還不知道它會落到哪個站台。
     ///
-    /// ⚠ ⚠ 这里设的是**同一个**实现，而 `self.stacks` 可以有多个监听地址
-    /// ⇒ 实现方必须按 [`ConnectionCounter::enter`] 收到的 `listen` 分格。
+    /// ⚠ ⚠ 這裡設的是**同一個**實作，而 `self.stacks` 可以有多個監聽位址
+    /// ⇒ 實作方必須按 [`ConnectionCounter::enter`] 收到的 `listen` 分格。
     pub fn set_connection_counter(&mut self, counter: Arc<dyn ConnectionCounter>) {
         self.connection_counter = Some(counter.clone());
         for stack in &mut self.stacks {
@@ -879,14 +879,14 @@ mod test {
         }
     }
 
-    /// ★ 枢衡改动 15 的回归守卫（手法照改动 13：**长在上游自己的测试模块里**）。
+    /// ★ 樞衡改動 15 的迴歸守衛（手法照改動 13：**長在上游自己的測試模組裡**）。
     ///
-    /// ⚠ **它只覆盖 [`ConnGuard`] 本身，到不了 `run_endpoint` 里那个调用点** ——
-    /// 那一段由下面 [`枢衡改动15_守卫必须被移进任务且绑了名字`] 守（2026-09-04 补）。
-    /// ⛔ **两条别合并**：这一条验**行为**（构造即 enter、drop 即 leave），
-    /// 那一条验**接线**（那个值真的被移进了任务）—— 合并之后哪一半坏了都分不出来。
-    /// ★ 端到端那一层仍然有它自己的判据（`tests/metrics/run.sh` 里
-    /// 「连上 TLS 端口什么都不发 ⇒ active +1」），三层各守一段。
+    /// ⚠ **它只覆蓋 [`ConnGuard`] 本身，到不了 `run_endpoint` 裡那個呼叫點** ——
+    /// 那一段由下面 [`枢衡改动15_守卫必须被移进任务且绑了名字`] 守（2026-09-04 補）。
+    /// ⛔ **兩條別合併**：這一條驗**行為**（建構即 enter、drop 即 leave），
+    /// 那一條驗**串接**（那個值真的被移進了任務）—— 合併之後哪一半壞了都分不出來。
+    /// ★ 端到端那一層仍然有它自己的判據（`tests/metrics/run.sh` 裡
+    /// 「連上 TLS 連接埠什麼都不發 ⇒ active +1」），三層各守一段。
     #[test]
     fn 枢衡改动15_连接守卫在_drop_时减一() {
         use std::sync::atomic::{AtomicUsize as 计数, Ordering as 序};
@@ -912,7 +912,7 @@ mod test {
             assert_eq!(c.进.load(序::Relaxed), 1, "构造 guard 就该 enter 一次");
             assert_eq!(c.出.load(序::Relaxed), 0, "还没 drop，不该 leave");
         }
-        // ★ ★ 这一条是整条改动的全部意义：**离开作用域就减一，无论那条路怎么走**。
+        // ★ ★ 這一條是整條改動的全部意義：**離開作用域就減一，無論那條路怎麼走**。
         assert_eq!(c.出.load(序::Relaxed), 1, "drop 之后必须 leave 一次");
         assert_eq!(
             *c.最后地址.lock().unwrap(),
@@ -921,40 +921,40 @@ mod test {
         );
     }
 
-    /// ★ ★ ★ 枢衡改动 15 的**第二道**守卫：`run_endpoint` 里那个守卫必须真的被
-    /// **移进** spawn 出去的任务，并且绑在一个**有名字**的变量上（2026-09-04 补）。
+    /// ★ ★ ★ 樞衡改動 15 的**第二道**守衛：`run_endpoint` 裡那個守衛必須真的被
+    /// **移進** spawn 出去的任務，並且綁在一個**有名字**的變數上（2026-09-04 補）。
     ///
-    /// ⚠ ⚠ 它守的是一个**编译器不会说、门禁也不会红**的失效，而且有两种形态：
+    /// ⚠ ⚠ 它守的是一個**編譯器不會說、門禁也不會紅**的失效，而且有兩種形態：
     ///
-    /// 1. `let _conn_guard = conn_guard;` 写成裸 `let _ = conn_guard;` ⇒ **当场 drop**；
-    /// 2. 把那一行**整个删掉** ⇒ 那个值就不再被移进 `async move` 块，
-    ///    于是在 accept 循环这一轮末尾就 drop 了 —— 后果与第 1 种**一模一样**。
+    /// 1. `let _conn_guard = conn_guard;` 寫成裸 `let _ = conn_guard;` ⇒ **當場 drop**；
+    /// 2. 把那一行**整個刪掉** ⇒ 那個值就不再被移進 `async move` 塊，
+    ///    於是在 accept 循環這一輪末尾就 drop 了 —— 後果與第 1 種**一模一樣**。
     ///
-    /// 两种的现场都是 **gauge 恒为 0 而 counter 照涨**：正文格式合法、series 都在，
-    /// 只有一个数字永远是 0。⇒ 这正是「一道只见过绿的门」最爱藏的地方。
+    /// 兩種的現場都是 **gauge 恆為 0 而 counter 照漲**：正文格式合法、series 都在，
+    /// 只有一個數字永遠是 0。⇒ 這正是「一道只見過綠的門」最愛藏的地方。
     #[test]
     fn 枢衡改动15_守卫必须被移进任务且绑了名字() {
-        // 把空白全去掉再判：`rustfmt` 换行与缩进变化不会误伤，
-        // 而两种形态在归一之后仍然是**不同**的字符串。
+        // 把空白全去掉再判：`rustfmt` 換行與縮進變化不會誤傷，
+        // 而兩種形態在歸一之後仍然是**不同**的字串。
         fn 归一(s: &str) -> String {
             s.chars().filter(|c| !c.is_whitespace()).collect()
         }
-        // ★ ★ ★ 判「有没有做某件事」之前**必须先剥掉整行注释**。
-        //   ⚠ ⚠ 这不是洁癖：`listening.rs` 里那句**警告**本身就写着
-        //   「⛔ 写成裸 `let _ = conn_guard;` 会当场 drop」——**本门第一次跑就红在它上面**，
-        //   判据把那句警告当成了坏代码。
-        //   ⚠ **只剥整行**（`^\s*//`）：行内 `//` 未必是注释（`http://`、字符串里的 `//`），
-        //   一刀切会把真代码剪掉 —— 那是另一个方向的假绿（判据看不见真做了的事）。
-        //   ⚠ 已知边界：**行尾注释剥不掉**。真要藏一句坏形态在行尾注释里能骗过它，
-        //   而本文件不写行尾注释，且那需要有人刻意去做 —— 写在明处，不假装它全能。
+        // ★ ★ ★ 判「有沒有做某件事」之前**必須先剝掉整行註解**。
+        //   ⚠ ⚠ 這不是潔癖：`listening.rs` 裡那句**警告**本身就寫著
+        //   「⛔ 寫成裸 `let _ = conn_guard;` 會當場 drop」——**本門第一次跑就紅在它上面**，
+        //   判據把那句警告當成了壞程式碼。
+        //   ⚠ **只剝整行**（`^\s*//`）：行內 `//` 未必是註解（`http://`、字串裡的 `//`），
+        //   一刀切會把真程式碼剪掉 —— 那是另一個方向的假綠（判據看不見真做了的事）。
+        //   ⚠ 已知邊界：**行尾註解剝不掉**。真要藏一句壞形態在行尾註解裡能騙過它，
+        //   而本檔案不寫行尾註解，且那需要有人刻意去做 —— 寫在明處，不假裝它全能。
         fn 去整行注释(src: &str) -> String {
             src.lines()
                 .filter(|l| !l.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
-        // 一份源码里那个守卫接得对不对。★ 正向与反向**走同一个函数**，
-        // 否则「反向能红」证明不了「正向判得动」。
+        // 一份原始碼裡那個守衛接得對不對。★ 正向與反向**走同一個函式**，
+        // 否則「反向能紅」證明不了「正向判得動」。
         fn 接得对(src: &str) -> bool {
             let s = 归一(&去整行注释(src));
             s.contains("ConnGuard::new(")
@@ -962,7 +962,7 @@ mod test {
                 && !s.contains("let_=conn_guard")
         }
 
-        // ★ 剥离器自己的两条自证（剥得掉整行 ∧ 剥不掉行内的 `//`）。
+        // ★ 剝離器自己的兩條自證（剝得掉整行 ∧ 剝不掉行內的 `//`）。
         assert_eq!(
             去整行注释("  // 整行注释\nlet a = 1;"),
             "let a = 1;",
@@ -973,10 +973,10 @@ mod test {
             "把行内的 `//` 也当注释剪掉了 ⇒ 判据会看不见真代码"
         );
 
-        // ★ ★ **反向那一半，与正向同一次运行**（照 `tests/m0/unclaimed.sh` 的先例）。
-        //   ⛔ 少了它，一个恒回 `true` 的判据在下面那条正向上是绿的。
-        //   ⚠ 这几份夹具里出现的坏形态**不会误伤正向**：正向读的是
-        //     `services/listening.rs`，⛔ **别把正向改成读本文件**。
+        // ★ ★ **反向那一半，與正向同一次執行**（照 `tests/m0/unclaimed.sh` 的先例）。
+        //   ⛔ 少了它，一個恆回 `true` 的判據在下面那條正向上是綠的。
+        //   ⚠ 這幾份夾具裡出現的壞形態**不會誤傷正向**：正向讀的是
+        //     `services/listening.rs`，⛔ **別把正向改成讀本檔案**。
         assert!(
             接得对("let conn_guard = ConnGuard::new(c, a);\nlet _conn_guard = conn_guard;"),
             "判据把正确的接法判成错的 ⇒ 它守不住任何东西"
@@ -989,10 +989,10 @@ mod test {
             !接得对("let conn_guard = ConnGuard::new(c, a);\n// 那一行被删了"),
             "形态 2（守卫压根没被移进任务）没被认出来"
         );
-        // ★ ★ ★ 第四份夹具＝**本门第一次跑时那个 bug 的回归测试**：
-        //   接法正确、而**注释里提到了坏形态**的源码必须被判为**对的**。
-        //   ⚠ 少了它，有人「顺手简化」掉 `去整行注释` 之后不会有任何东西红 ——
-        //   而那时这道门会对着一份完全正确的 `listening.rs` 判红。
+        // ★ ★ ★ 第四份夾具＝**本門第一次跑時那個 bug 的迴歸測試**：
+        //   接法正確、而**註解裡提到了壞形態**的原始碼必須被判為**對的**。
+        //   ⚠ 少了它，有人「順手簡化」掉 `去整行注释` 之後不會有任何東西紅 ——
+        //   而那時這道門會對著一份完全正確的 `listening.rs` 判紅。
         assert!(
             接得对(
                 "// ⛔ 写成裸 `let _ = conn_guard;` 会当场 drop\n\
@@ -1001,7 +1001,7 @@ mod test {
             "注释里提到坏形态的正确源码被判成了错的 ⇒ `去整行注释` 没在起作用"
         );
 
-        // 正向：真的那份源码。
+        // 正向：真的那份原始碼。
         assert!(
             接得对(include_str!("../services/listening.rs")),
             "`services/listening.rs` 里那个连接守卫没被移进任务、或没绑名字 ⇒ \

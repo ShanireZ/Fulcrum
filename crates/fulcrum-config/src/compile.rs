@@ -1,16 +1,16 @@
-//! 语义分析 + 编译：AST → [`crate::model::StructuredConfig`]。
+//! 語義分析 + 編譯：AST → [`crate::model::StructuredConfig`]。
 //!
-//! 这一层做四件事：
+//! 這一層做四件事：
 //!
-//! 1. **认指令**（G60 的清单）。不认识的报 [`DiagCode::UNKNOWN_DIRECTIVE`] 并给建议。
-//! 2. **按执行顺序表排序**（G49）。★ ★ 这是顺序表**唯一的真实消费者**——
-//!    一张没有人读的表就是一条注释，而本仓库反复抓到的正是「声明了却没人接」。
-//! 3. ⛔ **隐式回落（G47）—— 整层已删除**（G98）。★ 编号有意保留。
-//! 4. **一次报全**（G51）：语义错误全部收集，不在第一条停下。
+//! 1. **認指令**（G60 的清單）。不認識的報 [`DiagCode::UNKNOWN_DIRECTIVE`] 並給建議。
+//! 2. **按執行順序表排序**（G49）。★ ★ 這是順序表**唯一的真實消費者**——
+//!    一張沒有人讀的表就是一條註解，而本儲存庫反覆抓到的正是「宣告了卻沒人接」。
+//! 3. ⛔ **隱式回落（G47）—— 整層已刪除**（G98）。★ 編號有意保留。
+//! 4. **一次報全**（G51）：語義錯誤全部收集，不在第一條停下。
 //!
-//! ★ ★ ★ 下面那个对 [`ChainDirective`] 的 `match` **没有 `_` 兜底臂**，这是有意的：
-//! 加了一条指令却没教编译器拿它怎么办，它当场编不过。
-//! 「在表里有位置」和「有人接」是两件事，两道门缺一不可。
+//! ★ ★ ★ 下面那個對 [`ChainDirective`] 的 `match` **沒有 `_` 備援臂**，這是有意的：
+//! 加了一條指令卻沒教編譯器拿它怎麼辦，它當場編不過。
+//! 「在表裡有位置」和「有人接」是兩件事，兩道門缺一不可。
 
 use crate::ast::{Arg, File, MatcherDef, Node, Site, Stmt, TopBlock};
 use crate::diag::{DiagCode, Diagnostic, Diagnostics, Span};
@@ -24,7 +24,7 @@ use crate::placeholder::{self, Ctx};
 use crate::secret::Secret;
 use std::collections::BTreeMap;
 
-/// 匹配器块里允许的条件（DSL 参考 §五）。
+/// 匹配器塊裡允許的條件（DSL 參考 §五）。
 const MATCHER_CONDITIONS: &[&str] = &[
     "path",
     "path_regexp",
@@ -36,13 +36,13 @@ const MATCHER_CONDITIONS: &[&str] = &[
     "not",
 ];
 
-/// 给自动 HTTPS 的站点合成一个 `:80` 上的 308 重定向站点（G12 的后半句）。
+/// 給自動 HTTPS 的站台合成一個 `:80` 上的 308 重定向站台（G12 的後半句）。
 ///
-/// 返回 `None` 的三种情况：关掉了、没有自动 HTTPS 的站点、所有主机名都已被
-/// 用户自己写的 `http://` 站点接走。
+/// 回傳 `None` 的三種情況：關掉了、沒有自動 HTTPS 的站台、所有主機名都已被
+/// 使用者自己寫的 `http://` 站台接走。
 ///
-/// ★ **它顺带修好了 HTTP-01**：G54 把 HTTP-01 定为「备」，而没有 80 端口就没有落脚点。
-/// 挑战应答在路由**之前**，不会被这条 308 吃掉。
+/// ★ **它順帶修好了 HTTP-01**：G54 把 HTTP-01 定為「備」，而沒有 80 連接埠就沒有落腳點。
+/// 挑戰應答在路由**之前**，不會被這條 308 吃掉。
 fn synthesize_http_redirect(
     global: &Global,
     sites: &[SiteConfig],
@@ -52,7 +52,7 @@ fn synthesize_http_redirect(
     if !global.auto_http_redirect {
         return None;
     }
-    // 用户自己在 :80 上写过的主机名 —— 那些不碰。
+    // 使用者自己在 :80 上寫過的主機名 —— 那些不碰。
     let mut taken: BTreeMap<String, ()> = BTreeMap::new();
     let mut catch_all_80: Option<String> = None;
     for site in sites {
@@ -84,14 +84,14 @@ fn synthesize_http_redirect(
         return None;
     }
 
-    // ⚠ ⚠ 站点索引的顺序是**精确 → 通配 → 端口兜底**，所以合成出来的这个块
-    //   会盖过用户写的 `:80` 兜底站点 —— 对这几个主机名而言。
-    //   ★ 这件事必须**说出来**：它是一次行为改变，而沉默地改掉别人配置的行为，
-    //   正是本仓库反复点名的那种「现场看不出问题」。
+    // ⚠ ⚠ 站台索引的順序是**精確 → 通配 → 連接埠備援**，所以合成出來的這個塊
+    //   會蓋過使用者寫的 `:80` 備援站台 —— 對這幾個主機名而言。
+    //   ★ 這件事必須**說出來**：它是一次行為改變，而沉默地改掉別人設定的行為，
+    //   正是本儲存庫反覆點名的那種「現場看不出問題」。
     if let Some(raw) = &catch_all_80 {
-        // ★ 指到**用户写的那个兜底站点**上。
-        // ⚠ 退而求其次也不能指文件开头：一条指错地方的诊断比没有诊断更费时间 ——
-        //   人会先去看它指的那一行，而那一行与这件事无关。
+        // ★ 指到**使用者寫的那個備援站台**上。
+        // ⚠ 退而求其次也不能指檔案開頭：一條指錯地方的診斷比沒有診斷更費時間 ——
+        //   人會先去看它指的那一行，而那一行與這件事無關。
         let span = seen_addresses.get(raw).copied().unwrap_or(Span::new(0, 0));
         cx.diags.push(
             Diagnostic::warning(
@@ -117,7 +117,7 @@ fn synthesize_http_redirect(
             host: h.clone(),
             port: 80,
             wildcard: h.starts_with("*."),
-            // ★ 合成出来的这个站点**自己不要证书**：它就是那条跳转。
+            // ★ 合成出來的這個站台**自己不要證書**：它就是那條跳轉。
             auto_https: false,
         })
         .collect();
@@ -125,10 +125,10 @@ fn synthesize_http_redirect(
     Some(SiteConfig {
         addresses,
         matchers: BTreeMap::new(),
-        // ⚠ ⚠ **必须显式写 Off**：`TlsConfig::default()` 是 `Automatic`，
-        //   于是这个纯 HTTP 的跳转站点会被 TLS 那一层当成「要自动签发」，
-        //   装载日志里多出一条「站点 http://… 要自动签发，而存储里还没有它的证书」。
-        //   ★ 那条假的 ⏳ 是自己写完当场看见的 —— `plan` 把它印出来了。
+        // ⚠ ⚠ **必須顯式寫 Off**：`TlsConfig::default()` 是 `Automatic`，
+        //   於是這個純 HTTP 的跳轉站台會被 TLS 那一層當成「要自動簽發」，
+        //   裝載紀錄裡多出一條「站台 http://… 要自動簽發，而儲存裡還沒有它的證書」。
+        //   ★ 那條假的 ⏳ 是自己寫完當場看見的 —— `plan` 把它印出來了。
         tls: TlsConfig {
             mode: TlsMode::Off,
             ..TlsConfig::default()
@@ -137,8 +137,8 @@ fn synthesize_http_redirect(
         chain: vec![Step {
             order: 60,
             matcher: None,
-            // 308 而不是 301：**保留请求方法与 body**。
-            // ⚠ 301/302 会让一个 POST 变成 GET，而那类故障的现场是「表单提交丢了」。
+            // 308 而不是 301：**保留請求方法與 body**。
+            // ⚠ 301/302 會讓一個 POST 變成 GET，而那類故障的現場是「表單提交丟了」。
             body: StepBody::Redir {
                 to: "https://{host}{uri}".to_string(),
                 code: 308,
@@ -181,10 +181,10 @@ pub fn compile(file: &File, diags: &mut Diagnostics) -> StructuredConfig {
         }
     }
 
-    // 自动 HTTP 重定向（G12 的后半句）——**合成一个真的站点块**。
-    // ★ 合成在**编译期**而不是数据面加特判：合成物会原样出现在 `fulcrum compile` 的
-    //   JSON 与 `fulcrum plan` 的输出里 ⇒ **它是可以被读到、被 diff、被质疑的事实**。
-    //   ⚠ 一条看不见的特判，在它某天行为不对时，用户手上没有任何东西可查。
+    // 自動 HTTP 重定向（G12 的後半句）——**合成一個真的站台塊**。
+    // ★ 合成在**編譯期**而不是資料面加特判：合成物會原樣出現在 `fulcrum compile` 的
+    //   JSON 與 `fulcrum plan` 的輸出裡 ⇒ **它是可以被讀到、被 diff、被質疑的事實**。
+    //   ⚠ 一條看不見的特判，在它某天行為不對時，使用者手上沒有任何東西可查。
     let redirect_site = synthesize_http_redirect(&global, &sites, &seen_addresses, &mut cx);
     if let Some(site) = redirect_site {
         sites.push(site);
@@ -201,16 +201,16 @@ pub fn compile(file: &File, diags: &mut Diagnostics) -> StructuredConfig {
 
 struct Cx<'a> {
     diags: &'a mut Diagnostics,
-    /// **第一个** `cache` 块选的后端（`Some(dir)` = 磁盘，`None` = 内存）与它的 span。
+    /// **第一個** `cache` 塊選的後端（`Some(dir)` = 磁碟，`None` = 記憶體）與它的 span。
     ///
-    /// ★ ★ 缓存后端是**进程级**的，所以这条检查天然是跨站点的 —— 它不可能
-    /// 在「编译一条 `cache` 指令」那个函数里做完，那里看不见别的站点。
-    /// ⚠ 记的是**第一个**，而诊断指着**后面那个不一样的**：错的那一条才是要改的。
+    /// ★ ★ 快取後端是**處理程序級**的，所以這條檢查天然是跨站台的 —— 它不可能
+    /// 在「編譯一條 `cache` 指令」那個函式里做完，那裡看不見別的站台。
+    /// ⚠ 記的是**第一個**，而診斷指著**後面那個不一樣的**：錯的那一條才是要改的。
     cache_backend: Option<(Option<String>, Span)>,
 }
 
 impl Cx<'_> {
-    // ── 全局选项块 ──────────────────────────────────────────────────────────
+    // ── 全域選項塊 ──────────────────────────────────────────────────────────
     fn global(&mut self, file: &File) -> Global {
         let mut g = Global::default();
         let Some(block) = &file.global else {
@@ -221,10 +221,10 @@ impl Cx<'_> {
                 self.err_matcher_here(stmt);
                 continue;
             };
-            // ★ ★ **被删掉的选项，要说清它去哪了。**
-            //   ⚠ 只回一句「未知的全局选项」，等于让写过它的人以为自己打错了字，
-            //   而那写法在当时是对的。一个公开配置面消失时，最起码要告诉人
-            //   「它没了、为什么、现在该怎么写」—— 与 G52（回落必须可见）同一条纪律。
+            // ★ ★ **被刪掉的選項，要說清它去哪了。**
+            //   ⚠ 只回一句「未知的全域選項」，等於讓寫過它的人以為自己打錯了字，
+            //   而那寫法在當時是對的。一個公開設定面消失時，最起碼要告訴人
+            //   「它沒了、為什麼、現在該怎麼寫」—— 與 G52（回落必須可見）同一條紀律。
             if let Some(why) = removed_global_option(&node.name) {
                 self.diags.push(
                     Diagnostic::error(
@@ -266,34 +266,34 @@ impl Cx<'_> {
                 "grace_period" => {
                     g.grace_period_ms = node.args.first().and_then(|a| parse_duration_ms(&a.value))
                 }
-                // ★ 三格共用同一条解析与同一条诊断（G140）。⛔ 不许抄三遍：
-                //   抄三遍的失效形态是「改了值域忘了改其中一格」，而三格各自都自洽。
+                // ★ 三格共用同一條解析與同一條診斷（G140）。⛔ 不許抄三遍：
+                //   抄三遍的失效形態是「改了值域忘了改其中一格」，而三格各自都自洽。
                 "threads_l7" => g.threads_l7 = self.thread_count(node),
                 "threads_l4" => g.threads_l4 = self.thread_count(node),
                 "threads_admin" => g.threads_admin = self.thread_count(node),
                 "auto_http_redirect" => {
-                    // ★ 不写值就是「开」（`auto_http_redirect` 单写一行 = on），
-                    //   与 `on_demand` 那条同形。
+                    // ★ 不寫值就是「開」（`auto_http_redirect` 單寫一行 = on），
+                    //   與 `on_demand` 那條同形。
                     g.auto_http_redirect = node
                         .args
                         .first()
                         .is_none_or(|a| parse_bool(&a.value) == Some(true))
                 }
-                // ★ 收下全部参数（`v` 只是第一个）。网段的合法性在运行时图那一层
-                //   与 `remote_ip` 共用 `Cidr::parse` 校验 —— 不在这里另写一份。
+                // ★ 收下全部參數（`v` 只是第一個）。網段的合法性在執行環境圖那一層
+                //   與 `remote_ip` 共用 `Cidr::parse` 檢核 —— 不在這裡另寫一份。
                 "proxy_protocol_from" => {
                     g.proxy_protocol_from = node.args.iter().map(|a| a.value.clone()).collect()
                 }
-                // ⚠ 这条 `_ => {}` 是「表里有位置、没人接」的温床（批 6 在 `tls` 上栽过）。
-                //   守着它的是 compile_behaviour.rs 的 `全局选项全部有人接`：
-                //   GLOBAL_OPTIONS 里多一条而这里没接，那条测试**直接 panic**。
+                // ⚠ 這條 `_ => {}` 是「表裡有位置、沒人接」的溫床（批 6 在 `tls` 上栽過）。
+                //   守著它的是 compile_behaviour.rs 的 `全局选项全部有人接`：
+                //   GLOBAL_OPTIONS 裡多一條而這裡沒接，那條測試**直接 panic**。
                 _ => {}
             }
         }
         g
     }
 
-    // ── 站点块 ──────────────────────────────────────────────────────────────
+    // ── 站台塊 ──────────────────────────────────────────────────────────────
     fn site(
         &mut self,
         site: &Site,
@@ -347,7 +347,7 @@ impl Cx<'_> {
         let mut seen_site_directives: BTreeMap<&'static str, Span> = BTreeMap::new();
         let mut tls_written = false;
 
-        // 站点级指令先摘出来，剩下的才是链上的。
+        // 站台級指令先摘出來，剩下的才是鏈上的。
         let mut chain_nodes: Vec<&Node> = Vec::new();
         for stmt in &site.body {
             let Stmt::Node(node) = stmt else { continue };
@@ -379,12 +379,12 @@ impl Cx<'_> {
             }
         }
 
-        // `http://` 地址不签证书、不升级；DSL 里没写 `tls` 时按地址推出模式。
+        // `http://` 位址不簽證書、不升級；DSL 裡沒寫 `tls` 時按位址推出模式。
         if !tls_written && addresses.iter().all(|a| !a.auto_https) {
             tls.mode = TlsMode::Off;
         }
 
-        // ★ `guarded = false`：站点块顶层没有任何外层匹配器罩着。
+        // ★ `guarded = false`：站台塊頂層沒有任何外層匹配器罩著。
         let chain = self.chain(&chain_nodes, &matchers, Ctx::Request, true, false);
 
         if chain.is_empty() && error_handler.is_empty() {
@@ -494,24 +494,24 @@ impl Cx<'_> {
         });
     }
 
-    // ── 执行链 ──────────────────────────────────────────────────────────────
+    // ── 執行鏈 ──────────────────────────────────────────────────────────────
 
-    /// 把一组节点编译成执行链。
+    /// 把一組節點編譯成執行鏈。
     ///
-    /// `sorted = true` 时按执行顺序表排序（站点块顶层、`handle` 的每个 arm）；
-    /// `sorted = false` 时保持书写顺序（`route { … }` 内部——**G49 的逃生口**）。
+    /// `sorted = true` 時按執行順序表排序（站台塊頂層、`handle` 的每個 arm）；
+    /// `sorted = false` 時保持書寫順序（`route { … }` 內部——**G49 的逃生口**）。
     ///
-    /// `guarded` = **外层容器已经把来源限制住了**（[`restricts_source`]）。
-    /// ★ 它只服务于 G116 那条诊断，而那条诊断问的是「这一步对**谁**开着」。
+    /// `guarded` = **外層容器已經把來源限制住了**（[`restricts_source`]）。
+    /// ★ 它只服務於 G116 那條診斷，而那條診斷問的是「這一步對**誰**開著」。
     ///
-    /// 要沿链下传，是因为 `handle @internal { metrics }` 里那一步**自己**没有匹配器，
-    /// ⚠ 但它显然是被圈住的 —— 只看这一步自己的匹配器会把它误报成裸奔，
-    /// 而一条稳定误报的诊断很快就没人看了。
+    /// 要沿鏈下傳，是因為 `handle @internal { metrics }` 裡那一步**自己**沒有匹配器，
+    /// ⚠ 但它顯然是被圈住的 —— 只看這一步自己的匹配器會把它誤報成裸奔，
+    /// 而一條穩定誤報的診斷很快就沒人看了。
     ///
-    /// ⚠ ⚠ **口径是「限制得了来源」，不是「有没有匹配器」。**
-    /// `handle /metrics { … }` 里那个路径匹配器是**任何客户端都能照着发**的东西，
-    /// 它一个人都挡不住。⇒ 判据落在 [`restricts_source`] 上，
-    /// **不是** [`is_unconditional`]（那一条问的是另一件事，见它自己的文档）。
+    /// ⚠ ⚠ **口徑是「限制得了來源」，不是「有沒有匹配器」。**
+    /// `handle /metrics { … }` 裡那個路徑匹配器是**任何用戶端都能照著發**的東西，
+    /// 它一個人都擋不住。⇒ 判據落在 [`restricts_source`] 上，
+    /// **不是** [`is_unconditional`]（那一條問的是另一件事，見它自己的文件）。
     fn chain(
         &mut self,
         nodes: &[&Node],
@@ -520,12 +520,12 @@ impl Cx<'_> {
         sorted: bool,
         guarded: bool,
     ) -> Vec<Step> {
-        // ★ 所有 `handle` 合成**一个**互斥组，放在 `handle` 的表位上。
-        //   它们分散写在各处也是同一组——这正是「互斥容器」的含义。
+        // ★ 所有 `handle` 合成**一個**互斥組，放在 `handle` 的表位上。
+        //   它們分散寫在各處也是同一組——這正是「互斥容器」的含義。
         let mut handle_arms: Vec<HandleArm> = Vec::new();
         let mut handle_span: Option<Span> = None;
-        // ★ 每一步都拖着它在源码里的位置。诊断要能说出「它实际跑在第几步」，
-        //   而排完序之后**书写顺序已经丢了**——位置若不在这时候带上，后面就再也拿不到。
+        // ★ 每一步都拖著它在原始碼裡的位置。診斷要能說出「它實際跑在第幾步」，
+        //   而排完序之後**書寫順序已經丟了**——位置若不在這時候帶上，後面就再也拿不到。
         let mut steps: Vec<(Step, Span)> = Vec::new();
 
         for node in nodes {
@@ -602,16 +602,16 @@ impl Cx<'_> {
         }
 
         if sorted {
-            // ★ **稳定排序**：同序号的多条（比如两条 `header`）保持书写顺序。
-            //   不稳定的排序会让「两条 header 谁先跑」随实现细节抖动，
-            //   而那种抖动在配置层是查不出来的。
+            // ★ **穩定排序**：同序號的多條（比如兩條 `header`）保持書寫順序。
+            //   不穩定的排序會讓「兩條 header 誰先跑」隨實作細節抖動，
+            //   而那種抖動在設定層是查不出來的。
             steps.sort_by_key(|(s, _)| s.order);
             self.warn_unreachable(&steps);
         }
         steps.into_iter().map(|(s, _)| s).collect()
     }
 
-    /// `handle` 的一个分支。
+    /// `handle` 的一個分支。
     fn handle_arm(
         &mut self,
         node: &Node,
@@ -620,7 +620,7 @@ impl Cx<'_> {
         guarded: bool,
     ) -> Option<HandleArm> {
         let matcher = self.matcher_ref(node, matchers);
-        // 这个分支限制得了来源 ⇒ 块里的每一步都被它罩着。见 `restricts_source`。
+        // 這個分支限制得了來源 ⇒ 塊裡的每一步都被它罩著。見 `restricts_source`。
         let guarded = guarded || restricts_source(&matcher, matchers);
         let Some(block) = &node.block else {
             self.diags.push(
@@ -657,11 +657,11 @@ impl Cx<'_> {
         })
     }
 
-    /// 编译一条链上指令。
+    /// 編譯一條鏈上指令。
     ///
-    /// ★ ★ ★ 这个 `match` **没有 `_` 臂**。新增一条链上指令时它会当场编不过——
-    /// 这就是 G49 那条「新增指令必须在表里有位置」的第二半：
-    /// **有位置** ≠ **有人接**，两者都要编译器来管。
+    /// ★ ★ ★ 這個 `match` **沒有 `_` 臂**。新增一條鏈上指令時它會當場編不過——
+    /// 這就是 G49 那條「新增指令必須在表裡有位置」的第二半：
+    /// **有位置** ≠ **有人接**，兩者都要編譯器來管。
     fn step(
         &mut self,
         d: ChainDirective,
@@ -672,8 +672,8 @@ impl Cx<'_> {
     ) -> Option<Step> {
         let matcher = self.matcher_ref(node, matchers);
         let args = node.rest_args();
-        // 这一步的来源被限制住了吗：自己写了一个限制得了来源的匹配器，
-        // 或者外层容器带着一个。⚠ 「有匹配器」不等于「限制了来源」，见 `restricts_source`。
+        // 這一步的來源被限制住了嗎：自己寫了一個限制得了來源的匹配器，
+        // 或者外層容器帶著一個。⚠ 「有匹配器」不等於「限制了來源」，見 `restricts_source`。
         let guarded = guarded || restricts_source(&matcher, matchers);
 
         let body = match d {
@@ -732,7 +732,7 @@ impl Cx<'_> {
                     disk_dir,
                 }
             }
-            // `handle` 在 `chain()` 里先被摘出去合并成互斥组，不会走到这里。
+            // `handle` 在 `chain()` 裡先被摘出去合併成互斥組，不會走到這裡。
             ChainDirective::Handle => return None,
             ChainDirective::Route => {
                 let Some(block) = &node.block else {
@@ -763,7 +763,7 @@ impl Cx<'_> {
                         }
                     })
                     .collect();
-                // ★ `sorted = false`：这就是逃生口本身。
+                // ★ `sorted = false`：這就是逃生口本身。
                 StepBody::Route {
                     steps: self.chain(&inner, matchers, ctx, false, guarded),
                 }
@@ -827,12 +827,12 @@ impl Cx<'_> {
                     body: args.get(1).map(|a| a.value.clone()),
                 }
             }
-            // ── Prometheus 抓取端点（**M2 批 M**，G116）──────────────────────
+            // ── Prometheus 抓取端點（**M2 批 M**，G116）──────────────────────
             ChainDirective::Metrics => {
                 self.expect_no_block(node, d);
                 if !args.is_empty() {
-                    // ⚠ 一个参数都不收。⇒ `metrics /x` 里那个 `/x` 走的是**行内匹配器**
-                    //   那条路（G50），压根到不了这里；到这里的都是真的多余参数。
+                    // ⚠ 一個參數都不收。⇒ `metrics /x` 裡那個 `/x` 走的是**行內匹配器**
+                    //   那條路（G50），壓根到不了這裡；到這裡的都是真的多餘參數。
                     self.arity_error(node, "写法就是 `metrics`，它不收任何参数");
                     return None;
                 }
@@ -874,11 +874,11 @@ impl Cx<'_> {
 
     /// `file_server` 指令（M2 批 F，G87–G91）。
     ///
-    /// ★ 这里**没有**走 `sub_block()`，是有原因的：那个 helper 把子块读成
-    /// 「名字 → 值」的 `BTreeMap`，于是**同名子指令写两遍时后一条覆盖前一条**。
-    /// `hide` 的语义是「再多挡一样」，写两行 `hide` 却只有第二行生效，
-    /// 就是一次静默行为——正是 G88 那张表里「可见性」那一格要堵的东西。
-    /// ⇒ 照 `reverse_proxy` 的做法自己遍历，`hide` 跨行累加。
+    /// ★ 這裡**沒有**走 `sub_block()`，是有原因的：那個 helper 把子塊讀成
+    /// 「名字 → 值」的 `BTreeMap`，於是**同名子指令寫兩遍時後一條覆蓋前一條**。
+    /// `hide` 的語義是「再多擋一樣」，寫兩行 `hide` 卻只有第二行生效，
+    /// 就是一次靜默行為——正是 G88 那張表裡「可見性」那一格要堵的東西。
+    /// ⇒ 照 `reverse_proxy` 的做法自己遍歷，`hide` 跨行累加。
     fn file_server(&mut self, node: &Node, args: &[Arg]) -> StepBody {
         let browse = args.iter().any(|a| a.value == "browse");
         for a in args {
@@ -929,9 +929,9 @@ impl Cx<'_> {
                     "index" => {
                         index = sub.args.iter().map(|a| a.value.clone()).collect();
                     }
-                    // ⚠ `check_sub_args` 已经把非 `true`/`false` 拦下并 `continue` 了，
-                    //   所以这里 `parse_bool` 不会是 `None`；用 `is_none_or(..)` 兜一下
-                    //   只是为了不在这条路上再造一个 `unwrap`。
+                    // ⚠ `check_sub_args` 已經把非 `true`/`false` 攔下並 `continue` 了，
+                    //   所以這裡 `parse_bool` 不會是 `None`；用 `is_none_or(..)` 兜一下
+                    //   只是為了不在這條路上再造一個 `unwrap`。
                     "follow_symlinks" => {
                         follow_symlinks = sub
                             .args
@@ -944,9 +944,9 @@ impl Cx<'_> {
                             .first()
                             .is_none_or(|a| parse_bool(&a.value) == Some(true));
                     }
-                    // ★ 追加，不是替换（G88）——多行 `hide` 叠起来。
+                    // ★ 追加，不是替換（G88）——多行 `hide` 疊起來。
                     "hide" => hide.extend(sub.args.iter().map(|a| a.value.clone())),
-                    // ★ M2 批 I：预压缩旁文件。同样**追加**，与 `hide` 同款。
+                    // ★ M2 批 I：預壓縮旁檔案。同樣**追加**，與 `hide` 同款。
                     "precompressed" => {
                         precompressed.extend(sub.args.iter().map(|a| a.value.clone()))
                     }
@@ -955,7 +955,7 @@ impl Cx<'_> {
             }
         }
 
-        // ── root 必填（G89 自研之后没有 root 就没有东西可发）─────────────────
+        // ── root 必填（G89 自研之後沒有 root 就沒有東西可發）─────────────────
         match &root {
             None => self.diags.push(
                 Diagnostic::error(
@@ -966,7 +966,7 @@ impl Cx<'_> {
                 .label("自研之后没有 root 就没有东西可发")
                 .note("写成 `file_server { root /srv/www }`（M2 批 F 起 root 必填）"),
             ),
-            // ── 必须绝对路径（G91）────────────────────────────────────────
+            // ── 必須絕對路徑（G91）────────────────────────────────────────
             Some(r) if !r.starts_with('/') => self.diags.push(
                 Diagnostic::error(
                     DiagCode::PATH_NOT_ABSOLUTE,
@@ -997,7 +997,7 @@ impl Cx<'_> {
         let mut upstreams: Vec<UpstreamSpec> = Vec::new();
         for a in args {
             self.check_placeholders(a, ctx);
-            // ★ 权重先都是默认的 1；子块里的 `weight` 再按**逐字相同的地址**改其中几格。
+            // ★ 權重先都是預設的 1；子塊裡的 `weight` 再按**逐字相同的位址**改其中幾格。
             upstreams.push(UpstreamSpec::new(a.value.clone()));
         }
         if upstreams.is_empty() {
@@ -1008,19 +1008,19 @@ impl Cx<'_> {
         let mut health = HealthCheck::default();
         let mut dns_refresh_ms = 30_000u64;
         let mut passive = Passive::default();
-        // ★ G136：`passive_window` / `passive_cooldown` 写了没有 —— ⛔ 不能拿「值 != 缺省」当判据：
-        //   `passive_window 10s` 是合法写法，而它与「没写过」在产物上完全同形
-        //   （与 `weight` 那处 `weighted` 集合同一条理由）。
+        // ★ G136：`passive_window` / `passive_cooldown` 寫了沒有 —— ⛔ 不能拿「值 != 預設」當判據：
+        //   `passive_window 10s` 是合法寫法，而它與「沒寫過」在產物上完全同形
+        //   （與 `weight` 那處 `weighted` 集合同一條理由）。
         let mut passive_knob: Option<(&'static str, Span)> = None;
         let mut header_up: Vec<HeaderOp> = Vec::new();
         let mut header_down: Vec<HeaderOp> = Vec::new();
         let mut transport = "http".to_string();
         let mut tls_insecure_skip_verify = false;
         let mut proxy_protocol: Option<String> = None;
-        // 已经被 `weight` 指过一次的上游地址（**逐字**）。★ 不能拿「权重 != 1」当判据：
-        // `weight x 1` 是合法的写法，而它与「没写过」在产物上完全同形。
+        // 已經被 `weight` 指過一次的上游位址（**逐字**）。★ 不能拿「權重 != 1」當判據：
+        // `weight x 1` 是合法的寫法，而它與「沒寫過」在產物上完全同形。
         let mut weighted: std::collections::BTreeSet<String> = Default::default();
-        // ★ M2 批 N 任务 2.8（裁决 R6）：这一条 `reverse_proxy` 的稳定 id。
+        // ★ M2 批 N 任務 2.8（裁決 R6）：這一條 `reverse_proxy` 的穩定 id。
         let mut id: Option<String> = None;
 
         if let Some(block) = &node.block {
@@ -1057,9 +1057,9 @@ impl Cx<'_> {
                     "dns_refresh" => {
                         dns_refresh_ms = parse_duration_ms(&first).unwrap_or(dns_refresh_ms)
                     }
-                    // ★ ★ G136：取值域在这里判，⛔ 不回落成默认值。
-                    //   ⚠ ⚠ 原文是 `first.parse().ok()` —— `passive_fail 五` 静默变 `None`，
-                    //   而 `None` 的语义恰好是**整个特性关掉**：一个手滑的值让熔断悄悄消失。
+                    // ★ ★ G136：取值域在這裡判，⛔ 不回落成預設值。
+                    //   ⚠ ⚠ 原文是 `first.parse().ok()` —— `passive_fail 五` 靜默變 `None`，
+                    //   而 `None` 的語義恰好是**整個特性關掉**：一個手滑的值讓熔斷悄悄消失。
                     "passive_fail" => match first.parse::<u32>() {
                         Ok(v) if (MIN_PASSIVE_FAIL..=MAX_PASSIVE_FAIL).contains(&v) => {
                             passive.fail_threshold = Some(v)
@@ -1087,7 +1087,7 @@ impl Cx<'_> {
                             sub.args.first().map(|a| a.span).unwrap_or(sub.name_span),
                         ));
                     }
-                    // ★ G136 新增：熔断后歇多久再放一个半开探针。
+                    // ★ G136 新增：熔斷後歇多久再放一個半開探針。
                     "passive_cooldown" => {
                         passive.cooldown_ms =
                             parse_duration_ms(&first).unwrap_or(passive.cooldown_ms);
@@ -1113,9 +1113,9 @@ impl Cx<'_> {
                             .first()
                             .is_none_or(|a| parse_bool(&a.value) == Some(true));
                     }
-                    // ★ 参数可省 ⇒ 省了就是 v2（owner 拍板的默认）。
-                    //   ⚠ 默认值写在**这一处**，而 `fulcrum_runtime::proxyproto::Version`
-                    //   的 `Default` 也是 v2 —— 两处一致由那边一条单测钉着
+                    // ★ 參數可省 ⇒ 省了就是 v2（owner 拍板的預設）。
+                    //   ⚠ 預設值寫在**這一處**，而 `fulcrum_runtime::proxyproto::Version`
+                    //   的 `Default` 也是 v2 —— 兩處一致由那邊一條單測釘著
                     //   （`版本名与_dsl_里写的那个词一一对应`）。
                     "proxy_protocol" => {
                         proxy_protocol = Some(
@@ -1125,19 +1125,19 @@ impl Cx<'_> {
                                 .unwrap_or_else(|| DEFAULT_PROXY_PROTOCOL.to_string()),
                         );
                     }
-                    // ★ M2 批 N：`weight <上游地址> <正整数>`。三条诊断都在这里面。
+                    // ★ M2 批 N：`weight <上游地址> <正整数>`。三條診斷都在這裡面。
                     "weight" => self.upstream_weight(sub, &mut upstreams, &mut weighted),
-                    // ★ M2 批 N 任务 2.8：`id <名字>`（裁决 R6 ⇒ G125）。
+                    // ★ M2 批 N 任務 2.8：`id <名字>`（裁決 R6 ⇒ G125）。
                     "id" => self.proxy_id(sub, &mut id),
                     _ => {}
                 }
             }
         }
 
-        // ★ ★ G136：旋钮写了、而 `passive_fail` 没写 ⇒ 那两行**一个都不生效**。
-        //   ⚠ 必须说出来：它与「正在生效」在配置里长得一模一样，沉默就是让人以为它生效了
-        //   （与 `METRICS_UNGUARDED` 同一条纪律）。★ 但**从来不是** error ——
-        //   判红会把「先把旋钮调好、待会儿再开」这种正当的分步操作一起挡掉。
+        // ★ ★ G136：旋鈕寫了、而 `passive_fail` 沒寫 ⇒ 那兩行**一個都不生效**。
+        //   ⚠ 必須說出來：它與「正在生效」在設定里長得一模一樣，沉默就是讓人以為它生效了
+        //   （與 `METRICS_UNGUARDED` 同一條紀律）。★ 但**從來不是** error ——
+        //   判紅會把「先把旋鈕調好、待會兒再開」這種正當的分步操作一起擋掉。
         if let (None, Some((knob, span))) = (passive.fail_threshold, passive_knob) {
             self.diags.push(
                 Diagnostic::warning(
@@ -1167,27 +1167,27 @@ impl Cx<'_> {
         }
     }
 
-    /// `reverse_proxy { weight <上游地址> <正整数> }`（**M2 批 N**，裁决 R1/R3）。
+    /// `reverse_proxy { weight <上游地址> <正整数> }`（**M2 批 N**，裁決 R1/R3）。
     ///
-    /// 三条都是**装载期错误**，⛔ 一条都不回落成默认值：
+    /// 三條都是**裝載期錯誤**，⛔ 一條都不回落成預設值：
     ///
-    /// 1. 地址不在这条 `reverse_proxy` 的上游清单里 ⇒ [`DiagCode::UNKNOWN_WEIGHT_UPSTREAM`]，
-    ///    **并把清单原样列出来**；
-    /// 2. 同一个上游写了两次 ⇒ [`DiagCode::DUPLICATE_WEIGHT`]（⛔ 不是「后写的赢」）；
-    /// 3. 值不在 `[1, 65535]` 里 ⇒ [`DiagCode::BAD_WEIGHT`]。
+    /// 1. 位址不在這條 `reverse_proxy` 的上游清單裡 ⇒ [`DiagCode::UNKNOWN_WEIGHT_UPSTREAM`]，
+    ///    **並把清單原樣列出來**；
+    /// 2. 同一個上游寫了兩次 ⇒ [`DiagCode::DUPLICATE_WEIGHT`]（⛔ 不是「後寫的贏」）；
+    /// 3. 值不在 `[1, 65535]` 裡 ⇒ [`DiagCode::BAD_WEIGHT`]。
     ///
-    /// ⚠ 三条各自 `return`，所以一行 `weight` 只报一条 —— 但**每一行都会被看**，
-    /// 「一次报全」（G51）说的是那件事。
+    /// ⚠ 三條各自 `return`，所以一行 `weight` 只報一條 —— 但**每一行都會被看**，
+    /// 「一次報全」（G51）說的是那件事。
     /// `threads_l7` / `threads_l4` / `threads_admin` 的取值（**G140**）。
     ///
-    /// 值域 `[MIN_THREADS, MAX_THREADS]`；不合法就报 [`DiagCode::BAD_THREADS`] 并返回
-    /// `None`。⚠ 返回 `None` 的语义是**回落到角色缺省** —— 与「没写这一行」逐字相同，
-    /// 而那正是这条诊断必须存在的理由：没有它，`threads_l7 八` 会静默地变成「没写」。
+    /// 值域 `[MIN_THREADS, MAX_THREADS]`；不合法就報 [`DiagCode::BAD_THREADS`] 並回傳
+    /// `None`。⚠ 回傳 `None` 的語義是**回落到角色預設** —— 與「沒寫這一行」逐字相同，
+    /// 而那正是這條診斷必須存在的理由：沒有它，`threads_l7 八` 會靜默地變成「沒寫」。
     ///
-    /// ⛔ **不许退回 `first.parse().ok()`**：那条路在 `passive_fail` 上真出过事（G136），
-    /// 症状是「配置照过、装载照过，而旋钮一步都不做」。
+    /// ⛔ **不許退回 `first.parse().ok()`**：那條路在 `passive_fail` 上真出過事（G136），
+    /// 症狀是「設定照過、裝載照過，而旋鈕一步都不做」。
     fn thread_count(&mut self, node: &Node) -> Option<usize> {
-        // `check_sub_args` 已经保证正好一个参数。
+        // `check_sub_args` 已經保證正好一個參數。
         let arg = node.args.first()?;
         match arg.value.parse::<usize>() {
             Ok(n) if (MIN_THREADS..=MAX_THREADS).contains(&n) => Some(n),
@@ -1223,12 +1223,12 @@ impl Cx<'_> {
         upstreams: &mut [UpstreamSpec],
         weighted: &mut std::collections::BTreeSet<String>,
     ) {
-        // `check_sub_args` 已经保证正好两个参数。
+        // `check_sub_args` 已經保證正好兩個參數。
         let (addr_arg, weight_arg) = (&sub.args[0], &sub.args[1]);
         let addr = &addr_arg.value;
 
-        // ⚠ 上游清单是空的 = `reverse_proxy` 那一行本身就写错了，已经报过 BAD_ARITY。
-        //   这里再报一条「不在清单里」只是噪音，而噪音会把真的那条埋掉。
+        // ⚠ 上游清單是空的 = `reverse_proxy` 那一行本身就寫錯了，已經報過 BAD_ARITY。
+        //   這裡再報一條「不在清單裡」只是噪音，而噪音會把真的那條埋掉。
         if upstreams.is_empty() {
             return;
         }
@@ -1296,37 +1296,37 @@ impl Cx<'_> {
         }
     }
 
-    /// `reverse_proxy { id <名字> }`（**M2 批 N 任务 2.8**，裁决 R6 ⇒ G125）。
+    /// `reverse_proxy { id <名字> }`（**M2 批 N 任務 2.8**，裁決 R6 ⇒ G125）。
     ///
-    /// 这一层只管三件事，三件都是**装载期错误**、⛔ 一条都不回落成默认值：
+    /// 這一層只管三件事，三件都是**裝載期錯誤**、⛔ 一條都不回落成預設值：
     ///
-    /// 1. 写了两行 ⇒ [`DiagCode::DUPLICATE_PROXY_ID`]（⛔ 不是「后写的赢」）；
-    /// 2. 写了个空串 ⇒ [`DiagCode::EMPTY_PROXY_ID`]（空串 = 「没写」在键空间里的那一格）；
-    /// 3. 不在取值域里 ⇒ [`DiagCode::BAD_PROXY_ID`]（**M2 批 P**，裁决 R6 三之三）。
+    /// 1. 寫了兩行 ⇒ [`DiagCode::DUPLICATE_PROXY_ID`]（⛔ 不是「後寫的贏」）；
+    /// 2. 寫了個空串 ⇒ [`DiagCode::EMPTY_PROXY_ID`]（空串 = 「沒寫」在鍵空間裡的那一格）；
+    /// 3. 不在取值域裡 ⇒ [`DiagCode::BAD_PROXY_ID`]（**M2 批 P**，裁決 R6 三之三）。
     ///
-    /// ⚠ ⚠ **第 3 条在这里只是两处中的一处。** 结构化配置那条路（`POST /load`，
-    /// G11 的公开入口）不经过 `fulcrum compile` ⇒ 这条诊断在那条路上一次都不跑，
-    /// 由 `fulcrum_runtime` 建图时调**同一个** [`is_valid_proxy_id`] 再拦一遍。
-    /// ★ 两处调的是这一个函数，⛔ 不是两份手写的平行逻辑 —— 与 `weight` 的值域常量
-    /// 同一条纪律。
+    /// ⚠ ⚠ **第 3 條在這裡只是兩處中的一處。** 結構化設定那條路（`POST /load`，
+    /// G11 的公開入口）不經過 `fulcrum compile` ⇒ 這條診斷在那條路上一次都不跑，
+    /// 由 `fulcrum_runtime` 建圖時調**同一個** [`is_valid_proxy_id`] 再攔一遍。
+    /// ★ 兩處調的是這一個函式，⛔ 不是兩份手寫的平行邏輯 —— 與 `weight` 的值域常數
+    /// 同一條紀律。
     ///
-    /// # ⚠ ⚠ 这一层**看不见「两条的键撞没撞」**，也不该在这里看
+    /// # ⚠ ⚠ 這一層**看不見「兩條的鍵撞沒撞」**，也不該在這裡看
     ///
-    /// 「同一站点内两条 `reverse_proxy` 的 `(id, 上游地址)` 相同」这件事
-    /// 只有 `fulcrum_runtime` 说得清：键里的上游地址是**归一化之后**的串
-    /// （`backend` → `backend:80`），而归一化在那一层。⇒ 在这里拿原文 token 比一遍，
-    /// 一条写 `backend`、另一条写 `backend:80` 的那一对会被算成两个不同的键，
-    /// 而它们在运行时是同一台机器。
-    /// ★ 与 `weight` 的地址比对「有意只做逐字相同」是同一条边界的两侧：
-    /// 那一条要的正是原文，这一条要的正是归一化后的串。
+    /// 「同一站台內兩條 `reverse_proxy` 的 `(id, 上游地址)` 相同」這件事
+    /// 只有 `fulcrum_runtime` 說得清：鍵裡的上游位址是**歸一化之後**的串
+    /// （`backend` → `backend:80`），而歸一化在那一層。⇒ 在這裡拿原文 token 比一遍，
+    /// 一條寫 `backend`、另一條寫 `backend:80` 的那一對會被算成兩個不同的鍵，
+    /// 而它們在執行環境是同一臺機器。
+    /// ★ 與 `weight` 的位址比對「有意只做逐字相同」是同一條邊界的兩側：
+    /// 那一條要的正是原文，這一條要的正是歸一化後的串。
     ///
-    /// ⚠ ⚠ **键相同不是错误**（裁决 R6 ③ **第二轮** ⇒ G125）：那几条共享同一个
-    /// 覆盖格子，一次 `disable` 一起生效。⛔ 这一层、那一层都不许为此报错或告警 ——
-    /// 「一个后端挂在几组 `handle` 路由后面」是反代最常见的写法。
-    /// 「这一格管着几条」由 `fulcrum_runtime::Runtime::proxy_key_fanout` 算出来，
-    /// 经 `/stats` 显示。
+    /// ⚠ ⚠ **鍵相同不是錯誤**（裁決 R6 ③ **第二輪** ⇒ G125）：那幾條共享同一個
+    /// 覆蓋格子，一次 `disable` 一起生效。⛔ 這一層、那一層都不許為此回報錯誤或告警 ——
+    /// 「一個後端掛在幾組 `handle` 路由後面」是反代最常見的寫法。
+    /// 「這一格管著幾條」由 `fulcrum_runtime::Runtime::proxy_key_fanout` 算出來，
+    /// 經 `/stats` 顯示。
     fn proxy_id(&mut self, sub: &Node, id: &mut Option<String>) {
-        // `check_sub_args` 已经保证正好一个参数。
+        // `check_sub_args` 已經保證正好一個參數。
         let arg = &sub.args[0];
         if id.is_some() {
             self.diags.push(
@@ -1360,15 +1360,15 @@ impl Cx<'_> {
             );
             return;
         }
-        // ★ ★ 取值域（裁决 R6 三之三）。⚠ 判在空串**之后**：空串有它自己那条诊断
-        //   与自己那段解释，⛔ 不许被这条泛泛的「不合法」顶掉。
+        // ★ ★ 取值域（裁決 R6 三之三）。⚠ 判在空串**之後**：空串有它自己那條診斷
+        //   與自己那段解釋，⛔ 不許被這條泛泛的「不合法」頂掉。
         if !is_valid_proxy_id(&arg.value) {
             self.diags.push(
                 Diagnostic::error(
                     DiagCode::BAD_PROXY_ID,
                     arg.span,
-                    // ⚠ `{:?}` 而不是 `{}`：带换行的 id 会把这一行诊断在人眼里
-                    //   断成两行 —— 而那正是收紧的理由之二。
+                    // ⚠ `{:?}` 而不是 `{}`：帶換行的 id 會把這一行診斷在人眼裡
+                    //   斷成兩行 —— 而那正是收緊的理由之二。
                     format!("`id` {:?} 不在取值域里", arg.value),
                 )
                 .label("换一个短名字，如 `id pool_web`")
@@ -1385,7 +1385,7 @@ impl Cx<'_> {
         *id = Some(arg.value.clone());
     }
 
-    // ── 站点级指令 ──────────────────────────────────────────────────────────
+    // ── 站台級指令 ──────────────────────────────────────────────────────────
     fn tls(&mut self, node: &Node) -> TlsConfig {
         let mut cfg = TlsConfig::default();
         match node.args.len() {
@@ -1431,8 +1431,8 @@ impl Cx<'_> {
                     "ask" => cfg.ask = sub.args.first().map(|a| a.value.clone()),
                     "dns" => {
                         cfg.dns_provider = sub.args.first().map(|a| a.value.clone());
-                        // ★ 按供应商分岔：`exec` 的第二个参数是**程序路径**，不是凭据。
-                        //   ⚠ 一刀切会让「没有秘密的配置」也撞上权限门（门禁实测抓到）。
+                        // ★ 按供應商分岔：`exec` 的第二個參數是**處理程序路徑**，不是憑證。
+                        //   ⚠ 一刀切會讓「沒有秘密的設定」也撞上權限門（門禁實測抓到）。
                         let is_exec = sub.args.first().map(|a| a.value.as_str()) == Some("exec");
                         cfg.dns_arg = sub.args.get(1).map(|a| {
                             if is_exec {
@@ -1443,15 +1443,15 @@ impl Cx<'_> {
                         });
                     }
                     "resolvers" => {
-                        // ★ ★ ：形状校验搬到这里。
+                        // ★ ★ ：形狀檢核搬到這裡。
                         //
-                        //   在此之前它长在**装载期**，而且失败的处置是
-                        //   「打一行 error，本站点的 DNS-01 不启用」——
-                        //   ⚠ `validate` 退出码仍然是 0，站点照常起来，
-                        //   于是一份写错 `resolvers` 的配置**在每一处都显得正常**，
-                        //   直到那张证书永远签不下来。
-                        //   ★ 编译期判形状不需要网络，所以它可以在这里判；
-                        //   真去解析主机名要网络，那一步留到签发那一刻（见 host.rs 注释）。
+                        //   在此之前它長在**裝載期**，而且失敗的處置是
+                        //   「打一行 error，本站台的 DNS-01 不啟用」——
+                        //   ⚠ `validate` 結束代碼仍然是 0，站台照常起來，
+                        //   於是一份寫錯 `resolvers` 的設定**在每一處都顯得正常**，
+                        //   直到那張證書永遠籤不下來。
+                        //   ★ 編譯期判形狀不需要網路，所以它可以在這裡判；
+                        //   真去解析主機名要網路，那一步留到簽發那一刻（見 host.rs 註解）。
                         for a in &sub.args {
                             if let Err(why) = crate::host::parse_resolver(&a.value) {
                                 self.diags.push(
@@ -1478,15 +1478,15 @@ impl Cx<'_> {
                             .map(|a| a.value.to_ascii_lowercase())
                             .collect()
                     }
-                    // ⚠ ⚠ 这一臂**必须响**，不能是 `_ => {}` —— 那样子指令会被**静默丢掉**
-                    //   （DSL 认得、`TLS_SUBS` 里有、文档写着，而运行时从来没见过）。
-                    //   这里 match 的是 `&str`，语言给不出穷尽性检查 ⇒ 两道：
-                    //   ① 走到这里报一条内部错误；② `tests/compile_behaviour.rs` 的
-                    //   `tls子指令全部有人接` 逐条枚举 `TLS_SUBS`，判据是**值落到了 `TlsConfig` 上**。
-                    // ★ 第 ① 道单独不够：改回 `_ => {}` 之后内部错误根本不会发出，
-                    //   于是任何「断言没有内部错误」的门都照常给绿。
-                    // ⚠ ★ 而第 ② 道必须真的存在：一条断言「某道门存在」的注释，
-                    //   在门不存在时长得和门存在时一模一样，比没有注释更糟。
+                    // ⚠ ⚠ 這一臂**必須響**，不能是 `_ => {}` —— 那樣子指令會被**靜默丟掉**
+                    //   （DSL 認得、`TLS_SUBS` 裡有、文件寫著，而執行環境從來沒見過）。
+                    //   這裡 match 的是 `&str`，語言給不出窮盡性檢查 ⇒ 兩道：
+                    //   ① 走到這裡報一條內部錯誤；② `tests/compile_behaviour.rs` 的
+                    //   `tls子指令全部有人接` 逐條枚舉 `TLS_SUBS`，判據是**值落到了 `TlsConfig` 上**。
+                    // ★ 第 ① 道單獨不夠：改回 `_ => {}` 之後內部錯誤根本不會發出，
+                    //   於是任何「斷言沒有內部錯誤」的門都照常給綠。
+                    // ⚠ ★ 而第 ② 道必須真的存在：一條斷言「某道門存在」的註解，
+                    //   在門不存在時長得和門存在時一模一樣，比沒有註解更糟。
                     other => self.diags.push(
                         Diagnostic::error(
                             DiagCode::UNKNOWN_SUBDIRECTIVE,
@@ -1498,8 +1498,8 @@ impl Cx<'_> {
                 }
             }
         }
-        // ★ G15：On-Demand 没配准入就拒绝启动。这里在**编译期**就把它挡下——
-        //   「错误在启动时暴露，不等被滥用才发现」，而编译期比启动更早。
+        // ★ G15：On-Demand 沒配存取資格就拒絕啟動。這裡在**編譯期**就把它擋下——
+        //   「錯誤在啟動時暴露，不等被濫用才發現」，而編譯期比啟動更早。
         if cfg.on_demand && cfg.ask.is_none() {
             self.diags.push(
                 Diagnostic::error(
@@ -1511,12 +1511,12 @@ impl Cx<'_> {
                 .note("G15：没有准入控制的 On-Demand 会被任意 SNI 刷爆，并把 CA 速率配额耗光"),
             );
         }
-        // ★ ★ G58：配了 DNS-01 就必须配权威 NS。形状照 G15——**编译期拒绝**。
+        // ★ ★ G58：配了 DNS-01 就必須配權威 NS。形狀照 G15——**編譯期拒絕**。
         //
-        //   G58 写死了「确认 TXT 可见必须真去问权威 NS，绝不能只 sleep 一个固定秒数」。
-        //   ⚠ 少了 `resolvers`，实现要么退回固定 sleep（G58 明确禁止），
-        //   要么在签发中途才报错——而那时已经在 CA 那边开了一张订单、
-        //   并且往 DNS 上写了一条记录。**在编译期挡下，代价只是一条诊断。**
+        //   G58 寫死了「確認 TXT 可見必須真去問權威 NS，絕不能只 sleep 一個固定秒數」。
+        //   ⚠ 少了 `resolvers`，實作要麼退回固定 sleep（G58 明確禁止），
+        //   要麼在簽發中途才回報錯誤——而那時已經在 CA 那邊開了一張訂單、
+        //   並且往 DNS 上寫了一條記錄。**在編譯期擋下，代價只是一條診斷。**
         if cfg.dns_provider.is_some() && cfg.resolvers.is_empty() {
             self.diags.push(
                 Diagnostic::error(
@@ -1531,19 +1531,19 @@ impl Cx<'_> {
                 ),
             );
         }
-        // ── ★ ★ G59：原生供应商的两条硬约束，都在**编译期**挡下（形状照 G15）─────
+        // ── ★ ★ G59：原生供應商的兩條硬約束，都在**編譯期**擋下（形狀照 G15）─────
         //
-        // ⚠ 理由不是洁癖：拿到某域的 DNS 写权限 = **能为该域签发任意证书**，
-        //   还能改 MX 劫持邮件。它比 On-Demand 被刷爆严重得多。
+        // ⚠ 理由不是潔癖：拿到某域的 DNS 寫權限 = **能為該域簽發任意證書**，
+        //   還能改 MX 劫持電子郵件。它比 On-Demand 被刷爆嚴重得多。
         if matches!(
             cfg.dns_provider.as_deref(),
             Some("cloudflare") | Some("dnspod")
         ) {
             let provider = cfg.dns_provider.clone().unwrap_or_default();
-            // G59 第 1 条：凭据绝不写进 DSL。只认 `env:` / `file:` 两种**来源**写法。
+            // G59 第 1 條：憑證絕不寫進 DSL。只認 `env:` / `file:` 兩種**來源**寫法。
             //
-            // ★ ★ 判据是**白名单**，不是「看起来像 token 就报错」的黑名单——
-            //   后者要去猜什么样子算 token，而猜错的那一次恰恰就是真 token 被放行的那一次。
+            // ★ ★ 判據是**白名單**，不是「看起來像 token 就回報錯誤」的黑名單——
+            //   後者要去猜什麼樣子算 token，而猜錯的那一次恰恰就是真 token 被放行的那一次。
             match cfg.dns_arg.as_ref() {
                 None => self.diags.push(
                     Diagnostic::error(
@@ -1557,14 +1557,14 @@ impl Cx<'_> {
                          被贴进 issue、被版本控制的东西",
                     ),
                 ),
-                // ★ ★ ★ **口径变了**（owner 拍板）：字面量凭据**写得下**了 ——
-                //   一份配置文件就能跑完，形状照 Caddy。
-                //   ⚠ 而剩下的这一条判据比原来那条更难写对：既然不写前缀就是字面量，
-                //   那么**一个写错的前缀**（`fil:/path`、`ENV:NAME`）就会被当成凭据本身，
-                //   然后带着一个根本不是凭据的字符串去打 CA —— 现场是「凭据不对」，
-                //   而真正的原因是打错了三个字母。
-                //   ⇒ 判据：**长得像来源前缀、而那个前缀我们不认识** ⇒ 编译期报错，
-                //   并把「如果这真的就是凭据本身」的出路（`literal:`）写在提示里。
+                // ★ ★ ★ **口徑變了**（owner 拍板）：字面值憑證**寫得下**了 ——
+                //   一份設定檔案就能跑完，形狀照 Caddy。
+                //   ⚠ 而剩下的這一條判據比原來那條更難寫對：既然不寫前綴就是字面值，
+                //   那麼**一個寫錯的前綴**（`fil:/path`、`ENV:NAME`）就會被當成憑證本身，
+                //   然後帶著一個根本不是憑證的字串去打 CA —— 現場是「憑證不對」，
+                //   而真正的原因是打錯了三個字母。
+                //   ⇒ 判據：**長得像來源前綴、而那個前綴我們不認識** ⇒ 編譯期回報錯誤，
+                //   並把「如果這真的就是憑證本身」的出路（`literal:`）寫在提示裡。
                 Some(a) => {
                     let looks_like_prefix = a
                         .expose()
@@ -1598,11 +1598,11 @@ impl Cx<'_> {
                     }
                 }
             }
-            // G59 第 3 条：必须显式声明这份凭据覆盖哪些 zone。
+            // G59 第 3 條：必須顯式宣告這份憑證覆蓋哪些 zone。
             //
-            // ★ 对 DNSPod 这是唯一的范围约束（它的 token 是账号级的，没有可问的端点）；
-            //   对 Cloudflare 它与启动时校验（第 2 条）叠加。⚠ 两家都要求，
-            //   比 G59 字面更严一点——统一一条规则，比「哪家要哪家不要」好记也好审。
+            // ★ 對 DNSPod 這是唯一的範圍約束（它的 token 是帳號級的，沒有可問的端點）；
+            //   對 Cloudflare 它與啟動時檢核（第 2 條）疊加。⚠ 兩家都要求，
+            //   比 G59 字面更嚴一點——統一一條規則，比「哪家要哪家不要」好記也好審。
             if cfg.zones.is_empty() {
                 self.diags.push(
                     Diagnostic::error(
@@ -1620,7 +1620,7 @@ impl Cx<'_> {
             }
         }
 
-        // ★ `dns exec` 不给程序路径 = 没人去改 TXT。同样在编译期挡下。
+        // ★ `dns exec` 不給處理程序路徑 = 沒人去改 TXT。同樣在編譯期擋下。
         if cfg.dns_provider.as_deref() == Some("exec") && cfg.dns_arg.is_none() {
             self.diags.push(
                 Diagnostic::error(
@@ -1645,12 +1645,12 @@ impl Cx<'_> {
         }
     }
 
-    /// `log { headers … }` / `log { resp_headers … }` 的白名单（**M2 批 L 第 ③ 步**）。
+    /// `log { headers … }` / `log { resp_headers … }` 的白名單（**M2 批 L 第 ③ 步**）。
     ///
-    /// ⚠ **值不从 `subs` 里取**（[`Cx::sub_block`] 把参数用空格连成一串）：
-    /// ① 拆回来的东西没有位置，而这一格要报一条**指着某一个名字**的诊断；
-    /// ② 「连起来再拆开」在参数里出现空格的那天会静静地错。
-    /// ⚠ 但**收不收**仍以 `subs` 为准 —— 参数个数不对时它已被 `check_sub_args` 拦掉。
+    /// ⚠ **值不從 `subs` 裡取**（[`Cx::sub_block`] 把參數用空格連成一串）：
+    /// ① 拆回來的東西沒有位置，而這一格要報一條**指著某一個名字**的診斷；
+    /// ② 「連起來再拆開」在參數裡出現空格的那天會靜靜地錯。
+    /// ⚠ 但**收不收**仍以 `subs` 為準 —— 參數個數不對時它已被 `check_sub_args` 攔掉。
     fn header_whitelist(
         &mut self,
         node: &Node,
@@ -1670,9 +1670,9 @@ impl Cx<'_> {
                 continue;
             }
             for a in &sub.args {
-                // ★ ★ ★ 四个名字是**编译期错误**（G114 那一半没被推翻的理由）。
-                //   ⚠ 大小写不敏感：HTTP 头名本来就不区分大小写，
-                //     一条「写 `Cookie` 会红、写 `cookie` 不会」的规则等于没有规则。
+                // ★ ★ ★ 四個名字是**編譯期錯誤**（G114 那一半沒被推翻的理由）。
+                //   ⚠ 大小寫不敏感：HTTP 頭名本來就不區分大小寫，
+                //     一條「寫 `Cookie` 會紅、寫 `cookie` 不會」的規則等於沒有規則。
                 if SENSITIVE_HEADERS.contains(&a.value.to_ascii_lowercase().as_str()) {
                     self.diags.push(
                         Diagnostic::error(
@@ -1726,14 +1726,14 @@ impl Cx<'_> {
                 }
             })
             .collect();
-        // ★ 块内一律按 `ErrorHandler` 上下文校验占位符——`{status}` 只在这里可用。
-        // ⚠ `guarded = false`：`handle_errors` 是**按状态码**进来的，不是按匹配器 ——
-        //   它对「谁能连到这个端口」一个字都没说。★ 把它算成一层保护，等于让
-        //   一句 `handle_errors { metrics }` 悄悄躲开 G116 那条诊断。
+        // ★ 塊內一律按 `ErrorHandler` 上下文檢核佔位符——`{status}` 只在這裡可用。
+        // ⚠ `guarded = false`：`handle_errors` 是**按狀態碼**進來的，不是按匹配器 ——
+        //   它對「誰能連到這個連接埠」一個字都沒說。★ 把它算成一層保護，等於讓
+        //   一句 `handle_errors { metrics }` 悄悄躲開 G116 那條診斷。
         self.chain(&inner, matchers, Ctx::ErrorHandler, true, false)
     }
 
-    // ── L4（M2 自研，M1 编译成回落）─────────────────────────────────────────
+    // ── L4（M2 自研，M1 編譯成回落）─────────────────────────────────────────
     fn l4(&mut self, node: &Node) -> L4Config {
         let mut listeners = Vec::new();
         if let Some(block) = &node.block {
@@ -1774,11 +1774,11 @@ impl Cx<'_> {
                             "proxy" => {
                                 upstreams.extend(p.args.iter().map(|a| a.value.clone()));
                             }
-                            // ★ ★ M2 批 C：`sni` / `alpn` 嵌套匹配块（owner 拍板取的形状）。
+                            // ★ ★ M2 批 C：`sni` / `alpn` 嵌套匹配塊（owner 拍板取的形狀）。
                             //   `sni api.example.com *.internal { proxy 10.0.0.1:8443 }`
-                            //   ⚠ 只有 `tcp` 有这两条：UDP 上没有 ClientHello，
-                            //   而 QUIC 的 Initial 是**加密**的 —— 那不是「以后再做」，
-                            //   是**做不到**，所以这里要说清楚，不能只说「不支持」。
+                            //   ⚠ 只有 `tcp` 有這兩條：UDP 上沒有 ClientHello，
+                            //   而 QUIC 的 Initial 是**加密**的 —— 那不是「以後再做」，
+                            //   是**做不到**，所以這裡要說清楚，不能只說「不支援」。
                             "sni" | "alpn" => {
                                 if sub.name == "udp" {
                                     self.diags.push(
@@ -1838,12 +1838,12 @@ impl Cx<'_> {
                             }
                             // ── M2 批 D：PROXY protocol ─────────────────────
                             //
-                            // ⚠ ⚠ **两条都只在 `tcp` 上有意义，而这不是「以后再做」。**
-                            //   PROXY protocol 是**面向连接**的：头在连接开头发一次。
-                            //   UDP 上没有「连接开头」—— 每个数据报都是独立的，
-                            //   「只发一次」没有落点，「每个都发」不是这个协议规定的东西。
-                            //   ★ 与批 C 的 `sni` / `alpn` 同一条纪律：诊断要说出**为什么**，
-                            //     只说「不支持」会让人以为等等就有了。
+                            // ⚠ ⚠ **兩條都只在 `tcp` 上有意義，而這不是「以後再做」。**
+                            //   PROXY protocol 是**面向連接**的：頭在連接開頭髮一次。
+                            //   UDP 上沒有「連接開頭」—— 每個資料報都是獨立的，
+                            //   「只發一次」沒有落點，「每個都發」不是這個協定規定的東西。
+                            //   ★ 與批 C 的 `sni` / `alpn` 同一條紀律：診斷要說出**為什麼**，
+                            //     只說「不支援」會讓人以為等等就有了。
                             "proxy_protocol_from" | "proxy_protocol" => {
                                 if sub.name == "udp" {
                                     self.diags.push(
@@ -1868,10 +1868,10 @@ impl Cx<'_> {
                                         );
                                         continue;
                                     }
-                                    // ★ 网段本身的合法性在**运行时图**那一层校验
-                                    //   （与 `remote_ip` 共用 `Cidr::parse`，见 G50 那条
-                                    //   「结构化配置是公开入口，那一层也要校验」）——
-                                    //   这里只收字面量，不另写一份解析。
+                                    // ★ 網段本身的合法性在**執行環境圖**那一層檢核
+                                    //   （與 `remote_ip` 共用 `Cidr::parse`，見 G50 那條
+                                    //   「結構化設定是公開入口，那一層也要檢核」）——
+                                    //   這裡只收字面值，不另寫一份解析。
                                     pp_from.extend(p.args.iter().map(|a| a.value.clone()));
                                 } else {
                                     let v = p
@@ -1933,8 +1933,8 @@ impl Cx<'_> {
                         }
                     }
                 }
-                // ⚠ 兜底可以没有（「只服务我认得的那几个名字」），但**总得有人能接**：
-                //   既没有兜底又没有规则的监听器，接受连接之后只能立刻关掉。
+                // ⚠ 備援可以沒有（「只服務我認得的那幾個名字」），但**總得有人能接**：
+                //   既沒有備援又沒有規則的監聽器，接受連接之後只能立刻關掉。
                 if upstreams.is_empty() && rules.is_empty() {
                     self.arity_error(
                         sub,
@@ -1951,10 +1951,10 @@ impl Cx<'_> {
                 });
             }
         }
-        // ★ ★ ★ M2 批 B：**`l4` 不再产生任何回落标记** ——
-        //   TCP（批 A）与 UDP（批 B）都自研完了，`L4Config` 里那一格也随之删掉。
-        //   ⚠ 这改的是 `compile` 的 JSON 产物（G11/G48 的公开契约），
-        //   dsl-reference §4.5 的状态那行跟着改，两边都有测试盯着。
+        // ★ ★ ★ M2 批 B：**`l4` 不再產生任何回落標記** ——
+        //   TCP（批 A）與 UDP（批 B）都自研完了，`L4Config` 裡那一格也隨之刪掉。
+        //   ⚠ 這改的是 `compile` 的 JSON 產物（G11/G48 的公開契約），
+        //   dsl-reference §4.5 的狀態那行跟著改，兩邊都有測試盯著。
         L4Config { listeners }
     }
 
@@ -1987,7 +1987,7 @@ impl Cx<'_> {
         Some(MatcherRef::Path(arg.value.clone()))
     }
 
-    /// 一个指令后面不该跟块，跟了就报。
+    /// 一個指令後面不該跟塊，跟了就報。
     fn expect_no_block(&mut self, node: &Node, d: ChainDirective) {
         if node.block.is_some() {
             self.diags.push(
@@ -2008,9 +2008,9 @@ impl Cx<'_> {
             format!("`{}` 的参数不对", node.name),
         )
         .label(hint.to_string());
-        // ★ ★ 这条 help 挡的是一个真实的死胡同：`rewrite /new/x` 里那个 `/new/x`
-        //   会被「第一个以 `/` 开头的参数就是匹配器」的规则吃掉，于是参数看起来少了一个，
-        //   而报出来的只是一句「参数不对」——**看不出真正该怎么写**。
+        // ★ ★ 這條 help 擋的是一個真實的死衚衕：`rewrite /new/x` 裡那個 `/new/x`
+        //   會被「第一個以 `/` 開頭的參數就是匹配器」的規則吃掉，於是參數看起來少了一個，
+        //   而報出來的只是一句「參數不對」——**看不出真正該怎麼寫**。
         if node.rest_args().is_empty()
             && let Some(m) = node.matcher_arg()
             && !m.value.starts_with('@')
@@ -2047,7 +2047,7 @@ impl Cx<'_> {
         self.diags.push(d);
     }
 
-    /// 按规格校验一条子指令的参数个数与类型。返回 `false` 表示这条不可用。
+    /// 按規格檢核一條子指令的參數個數與類型。回傳 `false` 表示這條不可用。
     fn check_sub_args(&mut self, node: &Node, spec: &SubSpec) -> bool {
         if node.args.len() < spec.min_args || node.args.len() > spec.max_args {
             let expect = if spec.min_args == spec.max_args {
@@ -2068,8 +2068,8 @@ impl Cx<'_> {
             return false;
         }
         let mut ok = true;
-        // 类型只校验第一个参数——多参的那几条（header_up/down、index）第一个是名字，
-        // 后面是值，逐个套同一个类型没有意义。
+        // 類型只檢核第一個參數——多參的那幾條（header_up/down、index）第一個是名字，
+        // 後面是值，逐個套同一個類型沒有意義。
         if let Some(a) = node.args.first()
             && let Err((code, msg)) = check_arg_type(spec.arg_type, &a.value)
         {
@@ -2081,7 +2081,7 @@ impl Cx<'_> {
         ok
     }
 
-    /// 把一个子块读成「名字 → 全部参数用空格连起来」的表。
+    /// 把一個子塊讀成「名字 → 全部參數用空格連起來」的表。
     fn sub_block(&mut self, node: &Node, table: &'static [SubSpec]) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
         let Some(block) = &node.block else {
@@ -2114,11 +2114,11 @@ impl Cx<'_> {
         out
     }
 
-    /// `cache { disk … }` 的两道检查（M2 批 H）。
+    /// `cache { disk … }` 的兩道檢查（M2 批 H）。
     ///
-    /// ① 必须绝对路径（G91 那条理由一字不改地适用：相对路径按进程 cwd 解析，
-    ///    而 systemd 下 cwd 是 `/`、开发机上是项目目录 ⇒ 同一份配置指向两个地方）。
-    /// ② ★ ★ **全进程只有一个缓存后端**，所以多个 `cache` 块必须选同一个。
+    /// ① 必須絕對路徑（G91 那條理由一字不改地適用：相對路徑按處理程序 cwd 解析，
+    ///    而 systemd 下 cwd 是 `/`、開發機上是專案目錄 ⇒ 同一份設定指向兩個地方）。
+    /// ② ★ ★ **全處理程序只有一個快取後端**，所以多個 `cache` 塊必須選同一個。
     fn check_cache_backend(&mut self, node: &Node, disk_dir: &Option<String>) {
         if let Some(d) = disk_dir
             && !d.starts_with('/')
@@ -2137,16 +2137,16 @@ impl Cx<'_> {
                 ),
             );
         }
-        // ⚠ 只有**真收下了** `disk` 才指着那个参数：写了 `disk` 但参数个数不对时
-        //   它已经被 `check_sub_args` 拦掉、不在 `subs` 里，这时这个块选的其实是内存，
-        //   指着那行反而是在说一件不成立的事。
+        // ⚠ 只有**真收下了** `disk` 才指著那個參數：寫了 `disk` 但參數個數不對時
+        //   它已經被 `check_sub_args` 攔掉、不在 `subs` 裡，這時這個塊選的其實是記憶體，
+        //   指著那行反而是在說一件不成立的事。
         let here = match disk_dir {
             Some(_) => sub_arg_span(node, "disk").unwrap_or(node.name_span),
             None => node.name_span,
         };
         match &self.cache_backend {
             None => self.cache_backend = Some((disk_dir.clone(), here)),
-            // 一样就一样，什么都不用说。
+            // 一樣就一樣，什麼都不用說。
             Some((first, _)) if first == disk_dir => {}
             Some((first, _)) => {
                 let (a, b) = (describe_backend(first), describe_backend(disk_dir));
@@ -2167,7 +2167,7 @@ impl Cx<'_> {
         }
     }
 
-    /// `header` 指令：行内一条，或子块里多条。
+    /// `header` 指令：行內一條，或子塊裡多條。
     fn header_ops(&mut self, node: &Node, args: &[Arg], ctx: Ctx) -> Vec<HeaderOp> {
         let mut ops = Vec::new();
         if !args.is_empty()
@@ -2181,7 +2181,7 @@ impl Cx<'_> {
                     self.err_matcher_here(stmt);
                     continue;
                 };
-                // 子块里每一行的形状是 `[+-]<name> [value]`，指令名本身就是头名。
+                // 子塊裡每一行的形狀是 `[+-]<name> [value]`，指令名本身就是頭名。
                 let mut all = vec![Arg {
                     value: sub.name.clone(),
                     span: sub.name_span,
@@ -2249,10 +2249,10 @@ impl Cx<'_> {
         }
     }
 
-    /// ★ ★ G49 配套第 4 条：**诊断必须能解释「它实际跑在第几步」**。
+    /// ★ ★ G49 配套第 4 條：**診斷必須能解釋「它實際跑在第幾步」**。
     ///
-    /// 内建顺序表把书写顺序和执行顺序拆开之后，最容易出现的意外就是
-    /// 「我明明写在后面的兜底，怎么先跑了」。这里在编译期就把它说出来。
+    /// 內建順序表把書寫順序和執行順序拆開之後，最容易出現的意外就是
+    /// 「我明明寫在後面的備援，怎麼先跑了」。這裡在編譯期就把它說出來。
     fn warn_unreachable(&mut self, steps: &[(Step, Span)]) {
         let mut blocker: Option<(&'static str, u16)> = None;
         for (step, span) in steps {
@@ -2284,15 +2284,15 @@ impl Cx<'_> {
     }
 }
 
-/// 这一步会不会**无条件**终结请求——即它之后的任何一步都再也轮不到。
+/// 這一步會不會**無條件**終結請求——即它之後的任何一步都再也輪不到。
 ///
-/// ★ 「无条件」有两层：这一步自己没有匹配器，**并且**它真的会终结。
-/// 容器要递归看：`route { respond 200 }` 终结，`route { respond /x 200 }` 不终结
-/// （里面那条带匹配器）；`handle` 组只有**兜底分支**里终结才算。
+/// ★ 「無條件」有兩層：這一步自己沒有匹配器，**並且**它真的會終結。
+/// 容器要遞歸看：`route { respond 200 }` 終結，`route { respond /x 200 }` 不終結
+/// （裡面那條帶匹配器）；`handle` 組只有**備援分支**裡終結才算。
 ///
-/// ⚠ 只认「终结类指令 + 带兜底分支的 handle 组」是不够的 —— `handle { … 兜底 … }`
-/// 后面跟一个 `route { … }` 时会一声不吭，而那个 route 永远进不去。
-/// ★ **判据只认得一种形状**是本仓库反复抓到的那类缺陷。
+/// ⚠ 只認「終結類指令 + 帶備援分支的 handle 組」是不夠的 —— `handle { … 兜底 … }`
+/// 後面跟一個 `route { … }` 時會一聲不吭，而那個 route 永遠進不去。
+/// ★ **判據只認得一種形狀**是本儲存庫反覆抓到的那類缺陷。
 fn terminates_unconditionally(step: &Step) -> bool {
     if !is_unconditional(&step.matcher) {
         return false;
@@ -2307,10 +2307,10 @@ fn terminates_unconditionally(step: &Step) -> bool {
     }
 }
 
-/// 「没有匹配器」与「匹配器是 `*`」是同一件事。
+/// 「沒有匹配器」與「匹配器是 `*`」是同一件事。
 ///
-/// ⚠ 只认前者的话，`redir * /x` 不算兜底，它后面那条永远跑不到的指令
-/// **一声不吾** —— 而 `*` 正是文档教用户写的那个写法。
+/// ⚠ 只認前者的話，`redir * /x` 不算備援，它後面那條永遠跑不到的指令
+/// **一聲不吾** —— 而 `*` 正是文件教使用者寫的那個寫法。
 fn is_unconditional(m: &Option<MatcherRef>) -> bool {
     match m {
         None => true,
@@ -2319,30 +2319,30 @@ fn is_unconditional(m: &Option<MatcherRef>) -> bool {
     }
 }
 
-/// 一条匹配条件**减少得了「谁能碰到这一步」吗**（只服务于 G116 那条诊断）。
+/// 一條匹配條件**減少得了「誰能碰到這一步」嗎**（只服務於 G116 那條診斷）。
 ///
-/// ★ ★ 判据是一句可验证的问话：**它能不能把两个发同样请求的客户端分开？**
-/// - `remote_ip` 能 —— 它读的是 socket 对端，在这一层伪造不了。
-/// - `header` 能 —— 一个共享密钥可以放在这里。
+/// ★ ★ 判據是一句可驗證的問話：**它能不能把兩個發同樣請求的用戶端分開？**
+/// - `remote_ip` 能 —— 它讀的是 socket 對端，在這一層偽造不了。
+/// - `header` 能 —— 一個共享金鑰可以放在這裡。
 /// - `path` / `path_regexp` / `host` / `method` / `query` **都不能**：
-///   它们全都是请求行与请求头里的东西，**任何客户端都能照着发一份**
-///   ⇒ 它们只决定端点摆在哪，不减少能碰到它的人。
+///   它們全都是請求行與請求頭裡的東西，**任何用戶端都能照著發一份**
+///   ⇒ 它們只決定端點擺在哪，不減少能碰到它的人。
 ///
-/// ⚠ ⚠ `not` **不会出现在这张表要比的位置上**：`condition()` 是把 `not { … }`
-/// 拆开、给里面每一条打上 `negate` 之后再存的，所以 `not { remote_ip … }` 存下来的
-/// `kind` 就是 `remote_ip`。⇒ 按 `kind` 比对时它照样算保护，**不需要为 `not` 写一条特例**。
+/// ⚠ ⚠ `not` **不會出現在這張表要比的位置上**：`condition()` 是把 `not { … }`
+/// 拆開、給裡面每一條打上 `negate` 之後再存的，所以 `not { remote_ip … }` 存下來的
+/// `kind` 就是 `remote_ip`。⇒ 按 `kind` 比對時它照樣算保護，**不需要為 `not` 寫一條特例**。
 const SOURCE_CONDITIONS: &[&str] = &["remote_ip", "header"];
 
-/// 这个匹配器位**限制得了来源吗**（G116 那条诊断专用）。
+/// 這個匹配器位**限制得了來源嗎**（G116 那條診斷專用）。
 ///
-/// ⚠ ⚠ **它与 [`is_unconditional`] 问的是两件不同的事，别合并**：
-/// 那一条问「这一步会不会把它后面的都吃掉」（`warn_unreachable` 用），
-/// 这一条问「这一步对谁开着」。两条判据合用一个谓词，就是让它们将来一起漂走。
+/// ⚠ ⚠ **它與 [`is_unconditional`] 問的是兩件不同的事，別合併**：
+/// 那一條問「這一步會不會把它後面的都吃掉」（`warn_unreachable` 用），
+/// 這一條問「這一步對誰開著」。兩條判據合用一個謂詞，就是讓它們將來一起漂走。
 ///
-/// ★ 只有**命名匹配器**才可能算数：行内匹配器按 G50 只能是路径，而路径不限制来源。
-/// ⚠ 查不到那个名字（引用了没定义过的 `@name`）当作**不算保护** ——
-/// 那条路上 `matcher_ref` 已经报过 `UNKNOWN_MATCHER` 了，这里不必再说一遍；
-/// ★ 而在「不确定」时倒向报警告，是这条诊断唯一安全的那一侧。
+/// ★ 只有**命名匹配器**才可能算數：行內匹配器按 G50 只能是路徑，而路徑不限制來源。
+/// ⚠ 查不到那個名字（引用了沒定義過的 `@name`）當作**不算保護** ——
+/// 那條路上 `matcher_ref` 已經報過 `UNKNOWN_MATCHER` 了，這裡不必再說一遍；
+/// ★ 而在「不確定」時倒向報警告，是這條診斷唯一安全的那一側。
 fn restricts_source(m: &Option<MatcherRef>, matchers: &BTreeMap<String, Matcher>) -> bool {
     let Some(MatcherRef::Named(name)) = m else {
         return false;
@@ -2354,7 +2354,7 @@ fn restricts_source(m: &Option<MatcherRef>, matchers: &BTreeMap<String, Matcher>
     })
 }
 
-/// 响应侧上下文：在 `handle_errors` 里就还是 `handle_errors`。
+/// 回應側上下文：在 `handle_errors` 裡就還是 `handle_errors`。
 fn resp_ctx(base: Ctx) -> Ctx {
     match base {
         Ctx::ErrorHandler => Ctx::ErrorHandler,
@@ -2362,11 +2362,11 @@ fn resp_ctx(base: Ctx) -> Ctx {
     }
 }
 
-/// 曾经存在、现在删掉了的全局选项 → 一句「它去哪了」。
+/// 曾經存在、現在刪掉了的全域選項 → 一句「它去哪了」。
 ///
-/// ★ ★ 这张表**只增不删**：一条选项被删掉之后，写过它的配置文件不会跟着消失。
-/// ⚠ 把它从这里拿走，那些配置就退回到「未知的全局选项」——
-/// 一句听起来像「你打错字了」的话，而那写法曾经是对的。
+/// ★ ★ 這張表**只增不刪**：一條選項被刪掉之後，寫過它的設定檔案不會跟著消失。
+/// ⚠ 把它從這裡拿走，那些設定就退回到「未知的全域選項」——
+/// 一句聽起來像「你打錯字了」的話，而那寫法曾經是對的。
 fn removed_global_option(name: &str) -> Option<&'static str> {
     match name {
         "fallback_nginx" | "fallback_caddy" => Some(
@@ -2379,7 +2379,7 @@ fn removed_global_option(name: &str) -> Option<&'static str> {
     }
 }
 
-/// 站点地址解析（DSL 参考 §二）。
+/// 站台位址解析（DSL 參考 §二）。
 pub fn parse_address(raw: &str) -> Result<Address, &'static str> {
     let (scheme_given, rest) = if let Some(r) = raw.strip_prefix("https://") {
         (Some("https"), r)
@@ -2397,10 +2397,10 @@ pub fn parse_address(raw: &str) -> Result<Address, &'static str> {
     if rest.contains('/') {
         return Err("站点地址里不能带路径——路径用匹配器表达");
     }
-    // ★ IPv6 字面量要**在拆端口之前**判掉。`[::1]` 里的冒号会被 `rsplit_once(':')`
-    //   当成端口分隔符，于是用户收到的是一句「端口要是 1–65535 之间的整数」——
-    //   **指向一个根本不存在的问题**。
-    //   ⚠ 不支持它是**已知限制**，不是疏漏：DSL 参考 §二把支持的写法列全了，里面没有它。
+    // ★ IPv6 字面值要**在拆連接埠之前**判掉。`[::1]` 裡的冒號會被 `rsplit_once(':')`
+    //   當成連接埠分隔符，於是使用者收到的是一句「連接埠要是 1–65535 之間的整數」——
+    //   **指向一個根本不存在的問題**。
+    //   ⚠ 不支援它是**已知限制**，不是疏漏：DSL 參考 §二把支援的寫法列全了，裡面沒有它。
     if rest.contains('[') || rest.contains("::") {
         return Err("M1 还不支持 IPv6 字面量地址（DSL 参考 §二列全了支持的写法）");
     }
@@ -2427,8 +2427,8 @@ pub fn parse_address(raw: &str) -> Result<Address, &'static str> {
         return Err("至少要写主机名或端口");
     }
 
-    // ★ 没有主机名就签不出证书，所以 `:8080` 这种一律是 HTTP、不自动升级。
-    //   这不是取舍，是 ACME 的事实。
+    // ★ 沒有主機名就籤不出證書，所以 `:8080` 這種一律是 HTTP、不自動升級。
+    //   這不是取捨，是 ACME 的事實。
     let scheme = scheme_given.unwrap_or(if host.is_empty() { "http" } else { "https" });
     let auto_https = scheme == "https" && !host.is_empty();
     let port = port.unwrap_or(if scheme == "https" { 443 } else { 80 });
@@ -2451,10 +2451,10 @@ fn valid_hostname(h: &str) -> bool {
         && !h.ends_with('.')
 }
 
-/// 从一个子块里取某条子指令**第一个参数**的 span。
+/// 從一個子塊裡取某條子指令**第一個參數**的 span。
 ///
-/// ⚠ [`Cx::sub_block`] 只吐值不吐位置，而**一条指错地方的诊断比没有诊断更费时间**
-/// —— 人会先去看它指的那一行，而那一行与这件事无关。
+/// ⚠ [`Cx::sub_block`] 只吐值不吐位置，而**一條指錯地方的診斷比沒有診斷更費時間**
+/// —— 人會先去看它指的那一行，而那一行與這件事無關。
 fn sub_arg_span(node: &Node, name: &str) -> Option<Span> {
     node.block.as_ref()?.iter().find_map(|s| match s {
         Stmt::Node(n) if n.name == name => n.args.first().map(|a| a.span),
@@ -2462,7 +2462,7 @@ fn sub_arg_span(node: &Node, name: &str) -> Option<Span> {
     })
 }
 
-/// 把一个缓存后端选择说成人话（给 `FUL-DSL-0035` 的标题行用）。
+/// 把一個快取後端選擇說成人話（給 `FUL-DSL-0035` 的標題行用）。
 fn describe_backend(d: &Option<String>) -> String {
     match d {
         Some(dir) => format!("磁盘 `{dir}`"),

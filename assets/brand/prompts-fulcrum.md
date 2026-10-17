@@ -1,34 +1,34 @@
-# 枢衡 Fulcrum（fulcrum）— 提示词
+# 樞衡 Fulcrum（fulcrum）— 提示詞
 
-> 本文件是当前采用那套视觉资产的提示词与合成规范，`assets/brand/` 里的成品按它生成。
-> 换图之前先读第 5 节的自检清单。
+> 本檔案是當前採用那套視覺資產的提示詞與合成規範，`assets/brand/` 裡的成品按它生成。
+> 換圖之前先讀第 5 節的自檢清單。
 
-## 项目档案
+## 專案檔案
 
-| 项 | 值 |
+| 項 | 值 |
 | --- | --- |
-| code / 显示名 | `fulcrum` / 枢衡 Fulcrum |
-| 定位 | Rust 自研**单进程** Web 服务器 + 反向代理 + 负载均衡器：简单时像 Caddy，复杂时不必换软件 |
-| 最终文字 | 主标「枢衡」· 副标 `Fulcrum` |
-| 字体 | 中文 **HarmonyOS Sans SC Bold**（`Round1/ux/assets/fonts/HarmonyOS_Sans_SC_Bold.woff2`）· 拉丁 **Geist Mono**（`Round1/ux/assets/fonts/GeistMonoVF.woff2`） |
-| 色板 | 石墨 `#14161A` · 深石墨 `#1C2026` · 赤铜锈橙 `#C2622B` · 冷钢灰 `#8A93A0` · 暖白 `#EDE9E2` |
-| 视觉方向 | ★ **器物特写：支点上的天平横梁**（owner 2026-08-19 拍板） |
+| code / 顯示名 | `fulcrum` / 樞衡 Fulcrum |
+| 定位 | Rust 自研**單處理程序** Web 伺服器 + 反向代理 + 負載均衡器：簡單時像 Caddy，複雜時不必換軟體 |
+| 最終文字 | 主標「樞衡」· 副標 `Fulcrum` |
+| 字體 | 中文 **HarmonyOS Sans SC Bold**（`Round1/ux/assets/fonts/HarmonyOS_Sans_SC_Bold.woff2`）· 拉丁 **Geist Mono**（`Round1/ux/assets/fonts/GeistMonoVF.woff2`） |
+| 色板 | 石墨 `#14161A` · 深石墨 `#1C2026` · 赤銅鏽橙 `#C2622B` · 冷鋼灰 `#8A93A0` · 暖白 `#EDE9E2` |
+| 視覺方向 | ★ **器物特寫：支點上的天平橫樑**（owner 2026-08-19 拍板） |
 
-## 视觉方向
+## 視覺方向
 
-名字自己就是图：**「枢」是门轴与中枢，「衡」是平衡**；英文 `Fulcrum` 是杠杆与天平的支点，
-既是转动的中心，也是平衡的基准。所以主体就一件器物——**一根机加工横梁，水平架在一枚三棱支点上**：
-梁上有刻度（衡），梁心是带轴环的可转枢轴（枢），**三股流线从左汇入、一股从右送出**——
-那正是产品主张「Caddy + HAProxy + Nginx 收进一个进程」。
+名字自己就是圖：**「樞」是門軸與中樞，「衡」是平衡**；英文 `Fulcrum` 是槓桿與天平的支點，
+既是轉動的中心，也是平衡的基準。所以主體就一件器物——**一根機加工橫樑，水平架在一枚三稜支點上**：
+樑上有刻度（衡），梁心是帶軸環的可轉樞軸（樞），**三股流線從左匯入、一股從右送出**——
+那正是產品主張「Caddy + HAProxy + Nginx 收進一個處理程序」。
 
-★ **横梁必须绝对水平。** 倾斜的天平是「失衡」，与「衡」正好反义；这不是审美偏好，是语义错误。
-赤铜锈橙既是 Rust 的语义色，也是真实氧化金属的颜色，不是为了「科技感」挑的。
+★ **橫樑必須絕對水平。** 傾斜的天平是「失衡」，與「衡」正好反義；這不是審美偏好，是語義錯誤。
+赤銅鏽橙既是 Rust 的語義色，也是真實氧化金屬的顏色，不是為了「科技感」挑的。
 
-★ **`crab` 必须写进 Avoid**：Rust 的社区吉祥物 Ferris 是一只螃蟹，生成模型看到 "Rust" 很容易
-自己塞一只进来。同理要挡住云图标、机柜、齿轮堆和通用科技蓝——那是市面上所有云原生官网的样子，
-不是这个产品的样子。
+★ **`crab` 必須寫進 Avoid**：Rust 的社群吉祥物 Ferris 是一隻螃蟹，生成模型看到 "Rust" 很容易
+自己塞一隻進來。同理要擋住雲圖標、機櫃、齒輪堆和通用科技藍——那是市面上所有云原生官網的樣子，
+不是這個產品的樣子。
 
-## 1. Logo 原生生成（随后抠图）
+## 1. Logo 原生生成（隨後摳圖）
 
 ```text
 Use case: logo-brand
@@ -43,7 +43,7 @@ Constraints: one uniform backdrop with no shadow, gradient, texture, floor or re
 Avoid: tilted or unbalanced beam, courthouse justice scales with hanging pans, blindfold, gears, cloud icon, server rack, circuit board, generic tech blue, neon, glassmorphism, crab or any animal mascot, rounded app-icon plate behind the mark
 ```
 
-抠图后入库 `Fulcrum/assets/brand/fulcrum-logo.png`。
+摳圖後入庫 `Fulcrum/assets/brand/fulcrum-logo.png`。
 
 ## 2. 徽章背景原生生成（3:1）
 
@@ -61,9 +61,9 @@ Constraints: no text, no letters, no numbers, no logo, no watermark, no frame, n
 Avoid: data center photo, cloud icons, glowing blue network globe, circuit board, neon cyberpunk, gears, crab or animal mascot, hanging scale pans, tilted beam, cluttered left side
 ```
 
-入库 `Fulcrum/assets/brand/fulcrum-badge-bg.webp`。
+入庫 `Fulcrum/assets/brand/fulcrum-badge-bg.webp`。
 
-## 3. 竖版背景原生生成（4:5）
+## 3. 豎版背景原生生成（4:5）
 
 ```text
 Use case: stylized-concept
@@ -79,26 +79,26 @@ Constraints: no text, no letters, no numbers, no logo, no watermark, no frame, n
 Avoid: data center photo, cloud icons, glowing blue globe, circuit board, neon, gears, crab or animal mascot, hanging scale pans, tilted beam, a small logo floating in an empty box
 ```
 
-入库 `Fulcrum/assets/brand/fulcrum-stage-bg.webp`。
+入庫 `Fulcrum/assets/brand/fulcrum-stage-bg.webp`。
 
-## 4. 后期合成
+## 4. 後期合成
 
-- **徽章**：左侧 1/4 叠 `fulcrum-logo.png`；中间两行排「枢衡」与 `Fulcrum`；右侧只保留横梁 HERO。
-  主标 HarmonyOS Sans SC Bold 约 84px、`#EDE9E2`、字距 0.14em；副标 Geist Mono 约 30px、
+- **徽章**：左側 1/4 疊 `fulcrum-logo.png`；中間兩行排「樞衡」與 `Fulcrum`；右側只保留橫樑 HERO。
+  主標 HarmonyOS Sans SC Bold 約 84px、`#EDE9E2`、字距 0.14em；副標 Geist Mono 約 30px、
   `#C2622B`、字距 0.16em。
-- **竖版宣传图**：中央叠 Logo，下方排中文与英文，整组垂直居中。
-- ★ **「枢衡」是本批唯一的两字主标**。中段名称区若照四字主标的字号排，两个字会在一大片空里发飘：
-  **字号取上限（约 84px）＋ 字距拉到 0.12–0.16em**，才与左侧 Logo 和右侧 HERO 三者平衡。
-  副标 `Fulcrum` 用等宽体，本身就带字距，再加 0.16em 后正好与主标同宽域收边。
-- ★ Logo 是**横向器物**（横梁），与另外三个项目的竖向 Logo 不同：徽章左侧 1/4 那格按**高度**
-  给它定尺会太小，应按**宽度**占满该格的 78–84% 定尺，再与中段文字组按包围盒中心垂直居中。
+- **豎版宣傳圖**：中央疊 Logo，下方排中文與英文，整組垂直居中。
+- ★ **「樞衡」是本批唯一的兩字主標**。中段名稱區若照四字主標的字號排，兩個字會在一大片空裡發飄：
+  **字號取上限（約 84px）＋ 字距拉到 0.12–0.16em**，才與左側 Logo 和右側 HERO 三者平衡。
+  副標 `Fulcrum` 用等寬體，本身就帶字距，再加 0.16em 後正好與主標同寬域收邊。
+- ★ Logo 是**橫向器物**（橫樑），與另外三個專案的豎向 Logo 不同：徽章左側 1/4 那格按**高度**
+  給它定尺會太小，應按**寬度**佔滿該格的 78–84% 定尺，再與中段文字組按包圍盒中心垂直居中。
 
-## 5. 自检
+## 5. 自檢
 
-- **横梁必须水平**；任何倾斜即判废，不做「转正一点」的挽救。
-- **支点、刻度、枢轴三件必须同时成立**；缺一件就退化成「一根棍子架在三角上」，那不是枢衡。
-- 三进一出的流线要看得出来——那是「三合一」的产品主张，不是装饰线条。
-- 不得出现螃蟹或任何动物吉祥物、云图标、机柜、线缆、齿轮、通用科技蓝。
-- 背景里不得出现任何模型生成的字母、数字或伪 UI。
-- 「枢衡」二字必须实心；`Fulcrum` 大小写逐字正确（F 大写、其余小写），
-  不写成 `FULCRUM` / `fulcrum` / `FulCrum`。
+- **橫樑必須水平**；任何傾斜即判廢，不做「轉正一點」的挽救。
+- **支點、刻度、樞軸三件必須同時成立**；缺一件就退化成「一根棍子架在三角上」，那不是樞衡。
+- 三進一出的流線要看得出來——那是「三合一」的產品主張，不是裝飾線條。
+- 不得出現螃蟹或任何動物吉祥物、雲圖標、機櫃、線纜、齒輪、通用科技藍。
+- 背景裡不得出現任何模型生成的字母、數字或偽 UI。
+- 「樞衡」二字必須實心；`Fulcrum` 大小寫逐字正確（F 大寫、其餘小寫），
+  不寫成 `FULCRUM` / `fulcrum` / `FulCrum`。

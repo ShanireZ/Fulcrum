@@ -1,26 +1,26 @@
-//! 编译后的匹配器（G50）。
+//! 編譯後的匹配器（G50）。
 //!
-//! ★ ★ ★ **这一层会报错，而这不是重复劳动。**
-//! DSL 前端已经查过「条件名认不认得」「有没有取值」，但它**没有查取值本身**——
-//! `remote_ip 10.0.0.0/99` 与 `path_regexp (` 在 DSL 层都是合法的一个词。
+//! ★ ★ ★ **這一層會回報錯誤，而這不是重複勞動。**
+//! DSL 前端已經查過「條件名認不認得」「有沒有取值」，但它**沒有查取值本身**——
+//! `remote_ip 10.0.0.0/99` 與 `path_regexp (` 在 DSL 層都是合法的一個詞。
 //!
-//! 而结构化配置那一层是**公开入口**（G11：机器直接写它），所以
-//! **校验不能只长在 DSL 前端**：机器写进来的一份配置根本不经过词法与语法。
-//! → 结论：**构建运行时图这一步就是结构化层的校验器**，`fulcrum validate` 要把它一起跑。
+//! 而結構化設定那一層是**公開入口**（G11：機器直接寫它），所以
+//! **檢核不能只長在 DSL 前端**：機器寫進來的一份設定根本不經過詞法與語法。
+//! → 結論：**建置執行環境圖這一步就是結構化層的檢核器**，`fulcrum validate` 要把它一起跑。
 //!
-//! ⚠ 反过来说也成立：这里报的错必须**在装载时**报完，不能留到请求路径上。
-//! 一个「第一次有请求打到这条规则才发现正则编不过」的实现，
-//! 等于把配置错误变成了线上事故。
+//! ⚠ 反過來說也成立：這裡報的錯必須**在裝載時**報完，不能留到請求路徑上。
+//! 一個「第一次有請求打到這條規則才發現正則編不過」的實作，
+//! 等於把設定錯誤變成了線上事故。
 
 use crate::glob::{Cidr, glob_match};
 use crate::request::RequestCtx;
 use fulcrum_config::model::{Condition, Matcher};
 use regex::Regex;
 
-/// 构建运行时图时发现的问题。
+/// 建置執行環境圖時發現的問題。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildError {
-    /// 出问题的位置，形如 `sites[0] "example.com" · @internal · remote_ip`。
+    /// 出問題的位置，形如 `sites[0] "example.com" · @internal · remote_ip`。
     pub at: String,
     pub message: String,
 }
@@ -74,7 +74,7 @@ enum Cond {
     },
 }
 
-/// 一个编译好的命名匹配器。
+/// 一個編譯好的命名匹配器。
 #[derive(Debug)]
 pub struct CompiledMatcher {
     conds: Vec<Cond>,
@@ -92,11 +92,11 @@ impl CompiledMatcher {
         CompiledMatcher { conds }
     }
 
-    /// 求值。★ 同一匹配器内**多条件是 AND**；同一条件的多个值是 OR（G50）。
+    /// 求值。★ 同一匹配器內**多條件是 AND**；同一條件的多個值是 OR（G50）。
     ///
-    /// `caps` 用来收 `path_regexp` 的捕获组，给 `{path.N}` 用。
-    /// ⚠ **只有整体匹配成功时 `caps` 才有意义**：中途失败会留下已经写进去的组，
-    /// 所以调用方在失败时必须丢弃它——这里用「成功才提交」的写法把这件事挡住。
+    /// `caps` 用來收 `path_regexp` 的捕獲組，給 `{path.N}` 用。
+    /// ⚠ **只有整體匹配成功時 `caps` 才有意義**：中途失敗會留下已經寫進去的組，
+    /// 所以呼叫方在失敗時必須丟棄它——這裡用「成功才提交」的寫法把這件事擋住。
     pub fn matches(&self, req: &RequestCtx<'_>, caps: &mut Vec<String>) -> bool {
         let mut staged: Vec<String> = Vec::new();
         for cond in &self.conds {
@@ -110,8 +110,8 @@ impl CompiledMatcher {
         true
     }
 
-    /// 没有任何条件的匹配器命中一切。★ 单独说一句是因为它容易被当成 bug：
-    /// 一个空的 `@name { }` 在语义上就是「无条件」，而不是「永不命中」。
+    /// 沒有任何條件的匹配器命中一切。★ 單獨說一句是因為它容易被當成 bug：
+    /// 一個空的 `@name { }` 在語義上就是「無條件」，而不是「永不命中」。
     pub fn is_empty(&self) -> bool {
         self.conds.is_empty()
     }
@@ -126,9 +126,9 @@ fn compile_cond(at: &str, c: &Condition) -> Result<Cond, BuildError> {
             negate,
         }),
         "path_regexp" => {
-            // ★ DSL 允许 `path_regexp [name] <re>`：两个值时第一个是名字。
-            //   这里取**最后**一个当正则，不取第一个——名字是可选的，
-            //   而「取第一个」在带名字时会把名字当正则去编译，报一句莫名其妙的错。
+            // ★ DSL 允許 `path_regexp [name] <re>`：兩個值時第一個是名字。
+            //   這裡取**最後**一個當正則，不取第一個——名字是可選的，
+            //   而「取第一個」在帶名字時會把名字當正則去編譯，報一句莫名其妙的錯。
             let pat = c
                 .values
                 .last()
@@ -208,7 +208,7 @@ fn eval(cond: &Cond, req: &RequestCtx<'_>, caps: &mut Vec<String>) -> bool {
         Cond::PathRegexp { re, .. } => match re.captures(req.path) {
             None => false,
             Some(c) => {
-                // 第 0 组是整体匹配，`{path.N}` 说的是第 N 个**捕获**组。
+                // 第 0 組是整體匹配，`{path.N}` 說的是第 N 個**捕獲**組。
                 for i in 1..c.len() {
                     caps.push(c.get(i).map(|m| m.as_str().to_string()).unwrap_or_default());
                 }
@@ -234,8 +234,8 @@ fn eval(cond: &Cond, req: &RequestCtx<'_>, caps: &mut Vec<String>) -> bool {
             query_pairs(req.query).any(|(k, v)| k == key && v == value)
         }
         Cond::RemoteIp { nets, .. } => match req.remote_ip {
-            // ★ 取不到客户端 IP 时**判不命中**，不判命中。`remote_ip` 几乎总是用来
-            //   放行内网，宁可放行失败也不能放行错人。
+            // ★ 取不到用戶端 IP 時**判不命中**，不判命中。`remote_ip` 幾乎總是用來
+            //   放行內網，寧可放行失敗也不能放行錯人。
             None => false,
             Some(ip) => nets.iter().any(|n| n.contains(ip)),
         },
@@ -305,7 +305,7 @@ mod tests {
         let mut c = Vec::new();
         assert!(m.matches(&req("/a/x", "POST", &HeaderList(&[])), &mut c));
         assert!(m.matches(&req("/b/x", "PUT", &HeaderList(&[])), &mut c));
-        // path 命中但 method 不命中 → AND 失败
+        // path 命中但 method 不命中 → AND 失敗
         assert!(!m.matches(&req("/a/x", "GET", &HeaderList(&[])), &mut c));
         // method 命中但 path 不命中
         assert!(!m.matches(&req("/c/x", "POST", &HeaderList(&[])), &mut c));
@@ -345,7 +345,7 @@ mod tests {
         assert!(m.matches(&req("/", "GET", &HeaderList(&[])), &mut c));
         let (n, _) = build(vec![cond("query", &["flag=2"], false)]);
         assert!(!n.matches(&req("/", "GET", &HeaderList(&[])), &mut c));
-        // ★ 反向：`k=v&flag=1` 里不存在键 `lag`，尽管它是个子串
+        // ★ 反向：`k=v&flag=1` 裡不存在鍵 `lag`，儘管它是個子串
         let (s, _) = build(vec![cond("query", &["lag=1"], false)]);
         assert!(!s.matches(&req("/", "GET", &HeaderList(&[])), &mut c));
     }
@@ -354,7 +354,7 @@ mod tests {
     fn 捕获组只在整体命中时提交() {
         let (m, e) = build(vec![
             cond("path_regexp", &["^/u/([0-9]+)/(.*)$"], false),
-            // 第二条一定不命中 → 整体失败
+            // 第二條一定不命中 → 整體失敗
             cond("method", &["DELETE"], false),
         ]);
         assert!(e.is_empty());
@@ -385,11 +385,11 @@ mod tests {
         let mut c = Vec::new();
         assert!(m.matches(&ctx, &mut c));
         ctx.remote_ip = None;
-        // ★ 宁可放行失败，也不能放行错人。
+        // ★ 寧可放行失敗，也不能放行錯人。
         assert!(!m.matches(&ctx, &mut c));
     }
 
-    // ── 构建期校验：DSL 层查不到的那些 ──────────────────────────────────────
+    // ── 建置期檢核：DSL 層查不到的那些 ──────────────────────────────────────
 
     #[test]
     fn 坏正则在构建期就报() {
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn 结构化层直接写进来的未知条件也要被拒() {
-        // ★ 机器写的那一份不经过 DSL 词法语法，所以这一层必须自己认。
+        // ★ 機器寫的那一份不經過 DSL 詞法語法，所以這一層必須自己認。
         let (_, e) = build(vec![cond("hostt", &["a.com"], false)]);
         assert_eq!(e.len(), 1);
         assert!(e[0].message.contains("未知的匹配条件"));

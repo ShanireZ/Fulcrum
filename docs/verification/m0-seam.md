@@ -1,9 +1,9 @@
 ---
-type: 验证记录
-title: M0 接缝验证 · 结果
-description: 通过。自建的裸 TCP 与裸 UDP 监听器都参与了 Pingora 的 socket 移交，优雅升级窗口内三类流量零中断。
+type: 驗證記錄
+title: M0 接縫驗證 · 結果
+description: 通過。自建的裸 TCP 與裸 UDP 監聽器都參與了 Pingora 的 socket 移交，優雅升級視窗內三類流量零中斷。
 resource: ../../tests/m0/run.sh
-tags: [验证, 已通过, 必读]
+tags: [驗證, 已通過, 必讀]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -11,50 +11,50 @@ generated:
 sources:
   - id: plan-7
     resource: /references/plan.md
-    title: PLAN.md §7 M0（范围与退出条件）
+    title: PLAN.md §7 M0（範圍與退出條件）
   - id: plan-51
     resource: /references/plan.md
-    title: PLAN.md §5.1 第 3 条硬约束（这条风险的原始表述）
+    title: PLAN.md §5.1 第 3 條硬約束（這條風險的原始表述）
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G26（Docker 环境）、G27（范围收窄）、G28（QUIC 推后）
+    title: PLAN.md §10 G26（Docker 環境）、G27（範圍收窄）、G28（QUIC 推後）
 ---
 
-★ **本页记的是实际跑出来的东西，属历史事实。** 结论可以被后续实验推翻，但「那几次跑出了什么」不会变。
+★ **本頁記的是實際跑出來的東西，屬歷史事實。** 結論可以被後續實驗推翻，但「那幾次跑出了什麼」不會變。
 
-⚠ ★ ★ **这份结论的两个前提，必须和结论一起读**（2026-08-14 补记——原先只有结论、没有前提）：
+⚠ ★ ★ **這份結論的兩個前提，必須和結論一起讀**（2026-08-14 補記——原先只有結論、沒有前提）：
 
-1. **全部证据都来自 `daemon: true`**（[`conf/m0.yaml`](../../conf/m0.yaml)），即 pingora 自己 fork 出守护进程的那条路。
-   而 **G31 定的产品路径是 systemd `Type=notify` 前台运行、`daemonize` 依赖删除**——
-   也就是说，**产品将要走的那条路，本页一个字都没验过**。
-   G31 已把「systemd 下的 MainPID 交接 + 零停机升级」列为 **M1 的第一个 spike**，判据照 M0 的形式写死；
-   ★ 但在那个 spike 跑出来之前，**不要把本页的绿当成「前台模式也没问题」**。
-2. **绑定地址**当时是 `0.0.0.0`。2026-08-14 收紧为默认 `127.0.0.1`（可用 `M0_BIND_HOST` 覆盖），
-   理由见[安全基线](/platform/security-baseline.md)一节的回声反射面。下面日志摘录里的 `0.0.0.0:...`
-   是**当时的原样记录**，没有改写——★ 历史证据不该为了和今天一致而被修饰。
+1. **全部證據都來自 `daemon: true`**（[`conf/m0.yaml`](../../conf/m0.yaml)），即 pingora 自己 fork 出守護處理程序的那條路。
+   而 **G31 定的產品路徑是 systemd `Type=notify` 前台執行、`daemonize` 依賴刪除**——
+   也就是說，**產品將要走的那條路，本頁一個字都沒驗過**。
+   G31 已把「systemd 下的 MainPID 交接 + 零停機升級」列為 **M1 的第一個 spike**，判據照 M0 的形式寫死；
+   ★ 但在那個 spike 跑出來之前，**不要把本頁的綠當成「前台模式也沒問題」**。
+2. **綁定位址**當時是 `0.0.0.0`。2026-08-14 收緊為預設 `127.0.0.1`（可用 `M0_BIND_HOST` 覆蓋），
+   理由見[安全基線](/platform/security-baseline.md)一節的回聲反射面。下面紀錄摘錄裡的 `0.0.0.0:...`
+   是**當時的原樣記錄**，沒有改寫——★ 歷史證據不該為了和今天一致而被修飾。
 
-> **结论：通过。** 自建的裸 TCP 与裸 UDP 监听器都参与了 Pingora 的 socket 移交，
-> 一次 `SIGQUIT` + `-u` 优雅升级窗口内，三类流量零中断。
+> **結論：通過。** 自建的裸 TCP 與裸 UDP 監聽器都參與了 Pingora 的 socket 移交，
+> 一次 `SIGQUIT` + `-u` 優雅升級視窗內，三類流量零中斷。
 >
-> 日期：2026-08-12 ｜ 环境：Docker `fulcrum-build:local`（`rust:1-trixie` + cmake + clang，Rust 1.97.1）
-> ｜ pingora-core 0.8.1（★ 现为 [`vendor/pingora`](../../vendor/pingora/FORK.md) 的 fork）
+> 日期：2026-08-12 ｜ 環境：Docker `fulcrum-build:local`（`rust:1-trixie` + cmake + clang，Rust 1.97.1）
+> ｜ pingora-core 0.8.1（★ 現為 [`vendor/pingora`](../../vendor/pingora/FORK.md) 的 fork）
 > ｜ 重跑方式：`bash tests/m0/docker-run.sh`
 >
-> ★ **六次独立运行全绿**，其中三次是在 G30 的依赖 fork 之后——见 §5。
+> ★ **六次獨立執行全綠**，其中三次是在 G30 的依賴 fork 之後——見 §5。
 
-# 1. 要回答的问题
+# 1. 要回答的問題
 
-`PLAN.md` §5.1 第 3 条把这件事列为整个方案**唯一需要真花力气验证**的接缝：
+`PLAN.md` §5.1 第 3 條把這件事列為整個方案**唯一需要真花力氣驗證**的接縫：
 
-> 自建 QUIC(UDP) 与 L4 监听器必须接入 Pingora 的 socket 移交，否则优雅升级时这两条会断连。
+> 自建 QUIC(UDP) 與 L4 監聽器必須接入 Pingora 的 socket 移交，否則優雅升級時這兩條會斷連。
 
-**不通过就不进 M1。**
+**不通過就不進 M1。**
 
-★ QUIC 不在 M0 内（G27/G28）。风险本体是「非 Pingora 托管的监听器能否参与 fd 移交」，**这与监听器上跑什么协议无关**——能移交裸 UDP 的 fd，就能移交 QUIC 的。把 QUIC 排除在外，失败时才能立刻分清是**接缝**的问题还是 **QUIC 库**的问题。
+★ QUIC 不在 M0 內（G27/G28）。風險本體是「非 Pingora 託管的監聽器能否參與 fd 移交」，**這與監聽器上跑什麼協定無關**——能移交裸 UDP 的 fd，就能移交 QUIC 的。把 QUIC 排除在外，失敗時才能立刻分清是**接縫**的問題還是 **QUIC 庫**的問題。
 
-# 2. 先读源码得到的推断
+# 2. 先讀原始碼得到的推斷
 
-`pingora-core 0.8.1` 的 `Service` trait 文档注释直接写明了自建服务的**义务与权利**：
+`pingora-core 0.8.1` 的 `Service` trait 文件註解直接寫明瞭自建服務的**義務與權利**：
 
 > `fds` (Unix only): a collection of listening file descriptors. During zero downtime restart
 > the `fds` would contain the listening sockets passed from the old service, services should
@@ -62,7 +62,7 @@ sources:
 > the collection, the service should create its own listening sockets and then put them into
 > the collection in order for them to be passed to the next server.
 
-★ 也就是说，**自建监听器参与 fd 移交是 `Service` 契约里第一等的设计，不是 hack**。
+★ 也就是說，**自建監聽器參與 fd 移交是 `Service` 契約裡第一等的設計，不是 hack**。
 
 再看容器本身（`src/server/transfer_fd/mod.rs`）：
 
@@ -72,25 +72,25 @@ pub fn add(&mut self, bind: String, fd: RawFd)
 pub fn get(&self, bind: &str) -> Option<&RawFd>
 ```
 
-`HashMap<String, RawFd>` —— ★ **对协议零假设**。键是任意字符串，值是个 `i32`；传输走 `SCM_RIGHTS`，本来就能传任意 fd。所以 UDP 在结构上没有任何障碍。
+`HashMap<String, RawFd>` —— ★ **對協定零假設**。鍵是任意字串，值是個 `i32`；傳輸走 `SCM_RIGHTS`，本來就能傳任意 fd。所以 UDP 在結構上沒有任何障礙。
 
-推断到此为止。★ ★ **推断不是证据**，所以有了这个 spike。
+推斷到此為止。★ ★ **推斷不是證據**，所以有了這個 spike。
 
-# 3. 实现
+# 3. 實作
 
-三个服务挂在同一个 `Server` 上（`spikes/m0-seam/src/main.rs`）：
+三個服務掛在同一個 `Server` 上（`spikes/m0-seam/src/main.rs`）：
 
-| 服务 | 监听 | 托管方 | 证明什么 |
+| 服務 | 監聽 | 託管方 | 證明什麼 |
 |---|---|---|---|
-| `m0-http` | TCP 8080 | Pingora `listening::Service` | 原生服务照常工作，且与自建服务共用一张 fd 表不撞键 |
-| `m0-raw-tcp` | TCP 8081 | **自建 `Service`** | 自建 TCP 监听器能取到/放回 fd |
-| `m0-raw-udp` | UDP 8082 | **自建 `Service`** | ★ 自建 **UDP** 监听器能取到/放回 fd |
+| `m0-http` | TCP 8080 | Pingora `listening::Service` | 原生服務照常工作，且與自建服務共用一張 fd 表不撞鍵 |
+| `m0-raw-tcp` | TCP 8081 | **自建 `Service`** | 自建 TCP 監聽器能取到/放回 fd |
+| `m0-raw-udp` | UDP 8082 | **自建 `Service`** | ★ 自建 **UDP** 監聽器能取到/放回 fd |
 
-自建服务的 fd 表键刻意加了前缀（`m0-raw-tcp:0.0.0.0:8081`），与 Pingora 原生的裸 `addr:port` 键错开——顺便证明**键空间是自由的**。
+自建服務的 fd 表鍵刻意加了前綴（`m0-raw-tcp:0.0.0.0:8081`），與 Pingora 原生的裸 `addr:port` 鍵錯開——順便證明**鍵空間是自由的**。
 
-# 4. 直接证据
+# 4. 直接證據
 
-第一代注册、收到 `SIGQUIT` 送出、第二代继承：
+第一代註冊、收到 `SIGQUIT` 送出、第二代繼承：
 
 ```text
 [raw-udp] bound fresh on 0.0.0.0:8082, registered fd=10 as key=m0-raw-udp:0.0.0.0:8082
@@ -100,65 +100,65 @@ pingora_core::server] SIGQUIT received, sending socks and gracefully exiting
 [raw-tcp] INHERITED fd=5 for key=m0-raw-tcp:0.0.0.0:8081
 ```
 
-★ 两代之间 **fd 编号不同**（23→5、10→6）正是对的：`SCM_RIGHTS` 是把 fd **复制**进新进程的 fd 表，**编号由接收方内核分配，与发送方无关**。编号若相同反而说明没真的传。
+★ 兩代之間 **fd 編號不同**（23→5、10→6）正是對的：`SCM_RIGHTS` 是把 fd **複製**進新處理程序的 fd 表，**編號由接收方核心分配，與傳送方無關**。編號若相同反而說明沒真的傳。
 
-★ **不同次运行的 fd 编号也不同**（首轮是 23→6、10→7），同样是这个原因。**不要把某一次的具体编号写进断言。**
+★ **不同次執行的 fd 編號也不同**（首輪是 23→6、10→7），同樣是這個原因。**不要把某一次的具體編號寫進斷言。**
 
-# 5. 间接证据
+# 5. 間接證據
 
-探针在升级前后持续打三类流量（`spikes/m0-seam/src/bin/probe.rs`），**六次独立运行**：
+探針在升級前後持續打三類流量（`spikes/m0-seam/src/bin/probe.rs`），**六次獨立執行**：
 
-| | 环境 | HTTP 成功/失败 | TCP 成功/断开 | UDP 成功/丢失 |
+| | 環境 | HTTP 成功/失敗 | TCP 成功/斷開 | UDP 成功/丟失 |
 |---|---|---|---|---|
 | 1 | 原始（bookworm，pingora 0.8.1）| 281 / **0** | 283 / **0** | 283 / **0** |
 | 2 | 同上 | 282 / **0** | 283 / **0** | 283 / **0** |
-| 3 | 同上 —— ★ **改造前基线** | 282 / **0** | 283 / **0** | 283 / **0** |
+| 3 | 同上 —— ★ **改造前基線** | 282 / **0** | 283 / **0** | 283 / **0** |
 | 4 | **trixie**（Debian 13 + Rust 1.97.1）| 281 / **0** | 283 / **0** | 283 / **0** |
-| 5 | ★ ★ **trixie + fork 后的 pingora** | 281 / **0** | 282 / **0** | 282 / **0** |
+| 5 | ★ ★ **trixie + fork 後的 pingora** | 281 / **0** | 282 / **0** | 282 / **0** |
 | 6 | 同上 | 282 / **0** | 284 / **0** | 283 / **0** |
 | 7 | 同上 | 282 / **0** | 284 / **0** | 284 / **0** |
 
-判据：HTTP 每轮新建连接、打的是 accept 路径；TCP ★ **同一条连接贯穿升级**；UDP 跑在回环上无拥塞，**丢失即代表 socket 失守**。
+判據：HTTP 每輪新建連接、打的是 accept 路徑；TCP ★ **同一條連接貫穿升級**；UDP 跑在迴環上無擁塞，**丟失即代表 socket 失守**。
 
-进程确实换了：`gen1 pid=23 → gen2 pid=43`（第 1 次）、`gen1 pid=4006 → gen2 pid=4026`（第 3 次）。
+處理程序確實換了：`gen1 pid=23 → gen2 pid=43`（第 1 次）、`gen1 pid=4006 → gen2 pid=4026`（第 3 次）。
 
-★ ★ **第 5–7 次尤其重要**：G30 的 fork 把 `nix` 从 0.24.3 抬到 0.31.3，而那一轮破坏**恰好落在 `server/transfer_fd/mod.rs`——本页要验的那个模块**。`socket()` 改为返回 `OwnedFd`、`listen()` 改签名、`cmsgs()` 变为可失败，三处都在 fd 移交路径上。**连跑三次全绿，且两代之间 fd 编号照旧不同**，说明移交仍然是真的。改动清单见 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。
+★ ★ **第 5–7 次尤其重要**：G30 的 fork 把 `nix` 從 0.24.3 抬到 0.31.3，而那一輪破壞**恰好落在 `server/transfer_fd/mod.rs`——本頁要驗的那個模組**。`socket()` 改為回傳 `OwnedFd`、`listen()` 改簽名、`cmsgs()` 變為可失敗，三處都在 fd 移交路徑上。**連跑三次全綠，且兩代之間 fd 編號照舊不同**，說明移交仍然是真的。改動清單見 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。
 
-# 6. 顺带得到的两条结论
+# 6. 順帶得到的兩條結論
 
-## 6.1 给 D11（HTTP/3 库选型）的一条约束 ★
+## 6.1 給 D11（HTTP/3 庫選型）的一條約束 ★
 
-升级窗口内**两代进程持有的是同一个 UDP socket**，双方都在 `recv_from`，于是数据报会在两代之间被**分流**。
+升級視窗內**兩代處理程序持有的是同一個 UDP socket**，雙方都在 `recv_from`，於是資料報會在兩代之間被**分流**。
 
-对回声服务这无所谓——谁答都一样，所以零丢失。★ ★ **但对 QUIC 是真问题**：连接状态只存在于某一代进程里，被分到另一代的数据报无法被正确处理。
+對回聲服務這無所謂——誰答都一樣，所以零丟失。★ ★ **但對 QUIC 是真問題**：連接狀態只存在於某一代處理程序裡，被分到另一代的資料報無法被正確處理。
 
-所以 M2 做 HTTP/3 时，**fd 移交本身已经不是问题，连接归属才是**。完整推导与可能方向见 [尚未验证的接缝](/verification/open-seams.md)。
+所以 M2 做 HTTP/3 時，**fd 移交本身已經不是問題，連接歸屬才是**。完整推導與可能方向見 [尚未驗證的接縫](/verification/open-seams.md)。
 
-## 6.2 给 D2（线程模型）的实测依据
+## 6.2 給 D2（執行緒模型）的實測依據
 
-M0 跑在 `threads: 2` / `listener_tasks_per_fd: 1` / `work_stealing: true` 下全绿。这说明 Pingora 的默认多线程 work-stealing 模型**对自建服务没有额外约束**——自建 `Service` 拿到的是 `current_handle()` 所在的那个 runtime，行为与原生服务一致。
+M0 跑在 `threads: 2` / `listener_tasks_per_fd: 1` / `work_stealing: true` 下全綠。這說明 Pingora 的預設多執行緒 work-stealing 模型**對自建服務沒有額外約束**——自建 `Service` 拿到的是 `current_handle()` 所在的那個 runtime，行為與原生服務一致。
 
-★ **D2 此后已经不再待定** —— 线程模型的结论是 `PLAN.md` §10 的 **G35**（保持
-`work_stealing = true`；线程数按 service 角色定默认、配置可覆盖）。本节留下的是当时给它的
-实测依据：★ **至少不存在「自建服务必须单线程」这类隐藏限制**。
+★ **D2 此後已經不再待定** —— 執行緒模型的結論是 `PLAN.md` §10 的 **G35**（保持
+`work_stealing = true`；執行緒數按 service 角色定預設、設定可覆蓋）。本節留下的是當時給它的
+實測依據：★ **至少不存在「自建服務必須單執行緒」這類隱藏限制**。
 
-# 7. 读日志时不要误判的一行
+# 7. 讀紀錄時不要誤判的一行
 
-升级过程中第二代会先打一条 **ERROR**，然后才成功：
+升級過程中第二代會先打一條 **ERROR**，然後才成功：
 
 ```text
 ERROR pingora_core::server::transfer_fd] No incoming socket transfer, sleep 1s and try again
 INFO  pingora_core::server::bootstrap_services] Bootstrap done
 ```
 
-★ **这是正常的重试，不是失败。** 第二代起得比第一代送 fd 早一点时就会出现。判据是退出码与后面那两行 `INHERITED`，**不是有没有 ERROR 字样**。
+★ **這是正常的重試，不是失敗。** 第二代起得比第一代送 fd 早一點時就會出現。判據是結束代碼與後面那兩行 `INHERITED`，**不是有沒有 ERROR 字樣**。
 
-# 8. 怎么重跑
+# 8. 怎麼重跑
 
 ```bash
 bash tests/m0/docker-run.sh
 ```
 
-宿主机只要有 Docker。构建镜像不存在会自动做，`cargo` 与 `target` 缓存放在命名卷里，不污染宿主机也不进 Windows 文件系统。运行期产物（pid / sock / 日志 / 探针输出）落在 `run/m0/`（已 gitignore）。★ **退出码即结论。**
+宿主機只要有 Docker。建置鏡像不存在會自動做，`cargo` 與 `target` 快取放在命名卷裡，不汙染宿主機也不進 Windows 檔案系統。執行期產物（pid / sock / 紀錄 / 探針輸出）落在 `run/m0/`（已 gitignore）。★ **結束代碼即結論。**
 
-详见 [构建与验证](/platform/build-and-test.md)。
+詳見 [建置與驗證](/platform/build-and-test.md)。

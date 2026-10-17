@@ -86,7 +86,7 @@ fn titled_header_name(header_name: &HeaderName) -> Bytes {
 /// The titled form a header name is written with on HTTP/1 when no case is recorded for it,
 /// or `None` when it is written lowercase.
 ///
-/// 枢衡改动 17（G162）：改成 `pub`（在 crate 根再导出），让调用方判得出「不建大小写表时这个名会不会照原样写出」。
+/// 樞衡改動 17（G162）：改成 `pub`（在 crate 根再匯出），讓呼叫方判得出「不建大小寫表時這個名會不會照原樣寫出」。
 pub fn titled_header_name_str(header_name: &HeaderName) -> Option<&'static str> {
     Some(match *header_name {
         header::ACCEPT_RANGES => "Accept-Ranges",
@@ -101,9 +101,9 @@ pub fn titled_header_name_str(header_name: &HeaderName) -> Option<&'static str> 
         header::HOST => "Host",
         header::SERVER => "Server",
         header::SET_COOKIE => "Set-Cookie",
-        // 枢衡改动 17（G162）：枢衡自己构的响应会发、而上表没有的那几个。
-        // ⚠ 这张表也决定用常量插入的名怎么写（有没有大小写表都一样）⇒ 压缩层改写的 `ETag`、
-        //   追加的 `Vary` 从此也照这里写，不再是小写。
+        // 樞衡改動 17（G162）：樞衡自己構的回應會發、而上表沒有的那幾個。
+        // ⚠ 這張表也決定用常數插入的名怎麼寫（有沒有大小寫表都一樣）⇒ 壓縮層改寫的 `ETag`、
+        //   追加的 `Vary` 從此也照這裡寫，不再是小寫。
         header::ALLOW => "Allow",
         header::ALT_SVC => "Alt-Svc",
         header::CONTENT_RANGE => "Content-Range",
@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(header::SERVER.into_case_header_name().as_slice(), b"Server");
     }
 
-    /// 枢衡改动 17（G162）：补进表里的七个名，不建大小写表时照这里写出，用常量插入时也是。
+    /// 樞衡改動 17（G162）：補進表裡的七個名，不建大小寫表時照這裡寫出，用常數插入時也是。
     #[test]
     fn 枢衡改动17_补进标题化表的名照原样写出() {
         let names = [
@@ -152,7 +152,7 @@ mod tests {
             resp.header_to_h1_wire(&mut buf);
             assert_eq!(buf, format!("{titled}: v\r\n").into_bytes(), "{titled}");
         }
-        // 表外的名照旧写小写。
+        // 表外的名照舊寫小寫。
         assert_eq!(titled_header_name_str(&header::EXPIRES), None);
     }
 }

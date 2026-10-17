@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
-# 用例类「静态吞吐」——四家各服务**同一个固定资源**，同一个负载生成器打。
+# 用例類「靜態吞吐」——四家各服務**同一個固定資源**，同一個負載生成器打。
 #
 #   bash bench/case/static-throughput.sh <输出目录>
 #
-# ⛔ **本脚本不判定、不比较、不打印任何「谁更快」。** 它只产出原始数据。
-#   判定在 `bench/verdict.sh`，而那一步会先问宿主合不合格。
-#   ★ 这条分工不是洁癖：把「量」和「判」写在一起，就没有办法在不合格的宿主上
-#     跑完整条流水线而结构性地不出结论 —— 而那正是 G132 要的东西。
+# ⛔ **本指令碼不判定、不比較、不列印任何「誰更快」。** 它只產出原始資料。
+#   判定在 `bench/verdict.sh`，而那一步會先問宿主合不合格。
+#   ★ 這條分工不是潔癖：把「量」和「判」寫在一起，就沒有辦法在不合格的宿主上
+#     跑完整條流水線而結構性地不出結論 —— 而那正是 G132 要的東西。
 #
-# ── 对齐口径（★ 每一条都会被 bench/README.md 引用，改这里要一起改）─────────────
+# ── 對齊口徑（★ 每一條都會被 bench/README.md 引用，改這裡要一起改）─────────────
 #
-#   ① **一次只起一家。** 四家同时在跑会互相抢 CPU，量到的是「四家一起跑」这件事。
-#   ② **同一个 payload、同一个 URL 路径、同一个字节数**，且开跑前逐字节核对过。
-#   ③ **访问日志四家全关。** 日志是另一件事，开着会把它的代价算进吞吐里。
-#   ④ **明文 HTTP/1.1 + keep-alive。** TLS 归「TLS 握手」那一类，⛔ 不混进来。
-#   ⑤ **worker 数四家一致**（`BENCH_WORKERS`，缺省 1）。四家各自的旋钮：
-#      枢衡 `threads_l7` · nginx `worker_processes` · HAProxy `nbthread` · Caddy `GOMAXPROCS`。
-#      ⚠ ⚠ ★ **枢衡那个旋钮是这一刀跑通之后才有的** —— 2026-09-05 之前它走
-#      pingora `ServerConf::default()`（`threads: 1`），DSL 与 CLI 都没有调它的口子
-#      ⇒ 四家当时唯一可对齐的值只有 1。那是 D33，已由 G140 结案。
-#      ★ 这条正是「第一刀的价值在于跑通一遍」的活样本：缺的旋钮不是想出来的，是撞出来的。
-#      ⚠ 缺省仍取 1：它与机器无关 ⇒ 门禁里那一趟在任何机器上都一样。
-#      ⛔ 真要出数那天**必须显式设它**（按那台合格宿主的 CPU 分配），
-#      因为「四家都跑各自的缺省」与「四家跑同一个 worker 数」是两个不同的实验。
+#   ① **一次只起一家。** 四家同時在跑會互相搶 CPU，量到的是「四家一起跑」這件事。
+#   ② **同一個 payload、同一個 URL 路徑、同一個位元組數**，且開跑前逐位元組核對過。
+#   ③ **訪問紀錄四家全關。** 紀錄是另一件事，開著會把它的代價算進吞吐裡。
+#   ④ **明文 HTTP/1.1 + keep-alive。** TLS 歸「TLS 握手」那一類，⛔ 不混進來。
+#   ⑤ **worker 數四家一致**（`BENCH_WORKERS`，預設 1）。四家各自的旋鈕：
+#      樞衡 `threads_l7` · nginx `worker_processes` · HAProxy `nbthread` · Caddy `GOMAXPROCS`。
+#      ⚠ ⚠ ★ **樞衡那個旋鈕是這一刀跑通之後才有的** —— 2026-09-05 之前它走
+#      pingora `ServerConf::default()`（`threads: 1`），DSL 與 CLI 都沒有調它的口子
+#      ⇒ 四家當時唯一可對齊的值只有 1。那是 D33，已由 G140 結案。
+#      ★ 這條正是「第一刀的價值在於跑通一遍」的活樣本：缺的旋鈕不是想出來的，是撞出來的。
+#      ⚠ 預設仍取 1：它與機器無關 ⇒ 門禁裡那一趟在任何機器上都一樣。
+#      ⛔ 真要出數那天**必須顯式設它**（按那臺合格宿主的 CPU 分配），
+#      因為「四家都跑各自的預設」與「四家跑同一個 worker 數」是兩個不同的實驗。
 set -euo pipefail
 
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# ⚠ ⚠ ★ **只为拿那四个负载参数的缺省**（`bench/lib.sh` 的「负载参数」一节）。
-#   ⛔ **不许在本文件里再写一份 `:-` 缺省** —— 2026-09-06 之前正是那样：
-#   用例用「声明值或缺省」，而 `env-snapshot.sh` 记「声明值」
-#   ⇒ 没人显式设的参数，用例真的用了缺省而快照写 `null`
-#   （那一趟的 `payload_bytes` 与门禁里的 `workers` 都是这么来的）。
-#   ⇒ 缺省一处定义、两边都从这里取，那一族缺陷就**结构性地不存在**。
-# ★ `lib.sh` 被 `source` 时什么都不做（它自己那道 `BASH_SOURCE` 判断），
-#   ⇒ 这里拿到的只有变量与函数，⛔ 没有任何副作用。
+# ⚠ ⚠ ★ **只為拿那四個負載參數的預設**（`bench/lib.sh` 的「負載參數」一節）。
+#   ⛔ **不許在本檔案裡再寫一份 `:-` 預設** —— 2026-09-06 之前正是那樣：
+#   用例用「宣告值或預設」，而 `env-snapshot.sh` 記「宣告值」
+#   ⇒ 沒人顯式設的參數，用例真的用了預設而快照寫 `null`
+#   （那一趟的 `payload_bytes` 與門禁裡的 `workers` 都是這麼來的）。
+#   ⇒ 預設一處定義、兩邊都從這裡取，那一族缺陷就**結構性地不存在**。
+# ★ `lib.sh` 被 `source` 時什麼都不做（它自己那道 `BASH_SOURCE` 判斷），
+#   ⇒ 這裡拿到的只有變數與函式，⛔ 沒有任何副作用。
 # shellcheck source=bench/lib.sh
 . "$BENCH_DIR/lib.sh"
 
@@ -43,29 +43,29 @@ RAW_DIR="$OUT_DIR/raw/$CASE"
 WORK=$(mktemp -d)
 HOST=127.0.0.1
 
-# ── 参数（★ 它们是口径的一部分，会被写进环境快照）────────────────────────────
-# ⛔ 这四个**不带 `:-`**：缺省由上面那次 `source` 供。少了那一行就是 `set -u`
-#   当场报错，⛔ 而不是安静地回落到一个只有本文件知道的数。
+# ── 參數（★ 它們是口徑的一部分，會被寫進環境快照）────────────────────────────
+# ⛔ 這四個**不帶 `:-`**：預設由上面那次 `source` 供。少了那一行就是 `set -u`
+#   當場回報錯誤，⛔ 而不是安靜地回落到一個只有本檔案知道的數。
 DURATION=$BENCH_DURATION
 CONNECTIONS=$BENCH_CONNECTIONS
 WORKERS=$BENCH_WORKERS
 PAYLOAD_BYTES=$BENCH_PAYLOAD_BYTES
 FULCRUM_BIN=${FULCRUM_BIN:-/w/target/release/fulcrum}
 
-# 端口：9940–9943（端口表在 docs/platform/host-and-gate-traps.md）。
+# 連接埠：9940–9943（連接埠表在 docs/platform/host-and-gate-traps.md）。
 #
-# ★ 严格说本格**不与任何场景争端口** —— 它跑在自己的容器里，netns 是独立的。
-#   仍然登记进那张表、仍然挑一段没人用的，是因为**「今天不冲突」不是一个能靠的性质**：
-#   哪天有人给这个容器加上 `--net=host`，冲突会立刻出现而没有任何东西会说。
+# ★ 嚴格說本格**不與任何場景爭連接埠** —— 它跑在自己的容器裡，netns 是獨立的。
+#   仍然登記進那張表、仍然挑一段沒人用的，是因為**「今天不衝突」不是一個能靠的性質**：
+#   哪天有人給這個容器加上 `--net=host`，衝突會立刻出現而沒有任何東西會說。
 #
-# ⚠ ⚠ ⛔ **初稿写的是 9700–9703，那是 `tests/h3/` 已经占着的一段。**
-#   写下「9700–9703 是空段」那句话时，用的是一条自己拼的枚举命令，而它的
-#   字符类是 `[A-Z_]+` —— **匹配不到 `${H3_PORT:-9700}` 里的那个数字 `3`**。
-#   ⇒ 它安静地少列了一整格，而输出看起来完整。★ 教训与本仓 §3.1 同族：
-#   **自查用的筛子必须比被查的东西宽**；这里正确的做法是直接读那张表，⛔ 不是自己拼一条 grep。
+# ⚠ ⚠ ⛔ **初稿寫的是 9700–9703，那是 `tests/h3/` 已經佔著的一段。**
+#   寫下「9700–9703 是空段」那句話時，用的是一條自己拼的枚舉命令，而它的
+#   字元類是 `[A-Z_]+` —— **匹配不到 `${H3_PORT:-9700}` 裡的那個數字 `3`**。
+#   ⇒ 它安靜地少列了一整格，而輸出看起來完整。★ 教訓與本儲存庫 §3.1 同族：
+#   **自查用的篩子必須比被查的東西寬**；這裡正確的做法是直接讀那張表，⛔ 不是自己拼一條 grep。
 #
-# ⚠ ⛔ **一个都别改成 :80** —— 那个端口在门禁里是共享的（G137），占住它会让一个
-#   与本用例毫无关系的场景起不来，而报错落在那个无辜的端口上。
+# ⚠ ⛔ **一個都別改成 :80** —— 那個連接埠在門禁裡是共享的（G137），佔住它會讓一個
+#   與本用例毫無關係的場景起不來，而回報錯誤落在那個無辜的連接埠上。
 PORT_FULCRUM=${BENCH_PORT_FULCRUM:-9940}
 PORT_CADDY=${BENCH_PORT_CADDY:-9941}
 PORT_HAPROXY=${BENCH_PORT_HAPROXY:-9942}
@@ -82,19 +82,19 @@ bad() {
 cleanup() {
   stop_child
   rm -rf "$WORK"
-  # ⚠ `$WWW` 可能落在一个**跨趟存活**的命名卷上（`BENCH_WWW_ROOT`）⇒ 单独删。
-  #   ⛔ `${WWW:-}` 那层守卫是承重的：`set -u` 下，在 `WWW` 赋值之前退出（比如
-  #   payload 字节数对不上）会让这里 `unbound variable`，而那会把一条清楚的
-  #   失败报文换成一句 bash 的错。
+  # ⚠ `$WWW` 可能落在一個**跨趟存活**的命名捲上（`BENCH_WWW_ROOT`）⇒ 單獨刪。
+  #   ⛔ `${WWW:-}` 那層守衛是承重的：`set -u` 下，在 `WWW` 賦值之前退出（比如
+  #   payload 位元組數對不上）會讓這裡 `unbound variable`，而那會把一條清楚的
+  #   失敗訊息換成一句 bash 的錯。
   [ -z "${WWW:-}" ] || rm -rf "$WWW"
 }
 trap cleanup EXIT
 
-# ── 原语 ───────────────────────────────────────────────────────────────────
+# ── 原語 ───────────────────────────────────────────────────────────────────
 #
-# ★ 「起来了没有」判在**行为**上（真连一次），⛔ 不判某个工具在不在 ——
-#   `tests/stress/run.sh` 在这条上栽过：写 `ss -lnt …` 而镜像里根本没有 `ss`，
-#   于是那个原语**恒返回 false**，一个方向永远成立、另一个方向永远超时。
+# ★ 「起來了沒有」判在**行為**上（真連一次），⛔ 不判某個工具在不在 ——
+#   `tests/stress/run.sh` 在這條上栽過：寫 `ss -lnt …` 而鏡像里根本沒有 `ss`，
+#   於是那個原語**恆回傳 false**，一個方向永遠成立、另一個方向永遠超時。
 port_listening() {
   timeout 1 bash -c "exec 3<>/dev/tcp/$HOST/$1" 2>/dev/null
 }
@@ -130,9 +130,9 @@ stop_child() {
   CHILD=
 }
 
-# CPU 亲和。★ 两组核都给了才用 `taskset`；只给一个等于没给（见 env-snapshot.sh）。
-# ⚠ 用**数组**展开，⛔ 不要拼一个字符串再让它被词分割 —— 那条路在没设亲和时
-#   会展开成一个空词，`command` 拿到一个空 argv[0] 而报「command not found」。
+# CPU 親和。★ 兩組核都給了才用 `taskset`；只給一個等於沒給（見 env-snapshot.sh）。
+# ⚠ 用**陣列**展開，⛔ 不要拼一個字串再讓它被詞分割 —— 那條路在沒設親和時
+#   會展開成一個空詞，`command` 拿到一個空 argv[0] 而報「command not found」。
 pin_server=()
 pin_load=()
 if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
@@ -140,29 +140,29 @@ if [ -n "${BENCH_SERVER_CPUS:-}" ] && [ -n "${BENCH_LOAD_CPUS:-}" ]; then
   pin_load=(taskset -c "$BENCH_LOAD_CPUS")
 fi
 
-# ── 准备 payload ───────────────────────────────────────────────────────────
+# ── 準備 payload ───────────────────────────────────────────────────────────
 #
-# ★ ★ ★ **站点根落在哪种文件系统上是口径的一部分**，⛔ 不是实现细节：
-#   枢衡的静态文件路径先在本线程上试一次 `preadv2(RWF_NOWAIT)`，而**认不认由
-#   文件系统各自决定** —— 2026-09-06 实测 ext4 认、**overlayfs 与 tmpfs 回
-#   `EOPNOTSUPP`**，同一个二进制、同一台机器差 **45%**。
-#   ⚠ ⚠ 而 `mktemp -d` 落在容器可写层（overlayfs）上 —— 那是**编排的副产品，
-#   从来没人挑过**，却决定了被测的哪条路径会被走到。
-# ⇒ `BENCH_WWW_ROOT` 由 `bench/docker-run.sh` 指到一个命名卷（ext4）。
-# ⚠ ⛔ **缺省仍然回落到 `$WORK`，而这不是「悄悄回落」** —— 实际落在哪种文件系统上
-#   由 `bench/env-snapshot.sh` 探出来写进 `env.json` 的 `site_root` 里
-#   ⇒ 每一份原始数据都说得出自己是在哪种形状下量的。
+# ★ ★ ★ **站台根落在哪種檔案系統上是口徑的一部分**，⛔ 不是實作細節：
+#   樞衡的靜態檔案路徑先在本執行緒上試一次 `preadv2(RWF_NOWAIT)`，而**認不認由
+#   檔案系統各自決定** —— 2026-09-06 實測 ext4 認、**overlayfs 與 tmpfs 回
+#   `EOPNOTSUPP`**，同一個二進位、同一臺機器差 **45%**。
+#   ⚠ ⚠ 而 `mktemp -d` 落在容器可寫層（overlayfs）上 —— 那是**編排的副產品，
+#   從來沒人挑過**，卻決定了被測的哪條路徑會被走到。
+# ⇒ `BENCH_WWW_ROOT` 由 `bench/docker-run.sh` 指到一個命名卷（ext4）。
+# ⚠ ⛔ **預設仍然回落到 `$WORK`，而這不是「悄悄回落」** —— 實際落在哪種檔案系統上
+#   由 `bench/env-snapshot.sh` 探出來寫進 `env.json` 的 `site_root` 裡
+#   ⇒ 每一份原始資料都說得出自己是在哪種形狀下量的。
 if [ -n "${BENCH_WWW_ROOT:-}" ]; then
-  # ⚠ 命名卷**跨趟存活** ⇒ 每趟用自己的子目录并在收尾时删掉，
-  #   ⛔ 否则上一趟的 payload 会留在那里，而它与这一趟的可能不是同一份字节。
+  # ⚠ 命名卷**跨趟存活** ⇒ 每趟用自己的子目錄並在收尾時刪掉，
+  #   ⛔ 否則上一趟的 payload 會留在那裡，而它與這一趟的可能不是同一份位元組。
   WWW="$BENCH_WWW_ROOT/static-throughput-$$"
   rm -rf "$WWW"
 else
   WWW="$WORK/www"
 fi
 mkdir -p "$WWW" "$RAW_DIR"
-# ★ 用 `/dev/urandom` 而不是可压缩的重复字节：四家的默认压缩策略不同，
-#   一个高度可压缩的 payload 会把「压不压缩」的差异混进吞吐里。本类**不比压缩**。
+# ★ 用 `/dev/urandom` 而不是可壓縮的重複位元組：四家的預設壓縮策略不同，
+#   一個高度可壓縮的 payload 會把「壓不壓縮」的差異混進吞吐裡。本類**不比壓縮**。
 head -c "$PAYLOAD_BYTES" /dev/urandom > "$WWW/payload.bin"
 ACTUAL_BYTES=$(wc -c < "$WWW/payload.bin" | tr -d ' ')
 [ "$ACTUAL_BYTES" = "$PAYLOAD_BYTES" ] || {
@@ -171,10 +171,10 @@ ACTUAL_BYTES=$(wc -c < "$WWW/payload.bin" | tr -d ' ')
 }
 URL_PATH=/payload.bin
 
-# ── 渲染四家的配置 ─────────────────────────────────────────────────────────
+# ── 繪製四家的設定 ─────────────────────────────────────────────────────────
 #
-# ★ 模板在 `bench/conf/` 下、是**交付物的一部分**，这里只替换占位符。
-#   ⛔ 别把配置内联进本脚本：第三方要看的就是那四份配置本身。
+# ★ 範本在 `bench/conf/` 下、是**交付物的一部分**，這裡只替換佔位符。
+#   ⛔ 別把設定內聯進本指令碼：第三方要看的就是那四份設定本身。
 render() {
   local src=$1 dst=$2 port=$3
   sed -e "s|__PORT__|$port|g" \
@@ -192,7 +192,7 @@ mkdir -p "$WORK/nginx-body"
 
 # ── 一家的完整一趟 ─────────────────────────────────────────────────────────
 #
-# 起 → 等端口 → **核对它回的到底是不是那个资源** → 打负载 → 收 → 等端口消失。
+# 起 → 等連接埠 → **核對它回的到底是不是那個資源** → 打負載 → 收 → 等連接埠消失。
 run_subject() {
   local name=$1 port=$2
   shift 2
@@ -209,9 +209,9 @@ run_subject() {
     return 0
   fi
 
-  # ★ ★ ★ **开跑前先证明样本里真有东西。** 一个稳定回 404 的被测会给出一个
-  #   非常漂亮的 RPS，而那个数与「服务静态资源」毫无关系 —— 它量的是回 404 有多快。
-  #   ⇒ 状态码与**字节数**都要对上，⛔ 只判状态码不够（回 200 空 body 同样很快）。
+  # ★ ★ ★ **開跑前先證明樣本里真有東西。** 一個穩定回 404 的被測會給出一個
+  #   非常漂亮的 RPS，而那個數與「服務靜態資源」毫無關係 —— 它量的是回 404 有多快。
+  #   ⇒ 狀態碼與**位元組數**都要對上，⛔ 只判狀態碼不夠（回 200 空 body 同樣很快）。
   local probe code size
   probe=$(curl -sS -o /dev/null -w '%{http_code} %{size_download}' \
     "http://$HOST:$port$URL_PATH" 2>>"$log" || echo "000 0")
@@ -225,7 +225,7 @@ run_subject() {
   fi
   ok "$name 回的是那个资源（HTTP 200，$size 字节）"
 
-  # 打负载。⚠ `--no-tui`：没有 TTY 时 oha 的交互界面会把输出弄成一团。
+  # 打負載。⚠ `--no-tui`：沒有 TTY 時 oha 的交互介面會把輸出弄成一團。
   if "${pin_load[@]}" oha \
     --output-format json --no-tui \
     -z "$DURATION" -c "$CONNECTIONS" \
@@ -241,7 +241,7 @@ run_subject() {
   wait_port_gone "$port" || bad "$name 收掉之后 $port 还占着 —— 下一家会起不来"
 }
 
-# ⚠ 顺序有意固定：结果与顺序无关才对，⇒ 固定它是为了让两趟之间可比。
+# ⚠ 順序有意固定：結果與順序無關才對，⇒ 固定它是為了讓兩趟之間可比。
 run_subject fulcrum "$PORT_FULCRUM" \
   "$FULCRUM_BIN" serve "$WORK/fulcrum.Fulcrumfile" \
   --bind-host "$HOST" \
@@ -249,16 +249,16 @@ run_subject fulcrum "$PORT_FULCRUM" \
   --upgrade-sock "$WORK/fulcrum.sock" \
   --state-dir "$WORK/state"
 
-# ★ `GOMAXPROCS` 是 Caddy 唯一的并行度旋钮（它是 Go 写的，没有 worker 进程的概念）。
+# ★ `GOMAXPROCS` 是 Caddy 唯一的並行度旋鈕（它是 Go 寫的，沒有 worker 處理程序的概念）。
 GOMAXPROCS="$WORKERS" \
   run_subject caddy "$PORT_CADDY" \
   caddy run --config "$WORK/Caddyfile" --adapter caddyfile
 
-# ★ `-db` = 不 daemon 化、不做后台化，编排脚本才拿得到它的 pid。
+# ★ `-db` = 不 daemon 化、不做後台化，編排指令碼才拿得到它的 pid。
 run_subject haproxy "$PORT_HAPROXY" \
   haproxy -f "$WORK/haproxy.cfg" -db
 
-# ★ nginx 的 `daemon off` 写在配置里（见 bench/conf/nginx.conf）。
+# ★ nginx 的 `daemon off` 寫在設定裡（見 bench/conf/nginx.conf）。
 run_subject nginx "$PORT_NGINX" \
   nginx -c "$WORK/nginx.conf"
 

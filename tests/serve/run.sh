@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# 数据面端到端：起两个 `fulcrum serve`，用真流量验证路由决策**被执行对了**。
+# 資料面端到端：起兩個 `fulcrum serve`，用真流量驗證路由決策**被執行對了**。
 #
-# ★ ★ 这一层与 `crates/fulcrum-runtime/tests/routing.rs` 分工明确：
-#   那边测「该做什么」（纯逻辑、脱网、红了指到具体规则），
-#   这边测「做出来了没有」（真 socket、真 HTTP、真上游）。
-#   **两边都要有**：只有前者，一个把决策算对却写错响应的数据面照样全绿；
-#   只有后者，一条规则错了只会得到一个状态码，查起来要靠猜。
+# ★ ★ 這一層與 `crates/fulcrum-runtime/tests/routing.rs` 分工明確：
+#   那邊測「該做什麼」（純邏輯、脫網、紅了指到具體規則），
+#   這邊測「做出來了沒有」（真 socket、真 HTTP、真上游）。
+#   **兩邊都要有**：只有前者，一個把決策算對卻寫錯回應的資料面照樣全綠；
+#   只有後者，一條規則錯了只會得到一個狀態碼，查起來要靠猜。
 #
-# ★ **上游就是枢衡自己**（另一个 `fulcrum serve` 实例）。这不是偷懒：
-#   它让整套测试**零外部依赖**，而且上游那边用 `{path}` / `{header.X-Up}`
-#   把收到的东西回显出来——于是「rewrite 有没有带到上游」「header_up 有没有生效」
-#   这两件事可以被**看见**，而不是只能推断。
+# ★ **上游就是樞衡自己**（另一個 `fulcrum serve` 執行個體）。這不是偷懶：
+#   它讓整套測試**零外部依賴**，而且上游那邊用 `{path}` / `{header.X-Up}`
+#   把收到的東西回顯出來——於是「rewrite 有沒有帶到上游」「header_up 有沒有生效」
+#   這兩件事可以被**看見**，而不是隻能推斷。
 set -euo pipefail
 
 REPO=${REPO:-/w}
@@ -22,56 +22,56 @@ PROXY_PORT=${PROXY_PORT:-9100}
 UP_PORT=${UP_PORT:-9101}
 NAMED_PORT=${NAMED_PORT:-9102}
 TLS_PORT=${TLS_PORT:-9103}
-# ★ 批 11（主动健康检查）用的两个上游：
-#   SICK_PORT —— 进程好好的、业务路径回 200，**但探测路径回 500**；
-#   LATE_PORT —— 一开始**没人在听**，测到一半才起来（验「摘得掉」也「回得来」）。
-# ⚠ 名字有意不叫 `*UP_PORT`：下面那条 `sed "s/:UP_PORT/…/g"` 是全局替换，
-#   而本文件已经为「一条只认得一种写法的替换」栽过一次。
+# ★ 批 11（主動健康檢查）用的兩個上游：
+#   SICK_PORT —— 處理程序好好的、業務路徑回 200，**但探測路徑回 500**；
+#   LATE_PORT —— 一開始**沒人在聽**，測到一半才起來（驗「摘得掉」也「回得來」）。
+# ⚠ 名字有意不叫 `*UP_PORT`：下面那條 `sed "s/:UP_PORT/…/g"` 是全域替換，
+#   而本檔案已經為「一條只認得一種寫法的替換」栽過一次。
 SICK_PORT=${SICK_PORT:-9104}
 LATE_PORT=${LATE_PORT:-9105}
-# ★ ★ G136（被动熔断）用的上游：**业务路径就回 500**。
-#   ⚠ 它与 SICK_PORT 恰好相反，而这个对照就是两个特性的分界：
-#   SICK 是「探测路径坏、业务好」——只有**主动**健康检查看得见；
-#   BAD  是「业务就是坏的，探测路径无所谓」——只有**被动**熔断看得见。
+# ★ ★ G136（被動熔斷）用的上游：**業務路徑就回 500**。
+#   ⚠ 它與 SICK_PORT 恰好相反，而這個對照就是兩個特性的分界：
+#   SICK 是「探測路徑壞、業務好」——只有**主動**健康檢查看得見；
+#   BAD  是「業務就是壞的，探測路徑無所謂」——只有**被動**熔斷看得見。
 BAD_PORT=${BAD_PORT:-9106}
-# 线程模型那一节（G140）自己的三个端口。★ 三个实例**同时只起一个**，
-# 但端口仍各占一格：复用同一个端口时，上一个还没完全放开就会让下一个「起不来」，
-# 而症状落在一个与线程数毫无关系的地方。
+# 執行緒模型那一節（G140）自己的三個連接埠。★ 三個執行個體**同時只起一個**，
+# 但連接埠仍各佔一格：重複使用同一個連接埠時，上一個還沒完全放開就會讓下一個「起不來」，
+# 而症狀落在一個與執行緒數毫無關係的地方。
 THREADS_PORT_A=${THREADS_PORT_A:-9107}
 THREADS_PORT_B=${THREADS_PORT_B:-9108}
 THREADS_PORT_C=${THREADS_PORT_C:-9109}
-# ⚠ 9107 曾经是空的（回落层删除后退场），**2026-09-05 被上面那一组收走了**（G140）。
-#   端口表（docs/platform/host-and-gate-traps.md）已跟着从 9100–9106 扩到 9100–9109。
-# ★ 第 13 节（G163）的上游：一个 python 小服务，把收到的请求头名**原样**回成正文 ——
-#   枢衡当上游的 `respond` 只认得值、看不出头名的大小写。端口表跟着扩到 9100–9110。
+# ⚠ 9107 曾經是空的（回落層刪除後退場），**2026-09-05 被上面那一組收走了**（G140）。
+#   連接埠表（docs/platform/host-and-gate-traps.md）已跟著從 9100–9106 擴到 9100–9109。
+# ★ 第 13 節（G163）的上游：一個 python 小服務，把收到的請求頭名**原樣**回成正文 ——
+#   樞衡當上遊的 `respond` 只認得值、看不出頭名的大小寫。連接埠表跟著擴到 9100–9110。
 ECHO_PORT=${ECHO_PORT:-9110}
-# ★ 管理面走 Unix socket（G14），所以它**不占端口**，也不进上面那张端口表。
+# ★ 管理面走 Unix socket（G14），所以它**不佔連接埠**，也不進上面那張連接埠表。
 ADMIN_SOCK="$WORK/admin.sock"
 
 FAILS=0
 PIDS=()
 
 fail() { echo "  ✗ $*" >&2; FAILS=$((FAILS + 1)); }
-# 既不算过也不算不过的一行现场记录。★ 用它把「这条判据本趟分辨不出来」说出口，
-# ⛔ 别静默跳过 —— 一条被跳过的判据与一条通过的判据在输出上长得一模一样。
+# 既不算過也不算不過的一行現場記錄。★ 用它把「這條判據本趟分辨不出來」說出口，
+# ⛔ 別靜默跳過 —— 一條被跳過的判據與一條通過的判據在輸出上長得一模一樣。
 note() { echo "  · $*"; }
 ok() { echo "  ✓ $*"; }
 
 cleanup() {
   local pid
-  # ★ 先还原 /etc/hosts —— 备份就在 $WORK 里，而本函数末尾会把 $WORK 删掉。
-  #   这台容器后面还要跑别的场景，留下一条 rotate.test 是给后面下绊子。
+  # ★ 先還原 /etc/hosts —— 備份就在 $WORK 裡，而本函式末尾會把 $WORK 刪掉。
+  #   這臺容器後面還要跑別的場景，留下一條 rotate.test 是給後面下絆子。
   [ -f "$WORK/hosts.orig" ] && cat "$WORK/hosts.orig" > /etc/hosts 2>/dev/null
   true
-  # ★ 用 SIGINT 而不是 SIGTERM：Pingora 把 SIGTERM 当**优雅停机**，会等完整的排空窗口；
-  #   SIGINT 是立刻退。测试收尾要的是后者——等排空只会让每次跑都慢几秒，
-  #   而 bash 随后还会为被 SIGKILL 收掉的后台任务打一行 `Killed` 噪音。
+  # ★ 用 SIGINT 而不是 SIGTERM：Pingora 把 SIGTERM 當**優雅停機**，會等完整的排空視窗；
+  #   SIGINT 是立刻退。測試收尾要的是後者——等排空只會讓每次跑都慢幾秒，
+  #   而 bash 隨後還會為被 SIGKILL 收掉的後台任務打一行 `Killed` 噪音。
   for pid in "${PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
     kill -INT "$pid" 2>/dev/null || true
   done
-  # ★ 等它们真的走掉。不等的话，下一次跑会撞上「端口还被占着」，
-  #   而那看起来像是本次的新问题。
+  # ★ 等它們真的走掉。不等的話，下一次跑會撞上「連接埠還被佔著」，
+  #   而那看起來像是本次的新問題。
   for pid in "${PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
     local waited=0
@@ -99,8 +99,8 @@ wait_port() {
   return 1
 }
 
-# 等一个端口**放开**。★ 线程模型那一节要连起三个实例，
-# 上一个还攥着端口时下一个会「起不来」，而症状落在一个与线程数无关的地方。
+# 等一個連接埠**放開**。★ 執行緒模型那一節要連起三個執行個體，
+# 上一個還攥著連接埠時下一個會「起不來」，而症狀落在一個與執行緒數無關的地方。
 wait_port_gone() {
   local port=$1 tries=0
   while [ "$tries" -lt 100 ]; do
@@ -111,10 +111,10 @@ wait_port_gone() {
   return 1
 }
 
-# ── [0/4] 基线：四个端口必须**都还没被占** ──────────────────────────────────
+# ── [0/4] 基線：四個連接埠必須**都還沒被佔** ──────────────────────────────────
 #
-# ★ ★ 这一步不是形式。本仓库栽过一次：一个「基线探针」对着**上一个场景遗留的进程**
-#   报了绿。端口没清干净时，后面每一条断言测的都是别人的服务。
+# ★ ★ 這一步不是形式。本儲存庫栽過一次：一個「基線探針」對著**上一個場景遺留的處理程序**
+#   報了綠。連接埠沒清乾淨時，後面每一條斷言測的都是別人的服務。
 echo "=== [0/4] 基线：端口未被占用 ==="
 for p in "$PROXY_PORT" "$UP_PORT" "$NAMED_PORT" "$TLS_PORT" "$SICK_PORT" "$LATE_PORT" "$BAD_PORT" "$ECHO_PORT"; do
   if port_listening "$p"; then
@@ -129,13 +129,13 @@ ok "$PROXY_PORT / $UP_PORT / $NAMED_PORT / $TLS_PORT / $SICK_PORT / $LATE_PORT /
   exit 1
 }
 
-# ── 配置 ────────────────────────────────────────────────────────────────────
+# ── 設定 ────────────────────────────────────────────────────────────────────
 #
-# 上游把收到的**路径**与 `X-Up` 头回显出来 —— 于是 rewrite 与 header_up
-# 是否真的生效，可以直接从响应体里读出来。
-# ★ 回落层已整层删除（G98），它留下的那句话仍然写在数据面的模块文档里：
-#   **501 与 502 是两个不同的事实，不许合并** —— 合并之后，一次配置遗漏
-#   与一次后端故障在现场长得一模一样。
+# 上游把收到的**路徑**與 `X-Up` 頭回顯出來 —— 於是 rewrite 與 header_up
+# 是否真的生效，可以直接從回應體裡讀出來。
+# ★ 回落層已整層刪除（G98），它留下的那句話仍然寫在資料面的模組文件裡：
+#   **501 與 502 是兩個不同的事實，不許合併** —— 合併之後，一次設定遺漏
+#   與一次後端故障在現場長得一模一樣。
 cat > "$WORK/upstream.Fulcrumfile" <<'CONF'
 :UP_PORT {
     respond 200 "up path={path} xup={header.X-Up}"
@@ -143,10 +143,10 @@ cat > "$WORK/upstream.Fulcrumfile" <<'CONF'
 CONF
 sed -i "s/:UP_PORT/:$UP_PORT/" "$WORK/upstream.Fulcrumfile"
 
-# ★ ★ ★ 「病号」上游：**业务路径完全正常，只有探测路径回 500**。
+# ★ ★ ★ 「病號」上游：**業務路徑完全正常，只有探測路徑回 500**。
 #
-#   它是本批最重要的那个夹具。⚠ 少了它，「健康检查」与「连得上吗」
-#   在判据上分不开 —— 而一个只会 TCP 连一下的实现会全绿。
+#   它是本批最重要的那個夾具。⚠ 少了它，「健康檢查」與「連得上嗎」
+#   在判據上分不開 —— 而一個只會 TCP 連一下的實作會全綠。
 cat > "$WORK/sick.Fulcrumfile" <<'CONF'
 :SICK_PORT {
     # ⚠ 回落层整层删除（G98）之后，这里那条守「没配回落 ⇒ 501」的判据没了对象。
@@ -161,11 +161,11 @@ cat > "$WORK/sick.Fulcrumfile" <<'CONF'
 CONF
 sed -i "s/:SICK_PORT/:$SICK_PORT/" "$WORK/sick.Fulcrumfile"
 
-# ★ ★ ★ G136 的「坏」上游：**业务路径就回 500**，进程活得好好的。
+# ★ ★ ★ G136 的「壞」上游：**業務路徑就回 500**，處理程序活得好好的。
 #
-#   ⚠ 它是被动熔断这一节唯一的夹具，而它的价值在于**主动健康检查对它无能为力**：
-#   一个只探 `/health` 的实现会认为它健康（这里连 `health_uri` 都没配），
-#   而真实流量每一次都拿到 500。⇒ PLAN 给 `passive_fail` 的立身理由就是这一格。
+#   ⚠ 它是被動熔斷這一節唯一的夾具，而它的價值在於**主動健康檢查對它無能為力**：
+#   一個只探 `/health` 的實作會認為它健康（這裡連 `health_uri` 都沒配），
+#   而真實流量每一次都拿到 500。⇒ PLAN 給 `passive_fail` 的立身理由就是這一格。
 cat > "$WORK/bad.Fulcrumfile" <<'CONF'
 :BAD_PORT {
     respond 500 "bad upstream"
@@ -173,9 +173,9 @@ cat > "$WORK/bad.Fulcrumfile" <<'CONF'
 CONF
 sed -i "s/:BAD_PORT/:$BAD_PORT/" "$WORK/bad.Fulcrumfile"
 
-# 「迟到」的上游：这份配置先写好，但**进程要到本场景中途才起**。
-# ★ ★ 一条值得继承的取值方法（缓存那一格用的也是它）：
-#   让上游回显一个客户端现给的值，把「这份东西是谁给的」变成**看得见**的。
+# 「遲到」的上游：這份設定先寫好，但**處理程序要到本場景中途才起**。
+# ★ ★ 一條值得繼承的取值方法（快取那一格用的也是它）：
+#   讓上游回顯一個用戶端現給的值，把「這份東西是誰給的」變成**看得見**的。
 
 cat > "$WORK/late.Fulcrumfile" <<'CONF'
 :LATE_PORT {
@@ -367,13 +367,13 @@ secure.example:TLS_PORT {
 }
 CONF
 
-# ── 自签证书（给 `tls <cert> <key>` 那条路用）────────────────────────────────
+# ── 自簽證書（給 `tls <cert> <key>` 那條路用）────────────────────────────────
 #
-# ★ 用 openssl 现签一张，而**不是**把一张证书提交进仓库：
-#   仓库里的测试证书迟早会过期，而过期那天红的是「TLS 坏了」，
-#   查起来要绕一圈才发现是证书到期。现签的永远新鲜。
-# ⚠ SAN 必须有 `secure.example`：枢衡是**按证书自己的 SAN** 决定这张证书装在哪些
-#   SNI 上的（配置里写的站点名只用来核对），只给 CN 是装不上的。
+# ★ 用 openssl 現籤一張，而**不是**把一張證書提交進儲存庫：
+#   儲存庫裡的測試證書遲早會過期，而過期那天紅的是「TLS 壞了」，
+#   查起來要繞一圈才發現是證書到期。現籤的永遠新鮮。
+# ⚠ SAN 必須有 `secure.example`：樞衡是**按證書自己的 SAN** 決定這張證書裝在哪些
+#   SNI 上的（設定裡寫的站台名只用來核對），只給 CN 是裝不上的。
 openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   -keyout "$WORK/tls.key" -out "$WORK/tls.crt" \
   -subj "/CN=secure.example" \
@@ -384,42 +384,42 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   exit 1
 }
 
-# ⚠ `UP_PORT` 在两种前缀下都出现（`127.0.0.1:` 与 `localhost:`），两边都要替。
-#   ★ **一条只认得一种写法的替换，在另一种写法上等于没有替换。**
+# ⚠ `UP_PORT` 在兩種前綴下都出現（`127.0.0.1:` 與 `localhost:`），兩邊都要替。
+#   ★ **一條只認得一種寫法的替換，在另一種寫法上等於沒有替換。**
 sed -i "s/:PROXY_PORT/:$PROXY_PORT/; s/:UP_PORT/:$UP_PORT/g; s/:NAMED_PORT/:$NAMED_PORT/; s/:TLS_PORT/:$TLS_PORT/; s/:SICK_PORT/:$SICK_PORT/g; s/:LATE_PORT/:$LATE_PORT/g; s/:BAD_PORT/:$BAD_PORT/g; s/:ECHO_PORT/:$ECHO_PORT/g" \
   "$WORK/proxy.Fulcrumfile"
-# ★ 自研 file_server 的根 —— 内容在这里现造（M2 批 F）。
-#   ⚠ 必须是**绝对路径**（G91），`$WORK` 本来就是。
+# ★ 自研 file_server 的根 —— 內容在這裡現造（M2 批 F）。
+#   ⚠ 必須是**絕對路徑**（G91），`$WORK` 本來就是。
 mkdir -p "$WORK/www/static"
 printf 'self-built-file-server\n' > "$WORK/www/static/x"
-# 路径里有斜杠，用 | 当分隔符
+# 路徑裡有斜槓，用 | 當分隔符
 sed -i "s|TLS_CRT|$WORK/tls.crt|; s|TLS_KEY|$WORK/tls.key|; s|ADMIN_SOCK|$ADMIN_SOCK|; s|WWW_ROOT|$WORK/www|" \
   "$WORK/proxy.Fulcrumfile"
-# ★ 第 10 节（写缓冲，G155）的两份正文：4096 与 32768 个字母，现造。
-#   ⚠ 只用字母：它们要原样塞进 `respond` 的引号里，还要过一遍 sed。
+# ★ 第 10 節（寫緩衝，G155）的兩份正文：4096 與 32768 個字母，現造。
+#   ⚠ 只用字母：它們要原樣塞進 `respond` 的引號裡，還要過一遍 sed。
 BODY_4K=$(head -c 4096 /dev/zero | tr '\0' 'w')
 BODY_32K=$(head -c 32768 /dev/zero | tr '\0' 'W')
 sed -i "s/WBUF_4K/$BODY_4K/g; s/WBUF_32K/$BODY_32K/" "$WORK/proxy.Fulcrumfile"
 
-# ── ★ ★ ★ 会变的域名：给「后台重解析」准备夹具（批 10）──────────────────────
+# ── ★ ★ ★ 會變的網域：給「後台重解析」準備夾具（批 10）──────────────────────
 #
-# ⚠ `/byname/` 与 `/deadname/` 只验到**启动那一次**解析对了。
-#   「每 N 秒重解析一次」是另一件事，而它坏掉的样子**完全无声**：
-#   启动那次照常成功，此后地址永远停在启动时那一份 —— 这正是 nginx OSS
-#   那个经典事故（`dns_refresh` 这条指令存在的全部理由）。
-#   ⇒ 判据必须让**同一个域名在进程活着的时候换 IP**，再看它跟不跟得上。
+# ⚠ `/byname/` 與 `/deadname/` 只驗到**啟動那一次**解析對了。
+#   「每 N 秒重解析一次」是另一件事，而它壞掉的樣子**完全無聲**：
+#   啟動那次照常成功，此後位址永遠停在啟動時那一份 —— 這正是 nginx OSS
+#   那個經典事故（`dns_refresh` 這條指令存在的全部理由）。
+#   ⇒ 判據必須讓**同一個網域在處理程序活著的時候換 IP**，再看它跟不跟得上。
 #
-# ★ 手法：直接改容器的 `/etc/hosts`。glibc 的 nss_files 每次查询都重读它，
-#   进程内没有缓存 —— 所以这是一次真的「DNS 答案变了」。
-# ⚠ Docker 把 /etc/hosts 做成 bind-mount 的**文件**：只能**就地截断重写**
-#   （`cat >`）。`sed -i` / `mv` 要换 inode，在 bind-mount 的文件上做不到。
+# ★ 手法：直接改容器的 `/etc/hosts`。glibc 的 nss_files 每次查詢都重讀它，
+#   處理程序內沒有快取 —— 所以這是一次真的「DNS 答案變了」。
+# ⚠ Docker 把 /etc/hosts 做成 bind-mount 的**檔案**：只能**就地截斷重寫**
+#   （`cat >`）。`sed -i` / `mv` 要換 inode，在 bind-mount 的檔案上做不到。
 cp /etc/hosts "$WORK/hosts.orig"
 set_rotate_ip() {
   { cat "$WORK/hosts.orig"; echo "$1 rotate.test"; } > /etc/hosts 2>/dev/null
 }
 
-# ⚠ 写不进去就**当场退出**，不「跳过」。
-#   ★ 纪律：「没能检查」不许当成「检查通过」。
+# ⚠ 寫不進去就**當場退出**，不「跳過」。
+#   ★ 紀律：「沒能檢查」不許當成「檢查通過」。
 if ! set_rotate_ip 127.0.0.1; then
   echo "SERVE TESTS FAILED: 改不了 /etc/hosts —— 后台重解析那一节没法验。" >&2
   echo "  容器默认以 root 跑；传了 DOCKER_USER 就会撞到这里。" >&2
@@ -427,7 +427,7 @@ if ! set_rotate_ip 127.0.0.1; then
 fi
 ok "rotate.test 先指向真上游（127.0.0.1）"
 
-# ── [1/4] 起服务 ────────────────────────────────────────────────────────────
+# ── [1/4] 起服務 ────────────────────────────────────────────────────────────
 echo "=== [1/4] 起上游与代理 ==="
 start() {
   local name=$1 conf=$2
@@ -441,7 +441,7 @@ start() {
 start upstream "$WORK/upstream.Fulcrumfile"
 start sick "$WORK/sick.Fulcrumfile"
 start bad "$WORK/bad.Fulcrumfile"
-# ⚠ `late` **故意不起** —— 它要到 [2c/4] 那一节才上场。
+# ⚠ `late` **故意不起** —— 它要到 [2c/4] 那一節才上場。
 start proxy "$WORK/proxy.Fulcrumfile"
 
 for p in "$UP_PORT" "$SICK_PORT" "$BAD_PORT" "$PROXY_PORT" "$NAMED_PORT" "$TLS_PORT"; do
@@ -452,29 +452,29 @@ for p in "$UP_PORT" "$SICK_PORT" "$BAD_PORT" "$PROXY_PORT" "$NAMED_PORT" "$TLS_P
   }
 done
 ok "七个监听都起来了（迟到那个还没起，那是有意的）"
-# ★ ★ 一条「靠某个前提成立」的判据，要**把那个前提也测一遍** ——
-#   否则前提悄悄不成立的那天，判据仍然是绿的。
+# ★ ★ 一條「靠某個前提成立」的判據，要**把那個前提也測一遍** ——
+#   否則前提悄悄不成立的那天，判據仍然是綠的。
 
-# ── [2/4] 断言 ──────────────────────────────────────────────────────────────
+# ── [2/4] 斷言 ──────────────────────────────────────────────────────────────
 echo "=== [2/4] 断言 ==="
 
-# ★ ★ 统一的 curl 包装。**退出码与 `-w` 的输出必须分开拿。**
+# ★ ★ 統一的 curl 包裝。**結束代碼與 `-w` 的輸出必須分開拿。**
 #
-# ⚠ 不要写成 `curl … -w '%{http_code}' || echo "000"`：curl 连不上时 `-w`
-#   **已经输出了 `000`**，`|| echo` 再补一个就成了 `000000`。
-#   ★ **先弄清工具已经做了什么，再决定补什么。**
-# 只取 `-w` 的输出（不关心退出码）。
-# ⚠ `|| true` 是必需的：`set -e` 之下，赋值里的命令替换失败会让整个脚本退出。
+# ⚠ 不要寫成 `curl … -w '%{http_code}' || echo "000"`：curl 連不上時 `-w`
+#   **已經輸出了 `000`**，`|| echo` 再補一個就成了 `000000`。
+#   ★ **先弄清工具已經做了什麼，再決定補什麼。**
+# 只取 `-w` 的輸出（不關心結束代碼）。
+# ⚠ `|| true` 是必需的：`set -e` 之下，賦值裡的命令替換失敗會讓整個指令碼退出。
 run_curl() {
   curl "$@" 2>/dev/null || true
 }
 
-# ★ ★ 要**退出码**时不能走命令替换。
+# ★ ★ 要**結束代碼**時不能走命令替換。
 #
-# ⚠ 不要写成「函数里 `CURL_RC=$?`、调用方 `X=$(run_curl …)`」：
-#   **命令替换开的是子 shell，里面设的变量不会传回父 shell**，
-#   于是 `CURL_RC` 永远是初值 0，读起来像「curl 成功了」。
-# 结果写文件，退出码留在当前 shell 的 `CURL_RC` 里。
+# ⚠ 不要寫成「函式里 `CURL_RC=$?`、呼叫方 `X=$(run_curl …)`」：
+#   **命令替換開的是子 shell，裡面設的變數不會傳回父 shell**，
+#   於是 `CURL_RC` 永遠是初值 0，讀起來像「curl 成功了」。
+# 結果寫檔案，結束代碼留在當前 shell 的 `CURL_RC` 裡。
 CURL_RC=0
 curl_capture() {
   set +e
@@ -483,15 +483,15 @@ curl_capture() {
   set -e
 }
 
-# ★ ★ ★ 通用版（任意命令可能非零退出、又想要它的输出时，用它代替裸的
-#   `VAR=$(cmd)`；修复轮 2，评审 N1）连同「它为什么必须存在」都搬进了
-#   `tests/lib/capture.sh`（任务 7 收敛：本文件与 `tests/metrics/run.sh` 曾各有一份）。
-#   ⚠ 上面那个 `curl_capture()` **有意留在本文件**：它只服务 curl，且把正文落到
-#   `$WORK/curlw` 而不是变量里，与通用版不是同一件事。
+# ★ ★ ★ 通用版（任意命令可能非零退出、又想要它的輸出時，用它代替裸的
+#   `VAR=$(cmd)`；修復輪 2，評審 N1）連同「它為什麼必須存在」都搬進了
+#   `tests/lib/capture.sh`（任務 7 收斂：本檔案與 `tests/metrics/run.sh` 曾各有一份）。
+#   ⚠ 上面那個 `curl_capture()` **有意留在本檔案**：它只服務 curl，且把正文落到
+#   `$WORK/curlw` 而不是變數裡，與通用版不是同一件事。
 # shellcheck source=tests/lib/capture.sh
 . "$REPO/tests/lib/capture.sh"
 
-# 取状态码 + 响应体 + 某个响应头，一次请求全拿到。
+# 取狀態碼 + 回應體 + 某個回應頭，一次請求全拿到。
 probe() {
   local url=$1 host_hdr=${2:-}
   local args=(-s -o "$WORK/body" -D "$WORK/hdr" -w '%{http_code}' --max-time 5)
@@ -514,14 +514,14 @@ expect_body() {
 expect_header() {
   local what=$1 name=$2 want=$3
   local got
-  # 头名大小写不敏感；只取第一次出现，去掉行尾的 CR。
+  # 頭名大小寫不敏感；只取第一次出現，去掉行尾的 CR。
   got=$(grep -i "^$name:" "$WORK/hdr" | head -1 | cut -d' ' -f2- | tr -d '\r')
   if [ "$got" = "$want" ]; then ok "$what 的 $name = $got"; else fail "$what 的 $name 期望「$want」，实际「$got」"; fi
 }
 
-# ★ 头名的**大小写**逐字钉（G162）：上面的 `expect_header` 不分大小写 ⇒ 判不出「用户写的 `X-Fulcrum` 以 `x-fulcrum` 上线」。
-#   枢衡自建的响应只在要插的名都照原样写得出时才不建大小写表；`X-Fulcrum` 既不在 pingora 的标题化表里、
-#   也不是小写 ⇒ 这一条必须照旧建表、照用户写的发。判「什么时候不建表」那个函数坏成恒不建时，红在这里。
+# ★ 頭名的**大小寫**逐字釘（G162）：上面的 `expect_header` 不分大小寫 ⇒ 判不出「使用者寫的 `X-Fulcrum` 以 `x-fulcrum` 上線」。
+#   樞衡自建的回應只在要插的名都照原樣寫得出時才不建大小寫表；`X-Fulcrum` 既不在 pingora 的標題化表裡、
+#   也不是小寫 ⇒ 這一條必須照舊建表、照使用者寫的發。判「什麼時候不建表」那個函式壞成恆不建時，紅在這裡。
 expect_header_name_exact() {
   local what=$1 name=$2
   if grep -q "^$name: " "$WORK/hdr"; then ok "$what 的头名原样是 $name"; else
@@ -530,17 +530,17 @@ expect_header_name_exact() {
 
 BASE="http://$HOST:$PROXY_PORT"
 
-# 1) 兜底 handle + 站点级 header（G49：header 排在 handle 之前，所以两者都生效）
+# 1) 備援 handle + 站台級 header（G49：header 排在 handle 之前，所以兩者都生效）
 expect_status "GET /" 200 "$(probe "$BASE/")"
 expect_body "GET /" "root"
 expect_header "GET /" "X-Fulcrum" "test"
 expect_header_name_exact "GET /" "X-Fulcrum"
 
-# 2) ★ 转发：命名匹配器 + header_up 都要真的生效
+# 2) ★ 轉發：命名匹配器 + header_up 都要真的生效
 expect_status "GET /api/x（转发）" 200 "$(probe "$BASE/api/x")"
 expect_body "GET /api/x（转发）" "up path=/api/x xup=1"
 
-# 3) ★ rewrite 要带到上游去
+# 3) ★ rewrite 要帶到上游去
 expect_status "GET /rw/y（改写后转发）" 200 "$(probe "$BASE/rw/y")"
 expect_body "GET /rw/y（改写后转发）" "up path=/rewritten xup="
 
@@ -548,69 +548,69 @@ expect_body "GET /rw/y（改写后转发）" "up path=/rewritten xup="
 expect_status "GET /redir" 301 "$(probe "$BASE/redir")"
 expect_header "GET /redir" "Location" "https://example.com/moved"
 
-# 5) respond 带状态码与体
+# 5) respond 帶狀態碼與體
 expect_status "GET /err" 418 "$(probe "$BASE/err")"
 expect_body "GET /err" "teapot"
 
-# 6) ★ 自研的两块（`file_server` 批 F、`cache` 批 G）
+# 6) ★ 自研的兩塊（`file_server` 批 F、`cache` 批 G）
 #
-# ★ 判据取**响应体**而不只是状态码：只看 200 的话，一个仍然在回落的实现照样绿
-#   （回落后端也回 200）。响应体是唯一能把「自研发的」与「别人发的」分开的东西。
+# ★ 判據取**回應體**而不只是狀態碼：只看 200 的話，一個仍然在回落的實作照樣綠
+#   （回落後端也回 200）。回應體是唯一能把「自研發的」與「別人發的」分開的東西。
 expect_status "GET /static/x（file_server 自研 → 直接发文件）" 200 "$(probe "$BASE/static/x")"
-#   ★ `expect_body` 是**精确**比对，所以它同时也是反向那一半：一个仍然在回落的
-#   实现会得到 `fallback-nginx path=/static/x …`，当场不等。
+#   ★ `expect_body` 是**精確**比對，所以它同時也是反向那一半：一個仍然在回落的
+#   實作會得到 `fallback-nginx path=/static/x …`，當場不等。
 expect_body "GET /static/x（file_server 自研 → 直接发文件）" "self-built-file-server"
-# ★ 自研之后 Content-Type 由 G90 那张小表决定。`x` 没有扩展名 ⇒ 缺省值。
-#   ⚠ 这一条是「表真的被查了」的唯一痕迹 —— 回落后端给的会是它自己的判断。
+# ★ 自研之後 Content-Type 由 G90 那張小表決定。`x` 沒有副檔名 ⇒ 預設值。
+#   ⚠ 這一條是「表真的被查了」的唯一痕跡 —— 回落後端給的會是它自己的判斷。
 expect_header "GET /static/x" "Content-Type" "application/octet-stream"
-# ★ `cache` 现在是**中间件**（批 G），裹住 `/cached/*` 那条 `reverse_proxy`。
-#   这里只验「配了 `cache` 不会把转发弄坏」—— 判据取**回显出来的路径**，
-#   而不只是状态码：它证明请求是原样被带到上游的。
-#   ⚠ 缓存语义本身（命中/回源/Vary/Authorization 不串号/防惊群）由 `tests/cache/run.sh` 管。
+# ★ `cache` 現在是**中介軟體**（批 G），裹住 `/cached/*` 那條 `reverse_proxy`。
+#   這裡只驗「配了 `cache` 不會把轉發弄壞」—— 判據取**回顯出來的路徑**，
+#   而不只是狀態碼：它證明請求是原樣被帶到上游的。
+#   ⚠ 快取語義本身（命中/回源/Vary/Authorization 不串號/防驚群）由 `tests/cache/run.sh` 管。
 expect_status "GET /cached/x（cache 裹着 reverse_proxy）" 200 "$(probe "$BASE/cached/x")"
 expect_body "GET /cached/x（cache 裹着 reverse_proxy）" "up path=/cached/x xup="
-# ★ ★ 第二次必须**命中**，而命中这件事靠状态码看不出来（两次都是 200）
-#   ⇒ 看 `X-Fulcrum-Cache`。⚠ 少了这一条，一个「装上缓存却从不命中」的实现
-#   在本场景里与正确实现完全一样。
+# ★ ★ 第二次必須**命中**，而命中這件事靠狀態碼看不出來（兩次都是 200）
+#   ⇒ 看 `X-Fulcrum-Cache`。⚠ 少了這一條，一個「裝上快取卻從不命中」的實作
+#   在本場景裡與正確實作完全一樣。
 probe "$BASE/cached/x" > /dev/null
 expect_header "GET /cached/x 第二次" "X-Fulcrum-Cache" "HIT"
 
-# 7) ★ ★ 无站点匹配 → 421（G63）。`:9102` 上只有一个具名站点。
+# 7) ★ ★ 無站台匹配 → 421（G63）。`:9102` 上只有一個具名站台。
 NAMED="http://$HOST:$NAMED_PORT"
 expect_status "Host=only.example" 200 "$(probe "$NAMED/" only.example)"
 expect_body "Host=only.example" "named-only"
 expect_status "Host=nope（无站点匹配）" 421 "$(probe "$NAMED/" nope.example)"
 
-# 8) keep-alive：一次连接上两个请求
-# ⚠ `-o` 是**按 URL** 生效的，不是全局的：两个 URL 只给一个 `-o /dev/null`，
-#   第二个响应体会漏到 stdout 里，把 `-w` 的输出搅成 `200,teapot418,`。
-#   ★ 这不是 curl 的坑，是「以为选项是全局的」——每个 URL 配一个 `-o`。
+# 8) keep-alive：一次連接上兩個請求
+# ⚠ `-o` 是**按 URL** 生效的，不是全域的：兩個 URL 只給一個 `-o /dev/null`，
+#   第二個回應體會漏到 stdout 裡，把 `-w` 的輸出攪成 `200,teapot418,`。
+#   ★ 這不是 curl 的坑，是「以為選項是全域的」——每個 URL 配一個 `-o`。
 KA=$(curl -s -o /dev/null -o /dev/null -w '%{http_code},' --max-time 5 "$BASE/" "$BASE/err" 2>/dev/null || echo "000,")
 if [ "$KA" = "200,418," ]; then ok "同一连接上两个请求：$KA"; else fail "keep-alive 期望 200,418, 实际 $KA"; fi
 
-# ── 9) ★ ★ TLS：按 SNI 动态挑证书（§5.1 第 1 条锁死的那条路）────────────────
+# ── 9) ★ ★ TLS：按 SNI 動態挑證書（§5.1 第 1 條鎖死的那條路）────────────────
 #
-# ★ 动态挑证书走的是 BoringSSL 的 `set_select_certificate_callback`（G104），
-#   两个入口（h1/h2 与 h3）共用同一个回调。
+# ★ 動態挑證書走的是 BoringSSL 的 `set_select_certificate_callback`（G104），
+#   兩個入口（h1/h2 與 h3）共用同一個回呼。
 TLSURL="https://secure.example:$TLS_PORT/"
 RESOLVE="secure.example:$TLS_PORT:$HOST"
 
-# 9a) 证书链要**真的能验过**——用 `--cacert` 而不是 `-k`。
-#     ★ `-k` 只能证明「握手成功了」，证不了「服务端给的是我们那张证书」。
+# 9a) 證書鏈要**真的能驗過**——用 `--cacert` 而不是 `-k`。
+#     ★ `-k` 只能證明「握手成功了」，證不了「伺服器端給的是我們那張證書」。
 TLS_CODE=$(curl -s -o "$WORK/body" -w '%{http_code}' --max-time 5 \
   --cacert "$WORK/tls.crt" --resolve "$RESOLVE" "$TLSURL" 2>/dev/null || echo "000")
 expect_status "HTTPS（--cacert 验签）" 200 "$TLS_CODE"
 expect_body "HTTPS（--cacert 验签）" "secure-ok"
 
-# 9b) ★ ALPN 要能协商到 h2。`enable_h2()` 少调一次，这里会掉回 1.1。
+# 9b) ★ ALPN 要能協商到 h2。`enable_h2()` 少調一次，這裡會掉回 1.1。
 H2V=$(run_curl -s -o /dev/null -w '%{http_version}' --max-time 5 --http2 \
   --cacert "$WORK/tls.crt" --resolve "$RESOLVE" "$TLSURL")
 if [ "$H2V" = "2" ]; then ok "HTTPS 上 ALPN 协商到 HTTP/2"; else fail "HTTPS 期望 http_version=2，实际 $H2V"; fi
 
-# 9c) ★ ★ 没有证书的 SNI 必须**握手失败**，而不是拿一张不匹配的证书去应答。
-#     后者会让客户端看到证书错误，而运维在服务端只看到一次成功的握手。
-#     ★ 判据挂在 **curl 的退出码**上，不只挂在 `%{http_code}` 上：后者连不上时是 `000`，
-#     而 `000` 也可能来自超时、端口没开、DNS 失败——分不出「被拒绝握手」这一种。
+# 9c) ★ ★ 沒有證書的 SNI 必須**握手失敗**，而不是拿一張不匹配的證書去應答。
+#     後者會讓用戶端看到證書錯誤，而維運在伺服器端只看到一次成功的握手。
+#     ★ 判據掛在 **curl 的結束代碼**上，不只掛在 `%{http_code}` 上：後者連不上時是 `000`，
+#     而 `000` 也可能來自超時、連接埠沒開、DNS 失敗——分不出「被拒絕握手」這一種。
 curl_capture -s -o /dev/null -w '%{http_code}' --max-time 5 -k \
   --resolve "nocert.example:$TLS_PORT:$HOST" "https://nocert.example:$TLS_PORT/"
 NOCERT=$(cat "$WORK/curlw")
@@ -620,17 +620,17 @@ else
   fail "未知 SNI 期望握手失败，实际 curl 退出码 $CURL_RC、HTTP $NOCERT"
 fi
 
-# 9d) ★ ★ 不带 SNI 的客户端（老客户端、或直接按 IP 访问）→ 全局 `default_sni`。
+# 9d) ★ ★ 不帶 SNI 的用戶端（老用戶端、或直接按 IP 訪問）→ 全域 `default_sni`。
 #
-#     ⚠ ⚠ 这条指令曾经是**「DSL 认得、编译得过、运行时零调用方」**的活样本：
-#     `SniResolver::set_default` 全仓唯一的调用方在一条 `#[cfg(test)]` 里，
-#     而它又**不在 `UNWIRED` 里** ⇒ 装载日志一个字都不说，配了它的人只会看到
-#     不带 SNI 的客户端照样被拒绝握手。
-#     ★ 判据挂在**拿到的是哪一张证书**上，不挂在「握手成功了吗」上：后者在服务端
-#     随便发一张证书时同样成立，而那正是 9c 要防的那种「成功」。
-#     ★ 与它成对的反向那半就是上面的 9c —— 本场景现在**配着** default_sni，
-#     所以 9c 从此还多守一件事：这条指令没有顺手变成未知 SNI 的兜底
-#     （Caddy 把那件事分成另一个选项 `fallback_sni`，我们没有它）。
+#     ⚠ ⚠ 這條指令曾經是**「DSL 認得、編譯得過、執行環境零呼叫方」**的活樣本：
+#     `SniResolver::set_default` 全倉唯一的呼叫方在一條 `#[cfg(test)]` 裡，
+#     而它又**不在 `UNWIRED` 裡** ⇒ 裝載紀錄一個字都不說，配了它的人只會看到
+#     不帶 SNI 的用戶端照樣被拒絕握手。
+#     ★ 判據掛在**拿到的是哪一張證書**上，不掛在「握手成功了嗎」上：後者在伺服器端
+#     隨便發一張證書時同樣成立，而那正是 9c 要防的那種「成功」。
+#     ★ 與它成對的反向那半就是上面的 9c —— 本場景現在**配著** default_sni，
+#     所以 9c 從此還多守一件事：這條指令沒有順手變成未知 SNI 的備援
+#     （Caddy 把那件事分成另一個選項 `fallback_sni`，我們沒有它）。
 NOSNI_SUBJ=$(echo | openssl s_client -connect "$HOST:$TLS_PORT" -noservername 2>/dev/null \
              | openssl x509 -noout -subject 2>/dev/null || true)
 case "$NOSNI_SUBJ" in
@@ -638,18 +638,18 @@ case "$NOSNI_SUBJ" in
   *) fail "不带 SNI 期望拿到 secure.example 那张证书，实际：${NOSNI_SUBJ:-（一张都没拿到，多半是握手被拒）}" ;;
 esac
 
-# ── 10) ★ ★ ★ 一个约 4 KiB 的响应只许一个数据段：L7 写缓冲（G155）──────────────
+# ── 10) ★ ★ ★ 一個約 4 KiB 的回應只許一個資料段：L7 寫緩衝（G155）──────────────
 #
-# ★ 起因（2026-09-24 HTTP 层诊断的发现 1）：pingora 给接入连接的写缓冲缺省只有 1460 字节
-#   ⇒ 头 + 约 4 KiB 正文的响应被拆成**两次 send、两个 TCP 段**（头先被冲出去、正文再写穿），
-#   而 nginx / haproxy 都是一次。修法在 `crates/fulcrum-server/src/lib.rs` 的 L7 监听那段。
-# ★ 读法：客户端读**自己那条** socket 的 `TCP_INFO`，数它收到了几个带数据的段
-#   （`tcpi_data_segs_in`）。环回上一次 send 就是一个段（MSS 远大于这里的正文）
-#   ⇒ 读数是确定的，不用压测。
-# ★ 同一条连接先发一次预热，只量第二个响应：TLS 的握手与会话票据都落在预热那一次里。
-# ★ ★ 内置反证：32 KiB 的正文比写缓冲大 ⇒ 修好之后照样「先冲头、再写穿」，两个段。
-#   ⇒ 它证明这把尺子在修好之后**仍然看得见两个段** —— 一个恒报 1 的读法会让它红。
-#   ⚠ 写缓冲哪天调到 32 KiB 以上，这一条会红：那时把它的正文调到比缓冲大，⛔ 别删。
+# ★ 起因（2026-09-24 HTTP 層診斷的發現 1）：pingora 給接入連接的寫緩衝預設只有 1460 位元組
+#   ⇒ 頭 + 約 4 KiB 正文的回應被拆成**兩次 send、兩個 TCP 段**（頭先被衝出去、正文再寫穿），
+#   而 nginx / haproxy 都是一次。修法在 `crates/fulcrum-server/src/lib.rs` 的 L7 監聽那段。
+# ★ 讀法：用戶端讀**自己那條** socket 的 `TCP_INFO`，數它收到了幾個帶資料的段
+#   （`tcpi_data_segs_in`）。環回上一次 send 就是一個段（MSS 遠大於這裡的正文）
+#   ⇒ 讀數是確定的，不用壓測。
+# ★ 同一條連接先發一次預熱，只量第二個回應：TLS 的握手與工作階段票據都落在預熱那一次裡。
+# ★ ★ 內置反證：32 KiB 的正文比寫緩衝大 ⇒ 修好之後照樣「先衝頭、再寫穿」，兩個段。
+#   ⇒ 它證明這把尺子在修好之後**仍然看得見兩個段** —— 一個恆報 1 的讀法會讓它紅。
+#   ⚠ 寫緩衝哪天調到 32 KiB 以上，這一條會紅：那時把它的正文調到比緩衝大，⛔ 別刪。
 cat > "$WORK/segs.py" <<'PY'
 #!/usr/bin/env python3
 """只服务于 tests/serve/run.sh 的第 10 节：同一条 keep-alive 连接上发两次同一个请求，
@@ -747,9 +747,9 @@ except (OSError, ssl.SSLError) as e:
     sys.exit(f"{type(e).__name__}: {e}")
 PY
 
-# 量一次、判一次。★ 先核打到的是不是那条路由：落到兜底 `handle` 的话正文只有几个字节，
-#   而小响应本来就是一个段 ⇒ 不核这一条，路由写错时这一节照样全绿。
-# ⚠ 量不出来（python3 非零退出）就算红，⛔ 不跳过。
+# 量一次、判一次。★ 先核打到的是不是那條路由：落到備援 `handle` 的話正文只有幾個位元組，
+#   而小回應本來就是一個段 ⇒ 不核這一條，路由寫錯時這一節照樣全綠。
+# ⚠ 量不出來（python3 非零退出）就算紅，⛔ 不跳過。
 expect_segs() {
   local what=$1 want_len=$2 min=$3 max=$4
   shift 4
@@ -776,12 +776,12 @@ expect_segs "明文 GET /wbuf/4k" 4096 1 1 "$HOST" "$PROXY_PORT" /wbuf/4k
 expect_segs "HTTPS GET /wbuf/4k（TLS 在写缓冲之上）" 4096 1 1 "$HOST" "$TLS_PORT" /wbuf/4k secure.example
 expect_segs "明文 GET /wbuf/32k（内置反证：正文比写缓冲大）" 32768 2 "" "$HOST" "$PROXY_PORT" /wbuf/32k
 
-# ── 11) ★ ★ 错误页里的 `{header.X}` 取的是**原始**请求头（HTTP 层诊断发现 2 · 请求头不整份克隆）──────
+# ── 11) ★ ★ 錯誤頁裡的 `{header.X}` 取的是**原始**請求頭（HTTP 層診斷髮現 2 · 請求頭不整份克隆）──────
 #
-# ★ 起因：错误页那一路的请求头改成「借 session 里那一份」之后（`NoRouteMatch` 直接借，
-#   `file_server` 出错后重新借一次），一个「错误页拿到空头 / 拿错了头」的回归在别的门里全绿 ——
-#   在它之前没有任何一道门在错误页里用 `{header.X}`。
-# ★ ① 先证明这个站点的 `/static/*` 真的落到 `file_server` —— ② 才能说是「file_server 出错之后」那一路。
+# ★ 起因：錯誤頁那一路的請求頭改成「借 session 裡那一份」之後（`NoRouteMatch` 直接借，
+#   `file_server` 出錯後重新借一次），一個「錯誤頁拿到空頭 / 拿錯了頭」的迴歸在別的門裡全綠 ——
+#   在它之前沒有任何一道門在錯誤頁裡用 `{header.X}`。
+# ★ ① 先證明這個站台的 `/static/*` 真的落到 `file_server` —— ② 才能說是「file_server 出錯之後」那一路。
 ERRS="http://$HOST:$NAMED_PORT"
 expect_status "errs.example GET /static/x（/static/* 落到 file_server）" 200 "$(probe "$ERRS/static/x" errs.example)"
 expect_body "errs.example GET /static/x" "self-built-file-server"
@@ -794,14 +794,14 @@ expect_body "errs.example GET /static/missing" "404 /static/missing probe=p1"
 expect_status "errs.example GET /nothing（NoRouteMatch → 错误页）" 418 "$(probe_errs /nothing)"
 expect_body "errs.example GET /nothing" "404 /nothing probe=p1"
 
-# ── 12) ★ ★ 续不续听 pingora 的判定，枢衡只管时长（G161）──────────────────────────
+# ── 12) ★ ★ 續不續聽 pingora 的判定，樞衡只管時長（G161）──────────────────────────
 #
-# ★ 起因：`process_new_http` 读完请求头后曾无条件设 60 s keep-alive，盖掉了 pingora 判出的「不续」：
-#   ① HTTP/1.0 没要求 keep-alive 也续（RFC 9112 §9.3：回完就关）；
-#   ② TE 与 CL 同在的请求在读完请求体的站点上也续（§6.1：回完必须关，防请求走私）。
-# ★ 走 `/api/*`（反代，把请求体读完才回）：`respond` 不读请求体，会被 pingora
-#   「请求体没读完就先回 ⇒ 关」那条另行关掉 ⇒ ② 在那里看不出来（2026-10-08 实测）。
-# ★ 两个方向都判：该关的关、该续的续 —— 一个「什么都关」的实现会让前一半全绿。
+# ★ 起因：`process_new_http` 讀完請求頭後曾無條件設 60 s keep-alive，蓋掉了 pingora 判出的「不續」：
+#   ① HTTP/1.0 沒要求 keep-alive 也續（RFC 9112 §9.3：回完就關）；
+#   ② TE 與 CL 同在的請求在讀完請求體的站台上也續（§6.1：回完必須關，防請求走私）。
+# ★ 走 `/api/*`（反代，把請求體讀完才回）：`respond` 不讀請求體，會被 pingora
+#   「請求體沒讀完就先回 ⇒ 關」那條另行關掉 ⇒ ② 在那裡看不出來（2026-10-08 實測）。
+# ★ 兩個方向都判：該關的關、該續的續 —— 一個「什麼都關」的實作會讓前一半全綠。
 cat > "$WORK/conn.py" <<'PY'
 #!/usr/bin/env python3
 """只服务于 tests/serve/run.sh 的第 12 节：发一条原始请求、读完它的响应，
@@ -854,7 +854,7 @@ except socket.timeout:
 print(conn.group(1).decode().strip().lower() if conn else "-", state)
 PY
 
-# ⚠ 量不出来（python3 非零退出）就算红，⛔ 不跳过。
+# ⚠ 量不出來（python3 非零退出）就算紅，⛔ 不跳過。
 expect_conn() {
   local what=$1 name=$2 want=$3 out
   if ! out=$(python3 "$WORK/conn.py" "$HOST" "$PROXY_PORT" "$name" 2>"$WORK/conn.err"); then
@@ -873,14 +873,14 @@ expect_conn "HTTP/1.1 不带 Connection ⇒ 照续" h11 "keep-alive open"
 expect_conn "HTTP/1.1 Connection: close ⇒ 关" h11-close "close closed"
 expect_conn "TE 与 CL 同在、反代读完请求体 ⇒ 关（RFC 9112 §6.1）" te-cl "close closed"
 
-# ── 13) ★ ★ 有反代站点的端口上，h1 客户端的头名原样到上游（G163）──────────────────────
+# ── 13) ★ ★ 有反代站台的連接埠上，h1 用戶端的頭名原樣到上游（G163）──────────────────────
 #
-# ★ 起因：读 h1 请求头时保留头名原样大小写的那张表，G163 起**按端口**建 —— 端口上没有反代站点就不建
-#   （每条请求省两次分配）。读请求头之前还不知道 Host，只能按端口定。
-#   ⇒ 本端口有反代（`/api/*` 等）⇒ 必须照旧建表 ⇒ 转发给上游的头名一个字都不变。
-#   判定坏成「一律不建」（或端口判反了）时红在这里：上游收到的会是 `x-mixed-case` 一类小写。
-# ⚠ 反方向（没有反代的端口不建表）在线上**看不出任何差别**，只少两次分配 ——
-#   那一半由 `fulcrum-runtime` 的 `proxy_ports` 单测、`keepalive` 的单测与开发机诊断台的计数判。
+# ★ 起因：讀 h1 請求頭時保留頭名原樣大小寫的那張表，G163 起**按連接埠**建 —— 連接埠上沒有反代站台就不建
+#   （每條請求省兩次分配）。讀請求頭之前還不知道 Host，只能按連接埠定。
+#   ⇒ 本連接埠有反代（`/api/*` 等）⇒ 必須照舊建表 ⇒ 轉發給上游的頭名一個字都不變。
+#   判定壞成「一律不建」（或連接埠判反了）時紅在這裡：上游收到的會是 `x-mixed-case` 一類小寫。
+# ⚠ 反方向（沒有反代的連接埠不建表）線上上**看不出任何差別**，只少兩次分配 ——
+#   那一半由 `fulcrum-runtime` 的 `proxy_ports` 單測、`keepalive` 的單測與開發機診斷臺的計數判。
 cat > "$WORK/echo_case.py" <<'PY'
 #!/usr/bin/env python3
 """只服务于 tests/serve/run.sh 的第 13 节：把收到的请求头名原样（逗号分隔）回成正文。"""
@@ -947,21 +947,21 @@ else
   fail "回头名的上游（$ECHO_PORT）没起来：$(cat "$WORK/echo_case.log")"
 fi
 
-# ── ★ ★ ★ 域名上游（批 10）──────────────────────────────────────────────────
+# ── ★ ★ ★ 網域上游（批 10）──────────────────────────────────────────────────
 #
-# ⚠ ⚠ **这两条补的是一个具体的夹具缺口**：在它们之前，本场景里**所有上游
-#   都写的是 `127.0.0.1:端口`** —— 而 IP 字面量**不走 DNS**。
-#   于是「域名上游」这条路从来没有被任何一道门喂过，而它上面躺着一个真缺陷：
-#   `HttpPeer::new` 在**每个请求**上做一次阻塞 `getaddrinfo`，失败还 panic
-#   （实测：每请求一次 panic，客户端只看到连接被丢弃，不是干净的 502）。
+# ⚠ ⚠ **這兩條補的是一個具體的夾具缺口**：在它們之前，本場景裡**所有上游
+#   都寫的是 `127.0.0.1:端口`** —— 而 IP 字面值**不走 DNS**。
+#   於是「網域上游」這條路從來沒有被任何一道門餵過，而它上面躺著一個真缺陷：
+#   `HttpPeer::new` 在**每個請求**上做一次阻塞 `getaddrinfo`，失敗還 panic
+#   （實測：每請求一次 panic，用戶端只看到連接被丟棄，不是乾淨的 502）。
 #
-# ★ 判据两个方向都要：**解析得出来的照常转发**，**解析不出来的回干净的 502**。
+# ★ 判據兩個方向都要：**解析得出來的照常轉發**，**解析不出來的回乾淨的 502**。
 expect_status "GET /byname/x（域名上游，能解析）" 200 "$(probe "$BASE/byname/x")"
 expect_body "GET /byname/x（域名上游，能解析）" "up path=/byname/x xup="
 
-# ★ ★ 解析不出来的那个：**502，而不是连接被丢弃**。
-#   ⚠ 判据必须同时看状态码与 curl 的退出码 —— 改之前这里拿到的是
-#   `000`（连接断了）而不是 502，而只断言「不是 200」两者都满足。
+# ★ ★ 解析不出來的那個：**502，而不是連接被丟棄**。
+#   ⚠ 判據必須同時看狀態碼與 curl 的結束代碼 —— 改之前這裡拿到的是
+#   `000`（連接斷了）而不是 502，而只斷言「不是 200」兩者都滿足。
 curl_capture -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE/deadname/x"
 DEAD_CODE=$(cat "$WORK/curlw")
 if [ "$CURL_RC" -eq 0 ] && [ "$DEAD_CODE" = "502" ]; then
@@ -970,8 +970,8 @@ else
   fail "解析不出来的域名上游期望 502 且 curl 成功，实际 curl 退出码 $CURL_RC、HTTP $DEAD_CODE"
 fi
 
-# ★ ★ ★ 而且**进程没有 panic**。这一条是本批的头条判据：
-#   改之前那里是每请求一次 `called Result::unwrap() on an Err value`。
+# ★ ★ ★ 而且**處理程序沒有 panic**。這一條是本批的頭條判據：
+#   改之前那裡是每請求一次 `called Result::unwrap() on an Err value`。
 if grep -qiE "panicked at|Result::unwrap" "$WORK/proxy.log"; then
   fail "日志里出现了 panic —— 请求路径上还在做 DNS"
   grep -iE "panicked at|Result::unwrap" "$WORK/proxy.log" | head -3 >&2
@@ -979,23 +979,23 @@ else
   ok "★ 请求路径上没有任何 panic（改之前这里是每请求一次）"
 fi
 
-# ★ 装载时那条 error 必须说出来「哪个上游解析不出来」——
-#   一个静静跳过的实现会让运维对着 502 查半天。
+# ★ 裝載時那條 error 必須說出來「哪個上游解析不出來」——
+#   一個靜靜跳過的實作會讓維運對著 502 查半天。
 if grep -q "no-such-host-zzz.invalid:80" "$WORK/proxy.log"; then
   ok "装载日志点名了解析不出来的那个上游"
 else
   fail "装载日志没说哪个上游解析不出来"
 fi
 
-# ── ★ ★ ★ 后台重解析：域名在进程活着的时候换了 IP（批 10）────────────────────
+# ── ★ ★ ★ 後台重解析：網域在處理程序活著的時候換了 IP（批 10）────────────────────
 #
-# ★ 三步，两个方向都要走：**跟得上变坏** → **也跟得上变好**。
-#   ⚠ 只验前者，一个「解析失败就把上游永久摘掉」的实现照样全绿；
-#     只验后者，一个「压根没重解析、一直连着启动那一份」的实现在
-#     127.0.0.1 → 127.0.0.1 上也照样全绿。
+# ★ 三步，兩個方向都要走：**跟得上變壞** → **也跟得上變好**。
+#   ⚠ 只驗前者，一個「解析失敗就把上游永久摘掉」的實作照樣全綠；
+#     只驗後者，一個「壓根沒重解析、一直連著啟動那一份」的實作在
+#     127.0.0.1 → 127.0.0.1 上也照樣全綠。
 
-# ★ 先验一件更基本的事：**那个后台任务真的起来了，而且用的是配置里那个间隔**。
-#   ⚠ 少了这条，下面两步一旦超时，分不出「没重解析」还是「间隔取错成 30s」。
+# ★ 先驗一件更基本的事：**那個後台任務真的起來了，而且用的是設定裡那個間隔**。
+#   ⚠ 少了這條，下面兩步一旦超時，分不出「沒重解析」還是「間隔取錯成 30s」。
 if grep -qF "上游 DNS 定期重解析已启动，每 5s 一次" "$WORK/proxy.log"; then
   ok "后台重解析任务起来了，间隔取自配置里的 dns_refresh 5s"
 else
@@ -1003,7 +1003,7 @@ else
   grep -i '重解析' "$WORK/proxy.log" >&2 || true
 fi
 
-# 轮询直到状态码等于期望值，或超时。回显最后一次拿到的码。
+# 輪詢直到狀態碼等於期望值，或超時。回顯最後一次拿到的碼。
 POLL_TIMEOUT=30
 poll_status() {
   local url=$1 want=$2 tries=0 got=
@@ -1016,11 +1016,11 @@ poll_status() {
   echo "$got"
 }
 
-# 1) 启动时它指向真上游 —— 照常转发。
+# 1) 啟動時它指向真上游 —— 照常轉發。
 expect_status "GET /rotate/x（会变的域名，起初指向真上游）" 200 "$(probe "$BASE/rotate/x")"
 
-# 2) 把它指到一个没人在听的地址，等后台那一轮把新答案取回来。
-#    ⚠ 127.0.0.9 在 Linux 上属于本机的 lo，连它会**立刻**被拒 —— 干净、快、可判。
+# 2) 把它指到一個沒人在聽的位址，等後台那一輪把新答案取回來。
+#    ⚠ 127.0.0.9 在 Linux 上屬於本機的 lo，連它會**立刻**被拒 —— 乾淨、快、可判。
 set_rotate_ip 127.0.0.9 || fail "改不了 /etc/hosts"
 GOT=$(poll_status "$BASE/rotate/x" 502)
 if [ "$GOT" = "502" ]; then
@@ -1029,9 +1029,9 @@ else
   fail "域名换 IP 之后期望 502，$POLL_TIMEOUT 秒内一直是 $GOT —— 后台重解析没跑？"
 fi
 
-# ★ 而且要说出来「它变了、变成了什么」。
-#   ⚠ 只看状态码分不出「重解析了」与「上游恰好挂了」——
-#     日志里那一行是**谁做的决定**的唯一凭据。
+# ★ 而且要說出來「它變了、變成了什麼」。
+#   ⚠ 只看狀態碼分不出「重解析了」與「上游恰好掛了」——
+#     紀錄裡那一行是**誰做的決定**的唯一憑證。
 if grep -F '的地址变了' "$WORK/proxy.log" | grep -qF '127.0.0.9'; then
   ok "★ 日志记下了新解析出来的地址（谁做的决定看得见）"
 else
@@ -1039,9 +1039,9 @@ else
   grep -i '重解析\|地址变了' "$WORK/proxy.log" >&2 || true
 fi
 
-# 3) 再指回来 —— **它得自己恢复**。
-#    ★ ★ 这一步才是 `dns_refresh` 存在的全部理由：nginx OSS 那个事故就是
-#      「域名换了 IP，而进程一直连着启动时解析到的那一份」。
+# 3) 再指回來 —— **它得自己恢復**。
+#    ★ ★ 這一步才是 `dns_refresh` 存在的全部理由：nginx OSS 那個事故就是
+#      「網域換了 IP，而處理程序一直連著啟動時解析到的那一份」。
 set_rotate_ip 127.0.0.1 || fail "改不了 /etc/hosts"
 GOT=$(poll_status "$BASE/rotate/x" 200)
 if [ "$GOT" = "200" ]; then
@@ -1050,11 +1050,11 @@ else
   fail "域名指回真上游之后期望 200，$POLL_TIMEOUT 秒内一直是 $GOT"
 fi
 
-# ★ ★ 失败日志**不许每轮刷一行**。
-#   `no-such-host-zzz.invalid` 从头到尾都解析不出来，而上面这几步跑了十几秒
-#   ＝ 后台任务转了好几轮。一个「每轮都 warn」的实现在这里会留下好几行。
-#   ⚠ 判据用 `-le 1` 不用 `-eq 1`：本节耗时短时可能一轮都还没转到，
-#     那时 0 行是对的；而**刷屏的实现给不出 ≤1**。
+# ★ ★ 失敗紀錄**不許每輪刷一行**。
+#   `no-such-host-zzz.invalid` 從頭到尾都解析不出來，而上面這幾步跑了十幾秒
+#   ＝ 後台任務轉了好幾輪。一個「每輪都 warn」的實作在這裡會留下好幾行。
+#   ⚠ 判據用 `-le 1` 不用 `-eq 1`：本節耗時短時可能一輪都還沒轉到，
+#     那時 0 行是對的；而**刷屏的實作給不出 ≤1**。
 SPAM=$(grep -cF '开始解析不出来' "$WORK/proxy.log" || true)
 if [ "$SPAM" -le 1 ]; then
   ok "★ 一个永久坏掉的上游只报一次，不是每轮刷一行（实际 $SPAM 行）"
@@ -1063,11 +1063,11 @@ else
 fi
 
 
-# ── ★ ★ ★ 主动健康检查（批 11）──────────────────────────────────────────────
+# ── ★ ★ ★ 主動健康檢查（批 11）──────────────────────────────────────────────
 echo "=== [2c/4] 主动健康检查（health_uri）==="
 
-# ★ 先钉住「后台任务真的起来了」。少了它，下面每一条超时都分不出
-#   「判定没生效」还是「任务压根没起」。
+# ★ 先釘住「後台任務真的起來了」。少了它，下面每一條超時都分不出
+#   「判定沒生效」還是「任務壓根沒起」。
 if grep -qF "主动健康检查已启动" "$WORK/proxy.log"; then
   ok "主动健康检查任务起来了"
 else
@@ -1075,7 +1075,7 @@ else
   grep -i '健康' "$WORK/proxy.log" >&2 || true
 fi
 
-# 连打 n 次，回显命中 want 的次数。
+# 連打 n 次，回顯命中 want 的次數。
 burst_status() {
   local url=$1 want=$2 n=$3 hit=0 i=0 got=
   while [ "$i" -lt "$n" ]; do
@@ -1086,7 +1086,7 @@ burst_status() {
   echo "$hit"
 }
 
-# 轮询直到「连打 n 次全中」，或超时。回显最后一轮的命中数。
+# 輪詢直到「連打 n 次全中」，或超時。回顯最後一輪的命中數。
 poll_burst() {
   local url=$1 want=$2 n=$3 tries=0 hit=0
   while [ "$tries" -lt "$POLL_TIMEOUT" ]; do
@@ -1098,15 +1098,15 @@ poll_burst() {
   echo "$hit"
 }
 
-# ── ★ ★ ★ 本节的锚：那台「病号」的服务能力**完全正常** ─────────────────────
+# ── ★ ★ ★ 本節的錨：那臺「病號」的服務能力**完全正常** ─────────────────────
 #
-# ⚠ 少了这一条，下面那个 502 说明不了任何事情 —— 它可能只是「连不上」。
-#   有了它，502 唯一可能的来源就是**探测路径的判定**。
+# ⚠ 少了這一條，下面那個 502 說明不了任何事情 —— 它可能只是「連不上」。
+#   有了它，502 唯一可能的來源就是**探測路徑的判定**。
 expect_status "直连病号上游（业务路径）" 200 "$(probe "http://$HOST:$SICK_PORT/whatever")"
 expect_body "直连病号上游（业务路径）" "sick but serving path=/whatever"
 expect_status "直连病号上游的探测路径" 500 "$(probe "http://$HOST:$SICK_PORT/health")"
 
-# 1) 探测路径回 500 ⇒ 它被摘掉，那条路由只剩 502。
+# 1) 探測路徑回 500 ⇒ 它被摘掉，那條路由只剩 502。
 HIT=$(poll_burst "$BASE/sick/x" 502 5)
 if [ "$HIT" = "5" ]; then
   ok "★ ★ 探测路径回 500 的上游被摘掉了（而它的业务路径明明是 200）"
@@ -1114,9 +1114,9 @@ else
   fail "病号上游期望被摘掉（连 5 次 502），$POLL_TIMEOUT 秒内最好的一轮只中了 $HIT/5"
 fi
 
-# 2) ★ ★ ★ 同一个进程、同一条 health_uri，只把 `health_status` 写成 5xx
-#    ⇒ 判定**相反**。这一条证明的是「状态码模式真的被读了」，
-#    而不是「凡是 500 就摘」这种写死的实现。
+# 2) ★ ★ ★ 同一個處理程序、同一條 health_uri，只把 `health_status` 寫成 5xx
+#    ⇒ 判定**相反**。這一條證明的是「狀態碼模式真的被讀了」，
+#    而不是「凡是 500 就摘」這種寫死的實作。
 HIT=$(poll_burst "$BASE/sickok/x" 200 5)
 if [ "$HIT" = "5" ]; then
   ok "★ ★ ★ 同一个上游、health_status 写 5xx ⇒ 判它健康（状态码模式真的被读了）"
@@ -1124,9 +1124,9 @@ else
   fail "health_status 5xx 那条期望一直 200，$POLL_TIMEOUT 秒内最好的一轮只中了 $HIT/5"
 fi
 
-# 3) 日志要说清楚**谁**被摘了、**为什么**。
-#    ⚠ 只看状态码的话，运维面对 502 分不出「上游挂了」「被健康检查摘了」
-#      「DNS 没解析出来」——这三种的处置完全不同。
+# 3) 紀錄要說清楚**誰**被摘了、**為什麼**。
+#    ⚠ 只看狀態碼的話，維運面對 502 分不出「上游掛了」「被健康檢查摘了」
+#      「DNS 沒解析出來」——這三種的處置完全不同。
 if grep -F '被健康检查摘掉' "$WORK/proxy.log" | grep -qF "$SICK_PORT"; then
   ok "日志点名了被摘掉的那个上游与原因"
 else
@@ -1134,9 +1134,9 @@ else
   grep -i '健康检查' "$WORK/proxy.log" | head -5 >&2 || true
 fi
 
-# 4) 两个上游、其中一个**根本没人在听** ⇒ 探测把它摘掉之后，轮询必须一直落在活的那个上。
-#    ⚠ 没有健康检查时这里是「每两个请求坏一个」——而那正是 round_robin 的固有行为，
-#      不是缺陷；本批要的就是让它不再发生。
+# 4) 兩個上游、其中一個**根本沒人在聽** ⇒ 探測把它摘掉之後，輪詢必須一直落在活的那個上。
+#    ⚠ 沒有健康檢查時這裡是「每兩個請求壞一個」——而那正是 round_robin 的固有行為，
+#      不是缺陷；本批要的就是讓它不再發生。
 HIT=$(poll_burst "$BASE/hc/x" 200 10)
 if [ "$HIT" = "10" ]; then
   ok "★ 挂掉的那个上游被摘掉之后，连打 10 次全是 200"
@@ -1144,9 +1144,9 @@ else
   fail "期望连打 10 次全 200，$POLL_TIMEOUT 秒内最好的一轮只中了 $HIT/10"
 fi
 
-# 5) ★ ★ 恢复那一半：把迟到的上游起起来，它必须**自己回到轮询里**。
-#    ⚠ 只验「摘得掉」的话，一个单向的实现照样全绿 —— 而那意味着
-#      上游修好之后**永远回不来**，运维只能重启枢衡。
+# 5) ★ ★ 恢復那一半：把遲到的上游起起來，它必須**自己回到輪詢裡**。
+#    ⚠ 只驗「摘得掉」的話，一個單向的實作照樣全綠 —— 而那意味著
+#      上游修好之後**永遠回不來**，維運只能重新啟動樞衡。
 echo "  · 现在把迟到的那个上游起起来"
 start late "$WORK/late.Fulcrumfile"
 wait_port "$LATE_PORT" || fail "迟到的上游起不来"
@@ -1176,34 +1176,34 @@ if [ "$(seen_late)" = "yes" ]; then
 else
   fail "迟到的上游起来了 $POLL_TIMEOUT 秒，仍然没有一个请求落到它身上"
 fi
-# ★ 而且恢复也要留痕。
+# ★ 而且恢復也要留痕。
 if grep -qF '健康检查恢复了' "$WORK/proxy.log"; then
   ok "日志记下了恢复"
 else
   fail "日志里没有「健康检查恢复了」"
 fi
 
-# 6) ★ 没配 `health_uri` 的路由**完全不受影响**（`/api/` 上有 health_uri，
-#    但 `/rw/` 那条没有）—— 一个「对所有上游都探一遍」的实现会去打
-#    一个用户从没说过的路径，而那在很多后端上是 404 ⇒ 全部被判死。
+# 6) ★ 沒配 `health_uri` 的路由**完全不受影響**（`/api/` 上有 health_uri，
+#    但 `/rw/` 那條沒有）—— 一個「對所有上游都探一遍」的實作會去打
+#    一個使用者從沒說過的路徑，而那在很多後端上是 404 ⇒ 全部被判死。
 expect_status "没配 health_uri 的路由照常转发" 200 "$(probe "$BASE/rw/anything")"
 
-# ── [2d/4] ★ ★ ★ 被动熔断（passive_fail，G136）────────────────────────────
+# ── [2d/4] ★ ★ ★ 被動熔斷（passive_fail，G136）────────────────────────────
 #
-# ⚠ ⚠ **这一节是 `passive_fail` 在真实请求路径上唯一的判据。**
-#   单测只证明了状态机与筛子对，⛔ 证明不了「服务层真的会去落账」——
-#   而落账那三处全在 `proxy_with` 里，是一条**只有真流量才走得到**的路。
-#   ★ 那正是本仓反复抓到的形状：一条从没被执行过的路径不会自己报错。
+# ⚠ ⚠ **這一節是 `passive_fail` 在真實請求路徑上唯一的判據。**
+#   單測只證明了狀態機與篩子對，⛔ 證明不了「服務層真的會去落賬」——
+#   而落賬那三處全在 `proxy_with` 裡，是一條**只有真流量才走得到**的路。
+#   ★ 那正是本儲存庫反覆抓到的形狀：一條從沒被執行過的路徑不會自己回報錯誤。
 #
-# ★ ★ 判据是**两条路的差值**，⛔ 不是任何一条的绝对值：
-#   `/pf` 与 `/nopf` 指着**同一对上游**（坏的在前、好的在后），只差一行 `passive_fail`。
-#   两条各有自己的 `ProxyTarget` ⇒ 各有自己的熔断状态，于是同一个读数
-#   （「10 个请求里几个 500」）在两条路上必须给出不同的答案。
+# ★ ★ 判據是**兩條路的差值**，⛔ 不是任何一條的絕對值：
+#   `/pf` 與 `/nopf` 指著**同一對上游**（壞的在前、好的在後），只差一行 `passive_fail`。
+#   兩條各有自己的 `ProxyTarget` ⇒ 各有自己的熔斷狀態，於是同一個讀數
+#   （「10 個請求裡幾個 500」）在兩條路上必須給出不同的答案。
 echo "=== [2d/4] 被动熔断（passive_fail）==="
 
-# 1) 对照组：没配 `passive_fail` ⇒ 轮询照常把一半请求送给坏上游。
-#    ⚠ 这一条是**反证**：它要是也只中 2 个，说明「差值」根本不来自被动熔断，
-#      而来自别的什么（比如坏上游其实没在回 500）。
+# 1) 對照組：沒配 `passive_fail` ⇒ 輪詢照常把一半請求送給壞上游。
+#    ⚠ 這一條是**反證**：它要是也只中 2 個，說明「差值」根本不來自被動熔斷，
+#      而來自別的什麼（比如壞上游其實沒在回 500）。
 NOPF_500=$(burst_status "$BASE/nopf/x" 500 10)
 if [ "$NOPF_500" = "5" ]; then
   ok "没配 passive_fail ⇒ 10 个请求里 5 个落到坏上游（轮询原样）"
@@ -1211,10 +1211,10 @@ else
   fail "对照组期望 5 个 500，实得 $NOPF_500 —— 坏上游没在回 500？还是轮询不是交替？"
 fi
 
-# 2) ★ ★ ★ 承重：配了 `passive_fail 2` ⇒ **只赔掉阈值那么多个请求**，之后全绿。
-#    ★ 这个数字本身就是这个特性的全部价值：枢衡**不换上游重试**，
-#      所以每一个打到坏上游的请求都是用户可见的错。
-#      「2」说明熔断在第 2 次失败之后真的把它摘出了调度。
+# 2) ★ ★ ★ 承重：配了 `passive_fail 2` ⇒ **只賠掉閾值那麼多個請求**，之後全綠。
+#    ★ 這個數字本身就是這個特性的全部價值：樞衡**不換上游重試**，
+#      所以每一個打到壞上游的請求都是使用者可見的錯。
+#      「2」說明熔斷在第 2 次失敗之後真的把它摘出了排程。
 PF_500=$(burst_status "$BASE/pf/x" 500 10)
 if [ "$PF_500" = "2" ]; then
   ok "★ ★ ★ 配了 passive_fail 2 ⇒ 10 个请求只赔掉 2 个，坏上游被摘出调度"
@@ -1223,18 +1223,18 @@ else
   grep -iF 'passive_fail' "$WORK/proxy.log" | tail -5 >&2 || true
 fi
 
-# 3) ★ 两条路必须**真的不同** —— 把差值本身写成一条断言。
-#    ⚠ 少了它，一个「两边都只中 2 个」的巧合（比如坏上游中途死了）会让上面两条
-#      各自看起来都对，而它们其实在描述同一件与熔断无关的事。
+# 3) ★ 兩條路必須**真的不同** —— 把差值本身寫成一條斷言。
+#    ⚠ 少了它，一個「兩邊都只中 2 個」的巧合（比如壞上游中途死了）會讓上面兩條
+#      各自看起來都對，而它們其實在描述同一件與熔斷無關的事。
 if [ "$NOPF_500" != "$PF_500" ]; then
   ok "★ 同一对上游，只差一行 passive_fail ⇒ 读数不同（$NOPF_500 vs $PF_500）"
 else
   fail "两条路读数相同（都是 $NOPF_500）—— 那一行 passive_fail 没起任何作用"
 fi
 
-# 4) 日志要说清楚**谁**被熔断了。
-#    ⚠ 与健康检查那条同一理由：只看状态码的话，运维分不出「上游挂了」
-#      「被健康检查摘了」「被被动熔断摘了」——三种的处置完全不同。
+# 4) 紀錄要說清楚**誰**被熔斷了。
+#    ⚠ 與健康檢查那條同一理由：只看狀態碼的話，維運分不出「上游掛了」
+#      「被健康檢查摘了」「被被動熔斷摘了」——三種的處置完全不同。
 if grep -F '被动熔断' "$WORK/proxy.log" | grep -qF "$BAD_PORT"; then
   ok "日志点名了被熔断的那个上游"
 else
@@ -1242,10 +1242,10 @@ else
   grep -iF 'passive' "$WORK/proxy.log" | head -5 >&2 || true
 fi
 
-# 5) ⚠ 反方向：**没配 passive_fail 的那条路一个字都不许变**。
-#    ★ 它守的是 G136 那条「不写就是完全关闭」——一个「顺手对所有 reverse_proxy
-#      都开一遍」的实现会让这条也只中 2 个，而上面第 1 条已经会红；
-#      这里再单独确认它此刻**仍然**把请求送给坏上游（熔断没有外溢到别的目标）。
+# 5) ⚠ 反方向：**沒配 passive_fail 的那條路一個字都不許變**。
+#    ★ 它守的是 G136 那條「不寫就是完全關閉」——一個「順手對所有 reverse_proxy
+#      都開一遍」的實作會讓這條也只中 2 個，而上面第 1 條已經會紅；
+#      這裡再單獨確認它此刻**仍然**把請求送給壞上游（熔斷沒有外溢到別的目標）。
 NOPF_AGAIN=$(burst_status "$BASE/nopf/x" 500 4)
 if [ "$NOPF_AGAIN" = "2" ]; then
   ok "★ 熔断不外溢：没配的那条路仍然照常轮询（4 个里 2 个 500）"
@@ -1253,13 +1253,13 @@ else
   fail "没配 passive_fail 的那条路读数变了（4 个里 $NOPF_AGAIN 个 500）—— 熔断外溢到别的 ProxyTarget 了？"
 fi
 
-# ── [3/4] 管理面：全量原子 load（G8）与访问控制（G14）──────────────────────
+# ── [3/4] 管理面：全量原子 load（G8）與訪問控制（G14）──────────────────────
 #
-# ⚠ ⚠ **本节必须排在上面所有数据面断言之后**：它会真的把配置换掉。
+# ⚠ ⚠ **本節必須排在上面所有資料面斷言之後**：它會真的把設定換掉。
 echo "=== [3/4] 管理面（Unix socket，G14）==="
 
-# ★ ★ 权限就是这个管理面的**全部**访问控制（G14：交给文件系统 ACL）。
-#   一个 0666 的 socket 等于「同机任意进程可改配置」—— 正是 G14 要堵的那个短处。
+# ★ ★ 權限就是這個管理面的**全部**訪問控制（G14：交給檔案系統 ACL）。
+#   一個 0666 的 socket 等於「同機任意處理程序可改設定」—— 正是 G14 要堵的那個短處。
 if [ -S "$ADMIN_SOCK" ]; then
   ok "管理 socket 建起来了：$ADMIN_SOCK"
   SOCK_MODE=$(stat -c '%a' "$ADMIN_SOCK")
@@ -1272,9 +1272,9 @@ else
   fail "管理 socket 没建起来：$ADMIN_SOCK"
 fi
 
-# ★ 反向那一半：**没配 `admin` 的那个实例不该有任何 socket**。
-#   ⚠ 少了这一条，一个「不管配没配都开一个」的实现照样全绿 ——
-#   而 G14 的第一句话是「管理面默认不出机器」。
+# ★ 反向那一半：**沒配 `admin` 的那個執行個體不該有任何 socket**。
+#   ⚠ 少了這一條，一個「不管配沒配都開一個」的實作照樣全綠 ——
+#   而 G14 的第一句話是「管理面預設不出機器」。
 if [ -e "$WORK/upstream.sock" ] && [ -S "$WORK/upstream.sock" ]; then
   fail "上游实例没配 admin，却出现了一个 socket"
 else
@@ -1282,62 +1282,62 @@ else
 fi
 
 admin_post() {
-  # $1 = 路径，$2 = body。回 "状态码<TAB>正文"
+  # $1 = 路徑，$2 = body。回 "狀態碼<TAB>正文"
   curl -s -o "$WORK/admin.out" -w '%{http_code}' \
     --unix-socket "$ADMIN_SOCK" -X POST --data-binary "$2" \
     "http://localhost$1" 2>/dev/null || echo "000"
 }
 
-# 不认识的路径 → 404。⚠ 一个「什么都收下」的管理面会让打错的命令看起来成功了。
+# 不認識的路徑 → 404。⚠ 一個「什麼都收下」的管理面會讓打錯的命令看起來成功了。
 CODE=$(admin_post /nope '{}')
 expect_status "管理面：不认识的路径" 404 "$CODE"
 
-# 坏 JSON → 400，**且旧配置一个字节都没动**。
+# 壞 JSON → 400，**且舊設定一個位元組都沒動**。
 CODE=$(admin_post "/load?overrides=clear" '{ not json')
 expect_status "管理面：坏载荷" 400 "$CODE"
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$HOST:$PROXY_PORT/")
 expect_status "坏载荷之后旧配置还在服务" 200 "$CODE"
 
-# ── ★ ★ ★ 增量通道：POST /runtime（M2 批 N 任务 4，裁决 R10；修复轮 1，评审 I1）──
+# ── ★ ★ ★ 增量通道：POST /runtime（M2 批 N 任務 4，裁決 R10；修復輪 1，評審 I1）──
 #
-# ⚠ ⚠ ⚠ 少了这一段，`/runtime` 这条路由**在生产上可以整个不存在**而没有任何
-#   门会红：全部 21 条 admin.rs 判据都是直接调 `self.runtime(&body)`，一条都没有
-#   经过 `process_new_http` 里的路由分发（那个 `match (method, path)`）。
-#   把路由表里 `("POST","/runtime") => self.runtime(&body)` 那一行删掉，
-#   21 条判据照样全绿，而这里回 404——`admin.rs` 自己的注释写着「一个判据漏掉
-#   一个入口，等于在那个入口上没有判据」。
-#   ★ ★ 判据挂在**数据面**上，不是挂在「`/runtime` 回了 200」上：
-#   `disable` 之后要走真流量确认那台上游**真的不再收流量**，`enable` 之后
-#   要走真流量确认它**真的收回来了**。
+# ⚠ ⚠ ⚠ 少了這一段，`/runtime` 這條路由**在生產上可以整個不存在**而沒有任何
+#   門會紅：全部 21 條 admin.rs 判據都是直接調 `self.runtime(&body)`，一條都沒有
+#   經過 `process_new_http` 裡的路由散布（那個 `match (method, path)`）。
+#   把路由表裡 `("POST","/runtime") => self.runtime(&body)` 那一行刪掉，
+#   21 條判據照樣全綠，而這裡回 404——`admin.rs` 自己的註解寫著「一個判據漏掉
+#   一個入口，等於在那個入口上沒有判據」。
+#   ★ ★ 判據掛在**資料面**上，不是掛在「`/runtime` 回了 200」上：
+#   `disable` 之後要走真流量確認那臺上游**真的不再收流量**，`enable` 之後
+#   要走真流量確認它**真的收回來了**。
 echo "  · 增量通道：POST /runtime（disable 一个上游 ⇒ 数据面真的不再收流量）"
 
-# 基线：/api 现在应该是健康的（它指着 UP_PORT，没配 health_uri，没被摘过）。
+# 基線：/api 現在應該是健康的（它指著 UP_PORT，沒配 health_uri，沒被摘過）。
 expect_status "/runtime 基线：/api 现在是健康的" 200 "$(probe "$BASE/api/x")"
 
-# ⚠ `site` 取的是这个站点块在 DSL 里的**原文**（`SiteRt::name`），不是拼出来的——
-#   本场景的主站点块头就是裸端口 `:PROXY_PORT`（没有 host、没有 scheme），
-#   替换之后就是 `:$PROXY_PORT`。上游地址是 IP 字面量，不需要归一化，
-#   与 `reverse_proxy` 那一行逐字相同。
+# ⚠ `site` 取的是這個站台塊在 DSL 裡的**原文**（`SiteRt::name`），不是拼出來的——
+#   本場景的主站台塊頭就是裸連接埠 `:PROXY_PORT`（沒有 host、沒有 scheme），
+#   替換之後就是 `:$PROXY_PORT`。上游位址是 IP 字面值，不需要歸一化，
+#   與 `reverse_proxy` 那一行逐字相同。
 RUNTIME_SITE=":$PROXY_PORT"
 RUNTIME_UP="127.0.0.1:$UP_PORT"
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
 expect_status "POST /runtime disable" 200 "$CODE"
 
-# ★ ★ ★ 真正的判据：数据面上它必须真的不再收流量（不是「回了 200」）。
-#   `/rw`、`/cached` 与 `/api` 共享同一个覆盖格子（三条都没写 `id`，键相同）——
-#   这里只验 `/api`，上面那条 200 断言已经确认过它原本是健康的。
+# ★ ★ ★ 真正的判據：資料面上它必須真的不再收流量（不是「回了 200」）。
+#   `/rw`、`/cached` 與 `/api` 共享同一個覆蓋格子（三條都沒寫 `id`，鍵相同）——
+#   這裡只驗 `/api`，上面那條 200 斷言已經確認過它原本是健康的。
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/api/x")
 expect_status "★ ★ disable 之后 /api 在数据面上真的不再收流量" 502 "$CODE"
 
-# ★ 反向那一半：`enable` 把它撤回来，数据面也要真的恢复——只验「摘得掉」
-#   而不验「回得来」，一个单向的实现会让运维在真正需要撤销的时候束手无策。
+# ★ 反向那一半：`enable` 把它撤回來，資料面也要真的恢復——只驗「摘得掉」
+#   而不驗「回得來」，一個單向的實作會讓維運在真正需要撤銷的時候束手無策。
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"enable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
 expect_status "POST /runtime enable" 200 "$CODE"
 expect_status "★ enable 之后 /api 在数据面上恢复了" 200 "$(probe "$BASE/api/x")"
 expect_body "enable 之后 /api" "up path=/api/x xup=1"
 
-# ★ ★ 端口集变了 → 409，**且旧配置还在服务**。
-#   这一条是「原子」的判据：一个「先换后校验」的实现在「换得动」那条上表现完全相同。
+# ★ ★ 連接埠集變了 → 409，**且舊設定還在服務**。
+#   這一條是「原子」的判據：一個「先換後檢核」的實作在「換得動」那條上表現完全相同。
 printf '%s\n' ":$((PROXY_PORT + 40)) {" "    respond 200 \"moved-port\"" "}" \
   > "$WORK/otherport.Fulcrumfile"
 "$BIN" compile "$WORK/otherport.Fulcrumfile" > "$WORK/otherport.json" 2>/dev/null || {
@@ -1354,8 +1354,8 @@ fi
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$HOST:$PROXY_PORT/")
 expect_status "被拒之后旧配置还在服务（原子）" 200 "$CODE"
 
-# ★ ★ ★ 真的换一份：**判据挂在数据面上，不是挂在「返回了 200」上**。
-#   ⚠ 只断言 200 的话，一个「收下但什么都不做」的实现照样全绿。
+# ★ ★ ★ 真的換一份：**判據掛在資料面上，不是掛在「回傳了 200」上**。
+#   ⚠ 只斷言 200 的話，一個「收下但什麼都不做」的實作照樣全綠。
 printf '%s\n' "{" "    admin unix/$ADMIN_SOCK" "}" "" ":$PROXY_PORT {" \
   "    respond 200 \"after-load\"" "}" "" "http://only.example:$NAMED_PORT {" \
   "    respond 200 named-only" "}" "" "secure.example:$TLS_PORT {" \
@@ -1374,22 +1374,22 @@ if [ "$BODY" = "after-load" ]; then
 else
   fail "load 返回 200，但数据面还是老的：拿到「$BODY」"
 fi
-# ★ 同一次 load 里没动的那个站点必须**照旧能用** —— 换的是整份，不是只换命中的那个。
+# ★ 同一次 load 裡沒動的那個站台必須**照舊能用** —— 換的是整份，不是隻換命中的那個。
 CODE=$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   --resolve "only.example:$NAMED_PORT:$HOST" "http://only.example:$NAMED_PORT/")
 expect_status "同一份里没改动的站点照旧" 200 "$CODE"
 
-# ── [3.5/4] `overrides` 必填 + R11 覆盖计数（M2 批 N 任务 5，G120 / R9 / R11）──
+# ── [3.5/4] `overrides` 必填 + R11 覆蓋計數（M2 批 N 任務 5，G120 / R9 / R11）──
 echo "=== [3.5/4] POST /load?overrides= 与每次响应的覆盖计数 ==="
 
-# 上一节末尾把 :$PROXY_PORT 换成了裸 respond（after-load）——这里重新换出一份
-# 带 reverse_proxy 的，好让 overrides 的 keep/clear 有个真上游可以 disable。
-# ⚠ 监听端口集必须与当前完全相同（:$PROXY_PORT 裸 HTTP、only.example:$NAMED_PORT、
-#   secure.example:$TLS_PORT 走 tls），否则会撞 409，而那不是本节要测的东西。
-#   ★ ★ ★ 修复轮 1，评审 F1：`:$PROXY_PORT` 下面挂**两个**互不相同的覆盖键
-#   （没写 `id` 的兜底 handle + 写了 `id up2` 的 `/second/*`，两者共享同一台
-#   真机 `$UP_PORT`，只是 `id` 不同）——R11 那一节要摆「两项生效中、其中一项
-#   悬空」（N≠M），否则 N 与 M 永远是同一个数，`{n}`/`{m}` 写反也测不出来。
+# 上一節末尾把 :$PROXY_PORT 換成了裸 respond（after-load）——這裡重新換出一份
+# 帶 reverse_proxy 的，好讓 overrides 的 keep/clear 有個真上游可以 disable。
+# ⚠ 監聽連接埠集必須與當前完全相同（:$PROXY_PORT 裸 HTTP、only.example:$NAMED_PORT、
+#   secure.example:$TLS_PORT 走 tls），否則會撞 409，而那不是本節要測的東西。
+#   ★ ★ ★ 修復輪 1，評審 F1：`:$PROXY_PORT` 下面掛**兩個**互不相同的覆蓋鍵
+#   （沒寫 `id` 的備援 handle + 寫了 `id up2` 的 `/second/*`，兩者共享同一臺
+#   真機 `$UP_PORT`，只是 `id` 不同）——R11 那一節要擺「兩項生效中、其中一項
+#   懸空」（N≠M），否則 N 與 M 永遠是同一個數，`{n}`/`{m}` 寫反也測不出來。
 cat > "$WORK/ov.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1416,9 +1416,9 @@ CONF
   echo "SERVE TESTS FAILED: compile ov.Fulcrumfile 失败" >&2
   exit 1
 }
-# 同样的骨架，但兜底 handle 换成裸 respond——没写 id 的那把键没了上游，拿来验
-# 悬空（判据 5）；`/second/*`（id up2）原样留着，R11 那一节要靠它撑住「另一项
-# 仍然生效中、但不悬空」。
+# 同樣的骨架，但備援 handle 換成裸 respond——沒寫 id 的那把鍵沒了上游，拿來驗
+# 懸空（判據 5）；`/second/*`（id up2）原樣留著，R11 那一節要靠它撐住「另一項
+# 仍然生效中、但不懸空」。
 cat > "$WORK/ov-dangling.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1446,16 +1446,16 @@ CONF
   exit 1
 }
 
-# 重新建立带上游的那份基线——`overrides` 必填，即使这次只是「重建夹具」也不例外。
-# ⚠ `RUNTIME_SITE` / `RUNTIME_UP` 是上面 [3/4] 那一节留下的（`:$PROXY_PORT` /
-#   `127.0.0.1:$UP_PORT`），这份 ov.Fulcrumfile 用的是同一个站点、同一个上游。
+# 重新建立帶上游的那份基線——`overrides` 必填，即使這次只是「重建夾具」也不例外。
+# ⚠ `RUNTIME_SITE` / `RUNTIME_UP` 是上面 [3/4] 那一節留下的（`:$PROXY_PORT` /
+#   `127.0.0.1:$UP_PORT`），這份 ov.Fulcrumfile 用的是同一個站台、同一個上游。
 CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
 expect_status "重建 overrides 夹具（首次也要带 overrides）" 200 "$CODE"
 expect_status "重建之后 / 走真上游" 200 "$(probe "$BASE/")"
 
-# ── 判据 1：缺 overrides ⇒ 400，且旧配置一个字节没动 ─────────────────────
-#   ⚠ ⚠ 判据写法纪律：body 是完全合法、会真的生效的 ov.json——唯一的毛病
-#   是没带 `?overrides=`，否则 400 可能来自别的原因，判据就 confound 了。
+# ── 判據 1：缺 overrides ⇒ 400，且舊設定一個位元組沒動 ─────────────────────
+#   ⚠ ⚠ 判據寫法紀律：body 是完全合法、會真的生效的 ov.json——唯一的毛病
+#   是沒帶 `?overrides=`，否則 400 可能來自別的原因，判據就 confound 了。
 CODE=$(admin_post /load "$(cat "$WORK/ov.json")")
 expect_status "缺 overrides ⇒ 400" 400 "$CODE"
 if grep -q 'overrides' "$WORK/admin.out"; then
@@ -1465,16 +1465,16 @@ else
 fi
 expect_status "缺 overrides 被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
 
-# ── 判据 2：overrides 写了别的值 ⇒ 400，同上；夹具「除了这一处，其余完全合法」──
+# ── 判據 2：overrides 寫了別的值 ⇒ 400，同上；夾具「除了這一處，其餘完全合法」──
 CODE=$(admin_post "/load?overrides=bogus" "$(cat "$WORK/ov.json")")
 expect_status "overrides 写了不认识的值 ⇒ 400" 400 "$CODE"
 expect_status "写错值被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
 
-# ── 修复轮 1，评审 F3（提级 Minor）：overrides= 重复且冲突 ⇒ 400，不是静默取
-#   第一个 ────────────────────────────────────────────────────────────────
-#   G120 的立身之本是「两种现实互相冲突 ⇒ 不猜」，同一个请求里写了两个 overrides=
-#   正是这个形状的教科书实例。⚠ ⚠ 判据写法纪律：body 依旧是完全合法的 ov.json，
-#   唯一的毛病是查询串里 `overrides` 出现了两次。
+# ── 修復輪 1，評審 F3（提級 Minor）：overrides= 重複且衝突 ⇒ 400，不是靜默取
+#   第一個 ────────────────────────────────────────────────────────────────
+#   G120 的立身之本是「兩種現實互相沖突 ⇒ 不猜」，同一個請求裡寫了兩個 overrides=
+#   正是這個形狀的教科書執行個體。⚠ ⚠ 判據寫法紀律：body 依舊是完全合法的 ov.json，
+#   唯一的毛病是查詢串裡 `overrides` 出現了兩次。
 CODE=$(admin_post "/load?overrides=keep&overrides=clear" "$(cat "$WORK/ov.json")")
 expect_status "overrides 重复且冲突 ⇒ 400" 400 "$CODE"
 if grep -q '重复' "$WORK/admin.out"; then
@@ -1484,7 +1484,7 @@ else
 fi
 expect_status "重复被拒之后旧配置还在服务" 200 "$(probe "$BASE/")"
 
-# ── 判据 3：overrides=keep ⇒ 覆盖还在，且仍作用在数据面上 ───────────────────
+# ── 判據 3：overrides=keep ⇒ 覆蓋還在，且仍作用在資料面上 ───────────────────
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
 expect_status "先摘掉这个上游（走 /runtime）" 200 "$CODE"
 expect_status "摘掉之后数据面确实不通了" 502 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
@@ -1493,9 +1493,9 @@ CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov.json")")
 expect_status "overrides=keep 的 load" 200 "$CODE"
 expect_status "★ ★ keep 之后覆盖还在数据面上生效（继续 502）" 502 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
 
-# ── 判据 5：悬空——keep 之后键落不到任何上游的覆盖仍在、标了 dangling、回话点名 ──
-#   ⚠ 判据写法纪律：断言的地址（$RUNTIME_UP）是这份夹具自己的真实上游地址，
-#   不会出现在任何错误模板的固定字面量里。
+# ── 判據 5：懸空——keep 之後鍵落不到任何上游的覆蓋仍在、標了 dangling、回話點名 ──
+#   ⚠ 判據寫法紀律：斷言的位址（$RUNTIME_UP）是這份夾具自己的真實上游位址，
+#   不會出現在任何錯誤範本的固定字面值裡。
 CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
 expect_status "keep：换成不带这个上游的配置" 200 "$CODE"
 if grep -qF "$RUNTIME_UP" "$WORK/admin.out"; then
@@ -1509,9 +1509,9 @@ else
   fail "回话没说这是悬空：$(cat "$WORK/admin.out")"
 fi
 
-# ── 判据 4：overrides=clear ⇒ 覆盖没了，且回话里逐项列出被清掉的 ──────────────
-#   现在登记处里那一项是悬空的（上面 keep 换配置之后）。带回真有上游的那份，
-#   走 clear——clear 不分悬空不悬空，全清。
+# ── 判據 4：overrides=clear ⇒ 覆蓋沒了，且回話裡逐項列出被清掉的 ──────────────
+#   現在登記處裡那一項是懸空的（上面 keep 換設定之後）。帶回真有上游的那份，
+#   走 clear——clear 不分懸空不懸空，全清。
 CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
 expect_status "overrides=clear 的 load" 200 "$CODE"
 if grep -qF "$RUNTIME_UP" "$WORK/admin.out"; then
@@ -1521,7 +1521,7 @@ else
 fi
 expect_status "★ clear 之后数据面恢复（不再是 502）" 200 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
 
-# ── 判据 10：clear 之后再设一次覆盖，数据面当场生效（身份没断的行为侧对照）──
+# ── 判據 10：clear 之後再設一次覆蓋，資料面當場生效（身分沒斷的行為側對照）──
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
 expect_status "clear 之后再 disable 一次" 200 "$CODE"
 expect_status "★ 身份没断：再 disable 立刻又生效" 502 "$(run_curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$BASE/")"
@@ -1529,24 +1529,24 @@ CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"enable\",\"site\":\"$RUNTI
 expect_status "收尾：enable 撤回来" 200 "$CODE"
 expect_status "撤回之后数据面恢复" 200 "$(probe "$BASE/")"
 
-# ── 判据 6 / 7：R11 —— 每一次响应都带「当前有 N 项临时覆盖生效中（其中 M 项悬空）」──
-#   ⚠ ⚠ 「每一次」就是每一次：200/400/404/413 都要带；413 那条在 process_new_http
-#   的另一个 reply() 调用点上（读 body 超上界），主路径的判据测不到它。
-#   ★ ★ ★ 修复轮 1，评审 F1（Critical）：夹具必须是**两项覆盖、其中一项悬空**
-#   （N≠M）。原先只摆一项、且那一项就是要悬空的那个 ⇒ N 与 M 永远是同一个数
-#   （都是 1），`reply()` 里把 `{n}`/`{m}` 写反、或两格印同一个值，都测不出来——
-#   这正是判据写法纪律第 2 条点名的「好坏两种情况下读数相同的尺」。
-#   ⇒ 这里摆两把不同的键：没写 id 的兜底（$RUNTIME_UP）与写了 id 的 up2——
-#   下面这次 load 用 ov-dangling.json（只留 up2 那条路），没写 id 的那把因此
-#   悬空，up2 那把仍然活着。
+# ── 判據 6 / 7：R11 —— 每一次回應都帶「當前有 N 項臨時覆蓋生效中（其中 M 項懸空）」──
+#   ⚠ ⚠ 「每一次」就是每一次：200/400/404/413 都要帶；413 那條在 process_new_http
+#   的另一個 reply() 呼叫點上（讀 body 超上界），主路徑的判據測不到它。
+#   ★ ★ ★ 修復輪 1，評審 F1（Critical）：夾具必須是**兩項覆蓋、其中一項懸空**
+#   （N≠M）。原先只擺一項、且那一項就是要懸空的那個 ⇒ N 與 M 永遠是同一個數
+#   （都是 1），`reply()` 裡把 `{n}`/`{m}` 寫反、或兩格印同一個值，都測不出來——
+#   這正是判據寫法紀律第 2 條點名的「好壞兩種情況下讀數相同的尺」。
+#   ⇒ 這裡擺兩把不同的鍵：沒寫 id 的備援（$RUNTIME_UP）與寫了 id 的 up2——
+#   下面這次 load 用 ov-dangling.json（只留 up2 那條路），沒寫 id 的那把因此
+#   懸空，up2 那把仍然活著。
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"upstream\":\"$RUNTIME_UP\"}]}")
 expect_status "为 R11 摆第一项生效中的覆盖（没写 id 的那把，之后会悬空）" 200 "$CODE"
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$RUNTIME_SITE\",\"id\":\"up2\",\"upstream\":\"$RUNTIME_UP\"}]}")
 expect_status "为 R11 摆第二项生效中的覆盖（id=up2，之后仍然活着）" 200 "$CODE"
 CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
 expect_status "为 R11 换成只留 up2 那条路的配置（没写 id 的那把悬空）" 200 "$CODE"
-# 现在：登记处应该有 2 项生效中的覆盖，其中 1 项（没写 id 的那把）悬空 ⇒ N=2、M=1，
-# 两个数不同——一把真正能分得清「读对了」与「读串了」的尺。
+# 現在：登記處應該有 2 項生效中的覆蓋，其中 1 項（沒寫 id 的那把）懸空 ⇒ N=2、M=1，
+# 兩個數不同——一把真正能分得清「讀對了」與「讀串了」的尺。
 COUNT_LINE="当前有 2 项临时覆盖生效中（其中 1 项悬空）"
 if grep -qF "$COUNT_LINE" "$WORK/admin.out"; then
   ok "★ ★ 200 响应带着正确的计数行：$COUNT_LINE"
@@ -1570,9 +1570,9 @@ else
   fail "400 响应没带计数行：$(cat "$WORK/admin.out")"
 fi
 
-# ★ ★ ★ 413——在 process_new_http 的另一个 reply() 调用点上，主路径测不到它。
-#   真发一个超过 4 MiB 上界的载荷；写文件再用 @file，避免把 ~5MB 塞进单个
-#   shell 参数（ARG_MAX 会炸）。
+# ★ ★ ★ 413——在 process_new_http 的另一個 reply() 呼叫點上，主路徑測不到它。
+#   真發一個超過 4 MiB 上界的載荷；寫檔案再用 @file，避免把 ~5MB 塞進單個
+#   shell 參數（ARG_MAX 會炸）。
 head -c 5000000 /dev/zero | tr '\0' 'a' > "$WORK/big.bin"
 CODE=$(curl -s -o "$WORK/admin.out" -w '%{http_code}' \
   --unix-socket "$ADMIN_SOCK" -X POST --data-binary "@$WORK/big.bin" \
@@ -1584,46 +1584,46 @@ else
   fail "★ ★ ★ 413 响应没带计数行（brief 点名最容易漏的那条）：$(cat "$WORK/admin.out")"
 fi
 
-# 收尾：clear 掉，恢复数据面，别影响后面 [4/4] 的判据。
+# 收尾：clear 掉，恢復資料面，別影響後面 [4/4] 的判據。
 CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
 expect_status "overrides 小节收尾：clear 恢复" 200 "$CODE"
 expect_status "收尾之后数据面恢复" 200 "$(probe "$BASE/")"
 
-# ── [3.6/4] GET /stats（M2 批 N 任务 6，R12「与 /metrics 同源」）─────────────
+# ── [3.6/4] GET /stats（M2 批 N 任務 6，R12「與 /metrics 同源」）─────────────
 #
-# ⚠ ⚠ ⚠ 这一节是 brief §7 点名「R12 的同源判据本来就必须走真路径」的落地：
-#   下面每一条判据都从**真 socket**上打——`/stats` 走 admin unix socket，
-#   `/metrics` 走数据面 HTTP 端口，两者在**同一时刻**各抓一次。admin.rs 里
-#   逐字段的深度判据已经在 Rust 单测里做过（同源、fanout、overrides、
-#   证书/缓存缺省、装载时间），这里**不重复**那些细节，只证明「路由真的接
-#   在生产会走的那条线上」——任务 4 那次「16 条判据全部直接调 handler，
-#   把 `("GET","/stats") => …` 那一行删掉全部照样绿」的教训点名过这件事。
+# ⚠ ⚠ ⚠ 這一節是 brief §7 點名「R12 的同源判據本來就必須走真路徑」的完成實作：
+#   下面每一條判據都從**真 socket**上打——`/stats` 走 admin unix socket，
+#   `/metrics` 走資料面 HTTP 連接埠，兩者在**同一時刻**各抓一次。admin.rs 裡
+#   逐欄位的深度判據已經在 Rust 單測裡做過（同源、fanout、overrides、
+#   證書/快取預設、裝載時間），這裡**不重複**那些細節，只證明「路由真的接
+#   在生產會走的那條線上」——任務 4 那次「16 條判據全部直接調 handler，
+#   把 `("GET","/stats") => …` 那一行刪掉全部照樣綠」的教訓點名過這件事。
 echo "=== [3.6/4] GET /stats 与 GET /metrics 同源 ==="
 
 admin_get() {
-  # $1 = 路径。回状态码，正文写进 $WORK/admin.out（与 admin_post 同一个约定）。
+  # $1 = 路徑。回狀態碼，正文寫進 $WORK/admin.out（與 admin_post 同一個約定）。
   curl -s -o "$WORK/admin.out" -w '%{http_code}' \
     --unix-socket "$ADMIN_SOCK" -X GET \
     "http://localhost$1" 2>/dev/null || echo "000"
 }
 
-# ★ ★ 一把共享键（两条 reverse_proxy 都没写 id，指同一台 $UP_PORT）+ 一把独立
-#   键（id=solo，同样指 $UP_PORT——与共享键**同地址不同 id**，R12 的地址级
-#   归并因此要把三条 reverse_proxy 的 upstream 行并成 /metrics 上的一行）+
-#   一把指不存在地址的独立键（id=third，纯 IP 字面量，不需要能连上——只用来
-#   把 fanout 总键数拉到 3，与共享键的 proxies=2 错开，避免「总数与 proxies
-#   恰好相等」的判据写法陷阱）。`/__metrics` 挂在数据面，与 admin socket 上的
-#   `/stats` 是两个不同的出口。
+# ★ ★ 一把共享鍵（兩條 reverse_proxy 都沒寫 id，指同一臺 $UP_PORT）+ 一把獨立
+#   鍵（id=solo，同樣指 $UP_PORT——與共享鍵**同位址不同 id**，R12 的位址級
+#   歸併因此要把三條 reverse_proxy 的 upstream 行併成 /metrics 上的一行）+
+#   一把指不存在位址的獨立鍵（id=third，純 IP 字面值，不需要能連上——只用來
+#   把 fanout 總鍵數拉到 3，與共享鍵的 proxies=2 錯開，避免「總數與 proxies
+#   恰好相等」的判據寫法陷阱）。`/__metrics` 掛在資料面，與 admin socket 上的
+#   `/stats` 是兩個不同的出口。
 #
-# ★ ★ ★ 修复轮 1，评审 I2：`solo` 那条 `reverse_proxy` 挂了 `health_uri`，
-#   而 `health_status` 故意写成 `500`——$UP_PORT 那台上游对**任何**路径都回
-#   200（它的配置就是裸 `respond 200 "up path=… xup=…"`，没有一条路径会回
-#   500），于是这条探测**恒被判失败**，不需要真的去改 $UP_PORT 自己的配置
-#   （那个配置被本文件几十处别的判据共用，不该为了这一节去动它）。
-#   ⇒ `solo` 那一行的 `healthy` 会稳定落在 `false`，`shared-a`/`shared-b`
-#   没配 `health_uri`、恒 `true`——三行合取 = `false`，R12 的 healthy 归并
-#   因此走的是**非退化值**，不再是「一刻都没配 health_uri、恒 true」那种
-#   两边都读到同一个平凡值的退化场景。
+# ★ ★ ★ 修復輪 1，評審 I2：`solo` 那條 `reverse_proxy` 掛了 `health_uri`，
+#   而 `health_status` 故意寫成 `500`——$UP_PORT 那臺上游對**任何**路徑都回
+#   200（它的設定就是裸 `respond 200 "up path=… xup=…"`，沒有一條路徑會回
+#   500），於是這條探測**恆被判失敗**，不需要真的去改 $UP_PORT 自己的設定
+#   （那個設定被本檔案幾十處別的判據共用，不該為了這一節去動它）。
+#   ⇒ `solo` 那一行的 `healthy` 會穩定落在 `false`，`shared-a`/`shared-b`
+#   沒配 `health_uri`、恆 `true`——三行合取 = `false`，R12 的 healthy 歸併
+#   因此走的是**非退化值**，不再是「一刻都沒配 health_uri、恆 true」那種
+#   兩邊都讀到同一個平凡值的退化場景。
 cat > "$WORK/stats.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1671,11 +1671,11 @@ CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/stats.json")")
 expect_status "装载 /stats 夹具（含撞键 + /__metrics + 一条恒不健康的探测）" 200 "$CODE"
 expect_status "夹具装好之后 /shared-a 走真上游" 200 "$(probe "$BASE/shared-a/x")"
 
-# ★ ★ ★ 等主动健康检查真的把 solo 判成不健康——`poll_burst`/`POLL_TIMEOUT`
-#   是 [2c/4] 那一节留下的现成 helper（同一份脚本，函数在前面定义过就能在
-#   这里用）。判据挂在**数据面行为**上（502），不是「配了 health_uri 就当它
-#   已经生效」——刚装载完的那一小段窗口里 healthy 恒为初值 true（同 [2c/4]
-#   的教训）。
+# ★ ★ ★ 等主動健康檢查真的把 solo 判成不健康——`poll_burst`/`POLL_TIMEOUT`
+#   是 [2c/4] 那一節留下的現成 helper（同一份指令碼，函式在前面定義過就能在
+#   這裡用）。判據掛在**資料面行為**上（502），不是「配了 health_uri 就當它
+#   已經生效」——剛裝載完的那一小段視窗裡 healthy 恆為初值 true（同 [2c/4]
+#   的教訓）。
 HIT=$(poll_burst "$BASE/solo/x" 502 5)
 if [ "$HIT" = "5" ]; then
   ok "★ solo 探测路径恒 500 ⇒ 它被判不健康（数据面上 /solo/* 变成 502）"
@@ -1683,10 +1683,10 @@ else
   fail "solo 期望被判不健康（连 5 次 502），$POLL_TIMEOUT 秒内最好的一轮只中了 $HIT/5"
 fi
 
-# 只做一件事的小工具：解析 /stats 的 JSON 与 /metrics 的 exposition 文本，
-# 按地址做归并再互相比对。★ 判据本身（同源相等）落在 bash 这一层的
-# `expect_status`/`ok`/`fail` 上，python3 只负责把两份格式都不同的正文
-# 读成同一种形状——这与 tests/metrics/run.sh 的 EXPO 是同一个分工。
+# 只做一件事的小工具：解析 /stats 的 JSON 與 /metrics 的 exposition 文字，
+# 按位址做歸併再互相比對。★ 判據本身（同源相等）落在 bash 這一層的
+# `expect_status`/`ok`/`fail` 上，python3 只負責把兩份格式都不同的正文
+# 讀成同一種形狀——這與 tests/metrics/run.sh 的 EXPO 是同一個分工。
 cat > "$WORK/stats_check.py" <<'PY'
 #!/usr/bin/env python3
 """只服务于 tests/serve/run.sh 的 [3.6/4] 一节：读 /stats 的 JSON 与
@@ -1813,7 +1813,7 @@ else:
     sys.exit(1)
 PY
 
-# ── 判据 1：GET /stats 从真 socket 上打，回 200 + 合法 JSON ──────────────────
+# ── 判據 1：GET /stats 從真 socket 上打，回 200 + 合法 JSON ──────────────────
 CODE=$(admin_get /stats)
 expect_status "GET /stats（真 socket）" 200 "$CODE"
 cp "$WORK/admin.out" "$WORK/stats1.json"
@@ -1823,20 +1823,20 @@ else
   fail "/stats 的正文形状不对（见上面 python3 的报错）"
 fi
 
-# ★ ★ 修复轮 1，评审 M1：单测里 handler 与断言同进程，`pid` 那条判据近乎
-#   恒真（好坏两种情况读数相同）。这里换一个**独立**的对照物——
-#   `--pid-file "$WORK/proxy.pid"` 是 `proxy` 那个 `fulcrum serve` 进程
-#   自己落盘的、装的正是它自己的 OS pid（见 `process.rs::write_pid_file`），
-#   与 JSON 里的 `pid` 字段是两条完全不同的路径各自量出来的同一件事。
-#   ★ 分辨力由这个构造保证（不同源码位置 + 跨真实进程边界），可注入的
-#   错法是存在的——比如把 `stats()` 的 `pid` 接成 `std::process::id() + 1`
-#   或任何写死值，这条判据会抓住。
+# ★ ★ 修復輪 1，評審 M1：單測裡 handler 與斷言同處理程序，`pid` 那條判據近乎
+#   恆真（好壞兩種情況讀數相同）。這裡換一個**獨立**的對照物——
+#   `--pid-file "$WORK/proxy.pid"` 是 `proxy` 那個 `fulcrum serve` 處理程序
+#   自己寫入磁碟的、裝的正是它自己的 OS pid（見 `process.rs::write_pid_file`），
+#   與 JSON 裡的 `pid` 欄位是兩條完全不同的路徑各自量出來的同一件事。
+#   ★ 分辨力由這個建構保證（不同原始碼位置 + 跨真實處理程序邊界），可注入的
+#   錯法是存在的——比如把 `stats()` 的 `pid` 接成 `std::process::id() + 1`
+#   或任何寫死值，這條判據會抓住。
 #
-# ★ ★ ★ 修复轮 2，评审 N1：这两行原来是裸的 `VAR=$(...)`——`field` 子命令
-#   在字段不存在时 `sys.exit(1)`，`cat` 在文件不存在时也非零退出，两者在
-#   set -e 下都会让脚本半路硬中止而不是优雅报红（与判据 3 那条
-#   `SAME_SOURCE_OUT` 是同一类坑，这两行当时漏包了）。⇒ 改用上面新写的
-#   `capture()`——本文件现在「捕获一个可能失败的命令」只有这一种写法。
+# ★ ★ ★ 修復輪 2，評審 N1：這兩行原來是裸的 `VAR=$(...)`——`field` 子命令
+#   在欄位不存在時 `sys.exit(1)`，`cat` 在檔案不存在時也非零退出，兩者在
+#   set -e 下都會讓指令碼半路硬中止而不是優雅報紅（與判據 3 那條
+#   `SAME_SOURCE_OUT` 是同一類坑，這兩行當時漏包了）。⇒ 改用上面新寫的
+#   `capture()`——本檔案現在「捕獲一個可能失敗的命令」只有這一種寫法。
 capture python3 "$WORK/stats_check.py" field "$WORK/stats1.json" pid
 JSON_PID=$CAPTURE_OUT
 JSON_PID_RC=$CAPTURE_RC
@@ -1849,21 +1849,21 @@ else
   fail "pid 判据没通过：JSON_PID=「$JSON_PID」(rc=$JSON_PID_RC)，PROXY_PID=「$PROXY_PID」(rc=$PROXY_PID_RC)"
 fi
 
-# ── 判据 2：fanout_shared 里那把撞键的 proxies == 2，走真 HTTP ──────────────
+# ── 判據 2：fanout_shared 裡那把撞鍵的 proxies == 2，走真 HTTP ──────────────
 PROXIES=$(python3 "$WORK/stats_check.py" fanout_proxies "$WORK/stats1.json" "127.0.0.1:$UP_PORT" || echo "ERR")
 if [ "$PROXIES" = "2" ]; then
   ok "★ ★ fanout_shared 里 127.0.0.1:$UP_PORT 显示 proxies=2"
 else
   fail "fanout_shared 的 proxies 应该是 2，实际「$PROXIES」"
 fi
-# ★ ★ ★ 修复轮 1，评审 I1：这里要的是**等值**断言，不是「不等于 2」——
-#   夹具的真实总键数是**已知的字面量 3**（共享地址一把 + solo 一把 + third
-#   一把）。写成 `!= 2` 的话，`python3` 硬失败时 `TOTAL="ERR"`，
-#   `"ERR" != "2"` 为真 ⇒ 会打出一个**绿的** ✓（`fail` 只累加计数不退出，
-#   上游 `shape` 先红也挡不住这一条静默通过）；即便 `python3` 没坏，`0`/`1`/
-#   `99` 这类错误值同样会被 `!= 2` 放行——那是一把「不等值」判据，只能挡住
-#   `TOTAL` 恰好等于 2 的那一种错法。改成 `= 3` 之后，`ERR` 与任何非 3 的值
-#   都会被正确判红。
+# ★ ★ ★ 修復輪 1，評審 I1：這裡要的是**等值**斷言，不是「不等於 2」——
+#   夾具的真實總鍵數是**已知的字面值 3**（共享位址一把 + solo 一把 + third
+#   一把）。寫成 `!= 2` 的話，`python3` 硬失敗時 `TOTAL="ERR"`，
+#   `"ERR" != "2"` 為真 ⇒ 會打出一個**綠的** ✓（`fail` 只累加計數不退出，
+#   上游 `shape` 先紅也擋不住這一條靜默通過）；即便 `python3` 沒壞，`0`/`1`/
+#   `99` 這類錯誤值同樣會被 `!= 2` 放行——那是一把「不等值」判據，只能擋住
+#   `TOTAL` 恰好等於 2 的那一種錯法。改成 `= 3` 之後，`ERR` 與任何非 3 的值
+#   都會被正確判紅。
 TOTAL=$(python3 "$WORK/stats_check.py" fanout_total "$WORK/stats1.json" || echo "ERR")
 if [ "$TOTAL" = "3" ]; then
   ok "★ fanout 总键数 = 3（共享地址 + solo + third），与 proxies（2）不相等——判据写法纪律"
@@ -1871,8 +1871,8 @@ else
   fail "fanout 总键数应该是 3，实际「$TOTAL」"
 fi
 
-# ── 判据 3：R12 同源——GET /metrics 与 GET /stats 同一时刻各抓一次，
-#   /stats 按地址归并之后与 /metrics 逐项相等 ────────────────────────────────
+# ── 判據 3：R12 同源——GET /metrics 與 GET /stats 同一時刻各抓一次，
+#   /stats 按位址歸併之後與 /metrics 逐項相等 ────────────────────────────────
 CODE=$(probe "$BASE/__metrics")
 expect_status "GET /metrics（数据面，真 HTTP）" 200 "$CODE"
 cp "$WORK/body" "$WORK/metrics1.txt"
@@ -1884,18 +1884,18 @@ else
   fail "应该有 3 行未归并的 upstream 记录，实际 $ROWS 行"
 fi
 
-# ⚠ ⚠ 判据写法纪律：不许「两边都不是 0」——`same_source` 比的是**逐项相等**
-#   （数值比较，不是字符串比较）。inflight 这一格这一刻大概率仍然是退化的
-#   0（真实并发流量在这段脚本里没有制造出来，与 admin.rs 里 Rust 单测那条
-#   分开覆盖）；★ ★ ★ 但 healthy 这一格**不是**——上面刚等到 solo 被判
-#   不健康（502 已经证实），三行 healthy 取合取的结果是**非退化的 false**，
-#   不再是「没配 health_uri、恒 true」那种两边巧合读到同一个平凡值的场景。
-#   把 /stats 那一侧改成「自己再数一遍」而不读同一组原子量，这条判据必须红
-#   （反证见任务报告——本轮修复要求做实这一条，不许只在报告里写一句了事）。
-# ⚠ ⚠ 用 `capture()`（`same_source` 判定「不同源」时会非零退出，裸的
-#   `$(...)` 赋值在 set -e 下会让脚本半路硬中止——那正是修复轮 1 顺手
-#   加固过的那类坑，见 §4.5 反证；修复轮 2 又在 M1 那两行新栽了一次，
-#   见 §11——现在全文件这一族统一走 `capture()`，不再各自手包一次）。
+# ⚠ ⚠ 判據寫法紀律：不許「兩邊都不是 0」——`same_source` 比的是**逐項相等**
+#   （數值比較，不是字串比較）。inflight 這一格這一刻大概率仍然是退化的
+#   0（真實並行流量在這段指令碼里沒有製造出來，與 admin.rs 裡 Rust 單測那條
+#   分開覆蓋）；★ ★ ★ 但 healthy 這一格**不是**——上面剛等到 solo 被判
+#   不健康（502 已經證實），三行 healthy 取合取的結果是**非退化的 false**，
+#   不再是「沒配 health_uri、恆 true」那種兩邊巧合讀到同一個平凡值的場景。
+#   把 /stats 那一側改成「自己再數一遍」而不讀同一組原子量，這條判據必須紅
+#   （反證見任務報告——本輪修復要求做實這一條，不許只在報告裡寫一句了事）。
+# ⚠ ⚠ 用 `capture()`（`same_source` 判定「不同源」時會非零退出，裸的
+#   `$(...)` 賦值在 set -e 下會讓指令碼半路硬中止——那正是修復輪 1 順手
+#   加固過的那類坑，見 §4.5 反證；修復輪 2 又在 M1 那兩行新栽了一次，
+#   見 §11——現在全檔案這一族統一走 `capture()`，不再各自手包一次）。
 capture python3 "$WORK/stats_check.py" same_source \
      "$WORK/stats1.json" "$WORK/metrics1.txt" "127.0.0.1:$UP_PORT"
 SAME_SOURCE_OUT=$CAPTURE_OUT
@@ -1905,16 +1905,16 @@ if [ "$SAME_SOURCE_RC" -eq 0 ]; then
 else
   fail "★ ★ ★ R12：/stats 与 /metrics 不同源：$SAME_SOURCE_OUT"
 fi
-# ★ ★ 非退化确认（呼应 admin.rs 那条 Rust 判据收尾的「顺带确认」）：光
-#   「逐项相等」挡不住两边**都**读到同一个平凡值——这里再核一次 healthy
-#   落的确实是 False，不是巧合的 True。
+# ★ ★ 非退化確認（呼應 admin.rs 那條 Rust 判據收尾的「順帶確認」）：光
+#   「逐項相等」擋不住兩邊**都**讀到同一個平凡值——這裡再核一次 healthy
+#   落的確實是 False，不是巧合的 True。
 case "$SAME_SOURCE_OUT" in
   *"healthy=False"*) ok "★ 确认 healthy 归并结果是非退化的 False（不是两边巧合都读到 True）" ;;
   *) fail "healthy 应该归并成 False（solo 那一行不健康），实际：$SAME_SOURCE_OUT" ;;
 esac
 
-# ── 判据 4：不缓存 Runtime 快照——POST /load 换掉上游之后，/stats 立刻反映
-#   新的那份（不是继续举着换配置之前那份） ───────────────────────────────────
+# ── 判據 4：不快取 Runtime 快照——POST /load 換掉上游之後，/stats 立刻反映
+#   新的那份（不是繼續舉著換設定之前那份） ───────────────────────────────────
 cat > "$WORK/stats-swapped.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1958,7 +1958,7 @@ else
   fail "换配置之后 fanout 应该只有 1 把键（新配置只有一条 reverse_proxy），实际 $FANOUT_TOTAL_AFTER"
 fi
 
-# ── 判据 5：404 的「可用」清单里有 GET /stats（真 socket）───────────────────
+# ── 判據 5：404 的「可用」清單裡有 GET /stats（真 socket）───────────────────
 CODE=$(admin_post /nope '{}')
 expect_status "GET /stats 判据同一节里顺带核一次：/nope 仍然 404" 404 "$CODE"
 if grep -q 'GET /stats' "$WORK/admin.out"; then
@@ -1967,64 +1967,64 @@ else
   fail "404 的可用清单没有提到 GET /stats：$(cat "$WORK/admin.out")"
 fi
 
-# 收尾：clear 掉、换回 [4/4] 需要的干净基线，避免影响后面的装载日志判据。
+# 收尾：clear 掉、換回 [4/4] 需要的乾淨基線，避免影響後面的裝載紀錄判據。
 CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
 expect_status "[3.6/4] 收尾：clear 恢复" 200 "$CODE"
 expect_status "收尾之后数据面恢复" 200 "$(probe "$BASE/")"
 
-# ── [4/4] 装载日志该说的话 ──────────────────────────────────────────────────
+# ── [4/4] 裝載紀錄該說的話 ──────────────────────────────────────────────────
 echo "=== [4/4] 装载日志 ==="
-# ★ ★ G52（隐式的、用户没写出来的东西必须可见）没有作废，它换了对象：
-#   回落层删完之后，承担它的是缓存与静态文件那两处「把生效的默认值打出来」。
-#   ⇒ 这条判据因此钉两件事：**回落那几个字不许再出现**，
-#   而**缓存的生效设置必须出现**。
+# ★ ★ G52（隱式的、使用者沒寫出來的東西必須可見）沒有作廢，它換了物件：
+#   回落層刪完之後，承擔它的是快取與靜態檔案那兩處「把生效的預設值打出來」。
+#   ⇒ 這條判據因此釘兩件事：**回落那幾個字不許再出現**，
+#   而**快取的生效設定必須出現**。
 if grep -q '回落' "$WORK/proxy.log"; then
   fail "装载日志里还有「回落」—— 那一层已整层删除（G98）"
   grep '回落' "$WORK/proxy.log" >&2
 else
   ok "★ 装载日志里再没有回落（那一层已归零）"
 fi
-# ★ G52 的接班人：`cache` 的生效设置必须被打出来，且要说清 `ttl` 是**兜底**。
-#   ⚠ 少了后半句，从 nginx 迁过来的人会以为它是覆盖 —— 而那是一个
-#   与用户预期相反、却不说出来的默认。
+# ★ G52 的接班人：`cache` 的生效設定必須被打出來，且要說清 `ttl` 是**備援**。
+#   ⚠ 少了後半句，從 nginx 遷過來的人會以為它是覆蓋 —— 而那是一個
+#   與使用者預期相反、卻不說出來的預設。
 if grep '缓存：站点' "$WORK/proxy.log" | grep -q '兜底'; then
   ok "★ 装载日志说出了缓存的生效设置（含「ttl 是兜底」这一句）"
 else
   fail "装载日志没把缓存的生效设置说出来（G52 的接班人）"
   grep -i '缓存' "$WORK/proxy.log" >&2 || sed -n '1,20p' "$WORK/proxy.log" >&2
 fi
-# ── ⏳ 未接线的能力也要说出来，**而已经接线的不许再被说** ──────────────────
+# ── ⏳ 未串接的能力也要說出來，**而已經串接的不許再被說** ──────────────────
 #
-# ⚠ ⚠ 这条断言的锚点在两天里被迫换了两次（批 10 `dns_refresh` 接线、
-#   批 11 `health_uri` 接线），两次都是**当场红给我看的** —— 那是它在正常工作。
-#   ★ 但它暴露了一个真问题：**锚点是个会移动的靶子**。等最后一条未接线能力
-#   也做完，这条断言会无处可锚，而那一天最省事的做法是把它删掉。
+# ⚠ ⚠ 這條斷言的錨點在兩天裡被迫換了兩次（批 10 `dns_refresh` 串接、
+#   批 11 `health_uri` 串接），兩次都是**當場紅給我看的** —— 那是它在正常工作。
+#   ★ 但它暴露了一個真問題：**錨點是個會移動的靶子**。等最後一條未串接能力
+#   也做完，這條斷言會無處可錨，而那一天最省事的做法是把它刪掉。
 #
-# ⇒ 改成两半，各自守一个方向：
-#   ① **正向**：这行公告的**固定前缀**必须出现（它不随任何一条能力的死活而变），
-#      而且这一份夹具确实用到了一条仍未接线的能力（`passive_fail`）。
-#   ② ★ ★ **反向**：**已经接线的能力不许出现在这行公告里**。
-#      这一半才是真正会**无声**的那种烂法 —— 一条假警告不会红，
-#      它只会让人渐渐不看这张表。批 8 接线完 ACME 之后，
-#      `dsl-reference.md` 那句清单挂着「自动签发」躺了四天没人发现，
-#      就是因为**没有任何东西在看反向那一半**。
+# ⇒ 改成兩半，各自守一個方向：
+#   ① **正向**：這行公告的**固定前綴**必須出現（它不隨任何一條能力的死活而變），
+#      而且這一份夾具確實用到了一條仍未串接的能力（`passive_fail`）。
+#   ② ★ ★ **反向**：**已經串接的能力不許出現在這行公告裡**。
+#      這一半才是真正會**無聲**的那種爛法 —— 一條假警告不會紅，
+#      它只會讓人漸漸不看這張表。批 8 串接完 ACME 之後，
+#      `dsl-reference.md` 那句清單掛著「自動簽發」躺了四天沒人發現，
+#      就是因為**沒有任何東西在看反向那一半**。
 UNWIRED_LINES=$(grep -F '这一批还没接线' "$WORK/proxy.log" || true)
 if [ -n "$UNWIRED_LINES" ]; then
   ok "装载日志有未接线能力的公告"
 else
   fail "装载日志里一条未接线公告都没有（而夹具里写了 tracing）"
 fi
-# ⚠ ⚠ **锚点在 G136 又换了一次**（这是第三次：批 10 `dns_refresh`、批 11 `health_uri`、
-#   本次 `passive_fail`），三次都是当场红给我看的。⇒ 现在锚在 `tracing` 上，
-#   而夹具里那一行 `tracing` 就是为它写的。
+# ⚠ ⚠ **錨點在 G136 又換了一次**（這是第三次：批 10 `dns_refresh`、批 11 `health_uri`、
+#   本次 `passive_fail`），三次都是當場紅給我看的。⇒ 現在錨在 `tracing` 上，
+#   而夾具裡那一行 `tracing` 就是為它寫的。
 if printf '%s' "$UNWIRED_LINES" | grep -qF 'tracing'; then
   ok "公告点名了 tracing（它确实还没接线）"
 else
   fail "公告里没有 tracing：$UNWIRED_LINES"
 fi
-# ★ ★ 反向：这几条**已经接线**了，公告里再出现就是假警告。
+# ★ ★ 反向：這幾條**已經串接**了，公告裡再出現就是假警告。
 STALE=""
-# ★ G136：`passive_fail` 进这张「已接线」清单 —— 它此后再出现在公告里就是假警告。
+# ★ G136：`passive_fail` 進這張「已串接」清單 —— 它此後再出現在公告裡就是假警告。
 for cap in health_uri dns_refresh admin acme passive_fail; do
   if printf '%s' "$UNWIRED_LINES" | grep -qF "$cap"; then
     STALE="$STALE $cap"
@@ -2035,54 +2035,54 @@ if [ -z "$STALE" ]; then
 else
   fail "未接线公告里还挂着已经接线的能力：$STALE"
 fi
-# ★ 证书装载也要在日志里留痕：装了几个 SNI、哪些。
+# ★ 證書裝載也要在紀錄裡留痕：裝了幾個 SNI、哪些。
 if grep -q '已装载 1 个 SNI' "$WORK/proxy.log"; then
   ok "装载日志说出了装了几张证书"
 else
   fail "装载日志里没有证书装载那一行"
   grep -i 'SNI\|证书' "$WORK/proxy.log" >&2 || true
 fi
-# ★ ★ 装载日志是 `default_sni` 在运行中**唯一**看得见的地方。
-#   ⚠ 它此前正是卡在「配了」与「生效了」分不开这一点上：编译得过、运行时零调用方，
-#   而日志一个字都不说 ⇒ 配了它的人没有任何办法在现场发现它没接。
-#   ★ 这一条与 9d 分工：9d 问行为，这一条问**运维看不看得见**。
+# ★ ★ 裝載紀錄是 `default_sni` 在執行中**唯一**看得見的地方。
+#   ⚠ 它此前正是卡在「配了」與「生效了」分不開這一點上：編譯得過、執行環境零呼叫方，
+#   而紀錄一個字都不說 ⇒ 配了它的人沒有任何辦法在現場發現它沒接。
+#   ★ 這一條與 9d 分工：9d 問行為，這一條問**維運看不看得見**。
 if grep -qF 'default_sni secure.example' "$WORK/proxy.log"; then
   ok "装载日志说出了不带 SNI 的握手会用哪张证书"
 else
   fail "装载日志没说 default_sni 生效到了哪个名字"
   grep -i 'SNI' "$WORK/proxy.log" >&2 || true
 fi
-# ── ★ ★ ★ 自环：容器里的 `reverse_proxy` 指回自己，装载日志必须说出来 ────────
+# ── ★ ★ ★ 自環：容器裡的 `reverse_proxy` 指回自己，裝載紀錄必須說出來 ────────
 #
-# ⚠ ⚠ 这条警告在 `fulcrum-runtime` 里算了很久，而**一个消费者都没有**：
-#   `Runtime::self_loop_warnings` 全仓唯一的读者是单测，`log_load_summary`
-#   一个字都不说。⇒ 端到端这一层此前的读数是「算得对」，而运维现场读到的是
-#   **一片安静** —— 正是本仓那条老形状：*一个用来「出了事你能知道」的东西，
-#   自己不说话时没人知道。*
-# ★ 与单测分工：单测钉**扁平**站点的判定，这一格钉**容器下钻**（夹具里那条
-#   `/selfloop/*` 嵌在 `handle` arm 里）+ **它真的被打印出来了**。
+# ⚠ ⚠ 這條警告在 `fulcrum-runtime` 裡算了很久，而**一個消費者都沒有**：
+#   `Runtime::self_loop_warnings` 全倉唯一的讀者是單測，`log_load_summary`
+#   一個字都不說。⇒ 端到端這一層此前的讀數是「算得對」，而維運現場讀到的是
+#   **一片安靜** —— 正是本儲存庫那條老形狀：*一個用來「出了事你能知道」的東西，
+#   自己不說話時沒人知道。*
+# ★ 與單測分工：單測釘**扁平**站台的判定，這一格釘**容器下鑽**（夾具裡那條
+#   `/selfloop/*` 嵌在 `handle` arm 裡）+ **它真的被列印出來了**。
 SELFLOOP_LINES=$(grep -F '转发回自己' "$WORK/proxy.log" || true)
 if [ -n "$SELFLOOP_LINES" ]; then
   ok "★ 装载日志说出了自环（容器里的 reverse_proxy 指回本进程的监听口）"
 else
   fail "装载日志一个字都没提自环 —— 而夹具里 /selfloop/* 指着 127.0.0.1:$PROXY_PORT"
 fi
-# ★ 点得出是**哪个上游**：一句「有自环」而不说是谁，运维得自己翻整份配置。
+# ★ 點得出是**哪個上游**：一句「有自環」而不說是誰，維運得自己翻整份設定。
 if printf '%s' "$SELFLOOP_LINES" | grep -qF "127.0.0.1:$PROXY_PORT"; then
   ok "★ 自环警告点名了那个上游地址"
 else
   fail "自环警告没说是哪个上游：$SELFLOOP_LINES"
 fi
-# ★ ★ 反向那一半：**不自环的上游不许出现在这条警告里。**
-#   ⚠ 少了它，一个「对每条 reverse_proxy 都报一句」的实现在上面两条上全绿，
-#   而现场是每份正常配置都挨一堆假警告 —— 而假警告会把真的那条一起埋掉
-#   （这一节上面那条「已接线的能力不许出现在未接线公告里」守的是同一件事）。
+# ★ ★ 反向那一半：**不自環的上游不許出現在這條警告裡。**
+#   ⚠ 少了它，一個「對每條 reverse_proxy 都報一句」的實作在上面兩條上全綠，
+#   而現場是每份正常設定都挨一堆假警告 —— 而假警告會把真的那條一起埋掉
+#   （這一節上面那條「已串接的能力不許出現在未串接公告裡」守的是同一件事）。
 if printf '%s' "$SELFLOOP_LINES" | grep -qF "127.0.0.1:$UP_PORT"; then
   fail "自环警告把不自环的上游 127.0.0.1:$UP_PORT 也说进去了：$SELFLOOP_LINES"
 else
   ok "★ 不自环的上游没有被说成自环（没有假警告）"
 fi
-# ★ 恰好一条：夹具里只有一处自环，多出来的每一条都是噪音。
+# ★ 恰好一條：夾具裡只有一處自環，多出來的每一條都是噪音。
 SELFLOOP_N=$(printf '%s' "$SELFLOOP_LINES" | grep -cF '转发回自己' || true)
 if [ "$SELFLOOP_N" = "1" ]; then
   ok "★ 自环警告恰好一条（夹具里就一处自环）"
@@ -2090,24 +2090,24 @@ else
   fail "自环警告有 $SELFLOOP_N 条，夹具里只有一处自环：$SELFLOOP_LINES"
 fi
 
-# ── 线程模型：那个旋钮真的落到进程上了吗（G35 结案 · G140 落地）────────────
+# ── 執行緒模型：那個旋鈕真的落到處理程序上了嗎（G35 結案 · G140 完成實作）────────────
 #
-# ★ ★ ★ **这一节存在的全部理由**：`serve()` 里那三行 `s.threads = Some(...)`
-#   在此之前**没有任何判据执行过** —— 单测够不到 `serve()`（它返回 `!`、还要绑端口），
-#   而 `process.rs` 那几条纯函数测试只证明`算出来的数对`，⛔ 不证明`它被用上了`。
-#   一条从未被执行过的路径，`它生效了`就是一句没有判据的断言。
+# ★ ★ ★ **這一節存在的全部理由**：`serve()` 裡那三行 `s.threads = Some(...)`
+#   在此之前**沒有任何判據執行過** —— 單測夠不到 `serve()`（它回傳 `!`、還要綁連接埠），
+#   而 `process.rs` 那幾條純函式測試只證明`算出来的数对`，⛔ 不證明`它被用上了`。
+#   一條從未被執行過的路徑，`它生效了`就是一句沒有判據的斷言。
 #
-# ★ 判据挂在**进程真的有几个 OS 线程**上（`/proc/<pid>/status` 的 `Threads:`），
-#   ⛔ 不挂在启动日志那一行上：日志打的是**刚算出来的那个数**，
-#   对`它有没有真的传给 pingora`零判别力（同 G135 那条`回显自己刚写进去的值`）。
+# ★ 判據掛在**處理程序真的有幾個 OS 執行緒**上（`/proc/<pid>/status` 的 `Threads:`），
+#   ⛔ 不掛在啟動紀錄那一行上：紀錄打的是**剛算出來的那個數**，
+#   對`它有没有真的传给 pingora`零判別力（同 G135 那條`回显自己刚写进去的值`）。
 #
-# ⚠ 2026-09-05 实测（12 核）：`Threads` = **4 + threads_l7**，严格线性 ——
-#   `threads_l7 1`→5 · `8`→12 · `16`→20 · 不写（12 核）→16。
-#   下面三条界都是按这组实测数定的，⛔ 不是猜的。
+# ⚠ 2026-09-05 實測（12 核）：`Threads` = **4 + threads_l7**，嚴格線性 ——
+#   `threads_l7 1`→5 · `8`→12 · `16`→20 · 不寫（12 核）→16。
+#   下面三條界都是按這組實測數定的，⛔ 不是猜的。
 echo "=== [4/4] 线程模型（G140）==="
 
 threads_of() {
-  # 起一个只带一行全局配置的最小实例，量它的 OS 线程数，收掉，打印那个数。
+  # 起一個只帶一行全域設定的最小執行個體，量它的 OS 執行緒數，收掉，列印那個數。
   local label=$1 line=$2 port=$3
   {
     echo "{"
@@ -2128,8 +2128,8 @@ threads_of() {
     echo "0"
     return
   fi
-  # ⚠ 让 runtime 把 worker 都拉起来再量：tokio 的 worker 是建 runtime 时就 spawn 的，
-  #   但`端口在听`比那一步早一点点。
+  # ⚠ 讓 runtime 把 worker 都拉起來再量：tokio 的 worker 是建 runtime 時就 spawn 的，
+  #   但`端口在听`比那一步早一點點。
   sleep 1
   awk '/^Threads:/ {print $2}' "/proc/$pid/status" 2>/dev/null || echo "0"
   kill -INT "$pid" 2>/dev/null || true
@@ -2143,33 +2143,33 @@ T_DEFAULT=$(threads_of threads_default "" "$THREADS_PORT_C")
 NPROC=$(nproc 2>/dev/null || echo 0)
 note "实测线程数：threads_l7=1 → $T_ONE · threads_l7=8 → $T_EIGHT · 不写 → $T_DEFAULT（nproc=$NPROC）"
 
-# ★ `读不出来`判红，⛔ 不当成通过 —— 三个数里任何一个是 0 都说明量具没工作。
+# ★ `读不出来`判紅，⛔ 不當成通過 —— 三個數里任何一個是 0 都說明量具沒工作。
 if [ "$T_ONE" -gt 0 ] && [ "$T_EIGHT" -gt 0 ] && [ "$T_DEFAULT" -gt 0 ]; then
   ok "三个实例的线程数都量到了"
 else
   fail "线程数没量到（$T_ONE / $T_EIGHT / $T_DEFAULT）——「没能检查」不算「检查通过」"
 fi
 
-# ① 旋钮真的会动它。★ 实测差值恰好是 7，界取 6 留一格余量
-#   （⛔ 不写死 7：tokio 的阻塞池可能临时多出一条，而那与本条判据无关）。
+# ① 旋鈕真的會動它。★ 實測差值恰好是 7，界取 6 留一格餘量
+#   （⛔ 不寫死 7：tokio 的阻塞池可能臨時多出一條，而那與本條判據無關）。
 if [ "$((T_EIGHT - T_ONE))" -ge 6 ]; then
   ok "★ 「threads_l7」 从 1 调到 8，线程数多了 $((T_EIGHT - T_ONE)) 条 ⇒ 那个旋钮真的落到进程上了"
 else
   fail "「threads_l7」 从 1 调到 8 只多了 $((T_EIGHT - T_ONE)) 条线程 —— 那三行 s.threads 多半没接上"
 fi
 
-# ② 反方向的界：`threads_l7 1` 那一趟必须**真的少**。
-#   ⚠ 没有这一条，一个`无论配什么都起一百条线程`的实现在 ① 上照样过不了 ——
-#   但一个`无论配什么都按核数起`的实现会让 ① 的差值恰好是 0，而 ② 才说得出它错在哪。
+# ② 反方向的界：`threads_l7 1` 那一趟必須**真的少**。
+#   ⚠ 沒有這一條，一個`无论配什么都起一百条线程`的實作在 ① 上照樣過不了 ——
+#   但一個`无论配什么都按核数起`的實作會讓 ① 的差值恰好是 0，而 ② 才說得出它錯在哪。
 if [ "$T_ONE" -le 8 ]; then
   ok "「threads_l7 1」 那一趟只有 $T_ONE 条线程 ⇒ 它没有偷偷按核数起"
 else
   fail "「threads_l7 1」 却起了 $T_ONE 条线程 —— 配置多半根本没被读"
 fi
 
-# ③ ★ ★ **不写时的缺省真的是核数**（G140 ②：owner 拍板让 G35 的初值这次真的生效）。
-#   ⚠ 判成差值而不是绝对值：那 4 条固定线程（管理面 + 后台）与本条无关。
-#   ⚠ 核太少时这条判据没有分辨力，跳过并说出来 —— ⛔ 不静默跳过。
+# ③ ★ ★ **不寫時的預設真的是核數**（G140 ②：owner 拍板讓 G35 的初值這次真的生效）。
+#   ⚠ 判成差值而不是絕對值：那 4 條固定執行緒（管理面 + 後台）與本條無關。
+#   ⚠ 核太少時這條判據沒有分辨力，跳過並說出來 —— ⛔ 不靜默跳過。
 if [ "$NPROC" -ge 4 ]; then
   if [ "$((T_DEFAULT - T_ONE))" -ge "$((NPROC - 2))" ]; then
     ok "★ 不写 「threads_l7」 时比写 1 多了 $((T_DEFAULT - T_ONE)) 条（nproc=$NPROC）⇒ 角色缺省真的是核数"

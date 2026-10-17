@@ -1,35 +1,35 @@
-//! 磁盘后端（**M2 批 H**，形状由 **G83 / G84** 定死）。
+//! 磁碟後端（**M2 批 H**，形狀由 **G83 / G84** 定死）。
 //!
-//! ## 形状不是本批拍的，是 D8 结案时拍的
+//! ## 形狀不是本批拍的，是 D8 結案時拍的
 //!
-//! | | G83/G84 定下来的 | 这里落在哪 |
+//! | | G83/G84 定下來的 | 這裡落在哪 |
 //! |---|---|---|
-//! | 分片 | 缓存键 hash 的**两级分片目录** | [`DiskStore::shard_of`] |
-//! | 布局 | **meta 与 body 两个文件** | [`FamilyMeta`] / `*.body` |
-//! | 落地 | `tmp` 后 `rename` | [`DiskStore::atomic_write`] |
-//! | 重验证 | **只改 meta 不动 body** | [`DiskStore::refresh`] |
-//! | 崩溃恢复 | **启动不扫盘**：读时校验 + 后台渐进重建 | [`DiskStore::get`] / [`DiskStore::rebuild_step`] |
+//! | 分片 | 快取鍵 hash 的**兩級分片目錄** | [`DiskStore::shard_of`] |
+//! | 佈局 | **meta 與 body 兩個檔案** | [`FamilyMeta`] / `*.body` |
+//! | 完成實作 | `tmp` 後 `rename` | [`DiskStore::atomic_write`] |
+//! | 重驗證 | **只改 meta 不動 body** | [`DiskStore::refresh`] |
+//! | 崩潰恢復 | **啟動不掃盤**：讀時檢核 + 後台漸進重建 | [`DiskStore::get`] / [`DiskStore::rebuild_step`] |
 //! | `purge` | 走管理面（批 G 已做）| `admin.rs` |
 //!
-//! ## ⚠ 一处偏离：meta 是**一族一个**，不是一条一个
+//! ## ⚠ 一處偏離：meta 是**一族一個**，不是一條一個
 //!
-//! body 是一条一个，meta 是一个**主键**一个（装着该主键下全部 `Vary` 变体）。
-//! 没有 `Vary` 时 —— 绝大多数响应 —— 它就是「两个文件」。
-//! ★ 换不了：请求到达时我们**还不知道 `Vary`**（那是响应告诉我们的），
-//! 于是次级键算不出来、文件名拼不出来。
-//! ★ 而 G83 给出的**理由**（「重验证只改 meta 不动 body」）在这里一字不差地成立。
+//! body 是一條一個，meta 是一個**主鍵**一個（裝著該主鍵下全部 `Vary` 變體）。
+//! 沒有 `Vary` 時 —— 絕大多數回應 —— 它就是「兩個檔案」。
+//! ★ 換不了：請求到達時我們**還不知道 `Vary`**（那是回應告訴我們的），
+//! 於是次級鍵算不出來、檔案名拼不出來。
+//! ★ 而 G83 給出的**理由**（「重驗證只改 meta 不動 body」）在這裡一字不差地成立。
 //!
-//! ## ⚠ ⚠ hash 会撞，撞了的后果是「把别人的内容发给你」
+//! ## ⚠ ⚠ hash 會撞，撞了的後果是「把別人的內容發給你」
 //!
-//! **正确性不建在「不会撞」上面**：[`FamilyMeta::primary`] 存**主键原文**，
-//! 查的时候逐字比一遍，对不上就当没有。
+//! **正確性不建在「不會撞」上面**：[`FamilyMeta::primary`] 存**主鍵原文**，
+//! 查的時候逐字比一遍，對不上就當沒有。
 //!
-//! ## ⚠ 磁盘 I/O 是**同步**的，代价写在明处
+//! ## ⚠ 磁碟 I/O 是**同步**的，代價寫在明處
 //!
-//! 七个操作的签名与 [`super::store::MemStore`] 逐字相同，而那组签名是同步的。
-//! 改成 async 等于把接口劈成两份 ⇒ 数据面要为「内存还是磁盘」分出两条路。
-//! ⚠ **代价**：一次冷盘读会占住一条 tokio 工作线程。管理面那两条会走遍整棵目录树，
-//! 所以它们在调用处包了 `block_in_place`；请求路径上只读两个小文件，没有包。
+//! 七個操作的簽名與 [`super::store::MemStore`] 逐字相同，而那組簽名是同步的。
+//! 改成 async 等於把介面劈成兩份 ⇒ 資料面要為「記憶體還是磁碟」分出兩條路。
+//! ⚠ **代價**：一次冷盤讀會佔住一條 tokio 工作執行緒。管理面那兩條會走遍整棵目錄樹，
+//! 所以它們在呼叫處包了 `block_in_place`；請求路徑上唯讀兩個小檔案，沒有包。
 
 use super::cc::ResponseCc;
 use super::store::{Entry, Lookup};
@@ -42,25 +42,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// meta 文件的格式版本。
+/// meta 檔案的格式版本。
 ///
-/// ★ ★ 它不是装饰：加一个字段之后，旧进程写下的 meta 与新代码**长得不一样**，
-/// 而 serde 对着一份少了字段的 JSON 会给出一个**看起来很正常的错误**或者一份
-/// 半对的结构。⇒ 版本对不上就当这条不存在（当成未命中，后台清理会收走它）。
-/// ⚠ 代价认下：改这个号 = 换代之后缓存整个冷启动一次。那是**该付**的代价 ——
-/// 另一种做法是「尽量兼容」，而它的失败形态是把一份旧语义的元数据按新语义解释。
+/// ★ ★ 它不是裝飾：加一個欄位之後，舊處理程序寫下的 meta 與新程式碼**長得不一樣**，
+/// 而 serde 對著一份少了欄位的 JSON 會給出一個**看起來很正常的錯誤**或者一份
+/// 半對的結構。⇒ 版本對不上就當這條不存在（當成未命中，後台清理會收走它）。
+/// ⚠ 代價認下：改這個號 = 換代之後快取整個冷啟動一次。那是**該付**的代價 ——
+/// 另一種做法是「儘量相容」，而它的失敗形態是把一份舊語義的中繼資料按新語義解釋。
 const META_VERSION: u32 = 1;
 
-/// 一族（同一个主键）的元数据。★ 与 body **分开**的那一半（G83）。
+/// 一族（同一個主鍵）的中繼資料。★ 與 body **分開**的那一半（G83）。
 #[derive(Debug, Serialize, Deserialize)]
 struct FamilyMeta {
     v: u32,
-    /// ⚠ **主键原文**。文件名是 hash，而 hash 会撞 —— 这一行是撞了之后唯一的防线。
+    /// ⚠ **主鍵原文**。檔案名是 hash，而 hash 會撞 —— 這一行是撞了之後唯一的防線。
     primary: String,
     variants: Vec<VariantMeta>,
 }
 
-/// 一个 `Vary` 变体的元数据。
+/// 一個 `Vary` 變體的中繼資料。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VariantMeta {
     secondary: String,
@@ -72,15 +72,15 @@ struct VariantMeta {
     etag: Option<String>,
     last_modified: Option<String>,
     vary: Vec<String>,
-    /// body 文件**应该**有多长。★ 「读时校验」（G84）就是拿它比的。
+    /// body 檔案**應該**有多長。★ 「讀時檢核」（G84）就是拿它比的。
     body_len: u64,
 }
 
 impl VariantMeta {
-    /// 这条占多少字节（口径与 [`Entry::footprint`] 必须一致）。
+    /// 這條佔多少位元組（口徑與 [`Entry::footprint`] 必須一致）。
     ///
-    /// ⚠ ⚠ 两处各算各的话，`put` 加进去的数与 `evict` 减掉的数会**慢慢分家**，
-    /// 而现场是「缓存越用越满，最后一条都存不进去」，`stats()` 里的条数却是对的。
+    /// ⚠ ⚠ 兩處各算各的話，`put` 加進去的數與 `evict` 減掉的數會**慢慢分家**，
+    /// 而現場是「快取越用越滿，最後一條都存不進去」，`stats()` 裡的條數卻是對的。
     fn footprint(&self) -> u64 {
         let h: usize = self
             .headers
@@ -93,10 +93,10 @@ impl VariantMeta {
 
 /// FNV-1a 64 位。
 ///
-/// ★ ★ **有意不用 `DefaultHasher`**：`std` 明确不保证它跨版本稳定，而这里的 hash
-/// 决定的是**磁盘上的文件名** —— 换一次工具链，全盘缓存就集体改名，
-/// ⚠ 而现场表现是「升级之后缓存命中率掉到 0」，没有任何东西会说为什么。
-/// FNV-1a 写死在这里，它十年后还是同一个值。
+/// ★ ★ **有意不用 `DefaultHasher`**：`std` 明確不保證它跨版本穩定，而這裡的 hash
+/// 決定的是**磁碟上的檔案名** —— 換一次工具鏈，全盤快取就集體改名，
+/// ⚠ 而現場表現是「升級之後快取命中率掉到 0」，沒有任何東西會說為什麼。
+/// FNV-1a 寫死在這裡，它十年後還是同一個值。
 fn fnv1a64(s: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.as_bytes() {
@@ -110,17 +110,17 @@ fn hex16(v: u64) -> String {
     format!("{v:016x}")
 }
 
-/// 淘汰索引（**G84**：走 save/load，不靠启动扫盘）。
+/// 淘汰索引（**G84**：走 save/load，不靠啟動掃盤）。
 ///
-/// ⚠ ⚠ **它不在读路径上。** 读走的是「按键算出文件名、直接开」那条路 ——
-/// 于是**重启之后第一个请求就能命中磁盘上的东西**，而不必等索引重建完。
-/// ★ 索引只管一件事：淘汰时知道该先扔谁、以及现在占了多少。
-/// ⇒ 索引不全的代价就是 G84 写在明处的那一条：**刚重启时少算占用，淘汰比稳态晚一点**。
+/// ⚠ ⚠ **它不在讀路徑上。** 讀走的是「按鍵算出檔案名、直接開」那條路 ——
+/// 於是**重新啟動之後第一個請求就能命中磁碟上的東西**，而不必等索引重建完。
+/// ★ 索引只管一件事：淘汰時知道該先扔誰、以及現在佔了多少。
+/// ⇒ 索引不全的代價就是 G84 寫在明處的那一條：**剛重新啟動時少算佔用，淘汰比穩態晚一點**。
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DiskIndex {
     /// `(主键, 次级键) → 占用字节`。
     sizes: HashMap<String, u64>,
-    /// LRU 顺序：最近用过的排在后面。存 `"主键\u{1}次级键"`。
+    /// LRU 順序：最近用過的排在後面。存 `"主键\u{1}次级键"`。
     lru: Vec<String>,
     used: u64,
 }
@@ -159,49 +159,49 @@ impl DiskIndex {
     }
 }
 
-/// 后台渐进重建的进度（**G84**）。
+/// 後台漸進重建的進度（**G84**）。
 #[derive(Debug, Default)]
 struct RebuildState {
-    /// 本轮要走的一级分片目录，倒序弹出。
+    /// 本輪要走的一級分片目錄，倒序彈出。
     todo: Vec<PathBuf>,
-    /// 起过一轮没有。
+    /// 起過一輪沒有。
     started: bool,
-    /// 走完过几轮（给日志与判据用）。
+    /// 走完過幾輪（給紀錄與判據用）。
     passes: u64,
 }
 
-/// 磁盘缓存。★ 七个操作的签名与 [`super::store::MemStore`] **逐字相同**。
+/// 磁碟快取。★ 七個操作的簽名與 [`super::store::MemStore`] **逐字相同**。
 #[derive(Debug)]
 pub struct DiskStore {
     root: PathBuf,
-    /// ★ 原子而不是普通字段 —— 与 [`super::store::MemStore`] 同一条理由（D19）。
-    /// ⚠ ⚠ **两个后端必须一起改**：它们对 `capacity` 的三个读点形状逐字相同，
-    /// 只改一个的话症状是「换成磁盘后端就不生效」，那是最难查的那种形状。
+    /// ★ 原子而不是普通欄位 —— 與 [`super::store::MemStore`] 同一條理由（D19）。
+    /// ⚠ ⚠ **兩個後端必須一起改**：它們對 `capacity` 的三個讀點形狀逐字相同，
+    /// 只改一個的話症狀是「換成磁碟後端就不生效」，那是最難查的那種形狀。
     capacity: AtomicU64,
     index: Mutex<DiskIndex>,
-    /// meta 的「读—改—写」互斥。
+    /// meta 的「讀—改—寫」互斥。
     ///
-    /// ⚠ 没有它的话，两个并发 `put` 会各自读到同一份旧 meta、各写一份新的，
-    /// **后写的那份把先写的那个变体抹掉** —— 而它的 body 文件还在盘上，
-    /// 于是变成一条谁也找不到的垃圾。★ 那不是「给错内容」，只是浪费，
-    /// 但它是一条**不会被任何判据看见**的浪费，所以在结构上堵掉。
+    /// ⚠ 沒有它的話，兩個並行 `put` 會各自讀到同一份舊 meta、各寫一份新的，
+    /// **後寫的那份把先寫的那個變體抹掉** —— 而它的 body 檔案還在盤上，
+    /// 於是變成一條誰也找不到的垃圾。★ 那不是「給錯內容」，只是浪費，
+    /// 但它是一條**不會被任何判據看見**的浪費，所以在結構上堵掉。
     meta_lock: Mutex<()>,
     rebuild: Mutex<RebuildState>,
 }
 
 impl DiskStore {
-    /// 打开（或建出）一个磁盘缓存。
+    /// 打開（或建出）一個磁碟快取。
     ///
-    /// ★ ★ **启动不扫盘**（G84）：这里只建目录、读一次索引文件，都是 O(1)。
-    /// ⚠ 它与 G78 的 `sd_notify(READY=1)` 是同一件事的两面 —— 换代要求新一代
-    /// **快速就绪**，而全盘扫描的时间随缓存大小线性增长。
+    /// ★ ★ **啟動不掃盤**（G84）：這裡只建目錄、讀一次索引檔案，都是 O(1)。
+    /// ⚠ 它與 G78 的 `sd_notify(READY=1)` 是同一件事的兩面 —— 換代要求新一代
+    /// **快速就緒**，而全盤掃描的時間隨快取大小線性增長。
     pub fn open(root: &Path, capacity: u64) -> std::io::Result<DiskStore> {
         fs::create_dir_all(root)?;
         fs::create_dir_all(root.join("tmp"))?;
-        // ★ ★ **真写一次**再说这个目录能用。
-        //   ⚠ `create_dir_all` 对一个**已经存在但不可写**的目录是成功的 ——
-        //   于是「目录准备好了」这句话在最该报警的那一刻恰好成立，
-        //   而第一次 `put` 才失败，那时已经在收流量了。
+        // ★ ★ **真寫一次**再說這個目錄能用。
+        //   ⚠ `create_dir_all` 對一個**已經存在但不可寫**的目錄是成功的 ——
+        //   於是「目錄準備好了」這句話在最該報警的那一刻恰好成立，
+        //   而第一次 `put` 才失敗，那時已經在收流量了。
         let probe = root.join("tmp").join(".writable");
         fs::write(&probe, b"fulcrum")?;
         fs::remove_file(&probe)?;
@@ -224,40 +224,40 @@ impl DiskStore {
         self.capacity.load(Ordering::Relaxed)
     }
 
-    /// 换一个容量上限（`POST /load` 走这里，D19）。
+    /// 換一個容量上限（`POST /load` 走這裡，D19）。
     ///
-    /// ★ ★ **同样有意不当场淘汰**，而磁盘这边的理由更硬一层：当场收紧要**删文件**，
-    /// 那会把 `POST /load` 的耗时挂到盘上去。⇒ 下一次 `put` 的淘汰循环收紧它。
-    /// ⚠ 代价与内存后端逐字相同，判据见本文件测试 `容量在线改得动_磁盘后端同样`
-    /// 与 `store.rs` 的 `调小容量是惰性的_下一次写入才把占用压回去`。
+    /// ★ ★ **同樣有意不當場淘汰**，而磁碟這邊的理由更硬一層：當場收緊要**刪檔案**，
+    /// 那會把 `POST /load` 的耗時掛到盤上去。⇒ 下一次 `put` 的淘汰循環收緊它。
+    /// ⚠ 代價與記憶體後端逐字相同，判據見本檔案測試 `容量在线改得动_磁盘后端同样`
+    /// 與 `store.rs` 的 `调小容量是惰性的_下一次写入才把占用压回去`。
     pub fn set_capacity(&self, capacity: u64) {
         self.capacity.store(capacity, Ordering::Relaxed);
     }
 
-    /// 当前占用与条目数。
+    /// 當前佔用與條目數。
     ///
-    /// ⚠ ⚠ **刚重启时它会偏小**，而盘上的东西照样命中得到 —— 这不是缺陷，
-    /// 是 G84 写在明处的那个「最终一致窗口」。后台渐进重建会把它补齐。
+    /// ⚠ ⚠ **剛重新啟動時它會偏小**，而盤上的東西照樣命中得到 —— 這不是缺陷，
+    /// 是 G84 寫在明處的那個「最終一致視窗」。後台漸進重建會把它補齊。
     pub fn stats(&self) -> (u64, usize) {
         let g = self.lock_index();
         (g.used, g.lru.len())
     }
 
-    /// 走完过几轮渐进重建（给装载日志与判据用）。
+    /// 走完過幾輪漸進重建（給裝載紀錄與判據用）。
     pub fn rebuild_passes(&self) -> u64 {
         self.rebuild.lock().map(|g| g.passes).unwrap_or(0)
     }
 
-    // ⚠ 锁中毒不 panic：一个 panic 过的缓存不该把**整个服务**也拖下水
-    //   （与 `MemStore` 同款，理由也一样：缓存里最坏的情况是多回一次源）。
+    // ⚠ 鎖中毒不 panic：一個 panic 過的快取不該把**整個服務**也拖下水
+    //   （與 `MemStore` 同款，理由也一樣：快取裡最壞的情況是多回一次源）。
     fn lock_index(&self) -> std::sync::MutexGuard<'_, DiskIndex> {
         self.index.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    // ── 路径 ────────────────────────────────────────────────────────────────
+    // ── 路徑 ────────────────────────────────────────────────────────────────
 
-    /// 两级分片目录（G83）。★ nginx 与 Caddy 都是这个形状，理由是同一个：
-    /// ⚠ 单目录几十万文件时，`readdir` 与 `unlink` 的代价会把清理任务本身拖垮。
+    /// 兩級分片目錄（G83）。★ nginx 與 Caddy 都是這個形狀，理由是同一個：
+    /// ⚠ 單目錄幾十萬檔案時，`readdir` 與 `unlink` 的代價會把清理任務本身拖垮。
     fn shard_of(&self, hp: &str) -> PathBuf {
         self.root.join(&hp[0..2]).join(&hp[2..4])
     }
@@ -273,21 +273,21 @@ impl DiskStore {
         self.shard_of(&hp).join(format!("{hp}-{hs}.body"))
     }
 
-    // ── 原子落地（G83：`tmp` 后 `rename`）──────────────────────────────────
+    // ── 原子完成實作（G83：`tmp` 後 `rename`）──────────────────────────────────
 
-    /// 写一个文件：先写 `tmp/`，再 `rename` 到位。
+    /// 寫一個檔案：先寫 `tmp/`，再 `rename` 到位。
     ///
-    /// ★ `rename(2)` 在同一个文件系统内是原子的 —— 读的人要么看见旧的、要么看见新的，
-    /// **永远不会看见写到一半的**。⚠ 这也是 `tmp/` 必须在缓存根**里面**的原因：
-    /// 跨文件系统的 rename 会退化成「拷贝 + 删除」，那就不原子了。
+    /// ★ `rename(2)` 在同一個檔案系統內是原子的 —— 讀的人要麼看見舊的、要麼看見新的，
+    /// **永遠不會看見寫到一半的**。⚠ 這也是 `tmp/` 必須在快取根**裡面**的原因：
+    /// 跨檔案系統的 rename 會退化成「拷貝 + 刪除」，那就不原子了。
     ///
-    /// `fsync` 只对 **body** 做，不对 meta 做，理由见 [`DiskStore::put`]。
+    /// `fsync` 只對 **body** 做，不對 meta 做，理由見 [`DiskStore::put`]。
     fn atomic_write(&self, dst: &Path, bytes: &[u8], fsync: bool) -> std::io::Result<()> {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        // ★ 临时名带上进程号与一个自增序号：同一个进程里两次并发落地不能撞名，
-        //   而撞了的后果是其中一次写到另一次的半成品上。
+        // ★ 臨時名帶上處理程序號與一個自增序號：同一個處理程序裡兩次並行完成實作不能撞名，
+        //   而撞了的後果是其中一次寫到另一次的半成品上。
         let seq = next_tmp_seq();
         let tmp = self
             .root
@@ -312,7 +312,7 @@ impl DiskStore {
     fn read_family(&self, primary: &str) -> Option<FamilyMeta> {
         let raw = fs::read(self.meta_path(primary)).ok()?;
         let fam: FamilyMeta = serde_json::from_slice(&raw).ok()?;
-        // ★ 版本对不上、或者 hash 撞到了别人头上 —— 两种都当「这里没有」。
+        // ★ 版本對不上、或者 hash 撞到了別人頭上 —— 兩種都當「這裡沒有」。
         if fam.v != META_VERSION || fam.primary != primary {
             return None;
         }
@@ -324,7 +324,7 @@ impl DiskStore {
         self.atomic_write(&self.meta_path(&fam.primary), &bytes, false)
     }
 
-    /// 整族抹掉（meta + 全部 body）。返回抹掉几条。
+    /// 整族抹掉（meta + 全部 body）。回傳抹掉幾條。
     fn drop_family(&self, fam: &FamilyMeta) -> usize {
         for v in &fam.variants {
             let _ = fs::remove_file(self.body_path(&fam.primary, &v.secondary));
@@ -337,7 +337,7 @@ impl DiskStore {
         fam.variants.len()
     }
 
-    /// 把一个变体从它那一族里摘掉（读时校验失败、或淘汰时走这里）。
+    /// 把一個變體從它那一族裡摘掉（讀時檢核失敗、或淘汰時走這裡）。
     fn drop_variant(&self, primary: &str, secondary: &str) {
         let _guard = self.meta_lock.lock().unwrap_or_else(|e| e.into_inner());
         let _ = fs::remove_file(self.body_path(primary, secondary));
@@ -353,14 +353,14 @@ impl DiskStore {
             .remove(&DiskIndex::slot(primary, secondary));
     }
 
-    // ── 七个操作（与 `MemStore` 逐字同签名）──────────────────────────────
+    // ── 七個操作（與 `MemStore` 逐字同簽名）──────────────────────────────
 
-    /// 查一条。
+    /// 查一條。
     ///
-    /// ★ ★ ★ **这条路不看索引**：按键算出文件名直接开 —— 于是「启动不扫盘」（G84）
-    /// 与「重启之后立刻还能命中」这两件事**同时**成立。
-    /// ⚠ 把读路径挂到索引上的写法，会让一次重启等于一次全量回源，
-    /// 而那恰恰是磁盘缓存存在的理由。
+    /// ★ ★ ★ **這條路不看索引**：按鍵算出檔案名直接開 —— 於是「啟動不掃盤」（G84）
+    /// 與「重新啟動之後立刻還能命中」這兩件事**同時**成立。
+    /// ⚠ 把讀路徑掛到索引上的寫法，會讓一次重新啟動等於一次全量回源，
+    /// 而那恰恰是磁碟快取存在的理由。
     pub fn get<'a, F>(&self, primary: &str, mut get_header: F) -> Lookup
     where
         F: FnMut(&str) -> Option<&'a str>,
@@ -374,8 +374,8 @@ impl DiskStore {
             if vary_of_family.is_empty() {
                 vary_of_family = v.vary.clone();
             }
-            // ★ 逐条按**它自己的** vary 算次级键，不假设一族里都一样
-            //   （与 `MemStore` 同一条：上游改了 Vary 的那一刻，假设就开始命中错的条目）。
+            // ★ 逐條按**它自己的** vary 算次級鍵，不假設一族裡都一樣
+            //   （與 `MemStore` 同一條：上游改了 Vary 的那一刻，假設就開始命中錯的條目）。
             if super::key::secondary(&v.vary, &mut get_header) == v.secondary {
                 found = Some(v.clone());
                 break;
@@ -387,9 +387,9 @@ impl DiskStore {
             };
         };
 
-        // ── ★ ★ 读时校验（G84）───────────────────────────────────────────
-        //   ⚠ 「meta 说有、body 不在或长度对不上」是崩溃恢复必然会遇到的状态
-        //   （body 落地了而 meta 还没、或者反过来）。**即丢即删**，当成未命中。
+        // ── ★ ★ 讀時檢核（G84）───────────────────────────────────────────
+        //   ⚠ 「meta 說有、body 不在或長度對不上」是崩潰恢復必然會遇到的狀態
+        //   （body 完成實作了而 meta 還沒、或者反過來）。**即丟即刪**，當成未命中。
         let body = match fs::read(self.body_path(primary, &v.secondary)) {
             Ok(b) if b.len() as u64 == v.body_len => b,
             Ok(b) => {
@@ -411,9 +411,9 @@ impl DiskStore {
         {
             let mut g = self.lock_index();
             let slot = DiskIndex::slot(primary, &v.secondary);
-            // ⚠ 索引里可能根本没有这一条（刚重启、后台还没走到这一格）——
-            //   ★ 那就**顺手把它记上**：读路径本来就已经把这条的大小算出来了，
-            //   等后台走到这里再记一遍是白等一轮。
+            // ⚠ 索引裡可能根本沒有這一條（剛重新啟動、後台還沒走到這一格）——
+            //   ★ 那就**順手把它記上**：讀路徑本來就已經把這條的大小算出來了，
+            //   等後台走到這裡再記一遍是白等一輪。
             if g.sizes.contains_key(&slot) {
                 g.touch(&slot);
             } else {
@@ -435,22 +435,22 @@ impl DiskStore {
         }))
     }
 
-    /// 存一条。
+    /// 存一條。
     ///
-    /// 落地顺序是 **body 先、meta 后**，这一点不是随手排的：
-    /// ★ meta 是**唯一的索引**，所以「meta 在而 body 不在」会被读时校验当场收掉，
-    /// 而「body 在而 meta 不提它」只是一条没人认领的垃圾 —— 由后台清理收走。
-    /// ⇒ 先写 body 让崩溃落在**便宜**的那一边。
+    /// 完成實作順序是 **body 先、meta 後**，這一點不是隨手排的：
+    /// ★ meta 是**唯一的索引**，所以「meta 在而 body 不在」會被讀時檢核當場收掉，
+    /// 而「body 在而 meta 不提它」只是一條沒人認領的垃圾 —— 由後台清理收走。
+    /// ⇒ 先寫 body 讓崩潰落在**便宜**的那一邊。
     ///
-    /// `fsync` **只给 body**：
-    /// ⚠ 一份长度正确、内容是垃圾的 body 会被原样发给客户端 —— 那正是
-    /// 「偶尔给错内容」。而一份坏掉的 meta 解析不出来，当场就被当成没有。
-    /// ⇒ 把这一次 fsync 花在真正要命的那一边，不给 meta 再花一次。
+    /// `fsync` **只給 body**：
+    /// ⚠ 一份長度正確、內容是垃圾的 body 會被原樣發給用戶端 —— 那正是
+    /// 「偶爾給錯內容」。而一份壞掉的 meta 解析不出來，當場就被當成沒有。
+    /// ⇒ 把這一次 fsync 花在真正要命的那一邊，不給 meta 再花一次。
     pub fn put(&self, primary: &str, secondary: String, entry: Entry) {
         let size = entry.footprint();
-        // ★ 容量在这一次 put 里只读一次（与 `MemStore` 同一条理由，D19）。
+        // ★ 容量在這一次 put 裡唯讀一次（與 `MemStore` 同一條理由，D19）。
         let capacity = self.capacity();
-        // ⚠ 一条比整个容量还大的条目**不存**（与 `MemStore` 同一条理由）。
+        // ⚠ 一條比整個容量還大的條目**不存**（與 `MemStore` 同一條理由）。
         if size > capacity {
             return;
         }
@@ -475,9 +475,9 @@ impl DiskStore {
 
         {
             let _guard = self.meta_lock.lock().unwrap_or_else(|e| e.into_inner());
-            // ★ hash 撞到别人头上时：`read_family` 已经因为主键对不上返回 `None`，
-            //   于是这里会**整族改写**成我们这一族 —— 对方的 body 变成没人认领的垃圾，
-            //   由后台清理收走。⚠ 另一种做法是「让我们这条永远存不进去」，更坏。
+            // ★ hash 撞到別人頭上時：`read_family` 已經因為主鍵對不上回傳 `None`，
+            //   於是這裡會**整族改寫**成我們這一族 —— 對方的 body 變成沒人認領的垃圾，
+            //   由後台清理收走。⚠ 另一種做法是「讓我們這條永遠存不進去」，更壞。
             let mut fam = self.read_family(primary).unwrap_or(FamilyMeta {
                 v: META_VERSION,
                 primary: primary.to_string(),
@@ -494,9 +494,9 @@ impl DiskStore {
 
         // ── 淘汰 ────────────────────────────────────────────────────────
         //
-        // ★ 顺序与 `MemStore::put` **一样**：先把旧的那条减掉、再腾地方、最后插进去。
-        //   ⚠ 反过来（先插再腾）会让**刚存进来的这一条**排在 LRU 最前而被自己挤掉 ——
-        //   于是「存了又马上删」，下一次请求还会再存一次，永远在原地打转。
+        // ★ 順序與 `MemStore::put` **一樣**：先把舊的那條減掉、再騰地方、最後插進去。
+        //   ⚠ 反過來（先插再騰）會讓**剛存進來的這一條**排在 LRU 最前而被自己擠掉 ——
+        //   於是「存了又馬上刪」，下一次請求還會再存一次，永遠在原地打轉。
         let victims = {
             let mut g = self.lock_index();
             let slot = DiskIndex::slot(primary, &secondary);
@@ -512,17 +512,17 @@ impl DiskStore {
             g.insert(slot, size);
             out
         };
-        // ⚠ 删文件在锁外做：I/O 拿着索引锁会把别的请求一起堵住。
+        // ⚠ 刪檔案在鎖外做：I/O 拿著索引鎖會把別的請求一起堵住。
         for slot in victims {
             let (p, s) = DiskIndex::split(&slot);
             self.drop_variant(&p, &s);
         }
     }
 
-    /// **只更新元数据，不动 body**（G83 那条形状的落点）。
+    /// **只更新中繼資料，不動 body**（G83 那條形狀的落點）。
     ///
-    /// ★ 重验证（304）是缓存最常见的写操作之一 —— 合成一个文件就得整体重写，
-    /// 而一份 body 可能是几 MB。
+    /// ★ 重驗證（304）是快取最常見的寫操作之一 —— 合成一個檔案就得整體重寫，
+    /// 而一份 body 可能是幾 MB。
     pub fn refresh(
         &self,
         primary: &str,
@@ -550,7 +550,7 @@ impl DiskStore {
             .touch(&DiskIndex::slot(primary, secondary));
     }
 
-    /// 按主键清掉一整族。返回清掉几条。
+    /// 按主鍵清掉一整族。回傳清掉幾條。
     pub fn purge_primary(&self, primary: &str) -> usize {
         let _guard = self.meta_lock.lock().unwrap_or_else(|e| e.into_inner());
         match self.read_family(primary) {
@@ -559,13 +559,13 @@ impl DiskStore {
         }
     }
 
-    /// 按主键前缀清。返回清掉几条。
+    /// 按主鍵前綴清。回傳清掉幾條。
     ///
-    /// ★ ★ ★ **它走盘，不走索引。** 理由是 G84 的直接后果：启动不扫盘 ⇒
-    /// 刚重启时索引里几乎是空的，而盘上东西都在。⚠ 一个只看索引的 `purge`
-    /// 会在**刚重启之后**清不掉任何东西，还回一句「清掉 0 条」——
-    /// 那是一条在最该起作用的时候恰好失效、而且**看起来完全正常**的管理面。
-    /// ⇒ purge 的语义是「让它不在」，所以它必须以盘为准。
+    /// ★ ★ ★ **它走盤，不走索引。** 理由是 G84 的直接後果：啟動不掃盤 ⇒
+    /// 剛重新啟動時索引裡幾乎是空的，而盤上東西都在。⚠ 一個只看索引的 `purge`
+    /// 會在**剛重新啟動之後**清不掉任何東西，還回一句「清掉 0 條」——
+    /// 那是一條在最該起作用的時候恰好失效、而且**看起來完全正常**的管理面。
+    /// ⇒ purge 的語義是「讓它不在」，所以它必須以盤為準。
     pub fn purge_prefix(&self, prefix: &str) -> usize {
         let mut n = 0;
         for fam in self.walk_families() {
@@ -576,13 +576,13 @@ impl DiskStore {
         n
     }
 
-    /// 全清。返回清掉几条。★ 同样走盘，理由同 [`Self::purge_prefix`]。
+    /// 全清。回傳清掉幾條。★ 同樣走盤，理由同 [`Self::purge_prefix`]。
     pub fn purge_all(&self) -> usize {
         let mut n = 0;
         for fam in self.walk_families() {
             n += self.drop_family(&fam);
         }
-        // 顺手把没人认领的 body 也收掉：全清之后盘上不该剩下任何缓存内容。
+        // 順手把沒人認領的 body 也收掉：全清之後盤上不該剩下任何快取內容。
         for shard in self.leaf_dirs() {
             reap_orphans(&shard, &[]);
         }
@@ -591,22 +591,22 @@ impl DiskStore {
         n
     }
 
-    // ── 后台渐进重建（G84）───────────────────────────────────────────────
+    // ── 後台漸進重建（G84）───────────────────────────────────────────────
 
-    /// 走一小步渐进重建：处理**一个一级分片目录**。
+    /// 走一小步漸進重建：處理**一個一級分片目錄**。
     ///
-    /// 返回 `true` = 刚刚走完一整轮。
+    /// 回傳 `true` = 剛剛走完一整輪。
     ///
-    /// ★ ★ 它做两件事，而**第二件只有它能做**：
-    /// 1. 把索引里没有的条目补上（占用算得更准，淘汰不再偏晚）；
-    /// 2. **收掉没人认领的 body** —— 崩溃在「body 写完、meta 还没写」之间时留下的，
-    ///    以及淘汰/撞 hash 时留下的。⚠ 没有这一步，那些文件**永远**不会被删，
-    ///    而它们不在索引里 ⇒ 占用算不到 ⇒ 淘汰也永远轮不到它们：
-    ///    一处只会涨不会落的磁盘占用，**而缓存本身的行为完全正常**。
+    /// ★ ★ 它做兩件事，而**第二件只有它能做**：
+    /// 1. 把索引裡沒有的條目補上（佔用算得更準，淘汰不再偏晚）；
+    /// 2. **收掉沒人認領的 body** —— 崩潰在「body 寫完、meta 還沒寫」之間時留下的，
+    ///    以及淘汰/撞 hash 時留下的。⚠ 沒有這一步，那些檔案**永遠**不會被刪，
+    ///    而它們不在索引裡 ⇒ 佔用算不到 ⇒ 淘汰也永遠輪不到它們：
+    ///    一處只會漲不會落的磁碟佔用，**而快取本身的行為完全正常**。
     ///
-    /// ⚠ ⚠ 它**只加不减**：不去核对索引里的条目是否还在盘上。
-    /// 一条已经消失的条目会让占用偏大 ⇒ 淘汰早一点触发 ⇒ 淘汰它时文件早就不在，
-    /// `remove_file` 失败被忽略、条目从索引里掉出去。★ 自愈，且不需要一遍 stat 风暴。
+    /// ⚠ ⚠ 它**只加不減**：不去核對索引裡的條目是否還在盤上。
+    /// 一條已經消失的條目會讓佔用偏大 ⇒ 淘汰早一點觸發 ⇒ 淘汰它時檔案早就不在，
+    /// `remove_file` 失敗被忽略、條目從索引裡掉出去。★ 自愈，且不需要一遍 stat 風暴。
     pub fn rebuild_step(&self) -> bool {
         let dir = {
             let mut st = self.rebuild.lock().unwrap_or_else(|e| e.into_inner());
@@ -659,7 +659,7 @@ impl DiskStore {
         done
     }
 
-    /// 把淘汰索引写到盘上（**G84** 的 save 那一半）。
+    /// 把淘汰索引寫到盤上（**G84** 的 save 那一半）。
     pub fn save_index(&self) {
         let snapshot = {
             let g = self.lock_index();
@@ -675,12 +675,12 @@ impl DiskStore {
         }
     }
 
-    // ── 目录遍历 ────────────────────────────────────────────────────────
+    // ── 目錄遍歷 ────────────────────────────────────────────────────────
 
     fn level1_dirs(&self) -> Vec<PathBuf> {
         read_subdirs(&self.root)
             .into_iter()
-            // `tmp/` 不是分片目录。
+            // `tmp/` 不是分片目錄。
             .filter(|p| p.file_name().is_some_and(|n| n != "tmp"))
             .collect()
     }
@@ -693,7 +693,7 @@ impl DiskStore {
         out
     }
 
-    /// 走遍盘上全部 meta。★ 只给管理面那两条用 —— 它慢，而且慢得有道理。
+    /// 走遍盤上全部 meta。★ 只給管理面那兩條用 —— 它慢，而且慢得有道理。
     fn walk_families(&self) -> Vec<FamilyMeta> {
         let mut out = Vec::new();
         for leaf in self.leaf_dirs() {
@@ -703,7 +703,7 @@ impl DiskStore {
     }
 }
 
-/// 读一个目录下的子目录。★ 读不出来就当空 —— 缓存里最坏的情况是多回一次源。
+/// 讀一個目錄下的子目錄。★ 讀不出來就當空 —— 快取裡最壞的情況是多回一次源。
 fn read_subdirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = fs::read_dir(dir) else {
         return Vec::new();
@@ -713,7 +713,7 @@ fn read_subdirs(dir: &Path) -> Vec<PathBuf> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .map(|e| e.path())
         .collect();
-    // ★ 排序只为让遍历顺序可复现：一条走盘的判据在不同机器上该看到同一份结果。
+    // ★ 排序只為讓遍歷順序可重現：一條走盤的判據在不同機器上該看到同一份結果。
     out.sort();
     out
 }
@@ -735,8 +735,8 @@ fn read_families_in(leaf: &Path) -> Vec<FamilyMeta> {
             .and_then(|b| serde_json::from_slice::<FamilyMeta>(&b).ok())
         {
             Some(fam) if fam.v == META_VERSION => out.push(fam),
-            // ⚠ 解析不出来 / 版本不对 ⇒ **删掉 meta**。它的 body 随即变成
-            //   没人认领的，由同一轮的 `reap_orphans` 收走 —— 两步都在这一趟里做完。
+            // ⚠ 解析不出來 / 版本不對 ⇒ **刪掉 meta**。它的 body 隨即變成
+            //   沒人認領的，由同一輪的 `reap_orphans` 收走 —— 兩步都在這一趟裡做完。
             _ => {
                 let _ = fs::remove_file(&p);
             }
@@ -745,7 +745,7 @@ fn read_families_in(leaf: &Path) -> Vec<FamilyMeta> {
     out
 }
 
-/// 收掉这个叶子目录里**没人认领**的 body 文件。
+/// 收掉這個葉子目錄裡**沒人認領**的 body 檔案。
 fn reap_orphans(leaf: &Path, keep: &[String]) {
     let Ok(rd) = fs::read_dir(leaf) else {
         return;
@@ -766,10 +766,10 @@ fn reap_orphans(leaf: &Path, keep: &[String]) {
     }
 }
 
-/// 读回淘汰索引。
+/// 讀回淘汰索引。
 ///
-/// ★ 没有 / 坏了都当空 —— 后台渐进重建会把它补齐，
-/// 而在补齐之前**读路径照常命中**（它不看索引）。
+/// ★ 沒有 / 壞了都當空 —— 後台漸進重建會把它補齊，
+/// 而在補齊之前**讀路徑照常命中**（它不看索引）。
 fn load_index(root: &Path) -> DiskIndex {
     fs::read(root.join("index.json"))
         .ok()
@@ -787,13 +787,13 @@ fn next_tmp_seq() -> u64 {
 mod tests {
     use super::*;
 
-    /// 一个用完就删的临时目录。
+    /// 一個用完就刪的暫存目錄。
     ///
-    /// ⚠ ⚠ **有意不按 pid 派生名字**：pid 会被复用，而一个「按 pid 命名且从不清理」
-    /// 的测试目录，会让今天这一跑打开**上一次**留下的状态 —— 那是一条
-    /// 时红时绿的判据，而它教人「红了先重跑一次」。
-    /// ⇒ 名字里带一个进程内自增号 + 纳秒时间戳，并且**用 `create_dir` 而不是
-    /// `create_dir_all`**：撞上了就当场失败，而不是安静地复用。
+    /// ⚠ ⚠ **有意不按 pid 派生名字**：pid 會被重複使用，而一個「按 pid 命名且從不清理」
+    /// 的測試目錄，會讓今天這一跑打開**上一次**留下的狀態 —— 那是一條
+    /// 時紅時綠的判據，而它教人「紅了先重跑一次」。
+    /// ⇒ 名字裡帶一個處理程序內自增號 + 納秒時間戳，並且**用 `create_dir` 而不是
+    /// `create_dir_all`**：撞上了就當場失敗，而不是安靜地重複使用。
     struct TempDir(PathBuf);
 
     impl TempDir {
@@ -840,11 +840,11 @@ mod tests {
         DiskStore::open(&d.0, cap).expect("打不开磁盘缓存")
     }
 
-    // ── D19：磁盘后端的容量同样改得动 ──────────────────────────────────────
+    // ── D19：磁碟後端的容量同樣改得動 ──────────────────────────────────────
     //
-    // ⚠ ⚠ **它必须与 `MemStore` 那两条配成对**：两个后端对 `capacity` 的三个读点
-    //   （getter · 大条目守卫 · 淘汰循环）形状**逐字相同**，⇒ 只测一个的话，
-    //   另一个漏改了照样全绿，而症状是「换了磁盘后端就不生效」这种最难查的形状。
+    // ⚠ ⚠ **它必須與 `MemStore` 那兩條配成對**：兩個後端對 `capacity` 的三個讀點
+    //   （getter · 大條目守衛 · 淘汰循環）形狀**逐字相同**，⇒ 只測一個的話，
+    //   另一個漏改了照樣全綠，而症狀是「換了磁碟後端就不生效」這種最難查的形狀。
     #[test]
     fn 容量在线改得动_磁盘后端同样() {
         let d = TempDir::new("setcap");
@@ -878,10 +878,10 @@ mod tests {
         assert!(matches!(s.get("nope", none), Lookup::Miss));
     }
 
-    // ★ ★ ★ **本模块存在的理由，一条判据说完**：换一个进程（这里换一个 `DiskStore`
-    //   实例，且**没有**任何进程内状态传过去）之后，东西还在。
-    //   ⚠ 一个内存后端在这条判据上必然红 —— 也就是说它分得清「内存」与「磁盘」，
-    //   而 `X-Fulcrum-Cache` 那个头分不清（那个头信的是配置说了什么）。
+    // ★ ★ ★ **本模組存在的理由，一條判據說完**：換一個處理程序（這裡換一個 `DiskStore`
+    //   執行個體，且**沒有**任何處理程序內狀態傳過去）之後，東西還在。
+    //   ⚠ 一個記憶體後端在這條判據上必然紅 —— 也就是說它分得清「記憶體」與「磁碟」，
+    //   而 `X-Fulcrum-Cache` 那個頭分不清（那個頭信的是設定說了什麼）。
     #[test]
     fn 换一个实例之后东西还在() {
         let d = TempDir::new("persist");
@@ -896,9 +896,9 @@ mod tests {
         }
     }
 
-    // ★ ★ G84 的正面判据：**新实例的索引是空的**（启动不扫盘），
-    //   ⚠ 而**读路径照样命中** —— 上面那条已经证了后半句，这条证前半句。
-    //   合起来才说明「不扫盘」不是靠牺牲命中换来的。
+    // ★ ★ G84 的正面判據：**新執行個體的索引是空的**（啟動不掃盤），
+    //   ⚠ 而**讀路徑照樣命中** —— 上面那條已經證了後半句，這條證前半句。
+    //   合起來才說明「不掃盤」不是靠犧牲命中換來的。
     #[test]
     fn 启动不扫盘_索引是空的而读照样命中() {
         let d = TempDir::new("noscan");
@@ -909,7 +909,7 @@ mod tests {
             }
             assert_eq!(s.stats().1, 5);
         }
-        // ⚠ 把索引文件删掉，模拟「上一次没来得及 save」。
+        // ⚠ 把索引檔案刪掉，模擬「上一次沒來得及 save」。
         let _ = fs::remove_file(d.0.join("index.json"));
         let s2 = open(&d, 1 << 20);
         assert_eq!(s2.stats(), (0, 0), "启动时不该扫盘（索引应当是空的）");
@@ -919,7 +919,7 @@ mod tests {
         );
     }
 
-    // ★ 后台渐进重建把索引补齐（G84 的第二半）。
+    // ★ 後台漸進重建把索引補齊（G84 的第二半）。
     #[test]
     fn 渐进重建把索引补齐() {
         let d = TempDir::new("rebuild");
@@ -941,15 +941,15 @@ mod tests {
         assert!(s2.stats().0 > 0, "占用也该算出来");
     }
 
-    // ★ ★ ★ 没人认领的 body 必须被收掉。
-    //   ⚠ 它不在索引里 ⇒ 占用算不到 ⇒ 淘汰永远轮不到它：一处**只涨不落**的磁盘占用，
-    //   而缓存本身的行为完全正常。**除了这一步，没有任何东西会删它。**
+    // ★ ★ ★ 沒人認領的 body 必須被收掉。
+    //   ⚠ 它不在索引裡 ⇒ 佔用算不到 ⇒ 淘汰永遠輪不到它：一處**只漲不落**的磁碟佔用，
+    //   而快取本身的行為完全正常。**除了這一步，沒有任何東西會刪它。**
     #[test]
     fn 没人认领的_body_会被收掉() {
         let d = TempDir::new("orphan");
         let s = open(&d, 1 << 20);
         s.put("k", String::new(), entry(b"real", vec![]));
-        // 手工造一个孤儿：与真条目同一个叶子目录，但没有任何 meta 提到它。
+        // 手動造一個孤兒：與真條目同一個葉子目錄，但沒有任何 meta 提到它。
         let orphan = s.body_path("k", "\u{1}没人提过的次级键");
         fs::write(&orphan, b"garbage").unwrap();
         assert!(orphan.exists());
@@ -961,23 +961,23 @@ mod tests {
         );
     }
 
-    // ★ ★ 读时校验（G84）：body 与 meta 对不上 ⇒ 即丢即删，当成未命中。
-    //   ⚠ 不校验的话，一份被截断的 body 会被**原样发给客户端** —— 长度对不上、
-    //   状态码 200，而客户端拿到半个页面。
+    // ★ ★ 讀時檢核（G84）：body 與 meta 對不上 ⇒ 即丟即刪，當成未命中。
+    //   ⚠ 不檢核的話，一份被截斷的 body 會被**原樣發給用戶端** —— 長度對不上、
+    //   狀態碼 200，而用戶端拿到半個頁面。
     #[test]
     fn body_与_meta_对不上就即丢即删() {
         let d = TempDir::new("validate");
         let s = open(&d, 1 << 20);
         s.put("k", String::new(), entry(b"0123456789", vec![]));
         let bp = s.body_path("k", "");
-        fs::write(&bp, b"012").unwrap(); // 截断
+        fs::write(&bp, b"012").unwrap(); // 截斷
         assert!(matches!(s.get("k", none), Lookup::Miss), "坏条目该当未命中");
         assert!(!bp.exists(), "坏条目该被删掉");
-        // 再查一次仍然是 Miss，而且不该 panic。
+        // 再查一次仍然是 Miss，而且不該 panic。
         assert!(matches!(s.get("k", none), Lookup::Miss));
     }
 
-    // ★ body 整个不见了（meta 还在）—— 崩溃恢复里另一半的形态。
+    // ★ body 整個不見了（meta 還在）—— 崩潰恢復裡另一半的形態。
     #[test]
     fn body_不见了也是即丢即删() {
         let d = TempDir::new("nobody");
@@ -991,7 +991,7 @@ mod tests {
         );
     }
 
-    // ★ ★ Vary：两个分支共存、互不挤掉，而且各拿各的那一份。
+    // ★ ★ Vary：兩個分支共存、互不擠掉，而且各拿各的那一份。
     #[test]
     fn vary_两个分支共存() {
         let d = TempDir::new("vary");
@@ -1007,16 +1007,16 @@ mod tests {
                 other => panic!("{f} 该命中，实际 {other:?}"),
             }
         }
-        // 一个没写过的 flavor ⇒ VaryMiss（不是 Miss）——两种未命中要分得开。
+        // 一個沒寫過的 flavor ⇒ VaryMiss（不是 Miss）——兩種未命中要分得開。
         match s.get("k", |_| Some("c")) {
             Lookup::VaryMiss { vary: v } => assert_eq!(v, vary),
             other => panic!("该是 VaryMiss，实际 {other:?}"),
         }
     }
 
-    // ★ ★ refresh 只改 meta、**不动 body**（G83 那条形状的判据）。
-    //   ⚠ 它同时钉住「body 文件的修改时间没变」—— 只比内容的话，
-    //   一个「整条重写」的实现照样能给绿。
+    // ★ ★ refresh 只改 meta、**不動 body**（G83 那條形狀的判據）。
+    //   ⚠ 它同時釘住「body 檔案的修改時間沒變」—— 只比內容的話，
+    //   一個「整條重寫」的實作照樣能給綠。
     #[test]
     fn refresh_只改元数据不动_body_文件() {
         let d = TempDir::new("refresh");
@@ -1059,10 +1059,10 @@ mod tests {
         assert_eq!(s.stats(), (0, 0));
     }
 
-    // ★ ★ ★ **purge 必须以盘为准，不是以索引为准。**
-    //   ⚠ 一个只看索引的实现，在**刚重启之后**（索引空、盘上东西都在）
-    //   会清不掉任何东西，还回一句「清掉 0 条」——
-    //   而那正是有人会去按 purge 的那个时刻。
+    // ★ ★ ★ **purge 必須以盤為準，不是以索引為準。**
+    //   ⚠ 一個只看索引的實作，在**剛重新啟動之後**（索引空、盤上東西都在）
+    //   會清不掉任何東西，還回一句「清掉 0 條」——
+    //   而那正是有人會去按 purge 的那個時刻。
     #[test]
     fn 索引是空的时候_purge_照样清得掉() {
         let d = TempDir::new("purge-cold");
@@ -1088,18 +1088,18 @@ mod tests {
         assert_eq!(s.stats(), (0, 0));
     }
 
-    // ★ LRU：装满之后淘汰**最久没用**的那条，而且盘上的文件真的少了。
+    // ★ LRU：裝滿之後淘汰**最久沒用**的那條，而且盤上的檔案真的少了。
     #[test]
     fn 淘汰的是最久没用的而且文件真的被删了() {
         let d = TempDir::new("lru");
-        // 每条 ≈ 10（体）+ 头开销；给一个刚好放得下三条的容量。
+        // 每條 ≈ 10（體）+ 頭開銷；給一個剛好放得下三條的容量。
         let one = entry(&[0u8; 10], vec![]).footprint();
         let s = open(&d, one * 3);
         for k in ["a", "b", "c"] {
             s.put(k, String::new(), entry(&[0u8; 10], vec![]));
         }
         assert_eq!(s.stats().1, 3);
-        assert!(matches!(s.get("a", none), Lookup::Hit(_))); // a 变成最近用过的
+        assert!(matches!(s.get("a", none), Lookup::Hit(_))); // a 變成最近用過的
         let bp_b = s.body_path("b", "");
         s.put("d", String::new(), entry(&[0u8; 10], vec![]));
 
@@ -1134,9 +1134,9 @@ mod tests {
         assert_eq!(a, s.stats(), "重存把占用算了两遍");
     }
 
-    // ★ ★ 两级分片：目录形状是 G83 定死的，钉住它。
-    //   ⚠ 单层目录在几十万文件时会把清理任务本身拖垮 —— 那件事在门禁里
-    //   永远不会发生（门禁只存几条），所以**只能**在这里钉。
+    // ★ ★ 兩級分片：目錄形狀是 G83 定死的，釘住它。
+    //   ⚠ 單層目錄在幾十萬檔案時會把清理任務本身拖垮 —— 那件事在門禁裡
+    //   永遠不會發生（門禁只存幾條），所以**只能**在這裡釘。
     #[test]
     fn 两级分片目录() {
         let d = TempDir::new("shard");
@@ -1155,9 +1155,9 @@ mod tests {
         }
     }
 
-    // ★ hash 撞了也不许给错内容 —— 正确性不建在「不会撞」上面。
-    //   ⚠ 这里直接把一份「别人的」meta 写到我们这个键的文件名上，
-    //   模拟一次撞车：结果必须是未命中，绝不能把那份内容发出去。
+    // ★ hash 撞了也不許給錯內容 —— 正確性不建在「不會撞」上面。
+    //   ⚠ 這裡直接把一份「別人的」meta 寫到我們這個鍵的檔案名上，
+    //   模擬一次撞車：結果必須是未命中，絕不能把那份內容發出去。
     #[test]
     fn hash_撞了也不给错内容() {
         let d = TempDir::new("collide");
@@ -1173,7 +1173,7 @@ mod tests {
         );
     }
 
-    // ★ meta 版本对不上 ⇒ 当没有（换代之后冷启动一次，而不是按新语义读旧数据）。
+    // ★ meta 版本對不上 ⇒ 當沒有（換代之後冷啟動一次，而不是按新語義讀舊資料）。
     #[test]
     fn meta_版本对不上就当没有() {
         let d = TempDir::new("ver");
@@ -1185,7 +1185,7 @@ mod tests {
         assert!(matches!(s.get("k", none), Lookup::Miss));
     }
 
-    // ★ 坏掉的 meta 会被后台清理收走，连同它的 body。
+    // ★ 壞掉的 meta 會被後台清理收走，連同它的 body。
     #[test]
     fn 坏掉的_meta_会被收走() {
         let d = TempDir::new("badmeta");
@@ -1216,12 +1216,12 @@ mod tests {
         assert_eq!(s2.stats(), (used, n), "读回来的索引与存下去的对不上");
     }
 
-    // ⚠ 目录不可用时 `open` 必须**失败**，而不是回一个什么都不做的实例。
-    //   ★ 这条是「静默失能」的正面判据：调用方要有机会说出这件事。
+    // ⚠ 目錄不可用時 `open` 必須**失敗**，而不是回一個什麼都不做的執行個體。
+    //   ★ 這條是「靜默失能」的正面判據：呼叫方要有機會說出這件事。
     #[test]
     fn 目录不可用时_open_失败() {
         let d = TempDir::new("badroot");
-        // 用一个**文件**当缓存根：create_dir_all 会失败。
+        // 用一個**檔案**當快取根：create_dir_all 會失敗。
         let f = d.0.join("iam-a-file");
         fs::write(&f, b"x").unwrap();
         assert!(DiskStore::open(&f, 1 << 20).is_err());

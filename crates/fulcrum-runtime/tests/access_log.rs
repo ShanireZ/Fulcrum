@@ -1,18 +1,18 @@
-//! `log { headers … }` / `resp_headers` 的白名单，在**运行时图**这一层（**M2 批 L 第 ③ 步**）。
+//! `log { headers … }` / `resp_headers` 的白名單，在**執行環境圖**這一層（**M2 批 L 第 ③ 步**）。
 //!
-//! ★ ★ ★ **为什么这一层要有自己的判据，而不是「DSL 那道拦住了就行」**：
-//! 运行时图是**公开入口**（G11）—— `POST /load` 收的是结构化配置 JSON，
-//! 它可以是任何人生成的，**不必经过 `fulcrum compile`**。
-//! ⇒ 编译期那道 `FUL-DSL-0036` 在那条路上一次都不会跑。
+//! ★ ★ ★ **為什麼這一層要有自己的判據，而不是「DSL 那道攔住了就行」**：
+//! 執行環境圖是**公開入口**（G11）—— `POST /load` 收的是結構化設定 JSON，
+//! 它可以是任何人生成的，**不必經過 `fulcrum compile`**。
+//! ⇒ 編譯期那道 `FUL-DSL-0036` 在那條路上一次都不會跑。
 //!
-//! ⚠ ⚠ 而这一格比 `output` 那三条更要紧：`output` 写错的后果是配置装不上（吵闹），
-//! **这一条写错的后果是凭据静静地进了日志**。
+//! ⚠ ⚠ 而這一格比 `output` 那三條更要緊：`output` 寫錯的後果是設定裝不上（吵鬧），
+//! **這一條寫錯的後果是憑證靜靜地進了紀錄**。
 
 use fulcrum_config::compile_str;
 use fulcrum_runtime::Runtime;
 
-/// DSL → 结构化配置。★ 这里**故意不建运行时图**：下面几条要先改一改那份结构化配置，
-/// 而「改完再建」正是模拟 `POST /load` 收到一份没经过 DSL 的配置。
+/// DSL → 結構化設定。★ 這裡**故意不建執行環境圖**：下面幾條要先改一改那份結構化設定，
+/// 而「改完再建」正是模擬 `POST /load` 收到一份沒經過 DSL 的設定。
 fn cfg(dsl: &str) -> fulcrum_config::model::StructuredConfig {
     let o = compile_str("t.Fulcrumfile", dsl);
     assert!(
@@ -44,23 +44,23 @@ fn 白名单在装载时就算成最终形态() {
     ))
     .expect("应当建得起来");
     let log = rt.sites()[0].log.as_ref().expect("log 该落地");
-    // ★ ★ 两个字段是**两件事**：查哪个头（小写、带连字符）与日志里那一格叫什么
-    //   （小写、下划线、带前缀）。⚠ 断言两个，是因为只断言一个的话，
-    //   一个把 `lookup` 也换成下划线的实现会通过 —— 而它永远查不到任何头。
+    // ★ ★ 兩個欄位是**兩件事**：查哪個頭（小寫、帶連字元）與紀錄裡那一格叫什麼
+    //   （小寫、下劃線、帶前綴）。⚠ 斷言兩個，是因為只斷言一個的話，
+    //   一個把 `lookup` 也換成下劃線的實作會通過 —— 而它永遠查不到任何頭。
     assert_eq!(log.req_headers[0].lookup, "user-agent");
     assert_eq!(log.req_headers[0].key, "req_hdr_user_agent");
     assert_eq!(log.req_headers[1].lookup, "x-request-id");
     assert_eq!(log.req_headers[1].key, "req_hdr_x_request_id");
     assert_eq!(log.resp_headers[0].lookup, "content-type");
     assert_eq!(log.resp_headers[0].key, "resp_hdr_content_type");
-    // ★ 顺序 = 配置里写的顺序，不是字典序（日志那一行按它排）。
+    // ★ 順序 = 設定裡寫的順序，不是字典序（紀錄那一行按它排）。
     assert_eq!(log.req_headers.len(), 2);
 }
 
 #[test]
 fn 默认一个头都不记() {
-    // ⚠ ⚠ 这是契约里写死的默认值，而它**只能反向证**：
-    //   一个「不看配置、见头就记」的实现在上面那条里是全绿的。
+    // ⚠ ⚠ 這是契約裡寫死的預設值，而它**只能反向證**：
+    //   一個「不看設定、見頭就記」的實作在上面那條裡是全綠的。
     let rt = Runtime::build(&cfg(SRC)).expect("应当建得起来");
     let log = rt.sites()[0].log.as_ref().expect("log 该落地");
     assert!(log.req_headers.is_empty(), "默认不该记任何请求头");
@@ -69,8 +69,8 @@ fn 默认一个头都不记() {
 
 #[test]
 fn 结构化那条路上敏感头也被拦住() {
-    // ★ 这里改的是**编译之后**的那份结构化配置 —— 编译期那道门已经跑完了，
-    //   于是这一条量的确实是运行时图自己那道。
+    // ★ 這裡改的是**編譯之後**的那份結構化設定 —— 編譯期那道門已經跑完了，
+    //   於是這一條量的確實是執行環境圖自己那道。
     for name in [
         "Authorization",
         "cookie",
@@ -96,8 +96,8 @@ fn 结构化那条路上敏感头也被拦住() {
 
 #[test]
 fn 一个普通头名不许被当成敏感头() {
-    // ★ ★ 反证。⚠ 少了它，一条「见 `headers` 非空就报错」的实现会让上面那条全绿 ——
-    //   **「挡住坏的」与「别连好的一起挡掉」要各自一条判据**。
+    // ★ ★ 反證。⚠ 少了它，一條「見 `headers` 非空就回報錯誤」的實作會讓上面那條全綠 ——
+    //   **「擋住壞的」與「別連好的一起擋掉」要各自一條判據**。
     let mut c = cfg(SRC);
     c.sites[0].log.as_mut().unwrap().headers = vec!["X-Forwarded-For".into()];
     assert_eq!(errors_of(&c), "", "一个普通头名不该让配置装不上");
@@ -105,8 +105,8 @@ fn 一个普通头名不许被当成敏感头() {
 
 #[test]
 fn 同一个头写两遍只留一份() {
-    // ⚠ 两条同名的日志键会让那一行 JSON 里出现两个一样的 key，
-    //   而**哪一个会被解析器留下没有定义**。★ 大小写不同也是同一个头。
+    // ⚠ 兩條同名的紀錄鍵會讓那一行 JSON 裡出現兩個一樣的 key，
+    //   而**哪一個會被解析器留下沒有定義**。★ 大小寫不同也是同一個頭。
     let mut c = cfg(SRC);
     c.sites[0].log.as_mut().unwrap().headers = vec![
         "User-Agent".into(),
@@ -120,8 +120,8 @@ fn 同一个头写两遍只留一份() {
 
 #[test]
 fn 不是合法头名的东西是错误_而不是静静地什么都不记() {
-    // ★ ★ ★ 「查不到」在这份契约里与「这条请求上没有这个头」**长得一模一样** ——
-    //   ⇒ 一个拼错的名字会静静地什么都不记，而运维看到的是「我配了它怎么没有」。
+    // ★ ★ ★ 「查不到」在這份契約裡與「這條請求上沒有這個頭」**長得一模一樣** ——
+    //   ⇒ 一個拼錯的名字會靜靜地什麼都不記，而維運看到的是「我配了它怎麼沒有」。
     for bad in ["User Agent", "x:y", "", "头"] {
         let mut c = cfg(SRC);
         c.sites[0].log.as_mut().unwrap().headers = vec![bad.to_string()];

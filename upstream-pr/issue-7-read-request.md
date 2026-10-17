@@ -1,15 +1,15 @@
-# Issue — 投稿七（⏳ **材料已备，未发**；owner 2026-10-08 拍「先备材料、暂不发」）
+# Issue — 投稿七（⏳ **材料已備，未發**；owner 2026-10-08 拍「先備材料、暫不發」）
 
-> 对应 fork **改动 16（PLAN G157）的 ② ③**（C1 / C2）。① （B2，l4 流不再记等待计时）**不在本份**：
-> 上游有读者，在上游不是语义不变 —— 见 [`README.md`](README.md) 投稿七一节「B2 为什么不投」。
+> 對應 fork **改動 16（PLAN G157）的 ② ③**（C1 / C2）。① （B2，l4 流不再記等待計時）**不在本份**：
+> 上游有讀者，在上游不是語義不變 —— 見 [`README.md`](README.md) 投稿七一節「B2 為什麼不投」。
 >
-> 模板：上游 `.github/ISSUE_TEMPLATE/feature_request.md` 的四个小标题（性能改进不是缺陷，⛔ 不用 bug_report）。
-> 补丁：[`0007-…`](0007-Parse-request-headers-into-uninitialized-header-slots.patch)（C1）·
+> 範本：上游 `.github/ISSUE_TEMPLATE/feature_request.md` 的四個小標題（效能改進不是缺陷，⛔ 不用 bug_report）。
+> 補丁：[`0007-…`](0007-Parse-request-headers-into-uninitialized-header-slots.patch)（C1）·
 > [`0008-…`](0008-Keep-request-header-refs-on-the-stack-instead-of-in-a-Vec.patch)（C2），
-> 基于上游 `main` = `4487f7b`（2026-09-11）。PR 正文草稿：[`pr-7-read-request.md`](pr-7-read-request.md)。
+> 基於上游 `main` = `4487f7b`（2026-09-11）。PR 正文草稿：[`pr-7-read-request.md`](pr-7-read-request.md)。
 >
-> ⚠ 文中每个数都能在上游复现：`8 KiB` 是 `256 × size_of::<httparse::Header>()`（x86_64 上 32，容器实测）；
-> 分配次数来自补丁自带的测试（`tests/read_request_allocations.rs`）。⛔ fork 侧诊断台的指令计数（−4.7% 等）**没有**写进来。
+> ⚠ 文中每個數都能在上游重現：`8 KiB` 是 `256 × size_of::<httparse::Header>()`（x86_64 上 32，容器實測）；
+> 分配次數來自補丁自帶的測試（`tests/read_request_allocations.rs`）。⛔ fork 側診斷臺的指令計數（−4.7% 等）**沒有**寫進來。
 
 **Title**
 

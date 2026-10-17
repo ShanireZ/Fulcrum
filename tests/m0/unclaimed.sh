@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
-# 未被认领的继承 fd 会怎样 —— 补上 M0 只验了一面的那个缺口。
-# 这个脚本在容器里跑（G26），退出码即结论。
+# 未被認領的繼承 fd 會怎樣 —— 補上 M0 只驗了一面的那個缺口。
+# 這個指令碼在容器裡跑（G26），結束代碼即結論。
 #
-# ★ 背景：M0 证明的是**认领成功**那条路（自建监听器能取到 fd、升级零中断）。
-#   上游 `f82478ae` 指出另一面：**没被认领的继承 fd 会黑洞化连接**。
-#   见 docs/verification/open-seams.md。
+# ★ 背景：M0 證明的是**認領成功**那條路（自建監聽器能取到 fd、升級零中斷）。
+#   上游 `f82478ae` 指出另一面：**沒被認領的繼承 fd 會黑洞化連接**。
+#   見 docs/verification/open-seams.md。
 #
-# ★ ★ **口径 2026-09-24 反写（pingora 0.9.0 rebase）：本脚本现在验的是「修好了」。**
-#   上游 0.9.0 含 `f82478a`（新一代按各服务的 `listen_addresses()` 剪掉没人认领的继承 fd），
-#   而 spike 的三个服务都声明了键 ⇒ 判据是：第二代关掉那个 fd（上游那条 WARN）、
-#   老一代退出后端口**拒连**、它不再传给第三代。
-#   ⚠ 它守的最要紧的一条：**任何一个服务的 `listen_addresses()` 返回 `None`（pingora 的缺省）
-#     都会让整个进程的清理静默关闭** —— 编译器不报、日志不提。反证：让 raw_udp 返回 `None`
-#     ⇒ [4/6] 当场红（2026-09-24 实测）。
-#   ★ 此前（0.8.1）它验的是「坏行为已复现」：绿 = 孤儿 fd 保持 LISTEN、吞连接、逐代传递。
+# ★ ★ **口徑 2026-09-24 反寫（pingora 0.9.0 rebase）：本指令碼現在驗的是「修好了」。**
+#   上游 0.9.0 含 `f82478a`（新一代按各服務的 `listen_addresses()` 剪掉沒人認領的繼承 fd），
+#   而 spike 的三個服務都宣告了鍵 ⇒ 判據是：第二代關掉那個 fd（上游那條 WARN）、
+#   老一代退出後連接埠**拒連**、它不再傳給第三代。
+#   ⚠ 它守的最要緊的一條：**任何一個服務的 `listen_addresses()` 回傳 `None`（pingora 的預設）
+#     都會讓整個處理程序的清理靜默關閉** —— 編譯器不報、紀錄不提。反證：讓 raw_udp 回傳 `None`
+#     ⇒ [4/6] 當場紅（2026-09-24 實測）。
+#   ★ 此前（0.8.1）它驗的是「壞行為已重現」：綠 = 孤兒 fd 保持 LISTEN、吞連接、逐代傳遞。
 #
-# 造法：gen2 用 `M0_DROP_RAW_TCP=1` 启动，模拟「配置里删掉了 raw-tcp 这个监听器」，
-# 于是 gen1 传来的 8081 那个 fd 没有任何服务去认领。
+# 造法：gen2 用 `M0_DROP_RAW_TCP=1` 啟動，模擬「設定裡刪掉了 raw-tcp 這個監聽器」，
+# 於是 gen1 傳來的 8081 那個 fd 沒有任何服務去認領。
 set -euo pipefail
 
 RUN=${RUN:-/w/run/m0-unclaimed}
 BIN=${BIN:-/w/target/release}
 CONF=${CONF:-/w/conf/m0-unclaimed.yaml}
 PORT=8081
-# ★ 与 spike 的 `bind_host()` 默认保持一致（回环）。判据里出现的地址不能写死——
-#   spike 从 0.0.0.0 收紧到 127.0.0.1，写死的 grep 会当场全部失配，
-#   而失配的方向是「找不到 = 判红」，看起来像功能坏了，其实只是地址变了。
+# ★ 與 spike 的 `bind_host()` 預設保持一致（迴環）。判據裡出現的位址不能寫死——
+#   spike 從 0.0.0.0 收緊到 127.0.0.1，寫死的 grep 會當場全部失配，
+#   而失配的方向是「找不到 = 判紅」，看起來像功能壞了，其實只是位址變了。
 BIND_HOST=${M0_BIND_HOST:-127.0.0.1}
 export M0_BIND_HOST="$BIND_HOST"
 
@@ -39,9 +39,9 @@ LOG="$RUN/error.log"
 fail() { echo; echo "UNCLAIMED FAILED: $*"; echo "--- server log ---"; cat "$LOG" 2>/dev/null || true; exit 1; }
 
 # ── 收尾 ────────────────────────────────────────────────────────────────────
-# 规则与全部理由在 lifecycle.sh 里。对本场景尤其要紧：结束时最后一代手里正持着 8081 上
-# 那个**孤儿 LISTEN socket**，留着它，同一容器里后续用到这批端口的场景都会撞 EADDRINUSE。
-# ★ 找不到库就必须炸，不能默默不收。
+# 規則與全部理由在 lifecycle.sh 裡。對本場景尤其要緊：結束時最後一代手裡正持著 8081 上
+# 那個**孤兒 LISTEN socket**，留著它，同一容器裡後續用到這批連接埠的場景都會撞 EADDRINUSE。
+# ★ 找不到庫就必須炸，不能默默不收。
 LIFECYCLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lifecycle.sh"
 [ -f "$LIFECYCLE_LIB" ] || { echo "找不到 $LIFECYCLE_LIB —— 收尾逻辑缺失，拒绝继续。" >&2; exit 1; }
 # shellcheck source=tests/m0/lifecycle.sh
@@ -49,17 +49,17 @@ LIFECYCLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lifecycle.sh"
 lifecycle_init "$RUN"
 trap lifecycle_cleanup EXIT
 
-# ★ 端口是否有人 LISTEN —— 读 /proc/net/tcp{,6}，**不依赖 bash 的 /dev/tcp**。
-#   /dev/tcp 是编译期特性（--enable-net-redirections），精简镜像里可能没有；
-#   之前这里写过一句「自证它可用」的检查，实际测的是 /dev/null 且结果被丢弃——
-#   是个假的守卫。改成两套互不依赖的机制，还能互相交叉验证（见 [2/6]）。
+# ★ 連接埠是否有人 LISTEN —— 讀 /proc/net/tcp{,6}，**不依賴 bash 的 /dev/tcp**。
+#   /dev/tcp 是編譯期特性（--enable-net-redirections），精簡鏡像裡可能沒有；
+#   之前這裡寫過一句「自證它可用」的檢查，實際測的是 /dev/null 且結果被丟棄——
+#   是個假的守衛。改成兩套互不依賴的機制，還能互相交叉驗證（見 [2/6]）。
 #
-# ★ ★ **两个文件都要扫。** tcp6 里放的是全部 AF_INET6 socket，双栈监听 `[::]:port`
-#   **只**出现在那里，/proc/net/tcp 一行都没有（在本镜像里实测过）。
-#   当前 spike 绑的是 127.0.0.1（纯 IPv4），所以只读 tcp 侥幸没错；而双栈是绝大多数
-#   网络库的默认绑法，M1 的真监听器一旦绑 `[::]`，这个函数就会**恒假**——
-#   于是 [0/6] 的前置检查静默通过，回到它本来就是为了防的那件事：
-#   **基线对着别人的进程变绿**。
+# ★ ★ **兩個檔案都要掃。** tcp6 裡放的是全部 AF_INET6 socket，雙棧監聽 `[::]:port`
+#   **只**出現在那裡，/proc/net/tcp 一行都沒有（在本鏡像裡實測過）。
+#   當前 spike 綁的是 127.0.0.1（純 IPv4），所以唯讀 tcp 僥倖沒錯；而雙棧是絕大多數
+#   網路庫的預設綁法，M1 的真監聽器一旦綁 `[::]`，這個函式就會**恆假**——
+#   於是 [0/6] 的前置檢查靜默通過，回到它本來就是為了防的那件事：
+#   **基線對著別人的處理程序變綠**。
 PROC_NET_FILES=(/proc/net/tcp /proc/net/tcp6)
 port_listening() {
   local hex f seen=0
@@ -67,26 +67,26 @@ port_listening() {
   for f in "${PROC_NET_FILES[@]}"; do
     [ -r "$f" ] || continue
     seen=1
-    # local_address 是 `0100007F:1F90`（v4，8 位十六进制）或
-    # `00000000000000000000000000000000:1FA3`（v6，32 位）。端口段的取法一样，
-    # 所以只锚「冒号之后就是端口且到词尾」，不关心前面多长。$4 == 0A 即 TCP_LISTEN。
+    # local_address 是 `0100007F:1F90`（v4，8 位十六進制）或
+    # `00000000000000000000000000000000:1FA3`（v6，32 位）。連接埠段的取法一樣，
+    # 所以只錨「冒號之後就是連接埠且到詞尾」，不關心前面多長。$4 == 0A 即 TCP_LISTEN。
     if awk -v want="$hex" \
          '$4 == "0A" && $2 ~ ("^[0-9A-Fa-f]+:" want "$") { found = 1 } END { exit !found }' "$f"
     then
       return 0
     fi
   done
-  # ★ 读不到就必须炸，不能当成「没人监听」。fail-open 的守卫是本项目已经栽过的形状。
+  # ★ 讀不到就必須炸，不能當成「沒人監聽」。fail-open 的守衛是本專案已經栽過的形狀。
   [ "$seen" = 1 ] || fail "${PROC_NET_FILES[*]} 一个都读不到——无法判断端口占用，本脚本的判据全部失效"
   return 1
 }
 
-# ★ port_listening 在 [0/6] 只被用来**放行**，所以一个恒假的实现会让那道门静默通过。
-#   开跑前先拿固定样本证明它两个方向都认得——这就是 AGENTS.md 说的「门自带反向测试」。
+# ★ port_listening 在 [0/6] 只被用來**放行**，所以一個恆假的實作會讓那道門靜默通過。
+#   開跑前先拿固定樣本證明它兩個方向都認得——這就是 AGENTS.md 說的「門自帶反向測試」。
 #
-#   ★ 样本是**真实内核输出**，不是照着文档编的：在构建镜像里让 python 绑
-#     `[::]:8099`（=0x1FA3）之后，从 /proc/net/tcp6 原样抄下来的；同一时刻 /proc/net/tcp
-#     除表头外**一行都没有**。这份样本本身就是本次盲区的实物证据。
+#   ★ 樣本是**真實核心輸出**，不是照著文件編的：在建置鏡像裡讓 python 綁
+#     `[::]:8099`（=0x1FA3）之後，從 /proc/net/tcp6 原樣抄下來的；同一時刻 /proc/net/tcp
+#     除表頭外**一行都沒有**。這份樣本本身就是本次盲區的實物證據。
 selftest_port_listening() {
   local dir saved=("${PROC_NET_FILES[@]}")
   dir=$(mktemp -d)
@@ -103,7 +103,7 @@ selftest_port_listening() {
   PROC_NET_FILES=("$dir/tcp" "$dir/tcp6")
   local bad=""
   port_listening 8080 || bad="$bad 8080(v4-LISTEN 应为真)"
-  # ★ 这一条就是本次要修的那个盲区：8099 只在 tcp6 里。旧实现在这里必红。
+  # ★ 這一條就是本次要修的那個盲區：8099 只在 tcp6 裡。舊實作在這裡必紅。
   port_listening 8099 || bad="$bad 8099(v6-LISTEN 应为真)"
   ! port_listening 8081 || bad="$bad 8081(状态是 ESTABLISHED 不是 LISTEN，应为假)"
   ! port_listening 9000 || bad="$bad 9000(压根不在样本里，应为假)"
@@ -116,7 +116,7 @@ selftest_port_listening() {
 }
 
 probe_connect() { timeout 2 bash -c "exec 3<>/dev/tcp/$BIND_HOST/$1" 2>/dev/null; }
-# 发一个字节并等回声。回来了 → 0；连得上但没回应 → 124（timeout）；连不上 → 非 0 且非 124
+# 發一個位元組並等回聲。回來了 → 0；連得上但沒回應 → 124（timeout）；連不上 → 非 0 且非 124
 probe_echo() {
   timeout 3 bash -c "
     exec 3<>/dev/tcp/$BIND_HOST/$1 || exit 7
@@ -125,10 +125,10 @@ probe_echo() {
   " 2>/dev/null
 }
 
-# ★ 开跑前端口必须是干净的。
-#   第一次合并进全量跑时就栽在这里：M0 场景的进程还没走干净、占着 8081，
-#   本场景的 gen1 绑不上（EADDRINUSE），而**第 2 步的基线回声照样是绿的**——
-#   因为它对着的是别人的进程。判据必须能把「是我们自己的进程在服务」钉死。
+# ★ 開跑前連接埠必須是乾淨的。
+#   第一次合併進全量跑時就栽在這裡：M0 場景的處理程序還沒走乾淨、佔著 8081，
+#   本場景的 gen1 綁不上（EADDRINUSE），而**第 2 步的基線回聲照樣是綠的**——
+#   因為它對著的是別人的處理程序。判據必須能把「是我們自己的處理程序在服務」釘死。
 echo "=== [0/6] 前置：判据先自证，然后端口必须干净 ==="
 selftest_port_listening
 if port_listening "$PORT"; then
@@ -146,17 +146,17 @@ record_gen "$GEN1"
 echo "gen1 pid = $GEN1"
 
 echo "=== [2/6] 基线：raw-tcp 确实在工作，且**是我们这一代在服务** ==="
-# ★ 两条判据缺一不可：
-#   ① 我们自己的 gen1 确实 bind 成功并把 fd 注册进了表（看**我们的** error.log）
-#   ② 回声通
-#   只有 ② 的话，别人的进程也能让它变绿——那正是第一次合并跑时踩的坑。
+# ★ 兩條判據缺一不可：
+#   ① 我們自己的 gen1 確實 bind 成功並把 fd 註冊進了表（看**我們的** error.log）
+#   ② 回聲通
+#   只有 ② 的話，別人的處理程序也能讓它變綠——那正是第一次合併跑時踩的坑。
 grep -q "\[raw-tcp\] bound fresh on $BIND_HOST:$PORT, registered fd=" "$LOG" \
   || fail "第一代的 raw-tcp 没有成功 bind 并注册 fd（看 $LOG）。
        端口八成被别的进程占着——那样后面所有判据都是假的。"
 
-# ★ 两套机制在这里交叉验证：/proc 说它在 LISTEN，而 /dev/tcp 连不上，
-#   那就是本 shell 不支持 /dev/tcp，而不是服务的问题。把这两种情形分开报，
-#   免得把缺失的 shell 特性误读成「行为变了」。
+# ★ 兩套機制在這裡交叉驗證：/proc 說它在 LISTEN，而 /dev/tcp 連不上，
+#   那就是本 shell 不支援 /dev/tcp，而不是服務的問題。把這兩種情形分開報，
+#   免得把缺失的 shell 特性誤讀成「行為變了」。
 port_listening "$PORT" || fail "/proc/net/tcp 里看不到 $PORT 在 LISTEN，但日志说已经 bind 了——自相矛盾，需要人工看 $LOG"
 OUT=$(probe_echo "$PORT" || true)
 if [ "$OUT" != "ping" ]; then
@@ -166,7 +166,7 @@ fi
 echo "  ✓ 我们这一代已注册 fd、端口在 LISTEN、回声正常（收到 '$OUT'）"
 
 echo "=== [3/6] 升级到第二代，但**丢掉** raw-tcp 服务 ==="
-# ★ error.log 是三代共用、追加写的 ⇒ 下面一律用「起下一代前后的计数增量」判，不用绝对值。
+# ★ error.log 是三代共用、追加寫的 ⇒ 下面一律用「起下一代前後的計數增量」判，不用絕對值。
 INSPECT_KEY="\[fd-inspect\] entry key=m0-raw-tcp:$BIND_HOST:$PORT"
 INSPECT_BEFORE_GEN2=$(grep -c "$INSPECT_KEY" "$LOG" || true)
 kill -QUIT "$GEN1"
@@ -178,32 +178,32 @@ echo "gen2 pid = $GEN2"
 [ "$GEN1" != "$GEN2" ] || fail "pid 没变，根本没换进程"
 
 echo "=== [4/6] ★ 第二代把那个没人认领的 fd 关掉了（上游 0.9.0 f82478a）==="
-# ★ 判据锚在 pingora 自己打的启动顺序行上，而不是 spike 自证的那句 WARN——
-#   那句在 daemonize **之前**打，进的是启动 shell 的 stdout，不在 error.log 里。
+# ★ 判據錨在 pingora 自己打的啟動順序行上，而不是 spike 自證的那句 WARN——
+#   那句在 daemonize **之前**打，進的是啟動 shell 的 stdout，不在 error.log 裡。
 LAST_ORDER=$(grep "Starting services in dependency order" "$LOG" | tail -1)
 echo "  第二代启动的服务：$LAST_ORDER"
 case "$LAST_ORDER" in
   *m0-raw-tcp*) fail "第二代并没有真的丢掉 raw-tcp 服务" ;;
 esac
 
-# ★ ★ 上游那条 WARN 在 daemonize **之后**、起服务之前打（bootstrap_services.rs），进 error.log。
-#   第一代是冷启动、没有继承任何 fd ⇒ 走到这里时这条 WARN 只可能来自第二代。
+# ★ ★ 上游那條 WARN 在 daemonize **之後**、起服務之前打（bootstrap_services.rs），進 error.log。
+#   第一代是冷啟動、沒有繼承任何 fd ⇒ 走到這裡時這條 WARN 只可能來自第二代。
 grep -qF "Closed 1 inherited listening socket(s) not claimed by any service: [\"m0-raw-tcp:$BIND_HOST:$PORT\"]" "$LOG" \
   || fail "第二代没有关掉那个没人认领的 fd（error.log 里没有上游那条 WARN）。
        ★ 最常见的原因：某个服务的 listen_addresses() 返回了 None（pingora 的缺省实现）
          ⇒ **整个进程**的清理被静默关闭 —— 编译器不报、日志也不提。"
-# ★ 交叉验证：第二代的 fd-inspect 在清理**之后**才起，它看到的表里不该再有这个键。
+# ★ 交叉驗證：第二代的 fd-inspect 在清理**之後**才起，它看到的表裡不該再有這個鍵。
 INSPECT_AFTER_GEN2=$(grep -c "$INSPECT_KEY" "$LOG" || true)
 [ "$INSPECT_AFTER_GEN2" -eq "$INSPECT_BEFORE_GEN2" ] \
   || fail "WARN 说关了，而第二代的 fd 表里仍有 m0-raw-tcp 的条目（计数 $INSPECT_BEFORE_GEN2 → $INSPECT_AFTER_GEN2）"
 echo "  ✓ 第二代关掉并移出了那个 fd（上游 WARN 在；fd 表计数 $INSPECT_BEFORE_GEN2 → $INSPECT_AFTER_GEN2，没有增长）"
 
 echo "=== [5/6] ★ 核心判据：老一代退出之后，这个端口**拒连**（⛔ 不再黑洞）==="
-# ★ ★ 必须先等第一代真正退出，否则测的是它而不是孤儿 socket。
-#   pingora 在发完 fd 后要硬等 CLOSE_TIMEOUT（5 秒，server/mod.rs:59）才广播停机，
-#   这段时间**两代都持有同一个监听 socket，而老一代照常 accept**。
-#   第一次写这个脚本时就是在这个窗口里探的，结果收到了正常回声——
-#   不是行为不对，是判据取早了。
+# ★ ★ 必須先等第一代真正退出，否則測的是它而不是孤兒 socket。
+#   pingora 在發完 fd 後要硬等 CLOSE_TIMEOUT（5 秒，server/mod.rs:59）才廣播停機，
+#   這段時間**兩代都持有同一個監聽 socket，而老一代照常 accept**。
+#   第一次寫這個指令碼時就是在這個視窗裡探的，結果收到了正常回聲——
+#   不是行為不對，是判據取早了。
 echo "  等第一代退出（pid=$GEN1）..."
 for _ in $(seq 1 40); do
   kill -0 "$GEN1" 2>/dev/null || break
@@ -213,7 +213,7 @@ if kill -0 "$GEN1" 2>/dev/null; then
   fail "第一代 40 秒还没退出，无法在干净状态下判断端口是否已释放"
 fi
 echo "  ✓ 第一代已退出"
-# ★ 两套机制各判一次（与 [2/6] 同一个道理）：/proc 说没人 LISTEN，而且真连一次被拒。
+# ★ 兩套機制各判一次（與 [2/6] 同一個道理）：/proc 說沒人 LISTEN，而且真連一次被拒。
 if port_listening "$PORT"; then
   fail "第一代已退出，而 $PORT 仍在 LISTEN —— 那个没人认领的 fd 没被关掉（孤儿 socket 还在吞连接）"
 fi

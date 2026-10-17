@@ -1,19 +1,19 @@
-//! **h3 → 现有执行链的那座桥**（M2 批 J）。
+//! **h3 → 現有執行鏈的那座橋**（M2 批 J）。
 //!
-//! 接缝是 `HttpServerApp` / `ServerSession` —— 后者是个 **enum**，带
-//! `Custom(Box<dyn SessionCustom>)` 变体与公开的 `Session::new_custom()`。
-//! ⇒ 桥的形状：**为 h3 实现 `SessionCustom`，包起来原样喂给现有的 `serve_one`。**
-//! （⚠ 别信「执行链是为 `ProxyHttp` 建的」那种说法 —— `ProxyHttp` 在本仓库零命中。）
+//! 接縫是 `HttpServerApp` / `ServerSession` —— 後者是個 **enum**，帶
+//! `Custom(Box<dyn SessionCustom>)` 變體與公開的 `Session::new_custom()`。
+//! ⇒ 橋的形狀：**為 h3 實作 `SessionCustom`，包起來原樣餵給現有的 `serve_one`。**
+//! （⚠ 別信「執行鏈是為 `ProxyHttp` 建的」那種說法 —— `ProxyHttp` 在本儲存庫零命中。）
 //!
-//! ⚠ **代价写在明处**：那个 trait 在上游标着 `#[doc(hidden)]`，上游可以不加 semver 就改。
-//! 我们 vendor 了 pingora 所以换代时机可控，但 rebase 时这一页要跟着看。
-//! ★ 与 fork「加能力」不同：**这里一行 fork 都没改。**
+//! ⚠ **代價寫在明處**：那個 trait 在上游標著 `#[doc(hidden)]`，上游可以不加 semver 就改。
+//! 我們 vendor 了 pingora 所以換代時機可控，但 rebase 時這一頁要跟著看。
+//! ★ 與 fork「加能力」不同：**這裡一行 fork 都沒改。**
 //!
-//! # 形状：连接任务持有 quiche，会话只拿两根管子
+//! # 形狀：連接任務持有 quiche，工作階段只拿兩根管子
 //!
 //! `SessionCustom` 要求 `Send + Sync + Unpin + 'static`，而 `quiche::Connection`
-//! 是单线程的、由连接任务独占。⇒ 每条请求给一个 [`H3Session`]，它与连接任务之间
-//! 只有两条 mpsc：请求体进来、响应出去。
+//! 是單執行緒的、由連接任務獨佔。⇒ 每條請求給一個 [`H3Session`]，它與連接任務之間
+//! 只有兩條 mpsc：請求體進來、回應出去。
 //!
 //! ```text
 //!   连接任务（独占 quiche::Connection + quiche::h3::Connection）
@@ -22,12 +22,12 @@
 //!   H3Session  ──包进 ServerSession::new_custom──▶  FulcrumApp::serve_one（**一行没改**）
 //! ```
 //!
-//! # ⚠ 有几个方法**不兑现它名字的承诺**，而这一条有门看着
+//! # ⚠ 有幾個方法**不兌現它名字的承諾**，而這一條有門看著
 //!
-//! [`NOT_HONORED`] 那几个是「有定义的行为 + 安全返回值」，**不写 `unimplemented!()`** ——
-//! 照上游那份全 `unreachable!()` 的 stub 会**编得过、门也会绿**，然后在某条今天没人走的
-//! 路径上炸。⇒ 每一个都返回定义好的安全值，并由本页末尾那道门钉住
-//! 「**现有执行链不许调它们**」。
+//! [`NOT_HONORED`] 那幾個是「有定義的行為 + 安全回傳值」，**不寫 `unimplemented!()`** ——
+//! 照上游那份全 `unreachable!()` 的 stub 會**編得過、門也會綠**，然後在某條今天沒人走的
+//! 路徑上炸。⇒ 每一個都回傳定義好的安全值，並由本頁末尾那道門釘住
+//! 「**現有執行鏈不許調它們**」。
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -40,28 +40,28 @@ use pingora_core::protocols::http::custom::CustomMessageWrite;
 use pingora_core::protocols::http::custom::server::Session as SessionCustom;
 use pingora_core::protocols::http::v1::client::http_req_header_to_wire;
 use pingora_core::protocols::l4::socket::SocketAddr;
-// ★ h3 的 TLS 摘要（D27 结案）。⚠ 经 `pingora_core` 的 re-export 拿，
-//   与 `Digest` 同一条纪律。
+// ★ h3 的 TLS 摘要（D27 結案）。⚠ 經 `pingora_core` 的 re-export 拿，
+//   與 `Digest` 同一條紀律。
 use pingora_core::protocols::tls::SslDigest;
-// ★ 经 `pingora_core` 的 re-export 拿，而不是再加一条 `pingora-error` 直接依赖 ——
-//   与「BoringSSL 类型只经 pingora-boringssl 拿」同一条纪律（G111 破的是那一条，不是这一条）。
+// ★ 經 `pingora_core` 的 re-export 拿，而不是再加一條 `pingora-error` 直接依賴 ——
+//   與「BoringSSL 類型只經 pingora-boringssl 拿」同一條紀律（G111 破的是那一條，不是這一條）。
 use pingora_core::{Error, ErrorType, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// 连接任务 → 会话。
+/// 連接任務 → 工作階段。
 #[derive(Debug)]
 pub enum ToSession {
-    /// 一段请求体。
+    /// 一段請求體。
     Body(Bytes),
-    /// 请求体到此结束（h3 的 `Finished` 事件）。
+    /// 請求體到此結束（h3 的 `Finished` 事件）。
     End,
-    /// 流或连接坏了，会话该收摊。
+    /// 流或連接壞了，工作階段該收攤。
     Reset(String),
 }
 
-/// 会话 → 连接任务。
+/// 工作階段 → 連接任務。
 #[derive(Debug)]
 pub enum FromSession {
     Header {
@@ -73,90 +73,90 @@ pub enum FromSession {
         end: bool,
     },
     Trailers(HeaderMap),
-    /// 会话侧收摊了（正常结束或被掐断）。
+    /// 工作階段側收攤了（正常結束或被掐斷）。
     Finish,
 }
 
-/// **本批不兑现其名字承诺的方法**。
+/// **本批不兌現其名字承諾的方法**。
 ///
-/// ⚠ ⚠ 这不是「以后再说」的清单，它是**判据的输入** —— 本页末尾那道门会扫现有执行链，
-/// 一旦有人开始调它们就判红。⇒ 加一条到这里，等于给它配一道门；从这里删一条，
-/// 等于声称它已经真的实现了。
+/// ⚠ ⚠ 這不是「以後再說」的清單，它是**判據的輸入** —— 本頁末尾那道門會掃現有執行鏈，
+/// 一旦有人開始調它們就判紅。⇒ 加一條到這裡，等於給它配一道門；從這裡刪一條，
+/// 等於聲稱它已經真的實作了。
 ///
-/// | 方法 | 本批的行为 | 为什么可以是这样 |
+/// | 方法 | 本批的行為 | 為什麼可以是這樣 |
 /// |---|---|---|
-/// | `enable_retry_buffering` | 空操作 | 我们不做请求体重放（换上游重试）|
-/// | `retry_buffer_truncated` | `false` | 与 h2 在「从没开过缓冲」时同值 |
-/// | `get_retry_buffer` | `None` | 同上：没有缓冲 ⇒ 调用方不会拿它去重试 |
-/// | ~~`digest` / `digest_mut`~~ | ✅ **已兑现（D27 结案）** | ⚠ ★ ★ 曾经的理由是「pingora 的 `Digest` 是给 h1/h2 的连接摘要，h3 这侧没有对应物」——**那句话是错的**：h3 连接一样有 TLS 版本、SNI 与 ALPN，缺的只是一条把它们送出去的路。⇒ [`quic_digest`] 现造一份，`digest()` / `digest_mut()` 真的返回它，**两个名字都离开了这张表**。⚠ 只有 `cipher` 仍是空的（quiche 的 `Handshake::cipher()` 锁在私有 `mod tls` 里）|
-/// | `take_custom_message_*` | `None` | 「自定义消息」通道本仓库一处都没用 |
-/// | `restore_custom_message_*` | `Err` | ★ 恢复一个从来没被取走的东西是**调用方的逻辑错**，不能静默成功 |
+/// | `enable_retry_buffering` | 空操作 | 我們不做請求體重放（換上游重試）|
+/// | `retry_buffer_truncated` | `false` | 與 h2 在「從沒開過緩衝」時同值 |
+/// | `get_retry_buffer` | `None` | 同上：沒有緩衝 ⇒ 呼叫方不會拿它去重試 |
+/// | ~~`digest` / `digest_mut`~~ | ✅ **已兌現（D27 結案）** | ⚠ ★ ★ 曾經的理由是「pingora 的 `Digest` 是給 h1/h2 的連接摘要，h3 這側沒有對應物」——**那句話是錯的**：h3 連接一樣有 TLS 版本、SNI 與 ALPN，缺的只是一條把它們送出去的路。⇒ [`quic_digest`] 現造一份，`digest()` / `digest_mut()` 真的回傳它，**兩個名字都離開了這張表**。⚠ 只有 `cipher` 仍是空的（quiche 的 `Handshake::cipher()` 鎖在私有 `mod tls` 裡）|
+/// | `take_custom_message_*` | `None` | 「自定義訊息」通道本儲存庫一處都沒用 |
+/// | `restore_custom_message_*` | `Err` | ★ 恢復一個從來沒被取走的東西是**呼叫方的邏輯錯**，不能靜默成功 |
 pub const NOT_HONORED: &[&str] = &[
     "enable_retry_buffering",
     "retry_buffer_truncated",
     "get_retry_buffer",
-    // ★ ★ ★ `digest` / `digest_mut` **于 G128（§10，D27 结案）
-    //   从这张表上删掉了** —— 不是「让门闭嘴」，是它们**真的被实现出来了**。
-    //   ⚠ 判据：`不兑现承诺的那一组回安全值而不是_panic` 现在断言 `digest().is_some()`，
-    //     而访问日志那一格（`tests/log/run.sh`）在**真的 h3 请求**上量 `tls_*` 三格。
+    // ★ ★ ★ `digest` / `digest_mut` **於 G128（§10，D27 結案）
+    //   從這張表上刪掉了** —— 不是「讓門閉嘴」，是它們**真的被實作出來了**。
+    //   ⚠ 判據：`不兑现承诺的那一组回安全值而不是_panic` 現在斷言 `digest().is_some()`，
+    //     而訪問紀錄那一格（`tests/log/run.sh`）在**真的 h3 請求**上量 `tls_*` 三格。
     "take_custom_message_reader",
     "restore_custom_message_reader",
     "take_custom_message_writer",
     "restore_custom_message_writer",
 ];
 
-/// 一条 h3 请求，装成现有执行链认得的样子。
+/// 一條 h3 請求，裝成現有執行鏈認得的樣子。
 pub struct H3Session {
     req: Box<RequestHeader>,
     client: Option<SocketAddr>,
     server: Option<SocketAddr>,
     body_rx: mpsc::Receiver<ToSession>,
-    /// ★ ★ **一条连接上的所有流共用同一个出站通道**，所以每条消息都要带 stream_id。
-    /// ⚠ 每条流各开一个通道的话，连接任务就要在**动态数量**的接收端上 select ——
-    /// 那是「听起来更干净」与「写得出来」不一致的地方。
+    /// ★ ★ **一條連接上的所有流共用同一個出站通道**，所以每條訊息都要帶 stream_id。
+    /// ⚠ 每條流各開一個通道的話，連接任務就要在**動態數量**的接收端上 select ——
+    /// 那是「聽起來更乾淨」與「寫得出來」不一致的地方。
     out: mpsc::Sender<(u64, FromSession)>,
-    /// 这条请求在 QUIC 上的流号。
+    /// 這條請求在 QUIC 上的流號。
     stream_id: u64,
     written: Option<ResponseHeader>,
-    /// h3 的 `Headers` 事件自带 `has_body`，所以这一条**开局就知道**，
-    /// 不像 h1 要等读一次才分得清。
+    /// h3 的 `Headers` 事件自帶 `has_body`，所以這一條**開局就知道**，
+    /// 不像 h1 要等讀一次才分得清。
     body_empty: bool,
     body_done: bool,
     read_n: usize,
     sent_n: usize,
     finished: bool,
-    // ⚠ 下面三个**存得下、而本批没有任何人照着它做事** —— 超时归连接任务管
-    //   （quiche 的定时器是连接级的，不是流级的）。它们也在 NOT_HONORED 的精神之内，
-    //   但**没有列进去**：列进去会让那道门去禁止一件将来必然要做的事。
-    //   ⇒ 留一条 TODO 比留一道假门好。
+    // ⚠ 下面三個**存得下、而本批沒有任何人照著它做事** —— 超時歸連接任務管
+    //   （quiche 的定時器是連接級的，不是流級的）。它們也在 NOT_HONORED 的精神之內，
+    //   但**沒有列進去**：列進去會讓那道門去禁止一件將來必然要做的事。
+    //   ⇒ 留一條 TODO 比留一道假門好。
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     drain_timeout: Option<Duration>,
-    /// 这条 QUIC 连接的 TLS 摘要（**G128，D27 结案**）。
+    /// 這條 QUIC 連接的 TLS 摘要（**G128，D27 結案**）。
     ///
-    /// ★ 由 [`quic_digest`] 在**连接**那一层造一份，每条流克隆一个
-    /// （`Digest` 里那份 `SslDigest` 是 `Arc`，克隆只是一次引用计数）。
-    /// ⚠ `None` 只会出现在单测里 —— 真流量上 h3 层建起来时它一定有值。
+    /// ★ 由 [`quic_digest`] 在**連接**那一層造一份，每條流克隆一個
+    /// （`Digest` 裡那份 `SslDigest` 是 `Arc`，克隆只是一次引用計數）。
+    /// ⚠ `None` 只會出現在單測裡 —— 真流量上 h3 層建起來時它一定有值。
     digest: Option<Digest>,
 }
 
-/// 给一条 QUIC 连接造一份 `Digest`（**G128，D27 结案**）。
+/// 給一條 QUIC 連接造一份 `Digest`（**G128，D27 結案**）。
 ///
-/// # ★ ★ 三格从哪来，第四格为什么没有
+/// # ★ ★ 三格從哪來，第四格為什麼沒有
 ///
-/// | 格 | 来源 |
+/// | 格 | 來源 |
 /// |---|---|
-/// | `version` | **恒为 `TLSv1.3`** —— RFC 9001 §4.2 写死了 QUIC 只能用 TLS 1.3。★ 这不是猜，是规范 |
+/// | `version` | **恆為 `TLSv1.3`** —— RFC 9001 §4.2 寫死了 QUIC 只能用 TLS 1.3。★ 這不是猜，是規範 |
 /// | `sni` | `quiche::Connection::server_name()` |
 /// | `alpn` | `quiche::Connection::application_proto()` |
-/// | `cipher` | ⚠ **拿不到**：quiche 的 `Handshake::cipher()` 在**私有** `mod tls` 里，而 quiche 一个 TLS 出口都没有 re-export ⇒ 留空 = 那一格不出现 |
+/// | `cipher` | ⚠ **拿不到**：quiche 的 `Handshake::cipher()` 在**私有** `mod tls` 裡，而 quiche 一個 TLS 出口都沒有 re-export ⇒ 留空 = 那一格不出現 |
 ///
-/// ★ 与 h1/h2 那侧**汇到同一个类型**（`SslDigest`），于是访问日志那一层
-/// 一行分支都不用写 —— 「同一格数据两个填法」在结构上做不到。
+/// ★ 與 h1/h2 那側**匯到同一個類型**（`SslDigest`），於是訪問紀錄那一層
+/// 一行分支都不用寫 —— 「同一格資料兩個填法」在結構上做不到。
 pub fn quic_digest(sni: Option<String>, alpn: Option<String>) -> Digest {
     let mut ssl = SslDigest::new("", "TLSv1.3", None, None, Vec::new());
-    // ★ ★ `sni` / `alpn` 是 **fork 改动 14** 给 `SslDigest` 加的两格 ——
-    //   上游没有它们，见 `vendor/pingora/FORK.md`。
+    // ★ ★ `sni` / `alpn` 是 **fork 改動 14** 給 `SslDigest` 加的兩格 ——
+    //   上游沒有它們，見 `vendor/pingora/FORK.md`。
     ssl.sni = sni.map(|s| s.to_ascii_lowercase());
     ssl.alpn = alpn;
     Digest {
@@ -197,10 +197,10 @@ impl H3Session {
         }
     }
 
-    /// 往连接任务发一条。
+    /// 往連接任務發一條。
     ///
-    /// ⚠ 对端没了 ⇒ 连接已经塌了，这是 `WriteError` 而不是内部错误 ——
-    /// **两者在日志里必须分得开**：前者是网络的常态，后者是我们的缺陷。
+    /// ⚠ 對端沒了 ⇒ 連接已經塌了，這是 `WriteError` 而不是內部錯誤 ——
+    /// **兩者在紀錄裡必須分得開**：前者是網路的常態，後者是我們的缺陷。
     async fn send(&self, msg: FromSession) -> Result<()> {
         self.out.send((self.stream_id, msg)).await.map_err(|_| {
             Error::explain(
@@ -238,7 +238,7 @@ impl SessionCustom for H3Session {
                 self.body_done = true;
                 Error::e_explain(ErrorType::ReadError, format!("h3 流被掐断：{why}"))
             }
-            // 连接任务先走了 —— 与 Reset 同义，但措辞要分得开。
+            // 連接任務先走了 —— 與 Reset 同義，但措辭要分得開。
             None => {
                 self.body_done = true;
                 Error::e_explain(ErrorType::ConnectionClosed, "h3 连接任务已经不在了")
@@ -270,7 +270,7 @@ impl SessionCustom for H3Session {
         self.send(FromSession::Trailers(trailers)).await
     }
 
-    /// 批量写。★ 返回值是「**响应到此为止了吗**」——调用方据它决定还要不要再喂。
+    /// 批量寫。★ 回傳值是「**回應到此為止了嗎**」——呼叫方據它決定還要不要再喂。
     async fn response_duplex_vec(&mut self, tasks: Vec<HttpTask>) -> Result<bool> {
         let mut end = false;
         for t in tasks {
@@ -280,8 +280,8 @@ impl SessionCustom for H3Session {
                     end |= e;
                 }
                 HttpTask::Body(data, e) => {
-                    // ⚠ `Body(None, true)` 是「没有数据、但到此结束」——它必须被送出去，
-                    //   否则对端永远等不到流的结尾。
+                    // ⚠ `Body(None, true)` 是「沒有資料、但到此結束」——它必須被送出去，
+                    //   否則對端永遠等不到流的結尾。
                     let data = data.unwrap_or_default();
                     if !data.is_empty() || e {
                         self.write_body(data, e).await?;
@@ -297,8 +297,8 @@ impl SessionCustom for H3Session {
                     end = true;
                 }
                 HttpTask::Failed(e) => return Err(e),
-                // ⚠ h3 上没有 h1 的协议升级（websocket 走的是 Extended CONNECT，
-                //   与这一条不是同一件事）。当成普通体写出去比静默丢弃安全。
+                // ⚠ h3 上沒有 h1 的協定升級（websocket 走的是 Extended CONNECT，
+                //   與這一條不是同一件事）。當成普通體寫出去比靜默丟棄安全。
                 HttpTask::UpgradedBody(data, e) => {
                     let data = data.unwrap_or_default();
                     if !data.is_empty() || e {
@@ -350,8 +350,8 @@ impl SessionCustom for H3Session {
     async fn shutdown(&mut self, code: u32, ctx: &str) {
         debug!("h3 会话收摊（code={code}）：{ctx}");
         self.finished = true;
-        // ⚠ 这里**故意不管发没发出去**：收摊路径上再报一次「发不出去」没有任何用处，
-        //   而它会盖住真正的那条错误。
+        // ⚠ 這裡**故意不管發沒發出去**：收攤路徑上再報一次「發不出去」沒有任何用處，
+        //   而它會蓋住真正的那條錯誤。
         let _ = self.out.send((self.stream_id, FromSession::Finish)).await;
     }
 
@@ -372,8 +372,8 @@ impl SessionCustom for H3Session {
     }
 
     async fn read_body_or_idle(&mut self, no_body_expected: bool) -> Result<Option<Bytes>> {
-        // ★ h1 那侧这一条要在「等下一个请求」与「读体」之间做选择；
-        //   h3 上一条流就是一次请求，没有那个歧义 ⇒ 直接读体。
+        // ★ h1 那側這一條要在「等下一個請求」與「讀體」之間做選擇；
+        //   h3 上一條流就是一次請求，沒有那個歧義 ⇒ 直接讀體。
         if no_body_expected {
             return Ok(None);
         }
@@ -387,9 +387,9 @@ impl SessionCustom for H3Session {
         self.read_n
     }
 
-    /// ✅ **此后真的兑现**（D27 结案）：一条 h3 连接的 TLS 摘要，
-    /// 由 [`quic_digest`] 在连接那一层造好。★ 它让访问日志的 `tls_*` 那几格
-    /// 在 h3 上与 h1/h2 走**同一段代码**。
+    /// ✅ **此後真的兌現**（D27 結案）：一條 h3 連接的 TLS 摘要，
+    /// 由 [`quic_digest`] 在連接那一層造好。★ 它讓訪問紀錄的 `tls_*` 那幾格
+    /// 在 h3 上與 h1/h2 走**同一段程式碼**。
     fn digest(&self) -> Option<&Digest> {
         self.digest.as_ref()
     }
@@ -397,7 +397,7 @@ impl SessionCustom for H3Session {
         self.digest.as_mut()
     }
 
-    // ── 下面是 NOT_HONORED 那一组：有定义的行为 + 安全返回值 ──────────────
+    // ── 下面是 NOT_HONORED 那一組：有定義的行為 + 安全回傳值 ──────────────
 
     fn client_addr(&self) -> Option<&SocketAddr> {
         self.client.as_ref()
@@ -406,8 +406,8 @@ impl SessionCustom for H3Session {
         self.server.as_ref()
     }
 
-    /// h2 那侧就是这么做的（`http_req_header_to_wire`）——把 h2/h3 的请求头
-    /// 印成一行 h1 的样子，给日志与需要原始形态的地方用。
+    /// h2 那側就是這麼做的（`http_req_header_to_wire`）——把 h2/h3 的請求頭
+    /// 印成一行 h1 的樣子，給紀錄與需要原始形態的地方用。
     fn pseudo_raw_h1_request_header(&self) -> Bytes {
         http_req_header_to_wire(&self.req)
             .map(|b| b.freeze())
@@ -418,7 +418,7 @@ impl SessionCustom for H3Session {
         debug!("h3 会话不做请求体重放缓冲（NOT_HONORED）");
     }
     fn retry_buffer_truncated(&self) -> bool {
-        // ★ 与 h2 在「从没开过缓冲」时同值：false。
+        // ★ 與 h2 在「從沒開過緩衝」時同值：false。
         false
     }
     fn get_retry_buffer(&self) -> Option<Bytes> {
@@ -439,8 +439,8 @@ impl SessionCustom for H3Session {
         &mut self,
         _reader: Box<dyn Stream<Item = Result<Bytes>> + Unpin + Send + Sync + 'static>,
     ) -> Result<()> {
-        // ⚠ **不能静默成功**：还回一个从来没被取走的东西，说明调用方的状态机与我们
-        //   的假设对不上 —— 静默吞掉会让那个不一致一路带到别处才炸。
+        // ⚠ **不能靜默成功**：還回一個從來沒被取走的東西，說明呼叫方的狀態機與我們
+        //   的假設對不上 —— 靜默吞掉會讓那個不一致一路帶到別處才炸。
         Error::e_explain(
             ErrorType::InternalError,
             "h3 会话没有自定义消息通道，restore_custom_message_reader 不该被调到",
@@ -462,15 +462,15 @@ impl SessionCustom for H3Session {
     }
 }
 
-// ── 门：现有执行链不许调 NOT_HONORED 里的任何一个 ──────────────────────────
+// ── 門：現有執行鏈不許調 NOT_HONORED 裡的任何一個 ──────────────────────────
 //
-// ★ ★ ★ 这就是「有定义的行为 + **一条断言**」里的那条断言。没有它的话，
-//   上面那一组只是一堆「读起来很合理」的返回值 —— 而本仓库第 67/69 轮各记过一次
-//   「一个防御措施配一句听起来很对的理由，比没有理由更难查」。
+// ★ ★ ★ 這就是「有定義的行為 + **一條斷言**」裡的那條斷言。沒有它的話，
+//   上面那一組只是一堆「讀起來很合理」的回傳值 —— 而本儲存庫第 67/69 輪各記過一次
+//   「一個防禦措施配一句聽起來很對的理由，比沒有理由更難查」。
 
-/// 现有执行链里所有 `session.<方法>(` 的调用点。
+/// 現有執行鏈裡所有 `session.<方法>(` 的呼叫點。
 ///
-/// ⚠ 只在测试构建里存在：它 `include_str!` 三份产品源码，没有理由进产物。
+/// ⚠ 只在測試建置裡存在：它 `include_str!` 三份產品原始碼，沒有理由進產物。
 #[cfg(test)]
 const CHAIN_SOURCES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../lib.rs")),
@@ -478,20 +478,20 @@ const CHAIN_SOURCES: &[(&str, &str)] = &[
     ("admin.rs", include_str!("../admin.rs")),
 ];
 
-// ⚠ ★ **这里曾经有一份叫 `NONE_IS_A_DEFINED_ANSWER` 的豁免名单，它活了不到一天。**
-//   访问日志要 TLS 四格时 `session.digest()` 进了执行链，而 h3 走得到 ⇒ 这道门当场红了；
-//   当时给它开了一条「它回的值在调用处是**有定义的答案**」的豁免。
-//   ✅ D27 结案之后 `digest` 被**真的实现出来了**（[`quic_digest`]），豁免没有对象，
-//   这道门回到满强度。
+// ⚠ ★ **這裡曾經有一份叫 `NONE_IS_A_DEFINED_ANSWER` 的豁免名單，它活了不到一天。**
+//   訪問紀錄要 TLS 四格時 `session.digest()` 進了執行鏈，而 h3 走得到 ⇒ 這道門當場紅了；
+//   當時給它開了一條「它回的值在呼叫處是**有定義的答案**」的豁免。
+//   ✅ D27 結案之後 `digest` 被**真的實作出來了**（[`quic_digest`]），豁免沒有物件，
+//   這道門回到滿強度。
 //
-//   > ★ ★ **一个「有定义的答案」型豁免，多半是一处还没做的功能穿着判据的衣服。**
-//   > ⚠ 而它真的在一天后被删掉，唯一的原因是**过期日期写进了豁免自己的文档**。
+//   > ★ ★ **一個「有定義的答案」型豁免，多半是一處還沒做的功能穿著判據的衣服。**
+//   > ⚠ 而它真的在一天後被刪掉，唯一的原因是**過期日期寫進了豁免自己的文件**。
 
-/// 从一段源码里抠出所有 `session.<名字>(` 的方法名。
+/// 從一段原始碼裡摳出所有 `session.<名字>(` 的方法名。
 ///
-/// ⚠ 只认 `session.` 这一个前缀是**够的，而这一条是查实过的**：产品里每一个
-/// `ServerSession` 类型的绑定都字面叫 `session`（§10 核过）。
-/// ★ 但这份「够」会过期 —— 所以下面那道门带一条下界断言，改名之后它会先红。
+/// ⚠ 只認 `session.` 這一個前綴是**夠的，而這一條是查實過的**：產品裡每一個
+/// `ServerSession` 類型的綁定都字面叫 `session`（§10 核過）。
+/// ★ 但這份「夠」會過期 —— 所以下面那道門帶一條下界斷言，改名之後它會先紅。
 #[cfg(test)]
 fn session_calls(src: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -521,14 +521,14 @@ mod tests {
         Box::new(r)
     }
 
-    /// ★★★ **这一条才是那句订正的证明本身。**
+    /// ★★★ **這一條才是那句訂正的證明本身。**
     ///
-    /// §10 写下「h3 接进运行时图不需要第 13 处 fork『加能力』改动，
-    /// 它是上游现成的扩展点」时，那还只是**读码结论**。
-    /// 这里把 `H3Session` 真的包进 `ServerSession::new_custom()`，
-    /// 并**逐个走一遍现有执行链真正会调的那 8 个方法** ——
-    /// ⚠ trait 实现编得过**不等于**这件事成立：`ServerSession` 是个 enum，
-    /// 它的每个方法都在 `match` 里分派，`Custom` 那一支完全可以是个空壳。
+    /// §10 寫下「h3 接進執行環境圖不需要第 13 處 fork『加能力』改動，
+    /// 它是上游現成的擴充點」時，那還只是**讀碼結論**。
+    /// 這裡把 `H3Session` 真的包進 `ServerSession::new_custom()`，
+    /// 並**逐個走一遍現有執行鏈真正會調的那 8 個方法** ——
+    /// ⚠ trait 實作編得過**不等於**這件事成立：`ServerSession` 是個 enum，
+    /// 它的每個方法都在 `match` 裡分派，`Custom` 那一支完全可以是個空殼。
     #[tokio::test]
     async fn 包进_serversession_之后执行链那八个方法逐个走得通() {
         let (body_tx, body_rx) = mpsc::channel(8);
@@ -545,7 +545,7 @@ mod tests {
         );
         let mut s = ServerSession::new_custom(Box::new(sess));
 
-        // ① read_request —— Custom 支回 Ok(true)（构造时请求头已经读好了）
+        // ① read_request —— Custom 支回 Ok(true)（建構時請求頭已經讀好了）
         assert!(s.read_request().await.expect("read_request"));
         // ② req_header
         assert_eq!(s.req_header().uri.path(), "/hello");
@@ -554,7 +554,7 @@ mod tests {
             s.client_addr().and_then(|a| a.as_inet()).map(|a| a.port()),
             Some(44300)
         );
-        // ④ set_keepalive —— Custom 支是空操作，不该 panic
+        // ④ set_keepalive —— Custom 支是空操作，不該 panic
         s.set_keepalive(Some(60));
 
         // ⑤ read_request_body
@@ -597,7 +597,7 @@ mod tests {
             other => panic!("收到的不是体：{other:?}"),
         }
 
-        // ⑧ finish —— h3 上没有可复用的连接，回 None 是对的
+        // ⑧ finish —— h3 上沒有可重複使用的連接，回 None 是對的
         assert!(s.finish().await.expect("收尾").is_none());
         assert!(matches!(
             out_rx.recv().await.expect("收尾信号该到了"),
@@ -605,7 +605,7 @@ mod tests {
         ));
     }
 
-    /// 连接任务先走了 ⇒ 读体要给一个**说得清的错**，而不是挂住或 panic。
+    /// 連接任務先走了 ⇒ 讀體要給一個**說得清的錯**，而不是掛住或 panic。
     #[tokio::test]
     async fn 连接任务先走了读体给错而不是挂住() {
         let (body_tx, body_rx) = mpsc::channel(1);
@@ -613,11 +613,11 @@ mod tests {
         let mut sess = H3Session::new(a_request(), true, None, None, body_rx, out_tx, 0, None);
         drop(body_tx);
         assert!(sess.read_body_bytes().await.is_err());
-        // ★ 再读一次也不许挂住 —— body_done 已经置上了。
+        // ★ 再讀一次也不許掛住 —— body_done 已經置上了。
         assert_eq!(sess.read_body_bytes().await.expect("第二次读"), None);
     }
 
-    /// `has_body=false` 时开局就是「体读完了」，不该去等一条永远不来的消息。
+    /// `has_body=false` 時開局就是「體讀完了」，不該去等一條永遠不來的訊息。
     #[tokio::test]
     async fn 没有请求体时开局就是读完了() {
         let (_body_tx, body_rx) = mpsc::channel(1);
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(sess.read_body_bytes().await.expect("读体"), None);
     }
 
-    /// ⚠ `Body(None, true)` 是「没有数据、但到此结束」—— 它必须被送出去。
+    /// ⚠ `Body(None, true)` 是「沒有資料、但到此結束」—— 它必須被送出去。
     #[tokio::test]
     async fn 空体但结束的那一格必须被送出去() {
         let (_body_tx, body_rx) = mpsc::channel(1);
@@ -648,7 +648,7 @@ mod tests {
         }
     }
 
-    /// NOT_HONORED 那一组要**回定义好的安全值**，而不是 panic。
+    /// NOT_HONORED 那一組要**回定義好的安全值**，而不是 panic。
     #[test]
     fn 不兑现承诺的那一组回安全值而不是_panic() {
         let (_body_tx, body_rx) = mpsc::channel(1);
@@ -659,7 +659,7 @@ mod tests {
         assert!(sess.get_retry_buffer().is_none());
         assert!(sess.take_custom_message_reader().is_none());
         assert!(sess.take_custom_message_writer().is_none());
-        // ★ 而「还回一个从没被取走的东西」必须是错，不能静默成功 —— 两条都要验。
+        // ★ 而「還回一個從沒被取走的東西」必須是錯，不能靜默成功 —— 兩條都要驗。
         assert!(
             sess.restore_custom_message_reader(Box::new(futures::stream::empty()))
                 .is_err()
@@ -670,7 +670,7 @@ mod tests {
         );
     }
 
-    /// 给上面那条用的最小 `CustomMessageWrite`。
+    /// 給上面那條用的最小 `CustomMessageWrite`。
     struct NoWriter;
     #[async_trait]
     impl CustomMessageWrite for NoWriter {
@@ -692,11 +692,11 @@ mod tests {
         assert!(got.contains(&"read_request".to_string()));
         assert!(got.contains(&"write_body".to_string()));
         assert!(got.contains(&"finish".to_string()));
-        // 错过：不是调用（后面不是括号）
+        // 錯過：不是呼叫（後面不是括號）
         assert!(!got.contains(&"not_a_call".to_string()));
-        // 错过：不是 session
+        // 錯過：不是 session
         assert!(!got.contains(&"other_name".to_string()));
-        // 空输入不能被当成「查过了、没问题」
+        // 空輸入不能被當成「查過了、沒問題」
         assert!(session_calls("").is_empty());
     }
 
@@ -709,13 +709,13 @@ mod tests {
         all.sort();
         all.dedup();
 
-        // ★ 下界一：一个都没抠出来时，下面那条交集判定会拿空集比，看起来永远是绿的。
+        // ★ 下界一：一個都沒摳出來時，下面那條交集判定會拿空集比，看起來永遠是綠的。
         assert!(
             all.len() >= 5,
             "只从执行链里抠出 {} 个方法调用（{all:?}），扫描多半坏了；本次检查不能采信",
             all.len()
         );
-        // ★ 下界二：光有数量不够 —— 钉一个必然在里面、而与本门无关的名字。
+        // ★ 下界二：光有數量不夠 —— 釘一個必然在裡面、而與本門無關的名字。
         assert!(
             all.contains(&"req_header".to_string()),
             "执行链里连 req_header 都没扫到 —— 扫描多半坏了，本次检查不能采信。扫到的是：{all:?}"
@@ -737,11 +737,11 @@ mod tests {
         );
     }
 
-    /// `digest` 真的被兑现了（**G128，D27 结案**），而不是「从名单里删掉了名字」。
+    /// `digest` 真的被兌現了（**G128，D27 結案**），而不是「從名單裡刪掉了名字」。
     ///
-    /// ★ ★ 这一条是上面那道门的**另一半**：门只管「执行链别调没兑现的」，
-    /// 而**「它到底兑现没有」得由这里说**。⚠ 少了它，一次「把名字从 NOT_HONORED 删掉
-    /// 而行为一点没变」的改动会让门变绿 —— 那正是门自己的失败消息在警告的那件事。
+    /// ★ ★ 這一條是上面那道門的**另一半**：門只管「執行鏈別調沒兌現的」，
+    /// 而**「它到底兌現沒有」得由這裡說**。⚠ 少了它，一次「把名字從 NOT_HONORED 刪掉
+    /// 而行為一點沒變」的改動會讓門變綠 —— 那正是門自己的失敗訊息在警告的那件事。
     #[test]
     fn digest_真的兑现了_三格有值而_cipher_有意留空() {
         let d = quic_digest(Some("A.Example".into()), Some("h3".into()));
@@ -749,31 +749,31 @@ mod tests {
             .ssl_digest
             .as_ref()
             .expect("h3 的 digest 必须带 SslDigest");
-        // RFC 9001 §4.2：QUIC 只能用 TLS 1.3 —— 这是规范，不是猜。
+        // RFC 9001 §4.2：QUIC 只能用 TLS 1.3 —— 這是規範，不是猜。
         assert_eq!(ssl.version, "TLSv1.3");
-        // ⚠ SNI 压小写，与 h1/h2 那侧（fork 改动 14 的 `from_ssl`）逐字同源。
+        // ⚠ SNI 壓小寫，與 h1/h2 那側（fork 改動 14 的 `from_ssl`）逐字同源。
         assert_eq!(ssl.sni.as_deref(), Some("a.example"));
         assert_eq!(ssl.alpn.as_deref(), Some("h3"));
-        // ★ ★ `cipher` **有意是空的**：quiche 的 `Handshake::cipher()` 锁在私有 `mod tls` 里。
-        //   ⚠ 空串在访问日志那一层的意思是「这一格不出现」，而**不是**「套件叫空」。
+        // ★ ★ `cipher` **有意是空的**：quiche 的 `Handshake::cipher()` 鎖在私有 `mod tls` 裡。
+        //   ⚠ 空串在訪問紀錄那一層的意思是「這一格不出現」，而**不是**「套件叫空」。
         assert_eq!(ssl.cipher, "", "cipher 拿不到时必须留空，不许编一个值");
 
-        // 反向：没 SNI / 没 ALPN 的连接照样有 digest，只是那两格是 None。
+        // 反向：沒 SNI / 沒 ALPN 的連接照樣有 digest，只是那兩格是 None。
         let bare = quic_digest(None, None);
         let ssl = bare.ssl_digest.as_ref().expect("仍然要有");
         assert!(ssl.sni.is_none() && ssl.alpn.is_none());
         assert_eq!(ssl.version, "TLSv1.3", "版本与有没有 SNI 无关");
     }
 
-    /// ★ 反向的一半：把一个**确实被调用**的名字塞进 NOT_HONORED，门必须红。
-    /// 没有这一条的话，上面那道门与「恒为真」无法区分。
+    /// ★ 反向的一半：把一個**確實被呼叫**的名字塞進 NOT_HONORED，門必須紅。
+    /// 沒有這一條的話，上面那道門與「恆為真」無法區分。
     #[test]
     fn 门自证它抓得住_把一个真调用点塞进名单就该红() {
         let mut all: Vec<String> = Vec::new();
         for (_, src) in CHAIN_SOURCES {
             all.extend(session_calls(src));
         }
-        // `req_header` 是执行链真的在调的
+        // `req_header` 是執行鏈真的在調的
         let fake_list = ["req_header"];
         let bad: Vec<&String> = all
             .iter()

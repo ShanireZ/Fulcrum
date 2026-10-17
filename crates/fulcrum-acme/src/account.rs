@@ -1,19 +1,19 @@
-//! ACME 账户：建一次，存下来，之后一直用同一个。
+//! ACME 帳戶：建一次，存下來，之後一直用同一個。
 //!
-//! 路径：`<state>/acme/<issuer>/account.json`，**0600**。
+//! 路徑：`<state>/acme/<issuer>/account.json`，**0600**。
 //!
-//! # ★ ★ 为什么必须存
+//! # ★ ★ 為什麼必須存
 //!
-//! 每建一个账户 = CA 那边多一条记录 + 一次速率配额。进程重启就新建一个账户，
-//! 表现是「跑了几天之后突然签不出来了」，而那时的错误信息是速率限制，
-//! **指向的是域名而不是账户**——排查方向会整个跑偏。
+//! 每建一個帳戶 = CA 那邊多一條記錄 + 一次速率配額。處理程序重新啟動就新建一個帳戶，
+//! 表現是「跑了幾天之後突然籤不出來了」，而那時的錯誤資訊是速率限制，
+//! **指向的是網域而不是帳戶**——排查方向會整個跑偏。
 //!
-//! ⚠ 而且账户密钥是**撤销证书的凭据**：换了账户，之前签的证书就再也撤不掉了。
+//! ⚠ 而且帳戶金鑰是**撤銷證書的憑證**：換了帳戶，之前籤的證書就再也撤不掉了。
 //!
-//! # ★ 文件权限与证书私钥同级
+//! # ★ 檔案權限與證書私鑰同級
 //!
-//! 用的是 [`fulcrum_tls::store::atomic_write`]，与私钥同一份实现——
-//! 「权限在 create 时给，不是写完再 chmod」那条规则只有一份代码，就不会有一半忘了。
+//! 用的是 [`fulcrum_tls::store::atomic_write`]，與私鑰同一份實作——
+//! 「權限在 create 時給，不是寫完再 chmod」那條規則只有一份程式碼，就不會有一半忘了。
 
 use fulcrum_tls::store::atomic_write;
 use instant_acme::{Account, AccountBuilder, AccountCredentials, NewAccount};
@@ -21,26 +21,26 @@ use log::{info, warn};
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// 造一个 `instant-acme` 的账户构造器，**HTTPS 客户端由我们自己给**。
+/// 造一個 `instant-acme` 的帳戶建構器，**HTTPS 用戶端由我們自己給**。
 ///
-/// # ★ ★ 为什么不是 `Account::builder()`
+/// # ★ ★ 為什麼不是 `Account::builder()`
 ///
-/// **G104 第 ③ 处**：`instant-acme` 的 `hyper-rustls` feature 已经关掉了
+/// **G104 第 ③ 處**：`instant-acme` 的 `hyper-rustls` feature 已經關掉了
 /// （它 gate 的是 `dep:hyper` / `dep:hyper-rustls` / `dep:hyper-util` / `dep:rustls`），
-/// 而 `Account::builder()` 与 `Account::builder_with_root()` **两个入口都挂在那个 feature 上**
-/// ⇒ 现在只剩 `builder_with_http()` 这一条，而它要一个
+/// 而 `Account::builder()` 與 `Account::builder_with_root()` **兩個入口都掛在那個 feature 上**
+/// ⇒ 現在只剩 `builder_with_http()` 這一條，而它要一個
 /// [`instant_acme::HttpClient`] —— 就是 [`crate::https::AcmeHttpClient`]。
 ///
-/// ⚠ ⚠ **这不是「换个写法」，它换掉的是 ACME 协议那条路的整套 TLS**：
-/// 信任库、链校验、主机名校验、ALPN 从此与原生 DNS 供应商那条路是**同一份**。
-/// ★ 而「同一份」是结构上的，不是靠两处注释互相钉着 —— 两条路只有一个连接器构造入口。
+/// ⚠ ⚠ **這不是「換個寫法」，它換掉的是 ACME 協定那條路的整套 TLS**：
+/// 信任庫、鏈檢核、主機名檢核、ALPN 從此與原生 DNS 供應商那條路是**同一份**。
+/// ★ 而「同一份」是結構上的，不是靠兩處註解互相釘著 —— 兩條路只有一個連接器建構入口。
 fn new_builder() -> Result<AccountBuilder, String> {
     let http = crate::https::AcmeHttpClient::new()
         .map_err(|e| format!("建不出 ACME 的 HTTPS 客户端：{e}"))?;
     Ok(Account::builder_with_http(Box::new(http)))
 }
 
-/// 账户文件的存放处。
+/// 帳戶檔案的存放處。
 pub struct AccountStore {
     root: PathBuf,
 }
@@ -54,11 +54,11 @@ impl AccountStore {
         self.root.join(issuer).join("account.json")
     }
 
-    /// 拿到账户：存储里有就用它，没有就建一个并存下来。
+    /// 拿到帳戶：儲存裡有就用它，沒有就建一個並存下來。
     ///
-    /// ⚠ **存储里有但读不出来（坏了 / 权限不对）是硬错误，不是「那就重建一个」**。
-    /// 重建会静默地丢掉撤销能力，并多消耗一次账户配额，而现场毫无提示。
-    /// 这与 [`fulcrum_tls::CertStore::load`] 那条「缺文件是 None、坏文件是 Err」同形。
+    /// ⚠ **儲存裡有但讀不出來（壞了 / 權限不對）是硬錯誤，不是「那就重建一個」**。
+    /// 重建會靜默地丟掉撤銷能力，並多消耗一次帳戶配額，而現場毫無提示。
+    /// 這與 [`fulcrum_tls::CertStore::load`] 那條「缺檔案是 None、壞檔案是 Err」同形。
     pub async fn load_or_create(
         &self,
         issuer: &str,
@@ -89,12 +89,12 @@ impl AccountStore {
             return Ok(account);
         }
 
-        // ── 建一个新的 ──────────────────────────────────────────────────────
+        // ── 建一個新的 ──────────────────────────────────────────────────────
         //
-        // ★ `terms_of_service_agreed: true`：ACME 协议要求显式同意。
-        //   把它写成配置项没有意义——不同意就一张证书都签不出来，
-        //   而**用户运行 `fulcrum serve` 并配了自动 HTTPS，本身就是那个意思**。
-        //   ⚠ 但 CA 的 TOS URL 要在装载日志里说出来，见 `issue.rs` 的装载摘要。
+        // ★ `terms_of_service_agreed: true`：ACME 協定要求顯式同意。
+        //   把它寫成設定項沒有意義——不同意就一張證書都籤不出來，
+        //   而**使用者執行 `fulcrum serve` 並配了自動 HTTPS，本身就是那個意思**。
+        //   ⚠ 但 CA 的 TOS URL 要在裝載紀錄裡說出來，見 `issue.rs` 的裝載摘要。
         let contacts: Vec<String> = contact
             .map(|c| vec![format!("mailto:{c}")])
             .unwrap_or_default();
@@ -131,7 +131,7 @@ impl AccountStore {
     }
 }
 
-/// 写一份**私密**文件：目录先建好，内容原子替换，权限 0600。
+/// 寫一份**私密**檔案：目錄先建好，內容原子替換，權限 0600。
 fn save_secret(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn 账户文件的权限是_0600() {
-        // ⚠ 它里面是账户私钥 —— 与证书私钥同级，不是「一份配置」。
+        // ⚠ 它裡面是帳戶私鑰 —— 與證書私鑰同級，不是「一份設定」。
         let root = tmpdir();
         let s = AccountStore::new(&root);
         let p = s.path_for("letsencrypt");
@@ -175,8 +175,8 @@ mod tests {
                 .ends_with("letsencrypt/account.json")
         );
         assert_ne!(s.path_for("letsencrypt"), s.path_for("letsencrypt-staging"));
-        // ★ 换 CA 就是换账户 —— 拿 staging 的账户去生产签是签不出来的，
-        //   而如果两者共用一个文件，那个错误会在**第一次生产签发**时才出现。
+        // ★ 換 CA 就是換帳戶 —— 拿 staging 的帳戶去生產籤是籤不出來的，
+        //   而如果兩者共用一個檔案，那個錯誤會在**第一次生產簽發**時才出現。
         assert_ne!(s.path_for("letsencrypt"), s.path_for("ca-localhost-14000"));
     }
 

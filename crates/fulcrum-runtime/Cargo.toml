@@ -10,7 +10,7 @@ fulcrum-config = { path = "../fulcrum-config" }
 regex = { workspace = true }
 
 [dev-dependencies]
-# ★ 只给测试用：`udp_上的_proxy_protocol_两层都拦` 要**绕过 DSL**、
-#   直接喂一份结构化配置进来 —— 那正是 G11 说的「公开入口」，
-#   而「第二层判据真的存在」这件事只能这么证。
+# ★ 只給測試用：`udp_上的_proxy_protocol_两层都拦` 要**繞過 DSL**、
+#   直接喂一份結構化設定進來 —— 那正是 G11 說的「公開入口」，
+#   而「第二層判據真的存在」這件事只能這麼證。
 serde_json = { workspace = true }

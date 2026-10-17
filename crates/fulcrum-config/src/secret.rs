@@ -1,48 +1,48 @@
-//! 凭据值（**G59 第 1 条的修订**）。
+//! 憑證值（**G59 第 1 條的修訂**）。
 //!
-//! # ★ ★ ★ 口径变了：从「写不下字面量」变成「写得下，但它变成秘密」
+//! # ★ ★ ★ 口徑變了：從「寫不下字面值」變成「寫得下，但它變成秘密」
 //!
-//! 在此之前，DSL 里写凭据字面量是**编译期错误**，只认 `env:` / `file:` 两种来源。
-//! owner 拍板改成 Caddy 的形状：**一份配置文件就能跑完**。
+//! 在此之前，DSL 裡寫憑證字面值是**編譯期錯誤**，只認 `env:` / `file:` 兩種來源。
+//! owner 拍板改成 Caddy 的形狀：**一份設定檔案就能跑完**。
 //!
-//! ⚠ 而这句话真正的代价不是「多一种写法」，是**配置文件的性质变了** ——
-//! 它从「可以随便看的东西」变成了「秘密」。而枢衡里有四条路会把配置原样吐出来：
+//! ⚠ 而這句話真正的代價不是「多一種寫法」，是**設定檔案的性質變了** ——
+//! 它從「可以隨便看的東西」變成了「秘密」。而樞衡裡有四條路會把設定原樣吐出來：
 //!
-//! | 路 | 原本会泄漏什么 |
+//! | 路 | 原本會洩漏什麼 |
 //! |---|---|
-//! | `fulcrum compile` | 整份结构化 JSON（凭据在里面）|
-//! | `POST /load` 的载荷 | 同上，还会穿过管理面 |
-//! | 诊断 | **出错那一行会被原样打出来**（带 caret）—— 一个语法错误就能把 token 打进 journald |
-//! | `Debug` / 日志 | 任何 `{:?}` 一整份配置的地方 |
+//! | `fulcrum compile` | 整份結構化 JSON（憑證在裡面）|
+//! | `POST /load` 的載荷 | 同上，還會穿過管理面 |
+//! | 診斷 | **出錯那一行會被原樣打出來**（帶 caret）—— 一個語法錯誤就能把 token 打進 journald |
+//! | `Debug` / 紀錄 | 任何 `{:?}` 一整份設定的地方 |
 //!
-//! ⇒ 所以本类型的默认行为是**脱敏**，露出真值要显式进 [`reveal`] 作用域。
-//! ★ 判据不是「我们记得在这四处脱敏」，而是**默认就不出真值** ——
-//! 一条要在 N 个地方记住的规则，迟早会在其中一个地方被忘掉。
+//! ⇒ 所以本類型的預設行為是**脫敏**，露出真值要顯式進 [`reveal`] 作用域。
+//! ★ 判據不是「我們記得在這四處脫敏」，而是**預設就不出真值** ——
+//! 一條要在 N 個地方記住的規則，遲早會在其中一個地方被忘掉。
 
 use serde::de::{self, Deserialize, Deserializer};
 use serde::ser::{Serialize, Serializer};
 use std::cell::Cell;
 use std::fmt;
 
-/// 脱敏之后印出来的样子。
+/// 脫敏之後印出來的樣子。
 ///
-/// ★ 有意选一个**不可能是合法凭据**的串：它出现在哪儿，哪儿就是脱敏过的，
-/// 而不是「某个恰好长这样的 token」。
+/// ★ 有意選一個**不可能是合法憑證**的串：它出現在哪兒，哪兒就是脫敏過的，
+/// 而不是「某個恰好長這樣的 token」。
 pub const REDACTED: &str = "«已脱敏»";
 
 thread_local! {
-    /// 当前线程是否在 [`reveal`] 作用域里。
+    /// 當前執行緒是否在 [`reveal`] 作用域裡。
     ///
-    /// ⚠ 用 thread-local 而不是给 `Serialize` 加参数：serde 的 `Serialize` 签名是固定的，
-    /// 而**默认脱敏**这件事必须落在 `Serialize` 自己身上 —— 落在调用方就等于
-    /// 「每个调用方都要记得」，那正是这里要避免的。
+    /// ⚠ 用 thread-local 而不是給 `Serialize` 加參數：serde 的 `Serialize` 簽名是固定的，
+    /// 而**預設脫敏**這件事必須落在 `Serialize` 自己身上 —— 落在呼叫方就等於
+    /// 「每個呼叫方都要記得」，那正是這裡要避免的。
     static REVEAL: Cell<bool> = const { Cell::new(false) };
 }
 
-/// 在这个闭包里，[`Secret`] 序列化出**真值**。
+/// 在這個閉包裡，[`Secret`] 序列化出**真值**。
 ///
-/// ★ 唯一的用法是 `fulcrum compile --with-secrets` 与管理面的 load 载荷生成 ——
-/// 两处都是**用户显式要求**的时刻。
+/// ★ 唯一的用法是 `fulcrum compile --with-secrets` 與管理面的 load 載荷生成 ——
+/// 兩處都是**使用者顯式要求**的時刻。
 pub fn reveal<T>(f: impl FnOnce() -> T) -> T {
     REVEAL.with(|r| r.set(true));
     let out = f();
@@ -54,28 +54,28 @@ fn revealing() -> bool {
     REVEAL.with(|r| r.get())
 }
 
-/// 一个凭据「从哪儿来」——可能是指针（`env:` / `file:`），也可能就是值本身。
+/// 一個憑證「從哪兒來」——可能是指針（`env:` / `file:`），也可能就是值本身。
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret {
     raw: String,
-    /// 真值就在 `raw` 里（字面量）⇒ 印出去要脱敏。
+    /// 真值就在 `raw` 裡（字面值）⇒ 印出去要脫敏。
     sensitive: bool,
-    /// ★ 这一份是**从脱敏过的产物读回来的** —— 里面没有真值。
+    /// ★ 這一份是**從脫敏過的產物讀回來的** —— 裡面沒有真值。
     ///
-    /// ⚠ 它必须与「普通字面量」分开：把 `«已脱敏»` 当成凭据发给 CA，
-    /// 现场表现是「凭据不对」，而没有任何一处会说「你 load 的是一份脱敏产物」。
+    /// ⚠ 它必須與「普通字面值」分開：把 `«已脱敏»` 當成憑證發給 CA，
+    /// 現場表現是「憑證不對」，而沒有任何一處會說「你 load 的是一份脫敏產物」。
     redacted: bool,
 }
 
 impl Secret {
-    /// 从 DSL / JSON 里那个词造一个。
+    /// 從 DSL / JSON 裡那個詞造一個。
     ///
-    /// | 写法 | 结果 |
+    /// | 寫法 | 結果 |
     /// |---|---|
-    /// | `env:NAME` / `file:/path` | 指针，不脱敏（它本来就不是秘密）|
-    /// | `literal:<值>` | 字面量，脱敏 |
-    /// | `«已脱敏»` | ★ 标记为「读回来的脱敏产物」，用它去签发会**明确报错** |
-    /// | 其它任何值 | 字面量，脱敏（Caddy 形状：不写前缀就是值本身）|
+    /// | `env:NAME` / `file:/path` | 指針，不脫敏（它本來就不是秘密）|
+    /// | `literal:<值>` | 字面值，脫敏 |
+    /// | `«已脱敏»` | ★ 標記為「讀回來的脫敏產物」，用它去簽發會**明確回報錯誤** |
+    /// | 其它任何值 | 字面值，脫敏（Caddy 形狀：不寫前綴就是值本身）|
     pub fn parse(raw: &str) -> Secret {
         if raw == REDACTED {
             return Secret {
@@ -92,22 +92,22 @@ impl Secret {
         }
     }
 
-    /// 造一个**明确不是秘密**的值（例如 `dns exec` 的程序路径）。
+    /// 造一個**明確不是秘密**的值（例如 `dns exec` 的處理程序路徑）。
     ///
-    /// # ⚠ ⚠ 为什么需要它 —— 一刀切「无前缀就是凭据」会误伤
+    /// # ⚠ ⚠ 為什麼需要它 —— 一刀切「無前綴就是憑證」會誤傷
     ///
-    /// `dns` 的第二个参数**按供应商有两种含义**：
+    /// `dns` 的第二個參數**按供應商有兩種含義**：
     ///
-    /// | 供应商 | 第二个参数是 | 是秘密吗 |
+    /// | 供應商 | 第二個參數是 | 是秘密嗎 |
     /// |---|---|---|
-    /// | `cloudflare` / `dnspod` | 凭据 | ✅ |
-    /// | `exec` | **hook 程序的路径** | ❌ |
+    /// | `cloudflare` / `dnspod` | 憑證 | ✅ |
+    /// | `exec` | **hook 處理程序的路徑** | ❌ |
     ///
-    /// 不分这个岔的话，`dns exec /etc/fulcrum/dns-hook.sh`
-    /// 被当成了字面量凭据 —— **门禁当场红**：ACME 那个场景的配置是 0644，
-    /// 而它里面根本没有秘密。
-    /// ★ ★ 一道会在**没有秘密的配置**上开火的门，会训练人去无脑 chmod、
-    /// 或者干脆无视它 —— 那时它挡不住真正该挡的那一次。
+    /// 不分這個岔的話，`dns exec /etc/fulcrum/dns-hook.sh`
+    /// 被當成了字面值憑證 —— **門禁當場紅**：ACME 那個場景的設定是 0644，
+    /// 而它裡面根本沒有秘密。
+    /// ★ ★ 一道會在**沒有秘密的設定**上開火的門，會訓練人去無腦 chmod、
+    /// 或者乾脆無視它 —— 那時它擋不住真正該擋的那一次。
     pub fn path(raw: &str) -> Secret {
         Secret {
             raw: raw.to_string(),
@@ -116,31 +116,31 @@ impl Secret {
         }
     }
 
-    /// 真值（含 `env:` / `file:` 前缀那种指针写法）。
+    /// 真值（含 `env:` / `file:` 前綴那種指針寫法）。
     ///
-    /// ⚠ 拿到它就有责任不把它打出去。★ 名字里带 `expose` 是有意的：
-    /// grep 一下就知道全仓有哪几处碰过真值。
+    /// ⚠ 拿到它就有責任不把它打出去。★ 名字裡帶 `expose` 是有意的：
+    /// grep 一下就知道全倉有哪幾處碰過真值。
     pub fn expose(&self) -> &str {
         &self.raw
     }
 
-    /// 是不是字面量（真值就在配置文件里）。★ 装载期的权限门看这一条。
+    /// 是不是字面值（真值就在設定檔案裡）。★ 裝載期的權限門看這一條。
     pub fn is_sensitive(&self) -> bool {
         self.sensitive
     }
 
-    /// 是不是从脱敏产物读回来的。
+    /// 是不是從脫敏產物讀回來的。
     pub fn is_redacted(&self) -> bool {
         self.redacted
     }
 
-    /// 印出来给人看的样子：字面量一律脱敏，指针原样（它不是秘密，而且它是**线索**）。
+    /// 印出來給人看的樣子：字面值一律脫敏，指針原樣（它不是秘密，而且它是**線索**）。
     pub fn display(&self) -> &str {
         if self.sensitive { REDACTED } else { &self.raw }
     }
 }
 
-/// ⚠ `Debug` 也脱敏：一个 `{:?}` 一整份配置的日志语句，是最容易被忘掉的那条路。
+/// ⚠ `Debug` 也脫敏：一個 `{:?}` 一整份設定的紀錄語句，是最容易被忘掉的那條路。
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Secret({})", self.display())
@@ -158,8 +158,8 @@ impl Serialize for Secret {
         if self.sensitive && !revealing() {
             return s.serialize_str(REDACTED);
         }
-        // ★ 露真值时给字面量补上 `literal:` 前缀：结构化层是**公开入口**（G11），
-        //   而一个没有前缀的裸值在那里是有歧义的（它是值？还是某种没写对的来源？）。
+        // ★ 露真值時給字面值補上 `literal:` 前綴：結構化層是**公開入口**（G11），
+        //   而一個沒有前綴的裸值在那裡是有歧義的（它是值？還是某種沒寫對的來源？）。
         if self.sensitive && !self.raw.starts_with("literal:") {
             return s.serialize_str(&format!("literal:{}", self.raw));
         }
@@ -200,7 +200,7 @@ mod tests {
             format!("\"{REDACTED}\"")
         );
 
-        // ★ 指针不是秘密，而且它是**线索**：出错时「从哪个变量/文件读的」必须说得出来。
+        // ★ 指針不是秘密，而且它是**線索**：出錯時「從哪個變數/檔案讀的」必須說得出來。
         let ptr = Secret::parse("env:CF_API_TOKEN");
         assert!(!ptr.is_sensitive());
         assert_eq!(ptr.display(), "env:CF_API_TOKEN");
@@ -214,8 +214,8 @@ mod tests {
         let shown = reveal(|| serde_json::to_string(&lit).unwrap());
         assert_eq!(hidden, format!("\"{REDACTED}\""));
         assert_eq!(shown, "\"literal:cfat_realtoken12345\"");
-        // ⚠ 出了作用域必须立刻恢复 —— 否则一次 `--with-secrets` 会把整个进程后续
-        //   所有序列化都变成明文。
+        // ⚠ 出了作用域必須立刻恢復 —— 否則一次 `--with-secrets` 會把整個處理程序後續
+        //   所有序列化都變成明文。
         assert_eq!(
             serde_json::to_string(&lit).unwrap(),
             format!("\"{REDACTED}\"")
@@ -224,8 +224,8 @@ mod tests {
 
     #[test]
     fn 脱敏产物读回来要认得出是脱敏的() {
-        // ★ ★ 这一条挡的是最坏的那种失败：把 `«已脱敏»` 当成凭据发给 CA，
-        //   现场表现是「凭据不对」，而没有任何一处会说「你 load 的是一份脱敏产物」。
+        // ★ ★ 這一條擋的是最壞的那種失敗：把 `«已脱敏»` 當成憑證發給 CA，
+        //   現場表現是「憑證不對」，而沒有任何一處會說「你 load 的是一份脫敏產物」。
         let back: Secret = serde_json::from_str(&format!("\"{REDACTED}\"")).unwrap();
         assert!(back.is_redacted());
         assert!(back.is_sensitive());
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn 带_literal_前缀的写回来还是同一个值() {
         let lit = Secret::parse("literal:abc123");
-        // `literal:` 前缀在 parse 时不剥离（DSL 侧由 compile 负责），
-        // 但 JSON 往返必须**稳定**：写出去带前缀，读回来剥掉，值不变。
+        // `literal:` 前綴在 parse 時不剝離（DSL 側由 compile 負責），
+        // 但 JSON 往返必須**穩定**：寫出去帶前綴，讀回來剝掉，值不變。
         let json = reveal(|| serde_json::to_string(&lit).unwrap());
         let back: Secret = serde_json::from_str(&json).unwrap();
         assert_eq!(back.expose(), "abc123");

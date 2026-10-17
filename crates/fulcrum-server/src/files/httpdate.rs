@@ -1,44 +1,44 @@
-//! HTTP 日期：**发**一种、**收**三种（G93）。
+//! HTTP 日期：**發**一種、**收**三種（G93）。
 //!
-//! 图里没有日期库（G29 的依赖天花板），所以格式化与解析都手写。
+//! 圖裡沒有日期庫（G29 的依賴天花板），所以格式化與解析都手寫。
 //!
-//! ★ ★ RFC 9110 §5.6.7 对两个方向说的**不是同一句话**，这一点值得写在明处：
+//! ★ ★ RFC 9110 §5.6.7 對兩個方向說的**不是同一句話**，這一點值得寫在明處：
 //!
-//! - **发**：`Last-Modified` 等时间戳 **MUST** 用 IMF-fixdate
-//!   （`Sun, 06 Nov 1994 08:49:37 GMT`）。⇒ [`format_imf`] 只产这一种。
-//! - **收**：接收方 **MUST** 接受三种 —— IMF-fixdate、RFC 850、asctime。
-//!   ⇒ [`parse`] 三种都认。
+//! - **發**：`Last-Modified` 等時間戳 **MUST** 用 IMF-fixdate
+//!   （`Sun, 06 Nov 1994 08:49:37 GMT`）。⇒ [`format_imf`] 只產這一種。
+//! - **收**：接收方 **MUST** 接受三種 —— IMF-fixdate、RFC 850、asctime。
+//!   ⇒ [`parse`] 三種都認。
 //!
-//! ⚠ ⚠ 这里最容易错的是 RFC 850 那个**两位年**。RFC 9110 的规则是：
-//! 「看起来在未来 50 年以上的时间戳，必须理解成**最近的那个同末两位的过去年份**」。
-//! 于是 `parse` 的结果**依赖"现在"**——所以真正干活的是 [`parse_with_now`]，
-//! 它把"现在"当参数收，好让判据能在离线、确定的输入上钉住它。
+//! ⚠ ⚠ 這裡最容易錯的是 RFC 850 那個**兩位年**。RFC 9110 的規則是：
+//! 「看起來在未來 50 年以上的時間戳，必須理解成**最近的那個同末兩位的過去年份**」。
+//! 於是 `parse` 的結果**依賴"現在"**——所以真正幹活的是 [`parse_with_now`]，
+//! 它把"現在"當參數收，好讓判據能在離線、確定的輸入上釘住它。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// ★ 只用于**格式化**。解析时星期名是被**忽略**的 —— RFC 9110 说接收方
-/// 不该拿它当判据（报文里的星期名可能与日期本身矛盾）。
+/// ★ 只用於**格式化**。解析時星期名是被**忽略**的 —— RFC 9110 說接收方
+/// 不該拿它當判據（訊息裡的星期名可能與日期本身矛盾）。
 const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTH_NAMES: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// 把一个时刻格式化成 IMF-fixdate。
+/// 把一個時刻格式化成 IMF-fixdate。
 ///
-/// 早于 1970 的时刻（时钟错乱、或文件被人为设成很早）回 `None` ——
-/// ★ 不假装它是 epoch：一个错的时间戳会被下游当成真的，
-/// 而缺一个 `Last-Modified` 头只是少一次 304。
+/// 早於 1970 的時刻（時鐘錯亂、或檔案被人為設成很早）回 `None` ——
+/// ★ 不假裝它是 epoch：一個錯的時間戳會被下游當成真的，
+/// 而缺一個 `Last-Modified` 頭只是少一次 304。
 pub fn format_imf(t: SystemTime) -> Option<String> {
     let secs = t.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
     Some(format_imf_secs(secs))
 }
 
-/// 同上，输入是 unix 秒。分出来是为了让判据能喂确定的数。
+/// 同上，輸入是 unix 秒。分出來是為了讓判據能喂確定的數。
 pub fn format_imf_secs(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);
-    // 1970-01-01 是星期四 ⇒ 偏移 3（表里 Mon 是 0）。
+    // 1970-01-01 是星期四 ⇒ 偏移 3（表裡 Mon 是 0）。
     let dow = (days + 3).rem_euclid(7) as usize;
     format!(
         "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
@@ -52,15 +52,15 @@ pub fn format_imf_secs(secs: i64) -> String {
     )
 }
 
-/// IMF-fixdate 的定长（年份四位时）：`Sun, 06 Nov 1994 08:49:37 GMT` 恒为 29 字节。
+/// IMF-fixdate 的定長（年份四位時）：`Sun, 06 Nov 1994 08:49:37 GMT` 恆為 29 位元組。
 pub const IMF_LEN: usize = 29;
 
-/// 同 [`format_imf_secs`]，但写进调用方给的定长缓冲、⛔ 不走 `fmt`、不分配
-/// （10-05 · `file_server` 每个响应都要一个 `Last-Modified`）。
+/// 同 [`format_imf_secs`]，但寫進呼叫方給的定長緩衝、⛔ 不走 `fmt`、不分配
+/// （10-05 · `file_server` 每個回應都要一個 `Last-Modified`）。
 ///
-/// 年份不在 0000–9999 时写不进 29 字节 ⇒ 回 `false`，调用方回落到 [`format_imf_secs`]
-/// （那一版照 `{:04}` 写出五位年，字节与以前一样）。
-/// ★ 两版逐字节相同由单测 `定长写法与_format_那一版逐字节相同` 钉着。
+/// 年份不在 0000–9999 時寫不進 29 位元組 ⇒ 回 `false`，呼叫方回落到 [`format_imf_secs`]
+/// （那一版照 `{:04}` 寫出五位年，位元組與以前一樣）。
+/// ★ 兩版逐位元組相同由單測 `定长写法与_format_那一版逐字节相同` 釘著。
 pub fn write_imf_secs(secs: i64, out: &mut [u8; IMF_LEN]) -> bool {
     let days = secs.div_euclid(86_400);
     let tod = secs.rem_euclid(86_400);
@@ -68,7 +68,7 @@ pub fn write_imf_secs(secs: i64, out: &mut [u8; IMF_LEN]) -> bool {
     if !(0..=9999).contains(&y) {
         return false;
     }
-    // 1970-01-01 是星期四 ⇒ 偏移 3（表里 Mon 是 0）。
+    // 1970-01-01 是星期四 ⇒ 偏移 3（表裡 Mon 是 0）。
     let dow = (days + 3).rem_euclid(7) as usize;
     out[0..3].copy_from_slice(DAY_NAMES[dow].as_bytes());
     out[3..5].copy_from_slice(b", ");
@@ -87,7 +87,7 @@ pub fn write_imf_secs(secs: i64, out: &mut [u8; IMF_LEN]) -> bool {
     true
 }
 
-/// 定宽、左补零的十进制（宽度 = `out.len()`）。
+/// 定寬、左補零的十進位（寬度 = `out.len()`）。
 fn put_decimal(out: &mut [u8], mut v: u32) {
     for b in out.iter_mut().rev() {
         *b = b'0' + (v % 10) as u8;
@@ -95,7 +95,7 @@ fn put_decimal(out: &mut [u8], mut v: u32) {
     }
 }
 
-/// 解析三种 HTTP 日期，返回 unix 秒。用系统时钟当"现在"。
+/// 解析三種 HTTP 日期，回傳 unix 秒。用系統時鐘當"現在"。
 pub fn parse(s: &str) -> Option<i64> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -105,20 +105,20 @@ pub fn parse(s: &str) -> Option<i64> {
     parse_with_now(s, now)
 }
 
-/// 解析三种 HTTP 日期。`now_secs` 只被 RFC 850 那一档用到（两位年补世纪）。
+/// 解析三種 HTTP 日期。`now_secs` 只被 RFC 850 那一檔用到（兩位年補世紀）。
 pub fn parse_with_now(s: &str, now_secs: i64) -> Option<i64> {
     let s = s.trim();
-    // 三种格式的分辨点在**第一个逗号**：
-    //   IMF-fixdate  `Sun, 06 Nov 1994 08:49:37 GMT`   —— 逗号前 3 个字母
-    //   RFC 850      `Sunday, 06-Nov-94 08:49:37 GMT`  —— 逗号前是全写
-    //   asctime      `Sun Nov  6 08:49:37 1994`        —— 没有逗号
+    // 三種格式的分辨點在**第一個逗號**：
+    //   IMF-fixdate  `Sun, 06 Nov 1994 08:49:37 GMT`   —— 逗號前 3 個字母
+    //   RFC 850      `Sunday, 06-Nov-94 08:49:37 GMT`  —— 逗號前是全寫
+    //   asctime      `Sun Nov  6 08:49:37 1994`        —— 沒有逗號
     match s.split_once(',') {
         None => parse_asctime(s),
         Some((dow, rest)) => {
             let rest = rest.trim_start();
-            // ★ 判据不是"逗号前有多长"，而是**日期那一段自己长什么样**：
-            //   `06-Nov-94` 里有连字符，`06 Nov 1994` 里没有。
-            //   按星期名长度分反而会被 `Sun,` 与 `Sunday,` 之外的写法骗到。
+            // ★ 判據不是"逗號前有多長"，而是**日期那一段自己長什麼樣**：
+            //   `06-Nov-94` 裡有連字元，`06 Nov 1994` 裡沒有。
+            //   按星期名長度分反而會被 `Sun,` 與 `Sunday,` 之外的寫法騙到。
             if !dow.trim().is_empty() && rest.get(2..3) == Some("-") {
                 parse_rfc850(rest, now_secs)
             } else {
@@ -135,8 +135,8 @@ fn parse_imf(s: &str) -> Option<i64> {
     let m = month_from_name(it.next()?)?;
     let y: i64 = it.next()?.parse().ok()?;
     let tod = parse_hms(it.next()?)?;
-    // ⚠ 尾巴必须是 GMT。RFC 9110 说得很明确：HTTP 日期**永远**是 GMT，
-    //   带别的时区的那份报文是坏的 —— 认了它等于替对方猜一个偏移量。
+    // ⚠ 尾巴必須是 GMT。RFC 9110 說得很明確：HTTP 日期**永遠**是 GMT，
+    //   帶別的時區的那份訊息是壞的 —— 認了它等於替對方猜一個偏移量。
     if !it.next()?.eq_ignore_ascii_case("GMT") {
         return None;
     }
@@ -161,24 +161,24 @@ fn parse_rfc850(s: &str, now_secs: i64) -> Option<i64> {
     to_unix(expand_two_digit_year(yy, now_secs), m, d, tod)
 }
 
-/// `Nov  6 08:49:37 1994`（日那一栏是**空格补位**，不是补零）
+/// `Nov  6 08:49:37 1994`（日那一欄是**空格補位**，不是補零）
 fn parse_asctime(s: &str) -> Option<i64> {
     let mut it = s.split_ascii_whitespace();
-    // 星期名被忽略（见 DAY_NAMES 上那条注释），但**必须在**——少了它就不是 asctime。
+    // 星期名被忽略（見 DAY_NAMES 上那條註解），但**必須在**——少了它就不是 asctime。
     if it.next()?.len() < 3 {
         return None;
     }
     let m = month_from_name(it.next()?)?;
-    // ⚠ 日那一栏是**空格补位**（`Nov  6`），所以这里靠 `split_ascii_whitespace`
-    //   把连续空格吃掉；换成按固定列切会在个位数日期上错一格。
+    // ⚠ 日那一欄是**空格補位**（`Nov  6`），所以這裡靠 `split_ascii_whitespace`
+    //   把連續空格吃掉；換成按固定列切會在個位數日期上錯一格。
     let d: u32 = it.next()?.parse().ok()?;
     let tod = parse_hms(it.next()?)?;
     let y: i64 = it.next()?.parse().ok()?;
     to_unix(y, m, d, tod)
 }
 
-/// RFC 9110 §5.6.7 的两位年规则：
-/// **看起来在未来 50 年以上的，取最近的那个同末两位的过去年份。**
+/// RFC 9110 §5.6.7 的兩位年規則：
+/// **看起來在未來 50 年以上的，取最近的那個同末兩位的過去年份。**
 fn expand_two_digit_year(yy: i64, now_secs: i64) -> i64 {
     let (now_year, _, _) = civil_from_days(now_secs.div_euclid(86_400));
     let mut y = now_year.div_euclid(100) * 100 + yy;
@@ -195,7 +195,7 @@ fn month_from_name(s: &str) -> Option<u32> {
         .map(|i| i as u32 + 1)
 }
 
-/// `08:49:37` → 当天秒数。
+/// `08:49:37` → 當天秒數。
 fn parse_hms(s: &str) -> Option<i64> {
     let mut it = s.split(':');
     let h: i64 = it.next()?.parse().ok()?;
@@ -204,8 +204,8 @@ fn parse_hms(s: &str) -> Option<i64> {
     if it.next().is_some() {
         return None;
     }
-    // ⚠ 闰秒：`60` 是合法的 HTTP 时间戳。把它折成 59 —— 拒掉它会让一次
-    //   条件请求整个失效，而差一秒不影响 `If-Modified-Since` 的判断。
+    // ⚠ 閏秒：`60` 是合法的 HTTP 時間戳。把它折成 59 —— 拒掉它會讓一次
+    //   條件請求整個失效，而差一秒不影響 `If-Modified-Since` 的判斷。
     let se = if se == 60 { 59 } else { se };
     if !(0..24).contains(&h) || !(0..60).contains(&mi) || !(0..60).contains(&se) {
         return None;
@@ -234,7 +234,7 @@ fn days_in_month(y: i64, m: u32) -> u32 {
     }
 }
 
-/// Howard Hinnant 的 `days_from_civil`：民用日期 → 距 1970-01-01 的天数。
+/// Howard Hinnant 的 `days_from_civil`：民用日期 → 距 1970-01-01 的天數。
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -245,7 +245,7 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// 上面那个的反函数。
+/// 上面那個的反函式。
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -263,12 +263,12 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
 
-    /// RFC 9110 §5.6.7 自己举的那个例子，三种写法是**同一个时刻**。
+    /// RFC 9110 §5.6.7 自己舉的那個例子，三種寫法是**同一個時刻**。
     const IMF: &str = "Sun, 06 Nov 1994 08:49:37 GMT";
     const RFC850: &str = "Sunday, 06-Nov-94 08:49:37 GMT";
     const ASCTIME: &str = "Sun Nov  6 08:49:37 1994";
     const EXPECT: i64 = 784_111_777;
-    /// T00:00:00Z，给两位年那条规则当"现在"。
+    /// T00:00:00Z，給兩位年那條規則當"現在"。
     const NOW_2026: i64 = 1_787_616_000;
 
     #[test]
@@ -287,20 +287,20 @@ mod tests {
         );
     }
 
-    // ★ ★ 这条钉的是 G93 那半句「两位年按 RFC 9110 附录规则处理」。
-    //   ⚠ 少了它，一个 1994 年的 `If-Modified-Since` 会被读成 **2094 年**
-    //   ⇒ 服务器认为客户端手上的副本比文件还新，于是**永远回 304**，
-    //   而客户端永远拿不到更新后的文件 —— 现场是「改了文件但页面不变」，
-    //   没有任何一条日志会说是日期解析错了。
+    // ★ ★ 這條釘的是 G93 那半句「兩位年按 RFC 9110 附錄規則處理」。
+    //   ⚠ 少了它，一個 1994 年的 `If-Modified-Since` 會被讀成 **2094 年**
+    //   ⇒ 伺服器認為用戶端手上的副本比檔案還新，於是**永遠回 304**，
+    //   而用戶端永遠拿不到更新後的檔案 —— 現場是「改了檔案但頁面不變」，
+    //   沒有任何一條紀錄會說是日期解析錯了。
     #[test]
     fn rfc850_的两位年按_rfc9110_规则补世纪() {
         let year_of = |s: &str| civil_from_days(parse_with_now(s, NOW_2026).unwrap() / 86_400).0;
-        // 现在是 2026：+50 年的界在 2076。
+        // 現在是 2026：+50 年的界在 2076。
         assert_eq!(year_of("Sun, 06-Nov-94 08:49:37 GMT"), 1994, "94 → 1994");
         assert_eq!(year_of("Sun, 06-Nov-26 08:49:37 GMT"), 2026, "26 → 2026");
-        // 正好 50 年 —— 规则说的是「50 年**以上**」，所以这一档留在未来。
+        // 正好 50 年 —— 規則說的是「50 年**以上**」，所以這一檔留在未來。
         assert_eq!(year_of("Sun, 06-Nov-76 08:49:37 GMT"), 2076, "76 → 2076");
-        // 51 年 ⇒ 退一个世纪。★ 边界两侧各钉一条，差一错才跑不掉。
+        // 51 年 ⇒ 退一個世紀。★ 邊界兩側各釘一條，差一錯才跑不掉。
         assert_eq!(year_of("Sun, 06-Nov-77 08:49:37 GMT"), 1977, "77 → 1977");
         assert_eq!(year_of("Sun, 06-Nov-99 08:49:37 GMT"), 1999, "99 → 1999");
     }
@@ -323,12 +323,12 @@ mod tests {
         for bad in [
             "",
             "not a date",
-            "Sun, 32 Nov 1994 08:49:37 GMT", // 没有 11 月 32 日
-            "Sun, 29 Feb 1995 08:49:37 GMT", // 1995 不是闰年
-            "Sun, 06 Xxx 1994 08:49:37 GMT", // 月份名不认识
-            "Sun, 06 Nov 1994 24:49:37 GMT", // 小时越界
-            "Sun, 06 Nov 1994 08:60:37 GMT", // 分钟越界
-            "Sun, 06-Nov-994 08:49:37 GMT",  // RFC 850 的年必须两位
+            "Sun, 32 Nov 1994 08:49:37 GMT", // 沒有 11 月 32 日
+            "Sun, 29 Feb 1995 08:49:37 GMT", // 1995 不是閏年
+            "Sun, 06 Xxx 1994 08:49:37 GMT", // 月份名不認識
+            "Sun, 06 Nov 1994 24:49:37 GMT", // 小時越界
+            "Sun, 06 Nov 1994 08:60:37 GMT", // 分鐘越界
+            "Sun, 06-Nov-994 08:49:37 GMT",  // RFC 850 的年必須兩位
         ] {
             assert_eq!(parse_with_now(bad, NOW_2026), None, "本该拒掉：{bad:?}");
         }
@@ -339,7 +339,7 @@ mod tests {
         assert!(parse_with_now("Tue, 29 Feb 2028 00:00:00 GMT", NOW_2026).is_some());
     }
 
-    // ★ 闰秒折成 59 而不是拒 —— 拒掉会让整条条件请求失效。
+    // ★ 閏秒折成 59 而不是拒 —— 拒掉會讓整條條件請求失效。
     #[test]
     fn 闰秒被折成_59_而不是拒掉() {
         assert_eq!(
@@ -348,12 +348,12 @@ mod tests {
         );
     }
 
-    // ★ ★ 历法自证：两个方向来回一趟必须回到原处。
-    //   ⚠ 少了这条，`days_from_civil` 里一个差一的错**只会在某些月份**显形，
-    //   而抽查很容易全落在没事的那几天上。
+    // ★ ★ 曆法自證：兩個方向來回一趟必須回到原處。
+    //   ⚠ 少了這條，`days_from_civil` 裡一個差一的錯**只會在某些月份**顯形，
+    //   而抽查很容易全落在沒事的那幾天上。
     #[test]
     fn 历法来回一趟必须回到原处() {
-        // 1970-01-01 起每隔 97 天取一个点，跨 200 年 —— 覆盖闰年、世纪年、非世纪年。
+        // 1970-01-01 起每隔 97 天取一個點，跨 200 年 —— 覆蓋閏年、世紀年、非世紀年。
         let mut days = -70_000i64;
         while days < 60_000 {
             let (y, m, d) = civil_from_days(days);
@@ -362,9 +362,9 @@ mod tests {
         }
     }
 
-    /// ★ 写进定长缓冲的那一版（10-05 · 构响应头不走 `fmt`）必须与 [`format_imf_secs`]
-    ///   （`format!` 那一版，RFC 的例子钉着它）**逐字节相同**。
-    ///   扫 1970–9999 年：素数步长让每一步落在不同的日、月、闰年与时分秒上；外加几个边界。
+    /// ★ 寫進定長緩衝的那一版（10-05 · 構回應頭不走 `fmt`）必須與 [`format_imf_secs`]
+    ///   （`format!` 那一版，RFC 的例子釘著它）**逐位元組相同**。
+    ///   掃 1970–9999 年：素數步長讓每一步落在不同的日、月、閏年與時分秒上；外加幾個邊界。
     #[test]
     fn 定长写法与_format_那一版逐字节相同() {
         const LAST: i64 = 253_402_300_799; // 9999-12-31T23:59:59Z
@@ -390,7 +390,7 @@ mod tests {
                 "secs={s}"
             );
         }
-        // 年份超出四位：定长写不下 ⇒ 回 false，调用方回落到 `format!` 那一版（字节照旧）。
+        // 年份超出四位：定長寫不下 ⇒ 回 false，呼叫方回落到 `format!` 那一版（位元組照舊）。
         assert!(!write_imf_secs(LAST + 1, &mut buf));
     }
 

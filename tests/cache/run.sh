@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# 自研 HTTP 缓存的端到端（**M2 批 G**，G82–G84 + G95–G98）。
+# 自研 HTTP 快取的端到端（**M2 批 G**，G82–G84 + G95–G98）。
 #
-# ★ ★ ★ **判据为什么写成这个样子。** G82 拍板时把代价写在了明处：
-#   > RFC 9111 语义、Vary、防惊群、元数据序列化 ≈4000 行全自己写，
-#   > **而缓存的错表现为「偶尔给错内容」** —— 不像转发的错那样当场可见。
-#   ⇒ 这里每一条断言都要能区分「**从缓存来的**」与「**回源来的**」，
-#   而不只是「回了 200」。做法：**客户端每次带一个不同的 `X-Nonce`，上游把它回显出来** ——
-#   于是「体里是上一次那个 nonce」＝命中、「是这一次的」＝回源。
-#   ★ 这一点靠状态码是永远看不出来的：两者都是 200。
+# ★ ★ ★ **判據為什麼寫成這個樣子。** G82 拍板時把代價寫在了明處：
+#   > RFC 9111 語義、Vary、防驚群、中繼資料序列化 ≈4000 行全自己寫，
+#   > **而快取的錯表現為「偶爾給錯內容」** —— 不像轉發的錯那樣當場可見。
+#   ⇒ 這裡每一條斷言都要能區分「**從快取來的**」與「**回源來的**」，
+#   而不只是「回了 200」。做法：**用戶端每次帶一個不同的 `X-Nonce`，上游把它回顯出來** ——
+#   於是「體裡是上一次那個 nonce」＝命中、「是這一次的」＝回源。
+#   ★ 這一點靠狀態碼是永遠看不出來的：兩者都是 200。
 #
-# ★ 与 `crates/fulcrum-server/src/cache/*` 里那 50 条单测的分工：
-#   那边测**纯函数**（Cache-Control 解析、新鲜度、缓存键、Vary、LRU、防惊群闸），
-#   这边测**真 socket 上真的发生了什么**。⚠ 两边都要有。
+# ★ 與 `crates/fulcrum-server/src/cache/*` 裡那 50 條單測的分工：
+#   那邊測**純函式**（Cache-Control 解析、新鮮度、快取鍵、Vary、LRU、防驚群閘），
+#   這邊測**真 socket 上真的發生了什麼**。⚠ 兩邊都要有。
 set -euo pipefail
 
 REPO=${REPO:-/w}
@@ -19,11 +19,11 @@ cd "$REPO"
 BIN="$REPO/target/release/fulcrum"
 WORK=$(mktemp -d)
 HOST=127.0.0.1
-# ⚠ 端口表见 AGENTS.md。**9500–9501 是本场景的**（批 G 新增）。
-#   ★ 选之前查过那张表 —— 而批 F 正是因为**表不全**才撞上压力那一格。
-# ⚠ 本场景只用 9500–9501。⚠ 端口范围写宽了的话，AGENTS.md 那张表
-#   写的也是 9500–9501 ⇒ 两处口径不一致，而多占的那个号会让下一个人绕开它。
-#   ★ （批 H）改成与那张表一致，磁盘后端那一格因此正当地取了 9502–9503。
+# ⚠ 連接埠表見 AGENTS.md。**9500–9501 是本場景的**（批 G 新增）。
+#   ★ 選之前查過那張表 —— 而批 F 正是因為**表不全**才撞上壓力那一格。
+# ⚠ 本場景只用 9500–9501。⚠ 連接埠範圍寫寬了的話，AGENTS.md 那張表
+#   寫的也是 9500–9501 ⇒ 兩處口徑不一致，而多佔的那個號會讓下一個人繞開它。
+#   ★ （批 H）改成與那張表一致，磁碟後端那一格因此正當地取了 9502–9503。
 PORT=${CACHE_PORT:-9500}
 UP_PORT=${CACHE_UP_PORT:-9501}
 ADMIN_SOCK="$WORK/admin.sock"
@@ -81,22 +81,22 @@ ok "$PORT / $UP_PORT 都是空的"
   exit 1
 }
 
-# ── 上游：一个**把请求带来的 nonce 回显出去**的实例 ───────────────────────────
+# ── 上游：一個**把請求帶來的 nonce 回顯出去**的執行個體 ───────────────────────────
 #
-# ★ 上游是**枢衡自己**（与 serve 场景同一个做法，零外部依赖）：
-#   `respond` 配 `header` 就能造出任意响应头。
+# ★ 上游是**樞衡自己**（與 serve 場景同一個做法，零外部依賴）：
+#   `respond` 配 `header` 就能造出任意回應頭。
 #
-# ★ ★ ★ **「每次不同」由请求带进来的 `X-Nonce` 提供，而不是由时间提供。**
-#   ⚠ 写一个**根本不存在**的占位符（如 `time.now.unix_ms`）编译会当场红，
-#   那是好事：DSL 的占位符表是穷尽的，打错字不会被当成字面量放过去。
-#   ⚠ ⚠ 而就算写成真的那个 `{time}`，它也是**秒级**精度：两次连着的请求会撞出
-#   同一个值，于是「体没变 ⇒ 命中」这条判据在快机器上**恒真**。
-#   ⚠ ⚠ `{remote_port}` 同样不行：上游看到的是**枢衡→上游**那条连接的源端口，
-#   而枢衡有**连接池** —— 复用池里的连接会给出同一个端口，
-#   于是一次真的回源会被判成命中。★ 三种写法都是同一个形状：
-#   **判据在最该报警的那一刻给一个像样的错答案。**
-#   ⇒ nonce 由**客户端**每次现给：命中 ⇒ 体里是**上一次**的 nonce；回源 ⇒ 是这一次的。
-#   ★ 它与连接池、时钟精度、机器快慢全都无关。
+# ★ ★ ★ **「每次不同」由請求帶進來的 `X-Nonce` 提供，而不是由時間提供。**
+#   ⚠ 寫一個**根本不存在**的佔位符（如 `time.now.unix_ms`）編譯會當場紅，
+#   那是好事：DSL 的佔位符表是窮盡的，打錯字不會被當成字面值放過去。
+#   ⚠ ⚠ 而就算寫成真的那個 `{time}`，它也是**秒級**精度：兩次連著的請求會撞出
+#   同一個值，於是「體沒變 ⇒ 命中」這條判據在快機器上**恆真**。
+#   ⚠ ⚠ `{remote_port}` 同樣不行：上游看到的是**樞衡→上游**那條連接的源連接埠，
+#   而樞衡有**連接池** —— 重複使用池裡的連接會給出同一個連接埠，
+#   於是一次真的回源會被判成命中。★ 三種寫法都是同一個形狀：
+#   **判據在最該報警的那一刻給一個像樣的錯答案。**
+#   ⇒ nonce 由**用戶端**每次現給：命中 ⇒ 體裡是**上一次**的 nonce；回源 ⇒ 是這一次的。
+#   ★ 它與連接池、時鐘精度、機器快慢全都無關。
 cat > "$WORK/up.Fulcrumfile" <<'CONF'
 :UP_PORT {
     # ★ 每一条路径回一种 Cache-Control 组合，体里带一个**会变的值** ——
@@ -195,7 +195,7 @@ BASE="http://$HOST:$PORT"
 
 # ── helper ─────────────────────────────────────────────────────────────────
 probe() {
-  # ⚠ 先清空 body 与 hdr：curl 的 `-o` 在零字节时不动那个文件（批 F 栽过）。
+  # ⚠ 先清空 body 與 hdr：curl 的 `-o` 在零位元組時不動那個檔案（批 F 栽過）。
   : > "$WORK/body"
   : > "$WORK/hdr"
   curl -s -o "$WORK/body" -D "$WORK/hdr" -w '%{http_code}' --max-time 5 "$@"
@@ -216,8 +216,8 @@ expect_header() {
     fail "$what 的 $name 期望「$want」，实际「$got」"; fi
 }
 
-# ★ ★ ★ **本场景最要紧的两个 helper**：它们分辨「命中」与「回源」，
-#   而那件事**靠状态码永远看不出来** —— 两者都是 200。
+# ★ ★ ★ **本場景最要緊的兩個 helper**：它們分辨「命中」與「回源」，
+#   而那件事**靠狀態碼永遠看不出來** —— 兩者都是 200。
 expect_hit() {
   local what=$1 first=$2 second=$3 state
   state=$(hdr X-Fulcrum-Cache)
@@ -238,8 +238,8 @@ expect_miss() {
   fi
 }
 
-# 打两次同一条路径，**每次给一个不同的 nonce**，回显两次的体。
-# ★ 命中 ⇒ 第二次的体里仍是第一次那个 nonce；回源 ⇒ 是第二次那个。
+# 打兩次同一條路徑，**每次給一個不同的 nonce**，回顯兩次的體。
+# ★ 命中 ⇒ 第二次的體裡仍是第一次那個 nonce；回源 ⇒ 是第二次那個。
 NONCE=0
 twice() {
   local url=$1
@@ -255,35 +255,35 @@ twice() {
   printf '%s\n%s\n' "$a" "$b"
 }
 
-# ── [1/7] 命中与回源 ────────────────────────────────────────────────────────
+# ── [1/7] 命中與回源 ────────────────────────────────────────────────────────
 echo
 echo "=== [1/7] 命中与回源 ==="
 OUT=$(twice "$BASE/maxage"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_hit "GET /maxage（上游给了 max-age=60）" "$A" "$B"
 expect_header "GET /maxage 第二次" "X-Fulcrum-Cache" "HIT"
-# ★ ★ `Age` 是 RFC 9111 §5.1 要求的 —— 下游若还有一层缓存，它靠这个头算自己的新鲜度。
-#   ⚠ 不发的话，同一份内容会被一路放大到两倍寿命。
+# ★ ★ `Age` 是 RFC 9111 §5.1 要求的 —— 下游若還有一層快取，它靠這個頭算自己的新鮮度。
+#   ⚠ 不發的話，同一份內容會被一路放大到兩倍壽命。
 AGE=$(hdr Age)
 if [ -n "$AGE" ]; then ok "命中带 Age 头（$AGE）"; else fail "命中却没有 Age 头（RFC 9111 §5.1）"; fi
 
-# ★ ★ 反向那一半：`no-store` 的响应**不许**被缓存。
-#   ⚠ 少了它，一个「什么都存」的实现会让上面那条全绿。
+# ★ ★ 反向那一半：`no-store` 的回應**不許**被快取。
+#   ⚠ 少了它，一個「什麼都存」的實作會讓上面那條全綠。
 OUT=$(twice "$BASE/nostore"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_miss "GET /nostore（no-store）" "$A" "$B"
 
-# ★ ★ 我们是**共享**缓存 ⇒ `private` 是禁令。
+# ★ ★ 我們是**共享**快取 ⇒ `private` 是禁令。
 OUT=$(twice "$BASE/private"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_miss "GET /private（共享缓存不许存 private）" "$A" "$B"
 
-# ★ ★ G96 的兜底：上游一个字都没说 ⇒ 用配置里的 `ttl 30s`。
+# ★ ★ G96 的備援：上游一個字都沒說 ⇒ 用設定裡的 `ttl 30s`。
 OUT=$(twice "$BASE/nofresh"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_hit "GET /nofresh（上游没说 ⇒ 兜底 ttl 生效）" "$A" "$B"
 
-# 错误响应不缓存（500 不在可缓存状态码表里）。
+# 錯誤回應不快取（500 不在可快取狀態碼錶裡）。
 OUT=$(twice "$BASE/err"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_miss "GET /err（500 不可缓存）" "$A" "$B"
 
-# ★ 超过单条目上限（配的是 50B，这条体 70B）⇒ 不缓存，但**照常发给客户端**。
+# ★ 超過單條目上限（配的是 50B，這條體 70B）⇒ 不快取，但**照常發給用戶端**。
 CODE=$(probe "$BASE/big")
 expect_status "GET /big（超过 max_size）" 200 "$CODE"
 if [ "$(body | wc -c)" -ge 70 ]; then ok "超上限的响应照常完整发出去了"; else
@@ -295,22 +295,22 @@ if [ -z "$(hdr X-Fulcrum-Cache)" ]; then ok "超上限的响应没进缓存"; el
 # ── [2/7] Vary ─────────────────────────────────────────────────────────────
 echo
 echo "=== [2/7] Vary ==="
-# 同一个 flavor 两次 ⇒ 命中
+# 同一個 flavor 兩次 ⇒ 命中
 OUT=$(twice "$BASE/vary" -H "X-Flavor: a")
 A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_hit "GET /vary（X-Flavor: a 两次）" "$A" "$B"
-# ★ ★ 换一个 flavor ⇒ **不该**命中那一份，而且内容要对得上自己的 flavor。
-#   ⚠ 这一条是 `Vary` 唯一真正会出错的地方：一个不看 Vary 的实现会把
-#   flavor=a 的响应发给 flavor=b 的客户端 —— **状态码、头、长度全都正常**。
+# ★ ★ 換一個 flavor ⇒ **不該**命中那一份，而且內容要對得上自己的 flavor。
+#   ⚠ 這一條是 `Vary` 唯一真正會出錯的地方：一個不看 Vary 的實作會把
+#   flavor=a 的回應發給 flavor=b 的用戶端 —— **狀態碼、頭、長度全都正常**。
 CODE=$(probe -H "X-Flavor: b" "$BASE/vary")
 expect_status "GET /vary（X-Flavor: b）" 200 "$CODE"
 if body | grep -q "flavor=b"; then ok "★ 换了 Vary 头拿到的是自己那一份"; else
   fail "★ ★ 拿到了别人那一份：$(body)"; fi
-# 再来一次 b ⇒ 现在该命中 b 那一份了
+# 再來一次 b ⇒ 現在該命中 b 那一份了
 OUT=$(twice "$BASE/vary" -H "X-Flavor: b")
 A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_hit "GET /vary（X-Flavor: b 两次）" "$A" "$B"
-# 而 a 那一份**还在**（两份共存，不是互相挤掉）。
+# 而 a 那一份**還在**（兩份共存，不是互相擠掉）。
 probe -H "X-Flavor: a" "$BASE/vary" > /dev/null
 if [ "$(hdr X-Fulcrum-Cache)" = "HIT" ] && body | grep -q "flavor=a"; then
   ok "★ 两个 Vary 分支共存，互不挤掉"
@@ -318,19 +318,19 @@ else
   fail "a 那一份被挤掉了：X-Fulcrum-Cache=$(hdr X-Fulcrum-Cache) 体=$(body)"
 fi
 
-# `Vary: *` ⇒ 永远不可缓存。
+# `Vary: *` ⇒ 永遠不可快取。
 OUT=$(twice "$BASE/varystar"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_miss "GET /varystar（Vary: *）" "$A" "$B"
 
-# ── [3/7] 私有内容不许串号 ─────────────────────────────────────────────────
+# ── [3/7] 私有內容不許串號 ─────────────────────────────────────────────────
 echo
 echo "=== [3/7] 私有内容不许串号 ==="
-# ★ ★ ★ **本场景最贵的一条**（RFC 9111 §3.5）：带 `Authorization` 的请求，
-#   其响应对共享缓存默认不可存。⚠ 漏了它就是把一个人的私有页面发给下一个人 ——
-#   而那件事**不会有任何报错**，只会在两个用户之间偶尔串一次内容。
-# ⚠ ⚠ **两次请求要各带各的 nonce** —— 少了它，两个体都是 `secret-`（空 nonce），
-#   于是「alice ≠ bob」这条断言**恒假**，而它红的时候看起来像产品出了问题。
-#   ★ 实测栽过：报的是「bob 拿到了 alice 的响应」，而其实是判据没带值。
+# ★ ★ ★ **本場景最貴的一條**（RFC 9111 §3.5）：帶 `Authorization` 的請求，
+#   其回應對共享快取預設不可存。⚠ 漏了它就是把一個人的私有頁面發給下一個人 ——
+#   而那件事**不會有任何回報錯誤**，只會在兩個使用者之間偶爾串一次內容。
+# ⚠ ⚠ **兩次請求要各帶各的 nonce** —— 少了它，兩個體都是 `secret-`（空 nonce），
+#   於是「alice ≠ bob」這條斷言**恆假**，而它紅的時候看起來像產品出了問題。
+#   ★ 實測栽過：報的是「bob 拿到了 alice 的回應」，而其實是判據沒帶值。
 probe -H "Authorization: Bearer alice" -H "X-Nonce: alice1" "$BASE/authonly" > /dev/null
 ALICE=$(body)
 probe -H "Authorization: Bearer bob" -H "X-Nonce: bob1" "$BASE/authonly" > /dev/null
@@ -340,33 +340,33 @@ if [ "$ALICE" != "$BOB" ] && [ -z "$(hdr X-Fulcrum-Cache)" ]; then
 else
   fail "★ ★ ★ bob 拿到了 alice 的响应：alice「$ALICE」bob「$BOB」cache=「$(hdr X-Fulcrum-Cache)」"
 fi
-# 连**没带**凭据的第三个人也不该捡到它。
+# 連**沒帶**憑證的第三個人也不該撿到它。
 probe -H "X-Nonce: anon1" "$BASE/authonly" > /dev/null
 if [ -z "$(hdr X-Fulcrum-Cache)" ]; then ok "★ 匿名请求也没捡到那份私有响应"; else
   fail "★ ★ ★ 匿名请求命中了带 Authorization 那份：$(body)"; fi
 
-# `Set-Cookie` 且没写 public ⇒ 不存（存了就要剥头，而剥错一次就是串号）。
+# `Set-Cookie` 且沒寫 public ⇒ 不存（存了就要剝頭，而剝錯一次就是串號）。
 OUT=$(twice "$BASE/setcookie"); A=$(printf '%s' "$OUT" | head -1); B=$(printf '%s' "$OUT" | tail -1)
 expect_miss "GET /setcookie（带 Set-Cookie）" "$A" "$B"
 
-# ── [4/7] 请求侧的 Cache-Control ───────────────────────────────────────────
+# ── [4/7] 請求側的 Cache-Control ───────────────────────────────────────────
 echo
 echo "=== [4/7] 请求侧 Cache-Control ==="
-probe -H "X-Nonce: cc0" "$BASE/maxage" > /dev/null   # 先确保缓存里有
+probe -H "X-Nonce: cc0" "$BASE/maxage" > /dev/null   # 先確保快取裡有
 FIRST=$(body)
-# `no-cache` ⇒ 客户端要求回源。
+# `no-cache` ⇒ 用戶端要求回源。
 probe -H "Cache-Control: no-cache" -H "X-Nonce: cc1" "$BASE/maxage" > /dev/null
 if [ "$(body)" != "$FIRST" ]; then ok "请求带 no-cache ⇒ 回源"; else
   fail "请求带 no-cache 却给了缓存的：$(body)"; fi
-# `only-if-cached` 命中时正常给。
+# `only-if-cached` 命中時正常給。
 probe -H "Cache-Control: only-if-cached" -H "X-Nonce: cc2" "$BASE/maxage" > /dev/null
 if [ "$(hdr X-Fulcrum-Cache)" = "HIT" ]; then ok "only-if-cached 命中时正常给"; else
   fail "only-if-cached 命中时没给：$(hdr X-Fulcrum-Cache)"; fi
-# ★ ★ `only-if-cached` **没命中 ⇒ 504**（RFC 9111 §5.2.1.7），不是回源。
-#   ⚠ 回源的话，一个「离线模式」的客户端会在它以为自己不联网时把上游打醒。
+# ★ ★ `only-if-cached` **沒命中 ⇒ 504**（RFC 9111 §5.2.1.7），不是回源。
+#   ⚠ 回源的話，一個「離線模式」的用戶端會在它以為自己不聯網時把上游打醒。
 CODE=$(probe -H "Cache-Control: only-if-cached" "$BASE/never-cached-path")
 expect_status "★ only-if-cached 没命中 ⇒ 504" 504 "$CODE"
-# `max-age=0` ⇒ 客户端不接受任何陈的 ⇒ 回源。
+# `max-age=0` ⇒ 用戶端不接受任何陳的 ⇒ 回源。
 probe -H "X-Nonce: cc3" "$BASE/maxage" > /dev/null
 BEFORE=$(body)
 probe -H "Cache-Control: max-age=0" -H "X-Nonce: cc4" "$BASE/maxage" > /dev/null
@@ -398,28 +398,28 @@ else
   fail "★ purge 说清了，但下次请求还是命中：cache=$(hdr X-Fulcrum-Cache)"
 fi
 
-# ★ 清一个从没被缓存过的 URL ⇒ **200 而不是 404**：purge 的语义是「让它不在」，
-#   而它本来就不在同样满足这个语义。⚠ 回 404 会让脚本里到处是重试。
+# ★ 清一個從沒被快取過的 URL ⇒ **200 而不是 404**：purge 的語義是「讓它不在」，
+#   而它本來就不在同樣滿足這個語義。⚠ 回 404 會讓指令碼里到處是重試。
 RESP=$(admin /purge '{"key":"从来没有过的键"}')
 expect_status "purge 一个不存在的键" 200 "$(printf '%s' "$RESP" | tail -1)"
 
 RESP=$(admin /purge '{"all":true}')
 expect_status "POST /purge（全清）" 200 "$(printf '%s' "$RESP" | tail -1)"
 
-# 管理面不认识的路径仍然是 404（新加一个端点不该让别的变松）。
+# 管理面不認識的路徑仍然是 404（新加一個端點不該讓別的變鬆）。
 RESP=$(admin /nope '{}')
 expect_status "POST /nope（管理面认识的那几个之外仍然是 404）" 404 "$(printf '%s' "$RESP" | tail -1)"
 
-# ── ★ ★ ★ G123：被清掉的**条目**数自成一族，不再挤进 cache_events_total ────
+# ── ★ ★ ★ G123：被清掉的**條目**數自成一族，不再擠進 cache_events_total ────
 #
-# 这一格验的是**接线**：`admin.rs` 的 purge 收尾把真实条目数记进了新族。
-# ⚠ 单测只证得了「这个族渲得出来」（它调的是 `record_purged_entries(0)`），
-#   证不到「n 真的从 purge 那条路上传过来了」—— 那一段只有在这里走得到。
+# 這一格驗的是**串接**：`admin.rs` 的 purge 收尾把真實條目數記進了新族。
+# ⚠ 單測只證得了「這個族渲得出來」（它調的是 `record_purged_entries(0)`），
+#   證不到「n 真的從 purge 那條路上傳過來了」—— 那一段只有在這裡走得到。
 #
-# 读一个**无标签** counter 的当前读数。
-# ⛔ 它不是第二个 exposition 解析器（那一份是 `tests/metrics/run.sh` 的 `expo`）——
-#   它只取一行已知形状的样本的第二个字段。⚠ 若第三个场景也要读 exposition，
-#   正确做法是把 `expo` 抽进 `tests/lib/`，⛔ 不是再抄一份。
+# 讀一個**無標籤** counter 的當前讀數。
+# ⛔ 它不是第二個 exposition 解析器（那一份是 `tests/metrics/run.sh` 的 `expo`）——
+#   它只取一行已知形狀的樣本的第二個欄位。⚠ 若第三個場景也要讀 exposition，
+#   正確做法是把 `expo` 抽進 `tests/lib/`，⛔ 不是再抄一份。
 bare_counter() {
   awk -v n="$2" '$1 == n { print $2 }' "$1"
 }
@@ -427,8 +427,8 @@ scrape_metrics() {
   curl -sS -o "$1" --max-time 5 "$BASE/_metrics" 2>/dev/null
 }
 
-# ★ 造 **3** 条缓存条目 —— ⚠ 有意不是 1 条：「记条目数」与「记 purge 调了几次」
-#   在只清掉 1 条时给出**同一个读数**，那样的夹具两种实现都全绿。
+# ★ 造 **3** 條快取條目 —— ⚠ 有意不是 1 條：「記條目數」與「記 purge 調了幾次」
+#   在只清掉 1 條時給出**同一個讀數**，那樣的夾具兩種實作都全綠。
 for p in /maxage /nofresh /authonly; do
   probe -H "X-Nonce: g123" "$BASE$p" > /dev/null
 done
@@ -436,7 +436,7 @@ done
 scrape_metrics "$WORK/m-before.txt"
 PURGED_BEFORE=$(bare_counter "$WORK/m-before.txt" fulcrum_cache_purged_entries_total)
 
-# ★ ★ 取数端先自证：命中得了，也落空得了 —— 一个恒答空的读法会让下面每一条空转。
+# ★ ★ 取數端先自證：命中得了，也落空得了 —— 一個恆答空的讀法會讓下面每一條空轉。
 if [ -n "$PURGED_BEFORE" ]; then
   ok "取数端自证①：读得到 fulcrum_cache_purged_entries_total（$PURGED_BEFORE）"
 else
@@ -460,7 +460,7 @@ if [ "$CLEARED" = "1" ] || [ -z "$CLEARED" ]; then
 else
   ok "★ 夹具纪律：这一次清掉了 $CLEARED 条（不是 1 条）"
 fi
-# 浮点：exposition 里 counter 渲成 `3` 还是 `3.0` 由渲染器定 ⇒ 用 awk 算差，不做字符串比。
+# 浮點：exposition 裡 counter 渲成 `3` 還是 `3.0` 由繪製器定 ⇒ 用 awk 算差，不做字串比。
 DELTA=$(awk -v a="$PURGED_AFTER" -v b="$PURGED_BEFORE" 'BEGIN { printf "%d", a - b }')
 if [ "$DELTA" = "$CLEARED" ]; then
   ok "★★★ fulcrum_cache_purged_entries_total 正好涨了 $CLEARED —— 与 purge 回话里那个数逐一对得上"
@@ -468,53 +468,53 @@ else
   fail "★★★ 新族涨了 $DELTA，而 purge 说清掉了 $CLEARED 条（before=$PURGED_BEFORE after=$PURGED_AFTER）"
 fi
 
-# ★ ★ ★ 反向那半：**它不许再以 `event="purge"` 的形式出现**。
-#   ⚠ 少了这一条，一个「两边都记一笔」的实现在上面每一条上都是绿的 ——
-#     而那正是 G123 要消掉的形状（两个分母共用一个族）。
+# ★ ★ ★ 反向那半：**它不許再以 `event="purge"` 的形式出現**。
+#   ⚠ 少了這一條，一個「兩邊都記一筆」的實作在上面每一條上都是綠的 ——
+#     而那正是 G123 要消掉的形狀（兩個分母共用一個族）。
 if grep -q 'fulcrum_cache_events_total{event="purge"}' "$WORK/m-after.txt"; then
   fail "★★★ purge 又回到 cache_events_total 里了 —— 它数的是条目，那个族数的是请求（G123）"
 else
   ok "★★★ cache_events_total 里没有 event=\"purge\" —— 两个分母不再共用一个族（G123）"
 fi
-# ★ 而那个族本身**还在**，且真的有样本 —— 否则上面那条反向断言在「整个族都没渲出来」
-#   的情况下也会绿，那时它证明的不是 G123，只是指标坏了。
+# ★ 而那個族本身**還在**，且真的有樣本 —— 否則上面那條反向斷言在「整個族都沒渲出來」
+#   的情況下也會綠，那時它證明的不是 G123，只是指標壞了。
 if grep -q '^fulcrum_cache_events_total{event="' "$WORK/m-after.txt"; then
   ok "★ 而 cache_events_total 本身还在且有样本（上一条不是在对着一个空族说话）"
 else
   fail "★ cache_events_total 一条样本都没有 —— 上面那条反向断言因此什么都没证明"
 fi
 
-# ── [6/7] 防惊群 ───────────────────────────────────────────────────────────
+# ── [6/7] 防驚群 ───────────────────────────────────────────────────────────
 echo
 echo "=== [6/7] 防惊群 ==="
-# ★ ★ 同时打 20 个**同一条**没缓存过的 URL。它们要么拿到同一份（leader 存下、
-#   follower 重新查到），要么各自回源 —— 而**正确的实现只回源一次**。
-#   ⚠ 这里不数上游被打了几次（上游是枢衡、没有计数端点），
-#   ★ 改为数**回来的不同内容有几种**：只回源一次 ⇒ 全都一样。
-# ⚠ ⚠ ⚠ **每个并发请求必须带一个不同的 nonce** —— 少了它，20 个体全都是
-#   `up-`（空 nonce），于是「只有 1 种内容」这条断言**恒成立**：
-#   ★ 惊群挡没挡住，它给出的答案一模一样。**那是一条永远给绿的判据。**
-#   ⇒ 带上 nonce 之后：挡住了 ⇒ 大家拿到 leader 那一个 nonce（1 种）；
-#   没挡住 ⇒ 各自回源、各拿各的（20 种）。
+# ★ ★ 同時打 20 個**同一條**沒快取過的 URL。它們要麼拿到同一份（leader 存下、
+#   follower 重新查到），要麼各自回源 —— 而**正確的實作只回源一次**。
+#   ⚠ 這裡不數上游被打了幾次（上游是樞衡、沒有計數端點），
+#   ★ 改為數**回來的不同內容有幾種**：只回源一次 ⇒ 全都一樣。
+# ⚠ ⚠ ⚠ **每個並行請求必須帶一個不同的 nonce** —— 少了它，20 個體全都是
+#   `up-`（空 nonce），於是「只有 1 種內容」這條斷言**恆成立**：
+#   ★ 驚群擋沒擋住，它給出的答案一模一樣。**那是一條永遠給綠的判據。**
+#   ⇒ 帶上 nonce 之後：擋住了 ⇒ 大家拿到 leader 那一個 nonce（1 種）；
+#   沒擋住 ⇒ 各自回源、各拿各的（20 種）。
 admin /purge '{"all":true}' > /dev/null
 rm -f "$WORK/herd."*
-# ⚠ ⚠ ⚠ **只等这 20 个，不能用光秃秃的 `wait`。**
-#   `wait` 不带参数会等**本 shell 的全部后台作业** —— 而 `start()` 把两个
-#   `fulcrum serve` 也放在了后台，它们**永远不退出**。
-#   ★ 实测：整个场景在这一行挂到外层超时，而屏幕上最后一行是 `=== [6/7] 防惊群 ===`，
-#   看起来像是产品死锁了。
-#   > **一个会挂住的判据比一条红的判据更贵**：红的指着问题，挂住的指着错误的方向。
+# ⚠ ⚠ ⚠ **只等這 20 個，不能用光禿禿的 `wait`。**
+#   `wait` 不帶參數會等**本 shell 的全部後台作業** —— 而 `start()` 把兩個
+#   `fulcrum serve` 也放在了後台，它們**永遠不退出**。
+#   ★ 實測：整個場景在這一行掛到外層超時，而螢幕上最後一行是 `=== [6/7] 防惊群 ===`，
+#   看起來像是產品死鎖了。
+#   > **一個會掛住的判據比一條紅的判據更貴**：紅的指著問題，掛住的指著錯誤的方向。
 HERD_PIDS=()
 for i in $(seq 1 20); do
   curl -s --max-time 20 -H "X-Nonce: herd$i" "$BASE/maxage" -o "$WORK/herd.$i" &
   HERD_PIDS+=($!)
 done
 for pid in "${HERD_PIDS[@]}"; do wait "$pid" || true; done
-# ⚠ ⚠ ⚠ **每份之间要补一个换行**：响应体**没有行尾**，直接 `cat` 会把 20 份
-#   拼成**一行** ⇒ `sort -u | wc -l` 恒等于 1。★ 也就是说，不补这个换行的话，
-#   「只有 1 种内容」这条断言**不管惊群挡没挡住都成立** —— 又一条永远给绿的判据，
-#   而且它与上面那条（忘了带 nonce）是**同一批里的第二个**同形错误。
-#   > **判据失效时它不沉默，而是给一个像样的错答案。**
+# ⚠ ⚠ ⚠ **每份之間要補一個換行**：回應體**沒有行尾**，直接 `cat` 會把 20 份
+#   拼成**一行** ⇒ `sort -u | wc -l` 恆等於 1。★ 也就是說，不補這個換行的話，
+#   「只有 1 種內容」這條斷言**不管驚群擋沒擋住都成立** —— 又一條永遠給綠的判據，
+#   而且它與上面那條（忘了帶 nonce）是**同一批裡的第二個**同形錯誤。
+#   > **判據失效時它不沉默，而是給一個像樣的錯答案。**
 DISTINCT=$(for f in "$WORK/herd."*; do cat "$f"; echo; done | sort -u | wc -l)
 if [ "$DISTINCT" = "1" ]; then
   ok "★ ★ 20 个并发请求只回源了一次（收到的内容只有 1 种）"
@@ -522,9 +522,9 @@ else
   fail "★ ★ 惊群没挡住：20 个并发请求收到了 $DISTINCT 种不同的内容"
   for f in "$WORK/herd."*; do cat "$f"; echo; done | sort -u | head -5 >&2
 fi
-# ★ 反证那一半：**关掉并发**时每次都该拿到自己的 nonce（缓存已被上面填上，所以
-#   这里改用一条没缓存过的路径）。⚠ 少了它，一个「把所有并发请求都回同一份」的
-#   实现 —— 比如把 nonce 忽略掉 —— 会让上面那条全绿。
+# ★ 反證那一半：**關掉並行**時每次都該拿到自己的 nonce（快取已被上面填上，所以
+#   這裡改用一條沒快取過的路徑）。⚠ 少了它，一個「把所有並行請求都回同一份」的
+#   實作 —— 比如把 nonce 忽略掉 —— 會讓上面那條全綠。
 rm -f "$WORK/seq."*
 for i in 1 2 3; do
   curl -s --max-time 10 -H "X-Nonce: seq$i" "$BASE/nostore" -o "$WORK/seq.$i"
@@ -536,11 +536,11 @@ else
   fail "★ 反证不成立 —— nonce 根本没被回显？三次只有 $SEQ_DISTINCT 种"
 fi
 
-# ── [7/7] 装载日志 ─────────────────────────────────────────────────────────
+# ── [7/7] 裝載紀錄 ─────────────────────────────────────────────────────────
 echo
 echo "=== [7/7] 装载日志 ==="
-# ★ ★ `ttl` 是**兜底**不是覆盖（G96），而从 nginx 迁过来的人默认以为它是覆盖。
-#   ⇒ 装载时必须说出来，与 G88 的 hide 清单同一条纪律。
+# ★ ★ `ttl` 是**備援**不是覆蓋（G96），而從 nginx 遷過來的人預設以為它是覆蓋。
+#   ⇒ 裝載時必須說出來，與 G88 的 hide 清單同一條紀律。
 if grep '缓存：站点' "$WORK/cache.log" | grep -q '兜底'; then
   ok "★ 装载日志说出了 ttl 是兜底"
 else
@@ -552,7 +552,7 @@ if grep -q '内存后端' "$WORK/cache.log"; then
 else
   fail "装载日志没说后端"
 fi
-# ★ 回落层已经删掉 ⇒ 装载日志里**不该**再出现回落那几个字。
+# ★ 回落層已經刪掉 ⇒ 裝載紀錄裡**不該**再出現回落那幾個字。
 if grep -q '回落' "$WORK/cache.log"; then
   fail "装载日志里还有「回落」—— 那一层已于批 G 删除"
   grep '回落' "$WORK/cache.log" >&2

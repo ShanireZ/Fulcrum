@@ -1,12 +1,12 @@
-//! 语法分析：token 流 → [`ast::File`]。
+//! 語法分析：token 流 → [`ast::File`]。
 //!
-//! ★ **带错误恢复**（G51 的「一次报全」）。遇到语法错时不停下，而是丢弃到
-//! **本行末尾**或**本块结束**再继续。判断标准很简单：
-//! 一条指令的边界是换行，一个块的边界是花括号——这两样都不依赖语义，
-//! 所以就算前面刚报过错，恢复点仍然是可信的。
+//! ★ **帶錯誤恢復**（G51 的「一次報全」）。遇到語法錯時不停下，而是丟棄到
+//! **本行末尾**或**本塊結束**再繼續。判斷標準很簡單：
+//! 一條指令的邊界是換行，一個塊的邊界是花括號——這兩樣都不依賴語義，
+//! 所以就算前面剛報過錯，恢復點仍然是可信的。
 //!
-//! ⚠ 恢复不是免费的：报出来的第 2 条以后的诊断可能是第 1 条的余波。
-//! 处置是**不发明**——只报确实看见的形状问题，不猜用户想写什么。
+//! ⚠ 恢復不是免費的：報出來的第 2 條以後的診斷可能是第 1 條的餘波。
+//! 處置是**不發明**——只報確實看見的形狀問題，不猜使用者想寫什麼。
 
 use crate::ast::{Addr, Arg, Block, File, MatcherDef, Node, Site, Stmt, TopBlock};
 use crate::diag::{DiagCode, Diagnostic, Diagnostics, Source, Span};
@@ -51,10 +51,10 @@ impl Parser<'_> {
         }
     }
 
-    /// 丢弃到本行末尾（含那个换行）。恢复点之一。
+    /// 丟棄到本行末尾（含那個換行）。恢復點之一。
     fn skip_to_line_end(&mut self) {
         while !self.at(TokenKind::Newline) && !self.at(TokenKind::Eof) {
-            // ★ 花括号也要跟着走，否则一条坏行里的 `{` 会让后面整块结构错位。
+            // ★ 花括號也要跟著走，否則一條壞行裡的 `{` 會讓後面整塊結構錯位。
             if self.at(TokenKind::OpenBrace) {
                 self.skip_balanced_block();
                 continue;
@@ -67,7 +67,7 @@ impl Parser<'_> {
         self.skip_newlines();
     }
 
-    /// 从当前的 `{` 开始，跳过配平的一整块。
+    /// 從當前的 `{` 開始，跳過配平的一整塊。
     fn skip_balanced_block(&mut self) {
         if !self.at(TokenKind::OpenBrace) {
             return;
@@ -98,7 +98,7 @@ impl Parser<'_> {
         let mut file = File::default();
         self.skip_newlines();
 
-        // 全局选项块：文件里第一个非空 token 就是 `{`。
+        // 全域選項塊：檔案裡第一個非空 token 就是 `{`。
         if self.at(TokenKind::OpenBrace) {
             let open = self.advance();
             file.global = Some(self.block_body(open.span));
@@ -138,7 +138,7 @@ impl Parser<'_> {
         file
     }
 
-    /// 一个顶层块：站点块，或 `l4 { … }`。
+    /// 一個頂層塊：站台塊，或 `l4 { … }`。
     fn top_block(&mut self) -> Option<TopBlock> {
         let start = self.peek().span;
         let mut header: Vec<Token> = Vec::new();
@@ -147,7 +147,7 @@ impl Parser<'_> {
         }
 
         if header.is_empty() {
-            // 只可能是 Newline/Eof 之外的怪东西，交给上面的分支处理。
+            // 只可能是 Newline/Eof 之外的怪東西，交給上面的分支處理。
             self.advance();
             return None;
         }
@@ -172,8 +172,8 @@ impl Parser<'_> {
         let body = self.block_body(open.span);
         let span = header_span.join(open.span);
 
-        // ★ `l4` 是**顶层非站点块**（DSL 参考 §4.5），不是一个叫 l4 的站点。
-        //   判据取「块头恰好是一个词 `l4`」——站点地址不可能长这样（没有点、没有冒号）。
+        // ★ `l4` 是**頂層非站台塊**（DSL 參考 §4.5），不是一個叫 l4 的站台。
+        //   判據取「塊頭恰好是一個詞 `l4`」——站台位址不可能長這樣（沒有點、沒有冒號）。
         if header.len() == 1 && header[0].text == "l4" {
             return Some(TopBlock::L4(Node {
                 name: "l4".to_string(),
@@ -193,7 +193,7 @@ impl Parser<'_> {
         }))
     }
 
-    /// `{` 已经消费掉了，读到配对的 `}` 为止。
+    /// `{` 已經消費掉了，讀到配對的 `}` 為止。
     fn block_body(&mut self, open_span: Span) -> Block {
         let mut out: Block = Vec::new();
         loop {
@@ -295,7 +295,7 @@ impl Parser<'_> {
     fn node(&mut self) -> Option<Node> {
         let head = self.advance();
         if head.kind != TokenKind::Word {
-            // 不该走到这里；保底防死循环。
+            // 不該走到這裡；保底防死循環。
             return None;
         }
         let mut args: Vec<Arg> = Vec::new();
@@ -326,10 +326,10 @@ impl Parser<'_> {
     }
 }
 
-/// 块头的那些词切成地址。`a.com, b.com` / `a.com,b.com` / `a.com , b.com` 都认。
+/// 塊頭的那些詞切成位址。`a.com, b.com` / `a.com,b.com` / `a.com , b.com` 都認。
 ///
-/// ★ 逗号只是分隔符，不带语义。地址本身合不合法在 compile 阶段判——
-/// 那里能给出「你是不是想写 `http://…`」这种建议，词法层给不出。
+/// ★ 逗號只是分隔符，不帶語義。位址本身合不合法在 compile 階段判——
+/// 那裡能給出「你是不是想寫 `http://…`」這種建議，詞法層給不出。
 fn split_addresses(header: &[Token]) -> Vec<Addr> {
     let mut out = Vec::new();
     for t in header {
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn missing_open_brace_reports_once_and_recovers() {
-        // ★ 一次报全：第一行坏了，第二个站点块仍然要被解析出来。
+        // ★ 一次報全：第一行壞了，第二個站台塊仍然要被解析出來。
         let (f, d) = parse_str("a.com\nb.com {\n  respond 200\n}\n");
         assert!(
             d.items()
@@ -462,7 +462,7 @@ mod tests {
         let (_, d) = parse_str("a.com {\n  respond 200\n");
         assert_eq!(d.error_count(), 1);
         assert_eq!(d.items()[0].code, DiagCode::UNCLOSED_BLOCK);
-        // 位置指向 `{` 那一行，不是文件末尾。
+        // 位置指向 `{` 那一行，不是檔案末尾。
         let src = Source::new("t", "a.com {\n  respond 200\n");
         assert_eq!(src.location(d.items()[0].span.start).line, 1);
     }

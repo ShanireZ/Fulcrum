@@ -1,44 +1,44 @@
-//! 供应链的五道结构门。
+//! 供應鏈的五道結構門。
 //!
-//! ★ 起因：`instant-acme` 的 **default feature 里就含 `aws-lc-rs`**（`ring` 要显式开），
-//! 照默认写一行依赖就会把它悄悄拉回来。「上游 crate 的 `default` 是一条静默的供应链入口」
-//! 在本仓库现身过四次，前三次都是**发现之后**才知道自己一直在付代价 ——
-//! 所以它要有一道门，不能只写在注释里。
+//! ★ 起因：`instant-acme` 的 **default feature 裡就含 `aws-lc-rs`**（`ring` 要顯式開），
+//! 照預設寫一行依賴就會把它悄悄拉回來。「上游 crate 的 `default` 是一條靜默的供應鏈入口」
+//! 在本儲存庫現身過四次，前三次都是**發現之後**才知道自己一直在付代價 ——
+//! 所以它要有一道門，不能只寫在註解裡。
 //!
-//! # 判据挂在**锁**上，不挂在清单文本上
+//! # 判據掛在**鎖**上，不掛在清單文字上
 //!
-//! 门 1 查的是「两把 `Cargo.lock` 里有没有 `aws-lc-rs`」，不是「有没有人忘写
-//! `default-features = false`」：后者只覆盖一种写法，换个中间依赖或 feature 名就看不见了，
-//! 而结果一样。清单文本那两道门是第二层，不是第一层。
+//! 門 1 查的是「兩把 `Cargo.lock` 裡有沒有 `aws-lc-rs`」，不是「有沒有人忘寫
+//! `default-features = false`」：後者只覆蓋一種寫法，換個中間依賴或 feature 名就看不見了，
+//! 而結果一樣。清單文字那兩道門是第二層，不是第一層。
 //!
-//! # 五道门各答一个**不同**的问题（★ 不该混着说）
+//! # 五道門各答一個**不同**的問題（★ 不該混著說）
 //!
-//! | 门 | 它答的问题 |
+//! | 門 | 它答的問題 |
 //! |---|---|
-//! | 1 | 两把**锁**里有没有 `aws-lc-rs` |
-//! | 2 | **清单文本**里 `instant-acme` 等有没有关掉 default |
-//! | 3 | 产品 crate 依赖 `pingora-core` 时有没有开 `boringssl` |
-//! | 4 | **锁里写着**哪几套 TLS 实现 |
-//! | 5 | **依赖图里真有**哪几套 TLS 实现（`cargo tree`）|
+//! | 1 | 兩把**鎖**裡有沒有 `aws-lc-rs` |
+//! | 2 | **清單文字**裡 `instant-acme` 等有沒有關掉 default |
+//! | 3 | 產品 crate 依賴 `pingora-core` 時有沒有開 `boringssl` |
+//! | 4 | **鎖裡寫著**哪幾套 TLS 實作 |
+//! | 5 | **依賴圖裡真有**哪幾套 TLS 實作（`cargo tree`）|
 //!
-//! ⚠ ⚠ **门 4 与门 5 不是一回事**：`Cargo.lock` 是依赖图的**超集** —— 关掉
-//! `instant-acme` 的 `hyper-rustls` feature 之后，`hyper-rustls` / `rustls` / `schannel`
-//! 仍然在锁里，却已经没有任何人链接它们。门 4 因此对那一次改动原理上是瞎的
-//! （它在自己的注释里预言会红，而它没红）。详见门 4 那一段。
+//! ⚠ ⚠ **門 4 與門 5 不是一回事**：`Cargo.lock` 是依賴圖的**超集** —— 關掉
+//! `instant-acme` 的 `hyper-rustls` feature 之後，`hyper-rustls` / `rustls` / `schannel`
+//! 仍然在鎖裡，卻已經沒有任何人連結它們。門 4 因此對那一次改動原理上是瞎的
+//! （它在自己的註解裡預言會紅，而它沒紅）。詳見門 4 那一段。
 //!
-//! **一个从没红过的门与不存在的门无法区分**，所以每一条的判定函数都由本文件里的固定输入
-//! 证明过「能命中也能错过」；每一条还带一个**下界断言** —— 读不到清单、或一个 crate 都没
-//! 匹配上时，它会在什么都没查的情况下报绿。
+//! **一個從沒紅過的門與不存在的門無法區分**，所以每一條的判定函式都由本檔案裡的固定輸入
+//! 證明過「能命中也能錯過」；每一條還帶一個**下界斷言** —— 讀不到清單、或一個 crate 都沒
+//! 匹配上時，它會在什麼都沒查的情況下報綠。
 
-/// 根 workspace 的锁。
+/// 根 workspace 的鎖。
 const ROOT_LOCK: &str = include_str!("../../../Cargo.lock");
-/// ★ fork 的锁。**它才是要紧的那一把**：`[patch.crates-io]` 把 `pingora-core`
-/// 指向 vendor，根锁里连一个 rustls 相关的包都没有。
+/// ★ fork 的鎖。**它才是要緊的那一把**：`[patch.crates-io]` 把 `pingora-core`
+/// 指向 vendor，根鎖裡連一個 rustls 相關的包都沒有。
 const VENDOR_LOCK: &str = include_str!("../../../vendor/pingora/Cargo.lock");
 
 const ROOT_MANIFEST: &str = include_str!("../../../Cargo.toml");
 
-/// 仓库根。★ `CARGO_MANIFEST_DIR` 是 `crates/fulcrum`。
+/// 儲存庫根。★ `CARGO_MANIFEST_DIR` 是 `crates/fulcrum`。
 fn repo_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -46,13 +46,13 @@ fn repo_root() -> std::path::PathBuf {
         .expect("找不到仓库根")
 }
 
-/// **运行时**列出 `crates/*/Cargo.toml`。
+/// **執行環境**列出 `crates/*/Cargo.toml`。
 ///
-/// ★ ★ 为什么不用一串 `include_str!`：那是一张**手写清单**，
-/// 而新加一个 crate 时没人会想起来往里加一行——于是这道门会安静地少覆盖一个 crate，
-/// 看起来照样是绿的。这与 vendor 回归网那张 16 项手写名单、`unclaimed.sh` 的忽略名单
-/// 是同一个形状：**不自省的名单**。
-/// ⇒ 读目录，没有名单可维护；而下面那条下界断言负责证明它真的读到了东西。
+/// ★ ★ 為什麼不用一串 `include_str!`：那是一張**手寫清單**，
+/// 而新加一個 crate 時沒人會想起來往裡加一行——於是這道門會安靜地少覆蓋一個 crate，
+/// 看起來照樣是綠的。這與 vendor 迴歸網那張 16 項手寫名單、`unclaimed.sh` 的忽略名單
+/// 是同一個形狀：**不自省的名單**。
+/// ⇒ 讀目錄，沒有名單可維護；而下面那條下界斷言負責證明它真的讀到了東西。
 fn crate_manifests() -> Vec<(String, String)> {
     let dir = repo_root().join("crates");
     let mut out = Vec::new();
@@ -73,7 +73,7 @@ fn crate_manifests() -> Vec<(String, String)> {
     out
 }
 
-/// 从 `Cargo.lock` 里抠出全部包名。
+/// 從 `Cargo.lock` 裡摳出全部包名。
 fn lock_packages(lock: &str) -> Vec<&str> {
     lock.lines()
         .filter_map(|l| l.strip_prefix("name = \""))
@@ -81,14 +81,14 @@ fn lock_packages(lock: &str) -> Vec<&str> {
         .collect()
 }
 
-// ── 门 1：aws-lc-rs 不许回来 ────────────────────────────────────────────────
+// ── 門 1：aws-lc-rs 不許回來 ────────────────────────────────────────────────
 
 #[test]
 fn 两把锁里都不许出现_aws_lc_rs() {
     for (which, lock) in [("根", ROOT_LOCK), ("vendor/pingora", VENDOR_LOCK)] {
         let pkgs = lock_packages(lock);
-        // ★ 先钉住「确实读到了东西」。抠不出包名时下面的 `any` 恒为假，
-        //   这道门会在**什么都没查**的情况下报绿。
+        // ★ 先釘住「確實讀到了東西」。摳不出包名時下面的 `any` 恆為假，
+        //   這道門會在**什麼都沒查**的情況下報綠。
         assert!(
             pkgs.len() >= 100,
             "{which}锁里只抠出 {} 个包名，格式多半变了；本次检查不能采信",
@@ -115,14 +115,14 @@ fn 锁扫描器自证能命中也能错过() {
             .iter()
             .any(|p| p.starts_with("aws-lc"))
     );
-    // 空输入不能被当成「查过了、没问题」——这正是上面那条下界断言存在的理由。
+    // 空輸入不能被當成「查過了、沒問題」——這正是上面那條下界斷言存在的理由。
     assert!(lock_packages("").is_empty());
 }
 
-// ── 门 2：已知会拖进 crypto provider 的依赖必须关掉 default ─────────────────
+// ── 門 2：已知會拖進 crypto provider 的依賴必須關掉 default ─────────────────
 
-/// 这些 crate 的 default feature 会自己挑一个 crypto provider。
-/// ★ 名单会长，但它**不是**判据的全部——判据是门 1 那把锁。这里只是让人早一步看见。
+/// 這些 crate 的 default feature 會自己挑一個 crypto provider。
+/// ★ 名單會長，但它**不是**判據的全部——判據是門 1 那把鎖。這裡只是讓人早一步看見。
 const MUST_DISABLE_DEFAULT: &[&str] = &[
     "instant-acme",
     "rustls",
@@ -132,59 +132,59 @@ const MUST_DISABLE_DEFAULT: &[&str] = &[
     // ⚠ 批 8 加：它的 default 是
     //   `["native-tokio","http1","tls12","logging","aws-lc-rs"]` —— **含 aws-lc-rs**。
     "hyper-rustls",
-    // ⚠ ⚠ 批 J 加（G103）：**它进这张名单的理由与上面几条都不一样，要说清。**
-    //   上面几条是「default 会把一个我们不要的 provider 拖进来」；
-    //   `quiche` 的 default（`["boringssl-boring-crate"]`）**正好就是我们要的那一个**。
-    //   它进来是因为**另一条岔路**：`boringssl-vendored` 会让 quiche 自己从源码编一份
-    //   BoringSSL ⇒ 产物里两套，而「统一 BoringSSL」（G104）按字面读就成了假话。
-    //   ⇒ 本条守的是**上游哪天改了 default**，仅此而已。
-    //   ⚠ 2026-09-24 更正：quiche 0.29.3 / 0.30.0 的特性表里**没有** `boringssl-vendored`
-    //     （查 crates.io）⇒ 下文把它当成现有特性来写的地方，一律按「假如上游哪天加了这样一个特性」读。
+    // ⚠ ⚠ 批 J 加（G103）：**它進這張名單的理由與上面幾條都不一樣，要說清。**
+    //   上面幾條是「default 會把一個我們不要的 provider 拖進來」；
+    //   `quiche` 的 default（`["boringssl-boring-crate"]`）**正好就是我們要的那一個**。
+    //   它進來是因為**另一條岔路**：`boringssl-vendored` 會讓 quiche 自己從原始碼編一份
+    //   BoringSSL ⇒ 產物裡兩套，而「統一 BoringSSL」（G104）按字面讀就成了假話。
+    //   ⇒ 本條守的是**上游哪天改了 default**，僅此而已。
+    //   ⚠ 2026-09-24 更正：quiche 0.29.3 / 0.30.0 的特性表裡**沒有** `boringssl-vendored`
+    //     （查 crates.io）⇒ 下文把它當成現有特性來寫的地方，一律按「假如上游哪天加了這樣一個特性」讀。
     //
-    // ⚠ ⚠ **门 5 守不住 `boringssl-vendored` 那一半**：门 4 与门 5 都对包名做了
-    //   `dedup()`，判的是「出现了哪几个**名字**」，判不动「同一个名字有几个**版本**」；
+    // ⚠ ⚠ **門 5 守不住 `boringssl-vendored` 那一半**：門 4 與門 5 都對包名做了
+    //   `dedup()`，判的是「出現了哪幾個**名字**」，判不動「同一個名字有幾個**版本**」；
     //   而 `boringssl-vendored` 根本不新增任何包名（BoringSSL 在 quiche 自己的 build
-    //   script 里编）⇒ **两种情形门 5 都是绿的**。
-    //   ★ ★ **真正守住这条约束的是编译器**：`SniResolver::install_into()` 收的是
-    //   `pingora_boringssl::ssl::SslContextBuilder`，而它要被交给
-    //   `quiche::Config::with_boring_ssl_ctx_builder()` —— 两边不是同一个 `boring`
-    //   就是两个同名类型，**当场编不过**；feature 翻到 vendored 那一侧时，
-    //   我们调的那个 API 干脆不存在，同样编不过。
-    //   ⇒ 这正是 D18/G66 那条「**让分家在结构上做不到**」，只是这次执行者是类型系统。
-    //   ⚠ **仍然有一条它盖不住的缝**：feature 是**并集**的 —— 若将来有别的 crate
-    //     也依赖 quiche 并开了 `boringssl-vendored`，两个 feature 会同时打开，
-    //     我们调的 API 还在、编得过，而产物里可能真有两份 BoringSSL。
-    //     今天全 workspace 只有 `fulcrum-server` 一个消费者，所以这条缝是空的；
-    //     ★ **第二个消费者出现的那一天，这里要重新想一遍**（登记在 PLAN.md §7 批 J）。
+    //   script 裡編）⇒ **兩種情形門 5 都是綠的**。
+    //   ★ ★ **真正守住這條約束的是編譯器**：`SniResolver::install_into()` 收的是
+    //   `pingora_boringssl::ssl::SslContextBuilder`，而它要被交給
+    //   `quiche::Config::with_boring_ssl_ctx_builder()` —— 兩邊不是同一個 `boring`
+    //   就是兩個同名類型，**當場編不過**；feature 翻到 vendored 那一側時，
+    //   我們調的那個 API 乾脆不存在，同樣編不過。
+    //   ⇒ 這正是 D18/G66 那條「**讓分家在結構上做不到**」，只是這次執行者是類型系統。
+    //   ⚠ **仍然有一條它蓋不住的縫**：feature 是**並集**的 —— 若將來有別的 crate
+    //     也依賴 quiche 並開了 `boringssl-vendored`，兩個 feature 會同時打開，
+    //     我們調的 API 還在、編得過，而產物裡可能真有兩份 BoringSSL。
+    //     今天全 workspace 只有 `fulcrum-server` 一個消費者，所以這條縫是空的；
+    //     ★ **第二個消費者出現的那一天，這裡要重新想一遍**（登記在 PLAN.md §7 批 J）。
     "quiche",
 ];
 
-/// 一份清单里，某个依赖有没有关掉 default features。
+/// 一份清單裡，某個依賴有沒有關掉 default features。
 ///
-/// 返回 `None` 表示这份清单根本没声明它。
+/// 回傳 `None` 表示這份清單根本沒宣告它。
 ///
-/// ★ ★ **`workspace = true` 算作「已经关掉了」**，因为 feature 的口径整个继承自根清单，
-/// 而根清单本身也在被扫的名单里——**同一个事实只在一个地方判**。
+/// ★ ★ **`workspace = true` 算作「已經關掉了」**，因為 feature 的口徑整個繼承自根清單，
+/// 而根清單本身也在被掃的名單裡——**同一個事實只在一個地方判**。
 ///
-/// ⚠ 这一条是被这道门自己的**假警报**逼出来的：`fulcrum-acme` 里写的是
-/// `instant-acme = { workspace = true }`，根清单里写的是
+/// ⚠ 這一條是被這道門自己的**假警報**逼出來的：`fulcrum-acme` 裡寫的是
+/// `instant-acme = { workspace = true }`，根清單裡寫的是
 /// `instant-acme = { version = "…", default-features = false, features = [...] }`——
-/// 依赖图里**没有** aws-lc-rs（门 1 那把锁作证），而门 2 照样判红。
-/// ★ 那正是本仓库反复撞见的那个形状：**判据只认得一种写法**。
-/// 而假警报比没有警报更糟——它会训练人忽略这道门，连带把真的那次一起埋掉。
+/// 依賴圖裡**沒有** aws-lc-rs（門 1 那把鎖作證），而門 2 照樣判紅。
+/// ★ 那正是本儲存庫反覆撞見的那個形狀：**判據只認得一種寫法**。
+/// 而假警報比沒有警報更糟——它會訓練人忽略這道門，連帶把真的那次一起埋掉。
 fn declares_without_default_off(manifest: &str, dep: &str) -> Option<bool> {
     let mut found = None;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('#') {
-            continue; // ★ 注释掉的一行不算声明
+            continue; // ★ 註解掉的一行不算宣告
         }
         let Some(rest) = line.strip_prefix(dep) else {
             continue;
         };
         let rest = rest.trim_start();
         if !rest.starts_with('=') {
-            continue; // `instant-acme-foo = …` 之类，不是它
+            continue; // `instant-acme-foo = …` 之類，不是它
         }
         let delegated = rest.contains("workspace = true");
         found = Some(
@@ -198,8 +198,8 @@ fn declares_without_default_off(manifest: &str, dep: &str) -> Option<bool> {
 fn 会自带_crypto_provider_的依赖必须写_default_features_false() {
     let mut manifests = vec![("Cargo.toml".to_string(), ROOT_MANIFEST.to_string())];
     manifests.extend(crate_manifests());
-    // ★ 先钉住「确实读到了东西」：读不到 crates/ 时下面的循环一次都不跑，
-    //   这道门会在**什么都没查**的情况下报绿。
+    // ★ 先釘住「確實讀到了東西」：讀不到 crates/ 時下面的循環一次都不跑，
+    //   這道門會在**什麼都沒查**的情況下報綠。
     assert!(
         manifests.len() >= 4,
         "只读到 {} 份清单，crates/ 的布局多半变了；本次检查不能采信",
@@ -227,8 +227,8 @@ fn 清单扫描器自证能命中也能错过() {
     let on = "instant-acme = \">=0.7\"";
     let commented = "# instant-acme = \">=0.7\"";
     let other = "instant-acme-helper = \"1\"";
-    // ★ workspace 继承：口径在根清单上，而根清单本身也在被扫的名单里。
-    //   ⚠ 没有这一条，这道门会对**本仓库当前的真实写法**报假警——实际发生过。
+    // ★ workspace 繼承：口徑在根清單上，而根清單本身也在被掃的名單裡。
+    //   ⚠ 沒有這一條，這道門會對**本儲存庫當前的真實寫法**報假警——實際發生過。
     let inherited = "instant-acme = { workspace = true }";
     assert_eq!(
         declares_without_default_off(off, "instant-acme"),
@@ -248,29 +248,29 @@ fn 清单扫描器自证能命中也能错过() {
     assert_eq!(declares_without_default_off("", "instant-acme"), None);
 }
 
-// ── 门 4：依赖图里到底有几套 TLS **实现** —— 两个方向都严 ────────────────
+// ── 門 4：依賴圖裡到底有幾套 TLS **實作** —— 兩個方向都嚴 ────────────────
 //
-// ★ ★ ★ **（G104）新加的一道门，而它补的是一个此前没有任何东西看着的洞。**
-//   §10 的作废清单第 ⑥ 项写着：门 1/2/3 那套口径**整个建在 rustls 上**，
-//   而它们**对 boring 结构上说不出话** —— 门 1 只认 `aws-lc-rs` 这个名字。
-//   ⇒ 换后端的迁移期里「有几套 TLS」没有任何判据，**而迁移期恰恰是两套都在的时候**。
+// ★ ★ ★ **（G104）新加的一道門，而它補的是一個此前沒有任何東西看著的洞。**
+//   §10 的作廢清單第 ⑥ 項寫著：門 1/2/3 那套口徑**整個建在 rustls 上**，
+//   而它們**對 boring 結構上說不出話** —— 門 1 只認 `aws-lc-rs` 這個名字。
+//   ⇒ 換後端的遷移期裡「有幾套 TLS」沒有任何判據，**而遷移期恰恰是兩套都在的時候**。
 //
-// ⚠ ⚠ **两个方向都严**（照 `tests/vendor/run.sh` 的 EXPECTED_FAILURES 那套口径）：
-//   多一个要红（有人悄悄拖进了第三套），**少一个也要红**。
-//   ★ 后者不是洁癖：owner 拍的是「三处全换、rustls 彻底出局」，
-//     而那件事做完的那一刻**应该有人被迫来改这张表** —— 那正是它值得被记一笔的时候。
-//     一道只在「变多」时才红的门，会让「变少」这件好事悄悄发生、没人知道它发生了。
+// ⚠ ⚠ **兩個方向都嚴**（照 `tests/vendor/run.sh` 的 EXPECTED_FAILURES 那套口徑）：
+//   多一個要紅（有人悄悄拖進了第三套），**少一個也要紅**。
+//   ★ 後者不是潔癖：owner 拍的是「三處全換、rustls 徹底出局」，
+//     而那件事做完的那一刻**應該有人被迫來改這張表** —— 那正是它值得被記一筆的時候。
+//     一道只在「變多」時才紅的門，會讓「變少」這件好事悄悄發生、沒人知道它發生了。
 
-/// 已知的 TLS **实现** crate。
+/// 已知的 TLS **實作** crate。
 ///
-/// ⚠ ⚠ **只列实现，不列类型定义、不列适配层。** 这条边界是判据的一部分：
-///   · `rustls-pki-types` 是一组 DER newtype，没有 crypto ⇒ **不算**；
+/// ⚠ ⚠ **只列實作，不列類型定義、不列適配層。** 這條邊界是判據的一部分：
+///   · `rustls-pki-types` 是一組 DER newtype，沒有 crypto ⇒ **不算**；
 ///   · `hyper-rustls` / `tokio-rustls` / `pingora-rustls` / `pingora-boringssl`
-///     是适配层，它们各自的实现已经在名单里 ⇒ **不算**（否则同一套 TLS 被数好几遍）；
-///   · `openssl-probe` 只是去找系统证书文件在哪 ⇒ **不算**（★ 名字最像的一个）；
-///   · `ring` 是**算法库**不是 TLS 栈，rustls 用它当 provider ⇒ 不单独算一套。
-/// ★ 名单会长，而**长了不要紧**：它只决定「这个名字算不算一套 TLS」，
-///   真正的判据是下面那张 `EXPECTED` 与实测结果逐项相同。
+///     是適配層，它們各自的實作已經在名單裡 ⇒ **不算**（否則同一套 TLS 被數好幾遍）；
+///   · `openssl-probe` 只是去找系統證書檔案在哪 ⇒ **不算**（★ 名字最像的一個）；
+///   · `ring` 是**演算法庫**不是 TLS 棧，rustls 用它當 provider ⇒ 不單獨算一套。
+/// ★ 名單會長，而**長了不要緊**：它只決定「這個名字算不算一套 TLS」，
+///   真正的判據是下面那張 `EXPECTED` 與實測結果逐項相同。
 const KNOWN_TLS_IMPLS: &[&str] = &[
     "aws-lc-rs",
     "aws-lc-sys",
@@ -285,40 +285,40 @@ const KNOWN_TLS_IMPLS: &[&str] = &[
     "schannel",
 ];
 
-/// 今天**允许**出现在根锁里的那些，按字典序。
+/// 今天**允許**出現在根鎖裡的那些，按字典序。
 ///
-/// ⚠ ⚠ ★ **这道门读的是锁，而锁不是依赖图，更不是产物。**
-/// 第一条边界是它第一次跑就抓到的：`schannel`（Windows 的系统 TLS）**一直在根锁里**，
-/// 由 `rustls-platform-verifier` 按 target 条件拖进来，而 G13 的分发是 Linux musl
-/// ⇒ 它**一行都不会被编译进产物**。
+/// ⚠ ⚠ ★ **這道門讀的是鎖，而鎖不是依賴圖，更不是產物。**
+/// 第一條邊界是它第一次跑就抓到的：`schannel`（Windows 的系統 TLS）**一直在根鎖裡**，
+/// 由 `rustls-platform-verifier` 按 target 條件拖進來，而 G13 的散布是 Linux musl
+/// ⇒ 它**一行都不會被編譯進產物**。
 ///
-/// # ★ ★ 第二条边界，而它推翻了本门自己写下的一句预言
+/// # ★ ★ 第二條邊界，而它推翻了本門自己寫下的一句預言
 ///
-/// 这段原文写着「出站 HTTPS 换完之后这张表会只剩 boring 那两条，**而这道门会先红一次**」——
-/// **换完了，而它一个字都没红**：`hyper-rustls` / `rustls` / `tokio-rustls` / `schannel`
-/// 仍然在锁里。根因是 **`Cargo.lock` 是依赖图的超集** —— `instant-acme` 的 `ring` feature
-/// 里那句 `"hyper-rustls?/ring"` 让**包级解析照样把它写进锁**，尽管 feature 解析没打开它。
-/// ✅ 隔离实验：一个只依赖 `instant-acme` 的空 crate，**锁里 129 个包而 `cargo tree` 只有 72 个**。
+/// 這段原文寫著「出站 HTTPS 換完之後這張表會只剩 boring 那兩條，**而這道門會先紅一次**」——
+/// **換完了，而它一個字都沒紅**：`hyper-rustls` / `rustls` / `tokio-rustls` / `schannel`
+/// 仍然在鎖裡。根因是 **`Cargo.lock` 是依賴圖的超集** —— `instant-acme` 的 `ring` feature
+/// 裡那句 `"hyper-rustls?/ring"` 讓**包級解析照樣把它寫進鎖**，儘管 feature 解析沒打開它。
+/// ✅ 隔離實驗：一個只依賴 `instant-acme` 的空 crate，**鎖裡 129 個包而 `cargo tree` 只有 72 個**。
 ///
-/// > ★ ★ **一道门的注释写「本门守 X」不等于它判得动 X** —— 这一次它连自己会不会红
-/// > 都预言错了，而那句预言正是「换完之后会有人被迫来改这张表」的全部依据。
+/// > ★ ★ **一道門的註解寫「本門守 X」不等於它判得動 X** —— 這一次它連自己會不會紅
+/// > 都預言錯了，而那句預言正是「換完之後會有人被迫來改這張表」的全部依據。
 ///
-/// ⇒ 本门的口径就此收窄：**它答的是「锁里写着哪些」**。它仍然有用（唯一一道离线、零成本、
-/// 连 fork 那把锁一起看的），但 ⚠ 别拿它回答「产物里有几套」，答依赖图的是**门 5**。
+/// ⇒ 本門的口徑就此收窄：**它答的是「鎖裡寫著哪些」**。它仍然有用（唯一一道離線、零成本、
+/// 連 fork 那把鎖一起看的），但 ⚠ 別拿它回答「產物裡有幾套」，答依賴圖的是**門 5**。
 const EXPECTED_TLS_IMPLS: &[&str] = &["boring", "boring-sys", "rustls", "schannel"];
 
-/// 一串包名里出现了哪些 TLS 实现（去重、排序）。
+/// 一串包名裡出現了哪些 TLS 實作（去重、排序）。
 ///
-/// ★ 门 4（读锁）与门 5（读 `cargo tree`）**共用这一个判定**，
-/// 于是「这个名字算不算一套 TLS」只有一份答案 —— 两份名单迟早会分家。
-/// ⚠ ⚠ ★ ★ ★ **这里的 `dedup()` 是门 4 与门 5 共同的一处盲区，批 J 查实。**
-/// 它按**包名**去重 ⇒ 这两道门答得了「图里/锁里出现了哪几个 TLS 实现」，
-/// 答不了「**同一个名字有几个版本**」。而 G103 那条硬约束恰恰是后者：
-/// `quiche` 与 `pingora-boringssl` **必须解到同一个 `boring`**，否则 `SslContextBuilder`
-/// 同名而是两个类型。
-/// ★ **今天守住它的不是这两道门，是编译器**（两边的类型要真的互相传递，
-/// 解成两份就当场编不过）—— 见 `MUST_DISABLE_DEFAULT` 里 `quiche` 那一段。
-/// ⚠ 写在这里是因为**这两道门读起来很像已经守住了它**：它们的名字里就有「几套 TLS」。
+/// ★ 門 4（讀鎖）與門 5（讀 `cargo tree`）**共用這一個判定**，
+/// 於是「這個名字算不算一套 TLS」只有一份答案 —— 兩份名單遲早會分家。
+/// ⚠ ⚠ ★ ★ ★ **這裡的 `dedup()` 是門 4 與門 5 共同的一處盲區，批 J 查實。**
+/// 它按**包名**去重 ⇒ 這兩道門答得了「圖裡/鎖裡出現了哪幾個 TLS 實作」，
+/// 答不了「**同一個名字有幾個版本**」。而 G103 那條硬約束恰恰是後者：
+/// `quiche` 與 `pingora-boringssl` **必須解到同一個 `boring`**，否則 `SslContextBuilder`
+/// 同名而是兩個類型。
+/// ★ **今天守住它的不是這兩道門，是編譯器**（兩邊的類型要真的互相傳遞，
+/// 解成兩份就當場編不過）—— 見 `MUST_DISABLE_DEFAULT` 裡 `quiche` 那一段。
+/// ⚠ 寫在這裡是因為**這兩道門讀起來很像已經守住了它**：它們的名字裡就有「幾套 TLS」。
 fn tls_impls_among<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut out: Vec<String> = names
         .filter(|p| KNOWN_TLS_IMPLS.contains(p))
@@ -329,14 +329,14 @@ fn tls_impls_among<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     out
 }
 
-/// 一把锁里出现了哪些 TLS 实现（去重、排序）。
+/// 一把鎖裡出現了哪些 TLS 實作（去重、排序）。
 fn tls_impls_in(lock: &str) -> Vec<String> {
     tls_impls_among(lock_packages(lock).into_iter())
 }
 
 #[test]
 fn 锁里写着的_tls_实现必须与名单逐项相同() {
-    // ★ 下界：抠不出包名时下面那个比较会拿两个空表相等，而它看起来是绿的。
+    // ★ 下界：摳不出包名時下面那個比較會拿兩個空表相等，而它看起來是綠的。
     assert!(
         lock_packages(ROOT_LOCK).len() >= 100,
         "根锁里只抠出 {} 个包名，格式多半变了；本次检查不能采信",
@@ -370,8 +370,8 @@ fn tls_扫描器自证能命中也能错过() {
         tls_impls_in(&mk(&["boring-sys", "boring"])),
         vec!["boring".to_string(), "boring-sys".to_string()]
     );
-    // ★ ★ 错过：这四个**名字很像而不是 TLS 实现**，一个都不许被数进来。
-    //   ⚠ `openssl-probe` 是其中最像的一个，而它只是去找系统证书文件在哪。
+    // ★ ★ 錯過：這四個**名字很像而不是 TLS 實作**，一個都不許被數進來。
+    //   ⚠ `openssl-probe` 是其中最像的一個，而它只是去找系統證書檔案在哪。
     assert!(
         tls_impls_in(&mk(&[
             "openssl-probe",
@@ -382,25 +382,25 @@ fn tls_扫描器自证能命中也能错过() {
         ]))
         .is_empty()
     );
-    // 空输入不能被当成「查过了、没问题」——上面那条下界断言正是为此。
+    // 空輸入不能被當成「查過了、沒問題」——上面那條下界斷言正是為此。
     assert!(tls_impls_in("").is_empty());
-    // 同名重复只算一次（锁里同一个包可能出现多个版本）。
+    // 同名重複只算一次（鎖裡同一個包可能出現多個版本）。
     assert_eq!(
         tls_impls_in(&mk(&["boring", "boring"])),
         vec!["boring".to_string()]
     );
 }
 
-// ── 门 3：产品 crate 依赖 pingora-core 时必须开 boringssl ──────────────
+// ── 門 3：產品 crate 依賴 pingora-core 時必須開 boringssl ──────────────
 //
-// ⚠ ⚠ ★ **（G104）：这道门原本叫「必须开 rustls」。**
-//   §5.1 第 1 条把 TLS 后端锁死在 rustls，而那条约束已被 G104 推翻——
-//   后端换成 BoringSSL（成因是 G103 取 quiche 做 HTTP/3）。
-//   ★ **门要守的那件事一个字没变**：不开任何 TLS feature 的话，产品链接的是另一套代码，
-//     而它那一批传递依赖会留在常规审计视野之外（G41 查出来 rustls 那条曾经
-//     **两个月没被编译、测试或审计过**）。变的只是「哪个 feature 才算数」。
+// ⚠ ⚠ ★ **（G104）：這道門原本叫「必須開 rustls」。**
+//   §5.1 第 1 條把 TLS 後端鎖死在 rustls，而那條約束已被 G104 推翻——
+//   後端換成 BoringSSL（成因是 G103 取 quiche 做 HTTP/3）。
+//   ★ **門要守的那件事一個字沒變**：不開任何 TLS feature 的話，產品連結的是另一套程式碼，
+//     而它那一批傳遞依賴會留在常規稽核視野之外（G41 查出來 rustls 那條曾經
+//     **兩個月沒被編譯、測試或稽核過**）。變的只是「哪個 feature 才算數」。
 
-/// 一份清单里，`pingora-core` 有没有带上 `boringssl` feature。
+/// 一份清單裡，`pingora-core` 有沒有帶上 `boringssl` feature。
 fn pingora_without_boringssl(manifest: &str) -> Option<bool> {
     let mut found = None;
     for line in manifest.lines() {
@@ -422,10 +422,10 @@ fn pingora_without_boringssl(manifest: &str) -> Option<bool> {
 
 #[test]
 fn 产品_crate_一旦依赖_pingora_core_就必须开_boringssl() {
-    // ✅ 这条**已经不是空跑的了**：`crates/fulcrum-server` 从此后真的依赖
-    //    pingora-core，并且带着 `features = ["rustls"]`。
-    //    ★ 打开它实测多解析出 46 个包（G41 当年量到的是 133 → 175），
-    //    而 `aws-lc-rs` **不在其中**——门 1 那把锁负责证明这一点。
+    // ✅ 這條**已經不是空跑的了**：`crates/fulcrum-server` 從此後真的依賴
+    //    pingora-core，並且帶著 `features = ["rustls"]`。
+    //    ★ 打開它實測多解析出 46 個包（G41 當年量到的是 133 → 175），
+    //    而 `aws-lc-rs` **不在其中**——門 1 那把鎖負責證明這一點。
     let manifests = crate_manifests();
     assert!(manifests.len() >= 4, "只读到 {} 份清单", manifests.len());
     let mut depends = 0usize;
@@ -441,7 +441,7 @@ fn 产品_crate_一旦依赖_pingora_core_就必须开_boringssl() {
             Some(false) => depends += 1,
         }
     }
-    // ★ 下界：一个都没有的时候上面那个循环什么都没判，而它看起来是绿的。
+    // ★ 下界：一個都沒有的時候上面那個循環什麼都沒判，而它看起來是綠的。
     assert!(
         depends >= 1,
         "没有任何产品 crate 依赖 pingora-core —— 数据面不该消失。\n\
@@ -453,7 +453,7 @@ fn 产品_crate_一旦依赖_pingora_core_就必须开_boringssl() {
 fn pingora_扫描器自证能命中也能错过() {
     let with = "pingora-core = { workspace = true, features = [\"boringssl\"] }";
     let without = "pingora-core = { workspace = true }";
-    // ★ 旧口径必须被判成「没开」：G104 之后写 rustls 不算数，而**它看起来完全正常**。
+    // ★ 舊口徑必須被判成「沒開」：G104 之後寫 rustls 不算數，而**它看起來完全正常**。
     let old_backend = "pingora-core = { workspace = true, features = [\"rustls\"] }";
     let absent = "serde = \"1\"";
     assert_eq!(pingora_without_boringssl(with), Some(false));
@@ -462,31 +462,31 @@ fn pingora_扫描器自证能命中也能错过() {
     assert_eq!(pingora_without_boringssl(absent), None);
 }
 
-// ── 门 5：**依赖图**里到底有几套 TLS —— 门 4 那把尺子够不到的那一半 ────────
+// ── 門 5：**依賴圖**裡到底有幾套 TLS —— 門 4 那把尺子夠不到的那一半 ────────
 //
-// ★ ★ ★ **（G104 第 ③ 处）新加，而加它的理由是一次实测反常**：
-//   ③ 做完之后，`hyper-rustls` / `rustls` / `tokio-rustls` / `schannel`
-//   **全部离开了依赖图**（`cargo tree -e all --target all -i rustls` → nothing to print），
-//   **而门 4 一个字都没红** —— 锁里它们还在。
-//   ⇒ 那一批的全部内容，门 4 原理上看不见。
+// ★ ★ ★ **（G104 第 ③ 處）新加，而加它的理由是一次實測反常**：
+//   ③ 做完之後，`hyper-rustls` / `rustls` / `tokio-rustls` / `schannel`
+//   **全部離開了依賴圖**（`cargo tree -e all --target all -i rustls` → nothing to print），
+//   **而門 4 一個字都沒紅** —— 鎖裡它們還在。
+//   ⇒ 那一批的全部內容，門 4 原理上看不見。
 //
-// ⚠ ⚠ **本门读的是 `cargo tree`，不是锁**：
-//   · `-e all` —— normal + build + dev 三种边都算，一条藏在 build-dependency 里的
-//     TLS 栈同样会被编译，同样要审计；
-//   · `--target all` —— **不是**「只看 Linux」：`schannel` 当年就是靠 Windows 那一侧
-//     进来的，只看本机 target 会让它隐形；
-//   · `--locked` —— 拿一把过期的锁算出来的图不能采信，宁可红。
+// ⚠ ⚠ **本門讀的是 `cargo tree`，不是鎖**：
+//   · `-e all` —— normal + build + dev 三種邊都算，一條藏在 build-dependency 裡的
+//     TLS 棧同樣會被編譯，同樣要稽核；
+//   · `--target all` —— **不是**「只看 Linux」：`schannel` 當年就是靠 Windows 那一側
+//     進來的，只看本機 target 會讓它隱形；
+//   · `--locked` —— 拿一把過期的鎖算出來的圖不能採信，寧可紅。
 //
-// ⚠ 本门答的仍然**不是**「产物里有哪些」：那要 `--target x86_64-unknown-linux-musl`
-//   再加一步「真的被链接了」（看符号）。⏳ 那一条仍未做，登记在 PLAN.md §11。
-//   ★ 但 `--target all` 是它的**超集**：这里为空，musl 那一格必然也为空。
+// ⚠ 本門答的仍然**不是**「產物裡有哪些」：那要 `--target x86_64-unknown-linux-musl`
+//   再加一步「真的被連結了」（看符號）。⏳ 那一條仍未做，登記在 PLAN.md §11。
+//   ★ 但 `--target all` 是它的**超集**：這裡為空，musl 那一格必然也為空。
 
-/// 跑一次 `cargo tree`，拿回**真正在依赖图里**的包名（去重、排序）。
+/// 跑一次 `cargo tree`，拿回**真正在依賴圖裡**的包名（去重、排序）。
 ///
-/// ⚠ ⚠ **拿不到就 panic，不许「跳过」**：本仓库反复抓到的形状正是
-/// 「没能检查」被当成「检查通过」。
+/// ⚠ ⚠ **拿不到就 panic，不許「跳過」**：本儲存庫反覆抓到的形狀正是
+/// 「沒能檢查」被當成「檢查通過」。
 fn cargo_tree_packages() -> Vec<String> {
-    // ★ `CARGO` 由 cargo 自己传给测试进程，比在 PATH 上碰运气可靠。
+    // ★ `CARGO` 由 cargo 自己傳給測試處理程序，比在 PATH 上碰運氣可靠。
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let out = std::process::Command::new(&cargo)
         .arg("tree")
@@ -517,7 +517,7 @@ fn cargo_tree_packages() -> Vec<String> {
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let mut names: Vec<String> = text
         .lines()
-        // `{p}` 给的是 `name version (来源)`，取第一段。
+        // `{p}` 給的是 `name version (来源)`，取第一段。
         .filter_map(|l| l.split_whitespace().next())
         .map(|s| s.to_string())
         .collect();
@@ -530,15 +530,15 @@ fn cargo_tree_packages() -> Vec<String> {
 fn 依赖图里的_tls_实现必须只剩_boringssl() {
     let names = cargo_tree_packages();
 
-    // ★ 下界一：抠不出包名时下面那个比较会拿两个空表相等，而它看起来是绿的。
+    // ★ 下界一：摳不出包名時下面那個比較會拿兩個空表相等，而它看起來是綠的。
     assert!(
         names.len() >= 100,
         "`cargo tree` 只抠出 {} 个包名，输出格式多半变了；本次检查不能采信",
         names.len()
     );
-    // ★ 下界二：**光有数量不够**。一个把每行都截成空串的解析器同样能凑够数量，
-    //   而它会让下面那条比较恒为「一个 TLS 都没有」——**恰好是我们希望看到的样子**。
-    //   ⇒ 钉一个必然在图里、而与 TLS 无关的名字。
+    // ★ 下界二：**光有數量不夠**。一個把每行都截成空串的解析器同樣能湊夠數量，
+    //   而它會讓下面那條比較恆為「一個 TLS 都沒有」——**恰好是我們希望看到的樣子**。
+    //   ⇒ 釘一個必然在圖裡、而與 TLS 無關的名字。
     assert!(
         names.iter().any(|n| n == "tokio"),
         "`cargo tree` 的输出里连 tokio 都没有 —— 解析多半是坏的，本次检查不能采信"
@@ -558,18 +558,18 @@ fn 依赖图里的_tls_实现必须只剩_boringssl() {
 
 #[test]
 fn 依赖图扫描器自证它看得见也数得对() {
-    // ★ ★ 这一条守的是**上面那条断言的可信度**，不是产品：
-    //   `tls_impls_among` 是门 4 与门 5 共用的判定，而门 4 的自证只喂过它假锁文本。
-    //   这里再喂一次 `cargo tree` 那一侧的真实形状（裸包名，没有 `[[package]]` 包装）。
+    // ★ ★ 這一條守的是**上面那條斷言的可信度**，不是產品：
+    //   `tls_impls_among` 是門 4 與門 5 共用的判定，而門 4 的自證只餵過它假鎖文字。
+    //   這裡再喂一次 `cargo tree` 那一側的真實形狀（裸包名，沒有 `[[package]]` 包裝）。
     let names = cargo_tree_packages();
-    // 命中：boring 确实在图里，而这正是本批的产物。
+    // 命中：boring 確實在圖裡，而這正是本批的產物。
     assert!(
         names.iter().any(|n| n == "boring"),
         "图里没有 boring —— 那门 5 的绿说明不了任何事"
     );
-    // ★ ★ ★ 错过：`rustls-pki-types` **确实在图里**（`instant-acme` 的 ARI 要它），
-    //   而它是一组 DER newtype、不是一套 TLS。
-    //   ⇒ 这一条同时证明两件事：扫描器看得见真实的图，且**它不把名字像的算进来**。
+    // ★ ★ ★ 錯過：`rustls-pki-types` **確實在圖裡**（`instant-acme` 的 ARI 要它），
+    //   而它是一組 DER newtype、不是一套 TLS。
+    //   ⇒ 這一條同時證明兩件事：掃描器看得見真實的圖，且**它不把名字像的算進來**。
     assert!(
         names.iter().any(|n| n == "rustls-pki-types"),
         "图里没有 rustls-pki-types —— 下面那条「名字像也不算」就没了对象"

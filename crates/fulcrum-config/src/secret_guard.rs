@@ -1,32 +1,32 @@
-//! 配置文件的权限门（**批 22**）。
+//! 設定檔案的權限門（**批 22**）。
 //!
-//! # ★ ★ ★ 允许内联凭据，真正的代价是这一条
+//! # ★ ★ ★ 允許內聯憑證，真正的代價是這一條
 //!
-//! 字面量凭据写得进 Fulcrumfile 之后，**这份文件的性质就变了** ——
-//! 它从「可以随便看的东西」变成了「秘密」。而 Unix 上「是不是秘密」只有一个客观判据：
-//! **别人读不读得到**。
+//! 字面值憑證寫得進 Fulcrumfile 之後，**這份檔案的性質就變了** ——
+//! 它從「可以隨便看的東西」變成了「秘密」。而 Unix 上「是不是秘密」只有一個客觀判據：
+//! **別人讀不讀得到**。
 //!
-//! ⇒ 装载时检查：**只要配置里出现了字面量凭据**，这份文件就不许对 `other` 可读。
+//! ⇒ 裝載時檢查：**只要設定裡出現了字面值憑證**，這份檔案就不許對 `other` 可讀。
 //!
-//! | | 判据 |
+//! | | 判據 |
 //! |---|---|
-//! | 没有字面量凭据 | **一个字都不查** —— 不去管别人怎么放一份没有秘密的配置 |
-//! | 有字面量凭据，`o` 位有任何权限 | **拒绝启动**（形状照 G15：错误在最早的时刻暴露）|
-//! | 有字面量凭据，group 可读 | 放行 —— `0640 root:fulcrum` 是正当形状（root 拥有、服务读）|
+//! | 沒有字面值憑證 | **一個字都不查** —— 不去管別人怎麼放一份沒有秘密的設定 |
+//! | 有字面值憑證，`o` 位有任何權限 | **拒絕啟動**（形狀照 G15：錯誤在最早的時刻暴露）|
+//! | 有字面值憑證，group 可讀 | 放行 —— `0640 root:fulcrum` 是正當形狀（root 擁有、服務讀）|
 //!
-//! # ⚠ 为什么不干脆要求 0600
+//! # ⚠ 為什麼不乾脆要求 0600
 //!
-//! 因为那会**逼人把配置文件交给服务用户拥有**，而配置本该由 root 管、服务只读。
-//! 一条把人推向更差实践的规则，比没有规则更糟。
+//! 因為那會**逼人把設定檔案交給服務使用者擁有**，而設定本該由 root 管、服務唯讀。
+//! 一條把人推向更差實踐的規則，比沒有規則更糟。
 //!
-//! # ★ 这道门为什么不在编译期
+//! # ★ 這道門為什麼不在編譯期
 //!
-//! 编译期不知道文件在哪（`compile_str` 连路径都没有），而且**权限是运行时的事实**：
-//! 同一份配置，今天 0600、明天被 `chmod 644` —— 判据必须在**每次装载**时重新问一遍。
+//! 編譯期不知道檔案在哪（`compile_str` 連路徑都沒有），而且**權限是執行環境的事實**：
+//! 同一份設定，今天 0600、明天被 `chmod 644` —— 判據必須在**每次裝載**時重新問一遍。
 
 use crate::model::StructuredConfig;
 
-/// 配置里有没有「真值就在文件里」的凭据。
+/// 設定裡有沒有「真值就在檔案裡」的憑證。
 pub fn has_inline_secret(cfg: &StructuredConfig) -> bool {
     cfg.sites.iter().any(|s| {
         s.tls
@@ -36,15 +36,15 @@ pub fn has_inline_secret(cfg: &StructuredConfig) -> bool {
     })
 }
 
-/// 配置里有没有**脱敏过的**凭据（`«已脱敏»`）。
+/// 設定裡有沒有**脫敏過的**憑證（`«已脱敏»`）。
 ///
-/// # ★ ★ ★ 为什么它必须是硬错误
+/// # ★ ★ ★ 為什麼它必須是硬錯誤
 ///
-/// `fulcrum compile` 默认吐脱敏产物，而那份 JSON 正是 `POST /load` 的载荷。
-/// 少了这一条，`«已脱敏»` 会被当成凭据发给 CA —— 现场表现是「**凭据不对**」，
-/// 而没有任何一处会说「你 load 的是一份脱敏产物」。
-/// ⚠ 它与「凭据真的写错了」长得一模一样，而处置完全不同：
-/// 一个要去 CA 那边查权限，另一个只要重新 `compile --with-secrets`。
+/// `fulcrum compile` 預設吐脫敏產物，而那份 JSON 正是 `POST /load` 的載荷。
+/// 少了這一條，`«已脱敏»` 會被當成憑證發給 CA —— 現場表現是「**憑證不對**」，
+/// 而沒有任何一處會說「你 load 的是一份脫敏產物」。
+/// ⚠ 它與「憑證真的寫錯了」長得一模一樣，而處置完全不同：
+/// 一個要去 CA 那邊查權限，另一個只要重新 `compile --with-secrets`。
 pub fn redacted_secrets(cfg: &StructuredConfig) -> Vec<String> {
     let mut out = Vec::new();
     for s in &cfg.sites {
@@ -60,13 +60,13 @@ pub fn redacted_secrets(cfg: &StructuredConfig) -> Vec<String> {
     out
 }
 
-/// 装载时的权限门。`Ok(None)` = 没什么可说的；`Ok(Some(warn))` = 有话说但不拦；
-/// `Err` = **拒绝启动**。
+/// 裝載時的權限門。`Ok(None)` = 沒什麼可說的；`Ok(Some(warn))` = 有話說但不攔；
+/// `Err` = **拒絕啟動**。
 ///
-/// ⚠ 非 Unix 上直接放行：G13 的目标平台只有 Linux，而在别处**假装检查过**
-/// 比不检查更糟 —— 那会让人以为有一道门。
+/// ⚠ 非 Unix 上直接放行：G13 的目標平台只有 Linux，而在別處**假裝檢查過**
+/// 比不檢查更糟 —— 那會讓人以為有一道門。
 pub fn check(path: &str, cfg: &StructuredConfig) -> Result<Option<String>, String> {
-    // ★ 先挡脱敏产物：它比权限更早、也更确定 —— 那份配置**根本不可能工作**。
+    // ★ 先擋脫敏產物：它比權限更早、也更確定 —— 那份設定**根本不可能工作**。
     let redacted = redacted_secrets(cfg);
     if !redacted.is_empty() {
         return Err(format!(
@@ -134,9 +134,9 @@ mod tests {
 
     #[test]
     fn 脱敏过的凭据在任何入口都要被挡下() {
-        // ★ ★ 判据挂在 `check()` 上而不是只挂在 serve 的 ACME 那一层：
-        //   `validate` 的全部意义就是「上线之前先问一遍」，
-        //   而一份 load 不起来的配置正是它该拦住的东西。
+        // ★ ★ 判據掛在 `check()` 上而不是隻掛在 serve 的 ACME 那一層：
+        //   `validate` 的全部意義就是「上線之前先問一遍」，
+        //   而一份 load 不起來的設定正是它該攔住的東西。
         let src = format!(
             "*.a.com {{\n  tls {{\n    dns dnspod {}\n    zones a.com\n    resolvers 1.1.1.1\n  }}\n  respond 200\n}}\n",
             crate::secret::REDACTED
@@ -145,17 +145,17 @@ mod tests {
         assert_eq!(redacted_secrets(&cfg), vec!["*.a.com".to_string()]);
         let e = check("/nonexistent", &cfg).expect_err("脱敏产物竟然放行了");
         assert!(e.contains("--with-secrets"), "错误里要给出怎么办：{e}");
-        // ⚠ 它必须比权限门**更早**：上面那个路径根本不存在，
-        //   而如果先查权限，报出来的会是「读不到权限信息」——指错方向。
+        // ⚠ 它必須比權限門**更早**：上面那個路徑根本不存在，
+        //   而如果先查權限，報出來的會是「讀不到權限資訊」——指錯方向。
         assert!(!e.contains("权限"), "报错指向了权限而不是脱敏：{e}");
     }
 
     #[test]
     fn exec_的程序路径不是秘密() {
-        // ★ ★ 一刀切「无前缀就是凭据」是错的：
-        //   于是 `dns exec /path/to/hook` 被当成字面量，ACME 那个场景的 0644 配置当场被拒。
-        //   ⚠ 一道会在没有秘密的配置上开火的门，会训练人无脑 chmod 或直接无视它 ——
-        //   那时它挡不住真正该挡的那一次。
+        // ★ ★ 一刀切「無前綴就是憑證」是錯的：
+        //   於是 `dns exec /path/to/hook` 被當成字面值，ACME 那個場景的 0644 設定當場被拒。
+        //   ⚠ 一道會在沒有秘密的設定上開火的門，會訓練人無腦 chmod 或直接無視它 ——
+        //   那時它擋不住真正該擋的那一次。
         let src = "*.a.com {
   tls {
     dns exec /etc/fulcrum/dns-hook.sh
@@ -166,7 +166,7 @@ mod tests {
 ";
         let cfg = cfg_of(src);
         assert!(!has_inline_secret(&cfg), "exec 的程序路径被当成秘密了");
-        // ★ 而且它**不该被脱敏**：那条路径是排查时的线索。
+        // ★ 而且它**不該被脫敏**：那條路徑是排查時的線索。
         let arg = cfg.sites[0].tls.dns_arg.as_ref().unwrap();
         assert_eq!(arg.display(), "/etc/fulcrum/dns-hook.sh");
     }
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn 只有内联凭据才认得出来() {
         assert!(has_inline_secret(&cfg_of(INLINE)));
-        // ★ 指针写法不算：那份文件里没有秘密，不该被这道门管。
+        // ★ 指針寫法不算：那份檔案裡沒有秘密，不該被這道門管。
         assert!(!has_inline_secret(&cfg_of(POINTER)));
     }
 
@@ -190,13 +190,13 @@ mod tests {
         f.write_all(INLINE.as_bytes()).unwrap();
         let p = path.to_str().unwrap();
 
-        // 0644：其他人读得到 ⇒ 必须拒绝
+        // 0644：其他人讀得到 ⇒ 必須拒絕
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let e = check(p, &cfg_of(INLINE)).expect_err("0644 带着凭据竟然放行了");
         assert!(e.contains("其他用户读得到"), "{e}");
         assert!(e.contains("chmod 640"), "错误里要给出怎么办：{e}");
 
-        // 0640：正当形状 ⇒ 放行
+        // 0640：正當形狀 ⇒ 放行
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         assert!(check(p, &cfg_of(INLINE)).is_ok());
 
@@ -204,8 +204,8 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(check(p, &cfg_of(INLINE)).is_ok());
 
-        // ★ ★ 反面：同样是 0644，但配置里**没有**字面量凭据 ⇒ 一个字都不该说。
-        //   少了这一条，一道「对所有配置都要求 0640」的实现会让上面三条照常绿。
+        // ★ ★ 反面：同樣是 0644，但設定裡**沒有**字面值憑證 ⇒ 一個字都不該說。
+        //   少了這一條，一道「對所有設定都要求 0640」的實作會讓上面三條照常綠。
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(check(p, &cfg_of(POINTER)).unwrap(), None);
 

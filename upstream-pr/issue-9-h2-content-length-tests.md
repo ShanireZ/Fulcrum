@@ -1,17 +1,17 @@
-# Issue — 投稿九（⏳ **材料已备，未发**；owner 2026-10-16 拍「改准材料＋备投稿九」，发不发另拍）
+# Issue — 投稿九（⏳ **材料已備，未發**；owner 2026-10-16 拍「改準材料＋備投稿九」，發不發另拍）
 
-> 对应 fork **改动 20**（`vendor/pingora/FORK.md`）：两条上游 h2 测试在 h2 0.4.20 下红。
+> 對應 fork **改動 20**（`vendor/pingora/FORK.md`）：兩條上游 h2 測試在 h2 0.4.20 下紅。
 >
-> 模板：上游 `.github/ISSUE_TEMPLATE/bug_report.md` 的小标题（测试与依赖的行为对不上，是缺陷不是新功能）。
-> 补丁：[`0010-…`](0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch)，基于上游 `main` = `4487f7b`（2026-09-11；2026-10-16 查仍是它）。
+> 範本：上游 `.github/ISSUE_TEMPLATE/bug_report.md` 的小標題（測試與依賴的行為對不上，是缺陷不是新功能）。
+> 補丁：[`0010-…`](0010-Adapt-two-h2-server-tests-to-h2-0.4.20.patch)，基於上游 `main` = `4487f7b`（2026-09-11；2026-10-16 查仍是它）。
 > PR 正文草稿：[`pr-9-h2-content-length-tests.md`](pr-9-h2-content-length-tests.md)。
 >
-> ★ **上游已经有人提过，但只在别人的 PR 里提了一句**：PR #816 作者 2026-10-06 17:05 UTC 的评论
-> （https://github.com/cloudflare/pingora/pull/816#issuecomment-6021364933）—— 同样的两条、同样「0.4.20 红 / 0.4.19 绿」，
-> 并预言 `main` 下次跑也会红。没有 issue、没有修它的 PR（G46 查重见 README 投稿九一节）⇒ 正文引用它，⛔ 不另起炉灶地重述成「我们发现的」。
+> ★ **上游已經有人提過，但只在別人的 PR 裡提了一句**：PR #816 作者 2026-10-06 17:05 UTC 的評論
+> （https://github.com/cloudflare/pingora/pull/816#issuecomment-6021364933）—— 同樣的兩條、同樣「0.4.20 紅 / 0.4.19 綠」，
+> 並預言 `main` 下次跑也會紅。沒有 issue、沒有修它的 PR（G46 查重見 README 投稿九一節）⇒ 正文引用它，⛔ 不另起爐灶地重述成「我們發現的」。
 >
-> ⚠ 「CI 会红」这句**是核过的**（投稿四那条教训）：两条测试在默认 feature 下就编、就跑（`cargo test -p pingora-core --lib` 实测 14 条 v2 server 测试都跑了）；
-> 上游 CI 不带锁、现生成 ⇒ 2026-10-06 之后必解析到 h2 0.4.20；#816 那次 CI 正是红在这两条。
+> ⚠ 「CI 會紅」這句**是核過的**（投稿四那條教訓）：兩條測試在預設 feature 下就編、就跑（`cargo test -p pingora-core --lib` 實測 14 條 v2 server 測試都跑了）；
+> 上游 CI 不帶鎖、現生成 ⇒ 2026-10-06 之後必解析到 h2 0.4.20；#816 那次 CI 正是紅在這兩條。
 
 **Title**
 

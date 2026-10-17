@@ -18,18 +18,18 @@ Pingora's APIs and traits for the core network protocols.
 name = "pingora_core"
 path = "src/lib.rs"
 
-# ★ 枢衡 fork（2026-09-24）：上游这个 crate 没接 workspace 的 lints；接上是为了拿到那边登记的
-#   「已删特性名」（见 ../Cargo.toml 的 [workspace.lints.rust]）。
+# ★ 樞衡 fork（2026-09-24）：上游這個 crate 沒接 workspace 的 lints；接上是為了拿到那邊登記的
+#   「已刪特性名」（見 ../Cargo.toml 的 [workspace.lints.rust]）。
 [lints]
 workspace = true
 
 [dependencies]
 pingora-runtime = { version = "0.9.0", path = "../pingora-runtime" }
-# ★ 枢衡 fork（FORK.md「范围」与「rebase 的步骤」第 4 步）：上游这里还有 pingora-openssl / pingora-s2n
-#   两个可选后端，它们没被 vendor（枢衡用不上）⇒ 声明连同 [features] 里的 openssl / s2n 两条一起删；
-#   源码里的 #[cfg(feature = "...")] 分支原样保留，永远不会被点亮。
-#   ★ pingora-boringssl 是被 vendor 的那一个（G104），它的声明必须写全：路径依赖即使 optional，
-#     作为 workspace 成员加载时 cargo 也会读它的清单 —— 这个坑在产品构建时完全不显形。
+# ★ 樞衡 fork（FORK.md「範圍」與「rebase 的步驟」第 4 步）：上游這裡還有 pingora-openssl / pingora-s2n
+#   兩個可選後端，它們沒被 vendor（樞衡用不上）⇒ 宣告連同 [features] 裡的 openssl / s2n 兩條一起刪；
+#   原始碼裡的 #[cfg(feature = "...")] 分支原樣保留，永遠不會被點亮。
+#   ★ pingora-boringssl 是被 vendor 的那一個（G104），它的宣告必須寫全：路徑依賴即使 optional，
+#     作為 workspace 成員載入時 cargo 也會讀它的清單 —— 這個坑在產品建置時完全不顯形。
 pingora-boringssl = { version = "0.9.0", path = "../pingora-boringssl", optional = true }
 pingora-pool = { version = "0.9.0", path = "../pingora-pool" }
 pingora-error = { version = "0.9.0", path = "../pingora-error" }
@@ -46,12 +46,12 @@ bytes = { workspace = true }
 http = { workspace = true }
 log = { workspace = true }
 h2 = { workspace = true }
-# ★ 枢衡 fork §3：derivative（RUSTSEC-2024-0388，失维）换成 educe，见 FORK.md。
+# ★ 樞衡 fork §3：derivative（RUSTSEC-2024-0388，失維）換成 educe，見 FORK.md。
 educe.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 once_cell = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
-# ★ 枢衡 fork 改动 21：serde_yaml（已弃用，其 unsafe-libyaml 失维，RUSTSEC-2024-0449）换成 serde-saphyr，见 FORK.md。
+# ★ 樞衡 fork 改動 21：serde_yaml（已棄用，其 unsafe-libyaml 失維，RUSTSEC-2024-0449）換成 serde-saphyr，見 FORK.md。
 serde-saphyr = { version = "2", default-features = false, features = ["deserialize", "serialize"] }
 strum = "0.26.2"
 strum_macros = "0.26.2"
@@ -69,8 +69,8 @@ percent-encoding = "2.1"
 parking_lot = { version = "0.12", features = ["arc_lock"] }
 socket2 = { version = ">=0.4, <1.0.0", features = ["all"] }
 flate2 = { version = "1", features = ["zlib-ng"], default-features = false }
-# ★ 枢衡 fork §1：sfv / rand / brotli 的上界抬到 0.15 / 0.10 / 8（上游仍是 0.10.4 / 0.8 / 3），
-#   调用点适配见 FORK.md §2。
+# ★ 樞衡 fork §1：sfv / rand / brotli 的上界抬到 0.15 / 0.10 / 8（上游仍是 0.10.4 / 0.8 / 3），
+#   呼叫點適配見 FORK.md §2。
 sfv = "0.15"
 rand = "0.10"
 ahash = { workspace = true }
@@ -80,8 +80,8 @@ openssl-probe = "0.1.6"
 tokio-test = "0.4"
 zstd = "0"
 httpdate = "1"
-# ★ 枢衡 fork §1（G30，2026-08-20）：上游是 `"0.16.0"`，脱字号自带 `<0.17`，而 instant-acme 要 `^0.18`
-#   ⇒ 不抬，产物里就是两份 x509-parser，`tests/vendor/run.sh` 的 [2/5] 会判红并拒绝跑测试。
+# ★ 樞衡 fork §1（G30，2026-08-20）：上游是 `"0.16.0"`，脫字號自帶 `<0.17`，而 instant-acme 要 `^0.18`
+#   ⇒ 不抬，產物裡就是兩份 x509-parser，`tests/vendor/run.sh` 的 [2/5] 會判紅並拒絕跑測試。
 x509-parser = { version = "0.18.1", optional = true }
 ouroboros = { version = "0.18.4", optional = true }
 lru = { workspace = true, optional = true }
@@ -127,11 +127,11 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 
 [features]
 default = []
-# ★ 枢衡 fork：上游的 openssl / s2n 两条随 [dependencies] 里的声明一起删（理由在那里）。
-# ★ 枢衡 fork（2026-09-24，0.9.0 起）：上游新增的 dial9 / dial9-worker-s3 / dial9-cpu-profiling 三条也删 ——
-#   它们打开 pingora-runtime 的可选依赖 dial9-tokio-telemetry 与 aws-sdk-s3（那份清单里一并删了）。
-#   vendor 锁会记下成员 crate 的**全部**可选依赖，而 aws-sdk-s3 的默认特性经 rustls-aws-lc 拉进 aws-lc-rs
-#   ⇒ crates/fulcrum/tests/supply_gates.rs 门 1（两把锁里都不许出现 aws-lc-rs）当场红。见 FORK.md。
+# ★ 樞衡 fork：上游的 openssl / s2n 兩條隨 [dependencies] 裡的宣告一起刪（理由在那裡）。
+# ★ 樞衡 fork（2026-09-24，0.9.0 起）：上游新增的 dial9 / dial9-worker-s3 / dial9-cpu-profiling 三條也刪 ——
+#   它們打開 pingora-runtime 的可選依賴 dial9-tokio-telemetry 與 aws-sdk-s3（那份清單裡一併刪了）。
+#   vendor 鎖會記下成員 crate 的**全部**可選依賴，而 aws-sdk-s3 的預設特性經 rustls-aws-lc 拉進 aws-lc-rs
+#   ⇒ crates/fulcrum/tests/supply_gates.rs 門 1（兩把鎖裡都不許出現 aws-lc-rs）當場紅。見 FORK.md。
 boringssl = ["pingora-boringssl", "openssl_derived"]
 rustls = ["pingora-rustls", "any_tls", "dep:x509-parser", "ouroboros"]
 patched_http1 = ["pingora-http/patched_http1"]

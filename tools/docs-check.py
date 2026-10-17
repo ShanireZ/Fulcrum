@@ -33,9 +33,9 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = os.path.join(REPO, "docs")
 
-# OKF 保留文件名，不是概念文档，不要求 type。
-# ★ 按 basename 判定：`governance/index.md` 这类子目录入口同样是保留文件，
-#   但它仍然必须可达 —— 那正是 08-21 断掉的那五份。
+# OKF 保留檔案名，不是概念文件，不要求 type。
+# ★ 按 basename 判定：`governance/index.md` 這類子目錄入口同樣是保留檔案，
+#   但它仍然必須可達 —— 那正是 08-21 斷掉的那五份。
 RESERVED = {"index.md", "log.md"}
 
 OKF_VERSION = '"0.2"'
@@ -89,8 +89,8 @@ def links_of(rel: str) -> list[tuple[str, bool]]:
         href = raw.split("#")[0]
         if not href or not href.endswith(".md") or "://" in href:
             continue
-        # bundle 内链接写成相对 bundle 根的绝对路径（/governance/index.md）；
-        # ../PLAN.md 这类出 bundle 的按文档自身位置解析到仓库根。
+        # bundle 內連結寫成相對 bundle 根的絕對路徑（/governance/index.md）；
+        # ../PLAN.md 這類出 bundle 的按文件自身位置解析到儲存庫根。
         if href.startswith("/"):
             from_repo = normalize("docs/" + href)
         else:
@@ -121,7 +121,7 @@ def main() -> int:
     files = walk()
     problems: list[str] = []
 
-    # ★ 扫描没瞎：递归确实进了子目录。退化回「只有顶层」时，可达性会变成空断言。
+    # ★ 掃描沒瞎：遞歸確實進了子目錄。退化回「只有頂層」時，可達性會變成空斷言。
     if not files:
         print("docs/ 里一份 Markdown 都没有 —— 扫描本身坏了", file=sys.stderr)
         return 1
@@ -157,8 +157,8 @@ def main() -> int:
                 if target not in set(files):
                     problems.append("断链：%s -> /%s" % (name, target))
             elif not target.startswith(".."):
-                # ★★★ 跨仓引用（消不掉的 ..）不归本门管：它指向 workspace 里的兄弟
-                #   仓库，本仓既无权也无力保证它在，而克隆本仓的人那里它根本不存在。
+                # ★★★ 跨儲存庫引用（消不掉的 ..）不歸本門管：它指向 workspace 裡的兄弟
+                #   儲存庫，本儲存庫既無權也無力保證它在，而克隆本儲存庫的人那裡它根本不存在。
                 if not os.path.exists(os.path.join(REPO, *target.split("/"))):
                     problems.append("断链：%s -> %s" % (name, target))
 

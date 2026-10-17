@@ -1,9 +1,9 @@
 ---
-type: 权威文档
-title: PLAN.md · 唯一权威
-description: 枢衡的定位、范围、里程碑、验收标准、风险、§10 决策清单与 §11 待定清单。
+type: 權威文件
+title: PLAN.md · 唯一權威
+description: 樞衡的定位、範圍、里程碑、驗收標準、風險、§10 決策清單與 §11 待定清單。
 resource: ../../PLAN.md
-tags: [权威, 必读]
+tags: [權威, 必讀]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -14,32 +14,32 @@ sources:
     title: PLAN.md 全文
 ---
 
-★ ★ **[`PLAN.md`](../../PLAN.md) 是枢衡的唯一权威。** 本 bundle 与它冲突时，一律以它为准，并且要把 bundle 那一处改掉。
+★ ★ **[`PLAN.md`](../../PLAN.md) 是樞衡的唯一權威。** 本 bundle 與它衝突時，一律以它為準，並且要把 bundle 那一處改掉。
 
-# 章节地图
+# 章節地圖
 
-| 章节 | 内容 | bundle 里的导航 |
+| 章節 | 內容 | bundle 裡的導覽 |
 |---|---|---|
-| §1 | 当前状态 | [直接阅读唯一权威](../../PLAN.md#1-当前状态)；bundle 不复制当前状态 |
-| §2 | 项目定位 | [定位](/product/positioning.md) |
-| §3 | 要解决的问题；§3.1 竞争位置 | [定位](/product/positioning.md) |
-| §4 | 设计原则（七条）| [设计原则](/product/design-principles.md) |
-| §5 | 技术底盘；**§5.1 三条硬约束** | [技术栈](/platform/tech-stack.md) · [决策日志](/governance/decision-log.md) |
-| §6 | 首版范围（§6.1 自研 / §6.2 不做 / §6.3 回落）| [首版范围](/product/scope.md) · [回落层](/architecture/fallback.md) |
-| §7 | 里程碑 M0–M4 与退出条件 | [实施路线](/governance/roadmap.md) |
-| §8 | 性能验收标准 | [性能验收标准](/verification/performance-bar.md) |
-| §9 | 主要风险 | [尚未验证的接缝](/verification/open-seams.md) · [供应链现状](/platform/supply-chain.md) |
-| **§10** | ★ **决策日志** | [决策日志](/governance/decision-log.md) |
-| **§11** | ★ **待定清单**（⛔ 这里有意不抄 D 号范围：它只列仍然开着的，抄一个范围过来就会随着结案悄悄变成假话）| [待定清单](/governance/open-questions.md) |
-| §12 | 官方技术入口 | [上游技术入口](/references/upstream.md) |
+| §1 | 當前狀態 | [直接閱讀唯一權威](../../PLAN.md#1-当前状态)；bundle 不復制當前狀態 |
+| §2 | 專案定位 | [定位](/product/positioning.md) |
+| §3 | 要解決的問題；§3.1 競爭位置 | [定位](/product/positioning.md) |
+| §4 | 設計原則（七條）| [設計原則](/product/design-principles.md) |
+| §5 | 技術底盤；**§5.1 三條硬約束** | [技術棧](/platform/tech-stack.md) · [決策紀錄](/governance/decision-log.md) |
+| §6 | 首版範圍（§6.1 自研 / §6.2 不做 / §6.3 回落）| [首版範圍](/product/scope.md) · [回落層](/architecture/fallback.md) |
+| §7 | 里程碑 M0–M4 與退出條件 | [實施路線](/governance/roadmap.md) |
+| §8 | 效能驗收標準 | [效能驗收標準](/verification/performance-bar.md) |
+| §9 | 主要風險 | [尚未驗證的接縫](/verification/open-seams.md) · [供應鏈現狀](/platform/supply-chain.md) |
+| **§10** | ★ **決策紀錄** | [決策紀錄](/governance/decision-log.md) |
+| **§11** | ★ **待定清單**（⛔ 這裡有意不抄 D 號範圍：它只列仍然開著的，抄一個範圍過來就會隨著結案悄悄變成假話）| [待定清單](/governance/open-questions.md) |
+| §12 | 官方技術入口 | [上游技術入口](/references/upstream.md) |
 
-# 引用它的时候
+# 引用它的時候
 
-- **引 G 编号与章节号，不要引本 bundle。** bundle 是导航，会跟着重构变；`PLAN.md` 的编号是稳定标识。
-- ★ **正文与决策日志冲突时，以决策日志为准。**
-- ★ **§11 待定项不是需求。** 没拍板之前不得据以实现。
+- **引 G 編號與章節號，不要引本 bundle。** bundle 是導覽，會跟著重構變；`PLAN.md` 的編號是穩定標識。
+- ★ **正文與決策紀錄衝突時，以決策紀錄為準。**
+- ★ **§11 待定項不是需求。** 沒拍板之前不得據以實作。
 
-# 两条容易读错的地方
+# 兩條容易讀錯的地方
 
-1. ★ **G5 的「全量」指对外能力面，不是自研代码面。** 不先读这条，§6 整章都会读错。见 [首版范围](/product/scope.md)。
-2. ★ **G29 同时是 D1 的结案。** 读到「依赖版本策略待定」这类旧表述时，它是过期的。见 [依赖策略](/platform/dependency-policy.md)。
+1. ★ **G5 的「全量」指對外能力面，不是自研程式碼面。** 不先讀這條，§6 整章都會讀錯。見 [首版範圍](/product/scope.md)。
+2. ★ **G29 同時是 D1 的結案。** 讀到「依賴版本策略待定」這類舊錶述時，它是過期的。見 [依賴策略](/platform/dependency-policy.md)。

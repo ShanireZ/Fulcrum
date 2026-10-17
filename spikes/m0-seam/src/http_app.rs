@@ -1,6 +1,6 @@
-//! 一个最小的 HTTP/1.1 应答器，挂在 Pingora 原生的 `listening::Service` 上。
+//! 一個最小的 HTTP/1.1 應答器，掛在 Pingora 原生的 `listening::Service` 上。
 //!
-//! 它不是产品代码，只是 M0 里的对照组：证明自建服务加进来之后，原生服务照常工作。
+//! 它不是產品程式碼，只是 M0 裡的對照組：證明自建服務加進來之後，原生服務照常工作。
 
 use async_trait::async_trait;
 use pingora_core::apps::ServerApp;
@@ -21,18 +21,18 @@ impl ServerApp for MinimalHttp {
         mut session: Stream,
         _shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        // ★ 必须**读到头部结束**再应答。原先只 read 一次就回 200：请求一旦被拆成
-        //   两个 TCP 段（头部跨 MSS、或慢客户端），服务端会在收到第一段时就应答，
-        //   第二段随后被当成新请求又回一个 200 —— 协议就错位了。
-        //   ⚠ 它仍然**不解析请求行也不看方法/路径**，只判「头部收完没有」。
-        //     这是 M0 的对照组，不是 HTTP 实现；M1 不要拿它当模板。
+        // ★ 必須**讀到頭部結束**再應答。原先只 read 一次就回 200：請求一旦被拆成
+        //   兩個 TCP 段（頭部跨 MSS、或慢用戶端），伺服器端會在收到第一段時就應答，
+        //   第二段隨後被當成新請求又回一個 200 —— 協定就錯位了。
+        //   ⚠ 它仍然**不解析請求行也不看方法/路徑**，只判「頭部收完沒有」。
+        //     這是 M0 的對照組，不是 HTTP 實作；M1 不要拿它當範本。
         const MAX_HEAD: usize = 8 * 1024;
-        // ★ 读头部要有**空闲超时**：没有它时，连上来什么都不发（或每 29 秒发一个字节）
-        //   的对端会永久占住一个任务——慢速连接耗尽最基本的形态。
-        //   ⚠ 这是**整段头部**的总预算，不是每次 read 的预算：后者挡不住「慢慢滴」。
-        //   ⚠ ★ 它是**每请求**的预算。keep-alive 连接上每来一个请求就重新计时，所以
-        //     「每 14 秒发一个完整请求」的对端能无限期占住连接。真正堵死它需要**连接级**
-        //     的总预算 + 并发连接数上限——那是 M1 的事，这里记下边界，别让人以为已经防住了。
+        // ★ 讀頭部要有**空閒超時**：沒有它時，連上來什麼都不發（或每 29 秒發一個位元組）
+        //   的對端會永久佔住一個任務——慢速連接耗盡最基本的形態。
+        //   ⚠ 這是**整段頭部**的總預算，不是每次 read 的預算：後者擋不住「慢慢滴」。
+        //   ⚠ ★ 它是**每請求**的預算。keep-alive 連接上每來一個請求就重新計時，所以
+        //     「每 14 秒發一個完整請求」的對端能無限期佔住連接。真正堵死它需要**連接級**
+        //     的總預算 + 並行連接數上限——那是 M1 的事，這裡記下邊界，別讓人以為已經防住了。
         const HEAD_TIMEOUT: Duration = Duration::from_secs(15);
 
         let read_head = async {
@@ -41,14 +41,14 @@ impl ServerApp for MinimalHttp {
             loop {
                 let n = session.read(&mut chunk).await.ok()?;
                 if n == 0 {
-                    return None; // 对端关闭
+                    return None; // 對端關閉
                 }
-                // ★ 先判上限**再**收下这一段：原先是先 extend 后判，缓冲最多会涨到
-                //   MAX_HEAD + 1024 才断——上限就不是它声称的那个数了。
+                // ★ 先判上限**再**收下這一段：原先是先 extend 後判，緩衝最多會漲到
+                //   MAX_HEAD + 1024 才斷——上限就不是它聲稱的那個數了。
                 if head_buf.len() + n > MAX_HEAD {
-                    return None; // 头部过大，直接断开，别把内存交给对端控制
+                    return None; // 頭部過大，直接斷開，別把記憶體交給對端控制
                 }
-                // 只从「新数据可能参与的最小窗口」开始找，避免每次重扫全缓冲
+                // 只從「新資料可能參與的最小視窗」開始找，避免每次重掃全緩衝
                 let scan_from = head_buf.len().saturating_sub(3);
                 head_buf.extend_from_slice(&chunk[..n]);
                 if head_buf[scan_from..].windows(4).any(|w| w == b"\r\n\r\n") {
@@ -58,8 +58,8 @@ impl ServerApp for MinimalHttp {
         };
         let head_buf = tokio::time::timeout(HEAD_TIMEOUT, read_head).await.ok()??;
 
-        // ★ 尊重客户端的 `Connection: close`。原先固定回 keep-alive 并留着连接，
-        //   与客户端的意图相反；探针发的正是 `Connection: close`。
+        // ★ 尊重用戶端的 `Connection: close`。原先固定回 keep-alive 並留著連接，
+        //   與用戶端的意圖相反；探針發的正是 `Connection: close`。
         let lowered = head_buf.to_ascii_lowercase();
         let wants_close = lowered
             .windows(b"connection: close".len())
@@ -76,9 +76,9 @@ impl ServerApp for MinimalHttp {
         session.flush().await.ok()?;
 
         if wants_close {
-            None // 交还 None = 关闭连接
+            None // 交還 None = 關閉連接
         } else {
-            Some(session) // 连接可复用，交还给 service 等待下一个请求
+            Some(session) // 連接可重複使用，交還給 service 等待下一個請求
         }
     }
 }

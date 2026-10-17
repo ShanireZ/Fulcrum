@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# M1 反证场景：把 `ExitType` 换回 systemd 的默认值 `main`，其余一模一样。
+# M1 反證場景：把 `ExitType` 換回 systemd 的預設值 `main`，其餘一模一樣。
 #
-# ★ 它复现的是**坏行为**，所以它的绿 = 坏行为照常发生 —— 与 `tests/m0/unclaimed.sh` 原先同类
-#   （后者 2026-09-24 rebase 到 pingora 0.9.0 后已反写成验修复）。
-#   存在的理由有两条，都很硬：
+# ★ 它重現的是**壞行為**，所以它的綠 = 壞行為照常發生 —— 與 `tests/m0/unclaimed.sh` 原先同類
+#   （後者 2026-09-24 rebase 到 pingora 0.9.0 後已反寫成驗修復）。
+#   存在的理由有兩條，都很硬：
 #
-#   1. **证明 `ExitType=cgroup` 那一行确实在干活。** 少了它，unit 会在老代退出时被判定结束，
-#      并把已经接手了监听 fd 的新一代一起杀掉 —— 这正是 G31 担心的那个失败。
-#   2. ★ ★ **证明 run.sh 的判据分得清好坏。** 一道只见过绿的门，与一道根本没在跑的门，
-#      从输出上无法区分（AGENTS.md「Gate discipline」）。run.sh 里那句
-#      「gen1 退出把 gen2 一起带走了」的断言，只有在这里真的红过，才算数。
+#   1. **證明 `ExitType=cgroup` 那一行確實在幹活。** 少了它，unit 會在老代退出時被判定結束，
+#      並把已經接手了監聽 fd 的新一代一起殺掉 —— 這正是 G31 擔心的那個失敗。
+#   2. ★ ★ **證明 run.sh 的判據分得清好壞。** 一道只見過綠的門，與一道根本沒在跑的門，
+#      從輸出上無法區分（AGENTS.md「Gate discipline」）。run.sh 裡那句
+#      「gen1 退出把 gen2 一起帶走了」的斷言，只有在這裡真的紅過，才算數。
 #
-# ⚠ 若有一天这个脚本**红了**，含义是「systemd 的行为变了」，不是「测试坏了」——
-#   那时要回头重估 run.sh 的判据，而不是把这里改绿。
+# ⚠ 若有一天這個指令碼**紅了**，含義是「systemd 的行為變了」，不是「測試壞了」——
+#   那時要回頭重估 run.sh 的判據，而不是把這裡改綠。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,9 +32,9 @@ echo "=== [0/5] 装反证用的 drop-in（ExitType=main）==="
 mkdir -p "$DROPIN_DIR"
 printf '[Service]\nExitType=main\n' > "$DROPIN_DIR/exit-type-main.conf"
 systemctl daemon-reload
-# ★ 证明 drop-in 真的生效了，而不是写了个没人读的文件。
-#   少了这一条，下面整场戏可能是在跑**正常口径**——而正常口径下 unit 不死，
-#   于是这个反证脚本会红，我们就会去查一个根本不存在的问题。
+# ★ 證明 drop-in 真的生效了，而不是寫了個沒人讀的檔案。
+#   少了這一條，下面整場戲可能是在跑**正常口徑**——而正常口徑下 unit 不死，
+#   於是這個反證指令碼會紅，我們就會去查一個根本不存在的問題。
 [ "$(unit_prop ExitType)" = "main" ] \
   || fail "drop-in 没生效：unit 的 ExitType 仍是 $(unit_prop ExitType)"
 rm -f "$PID_FILE"
@@ -63,11 +63,11 @@ echo "=== [3/5] 等 gen1 退出 —— 坏行为应当在这一刻开始 ==="
 for _ in $(seq 1 150); do alive "$GEN1" || break; sleep 0.2; done
 alive "$GEN1" && fail "30 秒后 gen1 还没退出"
 
-# ★ 判据取「不再 active」的**第一时刻**，而不是「等 2 秒再看」。
-#   写死 sleep 2 然后同时断言「unit 不 active」与「gen2 已死」的话，
-#   结果卡在一个自相矛盾的中间态上：unit 已经是 deactivating，而 gen2 还活着。
-#   ——因为 systemd 判定 unit 结束之后是**发 SIGTERM 让整组优雅退出**，
-#   而 gen2 是 pingora，它会老老实实排空 grace+graceful 秒。两件事本来就不同时发生。
+# ★ 判據取「不再 active」的**第一時刻**，而不是「等 2 秒再看」。
+#   寫死 sleep 2 然後同時斷言「unit 不 active」與「gen2 已死」的話，
+#   結果卡在一個自相矛盾的中間態上：unit 已經是 deactivating，而 gen2 還活著。
+#   ——因為 systemd 判定 unit 結束之後是**發 SIGTERM 讓整組優雅退出**，
+#   而 gen2 是 pingora，它會老老實實排空 grace+graceful 秒。兩件事本來就不同時發生。
 FIRST_STATE=""
 for _ in $(seq 1 100); do
   st=$(unit_state)
@@ -81,13 +81,13 @@ done
 echo "  ✓ gen1 一退出，unit 立刻转入 $FIRST_STATE（不再 active）"
 
 echo "=== [4/5] ★ 关键：新一代是「被判了缓刑」，不是「安然无恙」 ==="
-# ★ ★ 这里的失效形态比预想的更阴险：新一代**没有被立刻杀掉**，
-#   而是收到 SIGTERM 后照常排空——于是**升级看起来成功了，流量也确实还在通**，
-#   直到排空窗口走完，整台机器上的服务才一起消失。
-#   若判据写成「升级后立刻探一下端口通不通」，这个场景会报绿。
-#   （与 open-seams.md 里「黑洞不是立刻出现的」是同一类陷阱。）
+# ★ ★ 這裡的失效形態比預想的更陰險：新一代**沒有被立刻殺掉**，
+#   而是收到 SIGTERM 後照常排空——於是**升級看起來成功了，流量也確實還在通**，
+#   直到排空視窗走完，整臺機器上的服務才一起消失。
+#   若判據寫成「升級後立刻探一下連接埠通不通」，這個場景會報綠。
+#   （與 open-seams.md 裡「黑洞不是立刻出現的」是同一類陷阱。）
 alive "$GEN2" && echo "  · 此刻 gen2=$GEN2 仍活着，正在排空 —— 端口还通，但它已经被判了死刑"
-for _ in $(seq 1 200); do   # 40s：够 grace(5)+graceful(5) 走完，也够 systemd 兜底 SIGKILL
+for _ in $(seq 1 200); do   # 40s：夠 grace(5)+graceful(5) 走完，也夠 systemd 備援 SIGKILL
   alive "$GEN2" || break
   sleep 0.2
 done

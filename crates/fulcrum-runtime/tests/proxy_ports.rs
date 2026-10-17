@@ -1,14 +1,14 @@
-//! G163：哪些端口算「有反代」—— 读 h1 请求头之前按端口定要不要保留头名的原样大小写。
+//! G163：哪些連接埠算「有反代」—— 讀 h1 請求頭之前按連接埠定要不要保留頭名的原樣大小寫。
 //!
-//! ★ 两个方向都判：有反代的端口必须算进去（漏了 ⇒ 转发给上游的头名变样），
-//!   没有反代的端口必须不算（多算 ⇒ 只是白建一张表，线上看不出来 —— 所以更要在这里钉住）。
+//! ★ 兩個方向都判：有反代的連接埠必須算進去（漏了 ⇒ 轉發給上游的頭名變樣），
+//!   沒有反代的連接埠必須不算（多算 ⇒ 只是白建一張表，線上看不出來 —— 所以更要在這裡釘住）。
 
 use fulcrum_config::compile_str;
 use fulcrum_runtime::{Runtime, SharedRuntime};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// DSL → 运行时图。构建期报错就 panic（测试里那是写错了用例）。
+/// DSL → 執行環境圖。建置期回報錯誤就 panic（測試裡那是寫錯了用例）。
 fn rt(dsl: &str) -> Runtime {
     let o = compile_str("t.Fulcrumfile", dsl);
     assert!(
@@ -19,9 +19,9 @@ fn rt(dsl: &str) -> Runtime {
     Runtime::build(&o.config.unwrap()).expect("运行时图应当能建起来")
 }
 
-/// 8001：同一端口上一个站点 respond、另一个站点在嵌套的 `handle` 里反代（精确表）·
-/// 8002：通配站点在 `route` 里反代（通配表）· 8003：端口兜底站点直接反代（兜底表）·
-/// 8004 / 8005：只有 respond（精确表与兜底表各一个反向）。
+/// 8001：同一連接埠上一個站台 respond、另一個站台在嵌套的 `handle` 裡反代（精確表）·
+/// 8002：通配站台在 `route` 裡反代（通配表）· 8003：連接埠備援站台直接反代（備援表）·
+/// 8004 / 8005：只有 respond（精確表與備援表各一個反向）。
 const DSL: &str = "\
 http://a.example:8001 {
   respond 200 a
@@ -53,7 +53,7 @@ fn 三张表与嵌套里的反代都算_只有respond的端口不算() {
     assert_eq!(rt(DSL).proxy_ports(), BTreeSet::from([8001, 8002, 8003]));
 }
 
-/// 位图的两端（第 0 个字的最低位、第 1023 个字的最高位）与换代：`swap` 之后照新配置答。
+/// 點陣圖的兩端（第 0 個字的最低位、第 1023 個字的最高位）與換代：`swap` 之後照新設定答。
 #[test]
 fn shared_runtime_按端口查_换代之后跟着新配置() {
     let shared = SharedRuntime::new(Arc::new(rt(DSL)));

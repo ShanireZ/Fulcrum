@@ -1,98 +1,98 @@
-# 投稿五（**已撤销，不发**）· rustls 监听器无法使用自定义证书解析器
+# 投稿五（**已撤銷，不發**）· rustls 監聽器無法使用自定義證書解析器
 
-> ❌ **状态：2026-08-20 撤销，owner 拍板「什么都不做」。**
-> **不开 issue、不开 PR、也不去别人的线程里留言。** 下面的立论**没有错**，
-> 但它**不该由我们再报一遍**——理由见下。fork 里那条改动照旧自己养着。
+> ❌ **狀態：2026-08-20 撤銷，owner 拍板「什麼都不做」。**
+> **不開 issue、不開 PR、也不去別人的執行緒裡留言。** 下面的立論**沒有錯**，
+> 但它**不該由我們再報一遍**——理由見下。fork 裡那條改動照舊自己養著。
 >
-> ## ★ ★ ★ 撤销的理由：这件事上游早就有人报了，而且比我们做得多
+> ## ★ ★ ★ 撤銷的理由：這件事上游早就有人報了，而且比我們做得多
 >
-> 按 G32「先查上游做没做、有没有人报过」搜了一遍（2026-08-20，`gh` 实测，不是读网页），
-> **同一主题已有 9 条** issue/PR，最早的是 **2025-04-27**：
+> 按 G32「先查上游做沒做、有沒有人報過」搜了一遍（2026-08-20，`gh` 實測，不是讀網頁），
+> **同一主題已有 9 條** issue/PR，最早的是 **2025-04-27**：
 >
-> | | 类型 | 状态 | 说的是什么 |
+> | | 類型 | 狀態 | 說的是什麼 |
 > |---|---|---|---|
-> | [#594](https://github.com/cloudflare/pingora/issues/594) | issue | open，10 条评论 | 最早那条诉求：SNI based resolver |
-> | ★ [#632](https://github.com/cloudflare/pingora/pull/632) | PR | open，`mergeable=false` | **就是我们这个写法**，见下 |
-> | [#599](https://github.com/cloudflare/pingora/pull/599) | PR | open | 另一条路（cert bundle） |
+> | [#594](https://github.com/cloudflare/pingora/issues/594) | issue | open，10 條評論 | 最早那條訴求：SNI based resolver |
+> | ★ [#632](https://github.com/cloudflare/pingora/pull/632) | PR | open，`mergeable=false` | **就是我們這個寫法**，見下 |
+> | [#599](https://github.com/cloudflare/pingora/pull/599) | PR | open | 另一條路（cert bundle） |
 > | [#726](https://github.com/cloudflare/pingora/pull/726) | PR | open | 收 `ServerConfig` |
-> | [#832](https://github.com/cloudflare/pingora/issues/832) | issue | open | 同一诉求，换个说法 |
-> | [#916](https://github.com/cloudflare/pingora/issues/916) | issue | open | 暴露 `Acceptor` 构造器 |
-> | [#833](https://github.com/cloudflare/pingora/pull/833) | PR | **closed** | TlsAcceptCallbacks，作者转投 openssl |
-> | ★ [#908](https://github.com/cloudflare/pingora/pull/908) | PR | open，8 条评论 | 接棒 #833，**当前最活跃**，一直在催评审 |
+> | [#832](https://github.com/cloudflare/pingora/issues/832) | issue | open | 同一訴求，換個說法 |
+> | [#916](https://github.com/cloudflare/pingora/issues/916) | issue | open | 暴露 `Acceptor` 建構器 |
+> | [#833](https://github.com/cloudflare/pingora/pull/833) | PR | **closed** | TlsAcceptCallbacks，作者轉投 openssl |
+> | ★ [#908](https://github.com/cloudflare/pingora/pull/908) | PR | open，8 條評論 | 接棒 #833，**當前最活躍**，一直在催評審 |
 > | [#877](https://github.com/cloudflare/pingora/pull/877) | PR | **closed** | resolver support |
 >
-> ★ ★ **#632 与我们的做法逐点相同，而且更完整**：同样是给 `TlsSettings` 加
-> `Option<Arc<dyn ResolvesServerCert>>`、`build()` 里二选一、`pingora-rustls` 再导出那几个类型；
-> **它还顺手把 `build()` 那个 panic 改成了 `Result`**——那是我们 fork 里没动的。
-> 而且已有 **3 个独立使用者**（JockeTF / tarka / sebadob 线上的项目）证实可用、各自维着 rebase。
+> ★ ★ **#632 與我們的做法逐點相同，而且更完整**：同樣是給 `TlsSettings` 加
+> `Option<Arc<dyn ResolvesServerCert>>`、`build()` 裡二選一、`pingora-rustls` 再匯出那幾個類型；
+> **它還順手把 `build()` 那個 panic 改成了 `Result`**——那是我們 fork 裡沒動的。
+> 而且已有 **3 個獨立使用者**（JockeTF / tarka / sebadob 線上的專案）證實可用、各自維著 rebase。
 >
-> ★ ★ **它卡住的原因不是设计分歧，是合并冲突 + 维护者评审带宽**：
-> #908 那条线里 `dpfeifer2` 从 6 月催到 8 月（`nojima` 说过「周末看一下」，之后没下文）。
-> ⇒ **再开第 7 份只会让那个队列更堵**，而我们自己的 `README.md` 里就记着那条教训：
-> **「我可以帮你报」在别人早就报过时，等于宣告自己没搜。**
+> ★ ★ **它卡住的原因不是設計分歧，是合併衝突 + 維護者評審頻寬**：
+> #908 那條線裡 `dpfeifer2` 從 6 月催到 8 月（`nojima` 說過「週末看一下」，之後沒下文）。
+> ⇒ **再開第 7 份只會讓那個佇列更堵**，而我們自己的 `README.md` 裡就記著那條教訓：
+> **「我可以幫你報」在別人早就報過時，等於宣告自己沒搜。**
 >
-> ## ⚠ 这条撤销**不影响** fork 里那条改动
+> ## ⚠ 這條撤銷**不影響** fork 裡那條改動
 >
-> `TlsSettings::with_cert_resolver`（`FORK.md` §8）照旧留着——它是 M1 的承重墙。
-> ★ 但要记住它的**归零条件变了**：不再是「等我们的投稿被接受」，而是
-> **等 #632 或 #908 落地**。到那天把 fork 那条删掉，换成上游的接口。
+> `TlsSettings::with_cert_resolver`（`FORK.md` §8）照舊留著——它是 M1 的承重牆。
+> ★ 但要記住它的**歸零條件變了**：不再是「等我們的投稿被接受」，而是
+> **等 #632 或 #908 完成實作**。到那天把 fork 那條刪掉，換成上游的介面。
 >
 > ---
 >
-> 以下是当初的草稿，**保留仅供归档**（如果哪天 owner 改主意要参与那几条线，立论现成）。
+> 以下是當初的草稿，**保留僅供歸檔**（如果哪天 owner 改主意要參與那幾條線，立論現成）。
 
 ---
 
-## 标题
+## 標題
 
 rustls listener cannot use a custom `ResolvesServerCert` (no SNI-based certificate selection)
 
 ## 描述（正文草稿）
 
-用 `feature = "rustls"` 时，`listeners::tls::TlsSettings` 没有任何办法提供
+用 `feature = "rustls"` 時，`listeners::tls::TlsSettings` 沒有任何辦法提供
 rustls 的 `ResolvesServerCert`：
 
-| 入口 | 现状 |
+| 入口 | 現狀 |
 |---|---|
-| `TlsSettings::intermediate(cert_path, key_path)` | 只接受**文件路径**，`build()` 里写死 `with_single_cert` |
-| `TlsSettings::with_callbacks()` | 在 rustls 后端**直接返回错误** |
-| 自己构造 `Acceptor` | 字段私有 |
-| `add_address(ServerAddress)` | 枚举只有 `Tcp` / `Uds` |
+| `TlsSettings::intermediate(cert_path, key_path)` | 只接受**檔案路徑**，`build()` 裡寫死 `with_single_cert` |
+| `TlsSettings::with_callbacks()` | 在 rustls 後端**直接回傳錯誤** |
+| 自己建構 `Acceptor` | 欄位私有 |
+| `add_address(ServerAddress)` | 枚舉只有 `Tcp` / `Uds` |
 
-后果：
+後果：
 
-- 一个监听端口只能有**一张**证书；
-- 换证书要重启或重载配置；
-- **按 SNI 在握手期选证书 / 现签**（ACME 的 on-demand 形态）无从实现。
+- 一個監聽連接埠只能有**一張**證書；
+- 換證書要重新啟動或重載設定；
+- **按 SNI 在握手期選證書 / 現籤**（ACME 的 on-demand 形態）無從實作。
 
-而 rustls 提供的正是这条路（`ResolvesServerCert`），且它是**唯一**一条——
-openssl / boringssl 后端的 `certificate_callback` 在 rustls 下不存在，
-`with_callbacks()` 自己也这么说。
+而 rustls 提供的正是這條路（`ResolvesServerCert`），且它是**唯一**一條——
+openssl / boringssl 後端的 `certificate_callback` 在 rustls 下不存在，
+`with_callbacks()` 自己也這麼說。
 
-## 建议的改法（最小）
+## 建議的改法（最小）
 
-给 `TlsSettings` 加一个可选的 resolver，并在 `build()` 里优先用它：
+給 `TlsSettings` 加一個可選的 resolver，並在 `build()` 裡優先用它：
 
 ```rust
 pub fn with_cert_resolver(resolver: Arc<dyn ResolvesServerCert>) -> Result<Self>;
 ```
 
-有 resolver 时**完全不读证书文件**（于是 `intermediate()` 那个「文件读不到就 panic」
-的行为与这条路无关）。
+有 resolver 時**完全不讀證書檔案**（於是 `intermediate()` 那個「檔案讀不到就 panic」
+的行為與這條路無關）。
 
-配套还要在 `pingora-rustls` 里再导出 `ResolvesServerCert` / `CertifiedKey` / `ClientHello`——
-否则依赖方拿不到那几个类型，只能自己再依赖一份 `rustls`，
-而那会**多一处 feature 声明**（`rustls` 的 default 里含 `aws_lc_rs`，
-参见投稿三 #965/#966 里那条「两个 provider 一起编进产物」）。
+配套還要在 `pingora-rustls` 裡再匯出 `ResolvesServerCert` / `CertifiedKey` / `ClientHello`——
+否則依賴方拿不到那幾個類型，只能自己再依賴一份 `rustls`，
+而那會**多一處 feature 宣告**（`rustls` 的 default 裡含 `aws_lc_rs`，
+參見投稿三 #965/#966 裡那條「兩個 provider 一起編進產物」）。
 
-## 为什么这不是「用别的后端就好」
+## 為什麼這不是「用別的後端就好」
 
-`certificate_callback` 只在 openssl / boringssl 后端存在。选 rustls 的项目
-（纯 Rust、可 musl 静态链接）目前**没有任何**做 SNI 动态证书的办法。
+`certificate_callback` 只在 openssl / boringssl 後端存在。選 rustls 的專案
+（純 Rust、可 musl 靜態連結）目前**沒有任何**做 SNI 動態證書的辦法。
 
-## 环境
+## 環境
 
 - 上游 tag `0.8.1`
-- 我们在 fork 里按上面的形状加了这条并跑通：`--cacert` 验签通过、
-  ALPN 协商到 h2、未知 SNI 被拒绝握手（rustls 报
-  `no server certificate chain resolved`，正是期望的行为）。
+- 我們在 fork 裡按上面的形狀加了這條並跑通：`--cacert` 驗籤通過、
+  ALPN 協商到 h2、未知 SNI 被拒絕握手（rustls 報
+  `no server certificate chain resolved`，正是期望的行為）。

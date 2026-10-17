@@ -158,8 +158,8 @@ pub struct HttpSession {
     /// [`super::super::HttpPersistentSettings`] into the next session.
     /// Scoped narrowly so it cannot affect FIN / `abort_on_close` semantics.
     pipelined_idle_bytes_stashed: bool,
-    /// 枢衡改动 18（G163）：[`Self::read_request`] 要不要另建保留请求头名原样大小写的那张表。
-    /// 缺省 `true`（与上游相同）。见 [`Self::set_preserve_header_case`]。
+    /// 樞衡改動 18（G163）：[`Self::read_request`] 要不要另建保留請求頭名原樣大小寫的那張表。
+    /// 預設 `true`（與上游相同）。見 [`Self::set_preserve_header_case`]。
     preserve_header_case: bool,
 }
 
@@ -213,11 +213,11 @@ impl HttpSession {
         }
     }
 
-    /// 枢衡改动 18（G163）：下一次 [`Self::read_request`] 要不要保留请求头名的原样大小写。
+    /// 樞衡改動 18（G163）：下一次 [`Self::read_request`] 要不要保留請求頭名的原樣大小寫。
     ///
-    /// 缺省保留（与上游相同）。不保留时 [`RequestHeader`] 不另建大小写表（每条请求少两次分配）：
-    /// 名与值照旧可查，只是再写成 h1 时（例如原样转发给上游）头名按标题化表写、表外的写小写 ——
-    /// 与 h2 读进来的请求头相同。每条请求的会话都是新建的 ⇒ 要每条设一次。
+    /// 預設保留（與上游相同）。不保留時 [`RequestHeader`] 不另建大小寫表（每條請求少兩次分配）：
+    /// 名與值照舊可查，只是再寫成 h1 時（例如原樣轉發給上游）頭名按標題化表寫、表外的寫小寫 ——
+    /// 與 h2 讀進來的請求頭相同。每條請求的工作階段都是新建的 ⇒ 要每條設一次。
     pub fn set_preserve_header_case(&mut self, preserve: bool) {
         self.preserve_header_case = preserve;
     }
@@ -344,8 +344,8 @@ impl HttpSession {
 
             // Use loop as GOTO to retry escaped request buffer, not a real loop
             loop {
-                // ★ 枢衡改动 16 ②：头槽位不先填一遍（256 × 32 字节，每条请求都要付），交给 httparse 的
-                //   uninit 入口；它与 `parse` 走的是同一个解析器、同一份缺省配置。patched_http1 那条路照上游原样。
+                // ★ 樞衡改動 16 ②：頭槽位不先填一遍（256 × 32 位元組，每條請求都要付），交給 httparse 的
+                //   uninit 入口；它與 `parse` 走的是同一個解析器、同一份預設設定。patched_http1 那條路照上游原樣。
                 #[cfg(not(feature = "patched_http1"))]
                 let mut headers = [const { std::mem::MaybeUninit::uninit() }; MAX_HEADERS];
                 #[cfg(feature = "patched_http1")]
@@ -362,7 +362,7 @@ impl HttpSession {
                         // `KVRef`s to record the offset of each piece of data, drop `req`, convert
                         // buf, the do the 0 copy update
                         let base = buf.as_ptr() as usize;
-                        // ★ 枢衡改动 16 ③：偏移记在栈上（不先填），不再每条请求分配一个 Vec。
+                        // ★ 樞衡改動 16 ③：偏移記在棧上（不先填），不再每條請求分配一個 Vec。
                         let mut header_refs =
                             [const { std::mem::MaybeUninit::<KVRef>::uninit() }; MAX_HEADERS];
                         let num_headers = populate_header_refs(base, &mut header_refs, req.headers);
@@ -370,7 +370,7 @@ impl HttpSession {
                         let method = req.method.unwrap_or("");
                         // we path httparse to allow unsafe bytes in the str
                         let path = req.path.unwrap_or("").as_bytes();
-                        // ★ 枢衡改动 18（G163）：不保留大小写时不建那张表。
+                        // ★ 樞衡改動 18（G163）：不保留大小寫時不建那張表。
                         let mut request_header = Box::new(if self.preserve_header_case {
                             RequestHeader::build(method, path, Some(req.headers.len()))?
                         } else {
@@ -404,7 +404,7 @@ impl HttpSession {
                         let buf = buf.freeze();
 
                         for header in &header_refs[..num_headers] {
-                            // SAFETY（枢衡改动 16 ③）：`populate_header_refs` 写满了前 `num_headers` 个。
+                            // SAFETY（樞衡改動 16 ③）：`populate_header_refs` 寫滿了前 `num_headers` 個。
                             let header = unsafe { header.assume_init_ref() };
                             let header_name = header.get_name_bytes(&buf);
                             let header_name = header_name.into_case_header_name();
@@ -841,8 +841,8 @@ impl HttpSession {
     /// This contains all the synchronous logic that should happen before writing the header.
     /// Returns Ok(Some((bytes, should_flush))) if the header should be written, Ok(None) if should skip.
     ///
-    /// 枢衡改动 19 ②（G165）：回传 `BytesMut` 而不是 `freeze` 过的 `Bytes` —— 直写那条路只借用它、用完就丢，
-    /// 而缓冲长度 ≠ 容量时 `freeze` 要另分配一块共享头；要 `Bytes` 的调用方（proxy task）自己 `freeze`。
+    /// 樞衡改動 19 ②（G165）：回傳 `BytesMut` 而不是 `freeze` 過的 `Bytes` —— 直寫那條路只借用它、用完就丟，
+    /// 而緩衝長度 ≠ 容量時 `freeze` 要另分配一塊共享頭；要 `Bytes` 的呼叫方（proxy task）自己 `freeze`。
     fn prepare_response_header(
         &mut self,
         header: &mut ResponseHeader,
@@ -874,8 +874,8 @@ impl HttpSession {
             /* update headers */
             header.insert_header(header::DATE, date::get_cached_date())?;
 
-            // 枢衡改动 19 ①（G165）：上游这里的 TODO（make these lazy static）本身 —— `from_static` 不分配，
-            // 而 `&str` 每次都经 `HeaderValue::from_str` 拷一份。
+            // 樞衡改動 19 ①（G165）：上游這裡的 TODO（make these lazy static）本身 —— `from_static` 不分配，
+            // 而 `&str` 每次都經 `HeaderValue::from_str` 拷一份。
             let connection_value = if self.will_keepalive() {
                 HeaderValue::from_static("keep-alive")
             } else {
@@ -1822,7 +1822,7 @@ fn escape_illegal_request_line(buf: &BytesMut) -> Option<BytesMut> {
     }
 }
 
-/// ★ 枢衡改动 16 ②：一个头槽位。缺省走 httparse 的 uninit 入口；patched_http1 那条路照上游，先填后解析。
+/// ★ 樞衡改動 16 ②：一個頭槽位。預設走 httparse 的 uninit 入口；patched_http1 那條路照上游，先填後解析。
 #[cfg(not(feature = "patched_http1"))]
 type HeaderSlot<'buf> = std::mem::MaybeUninit<httparse::Header<'buf>>;
 #[cfg(feature = "patched_http1")]
@@ -1867,8 +1867,8 @@ fn parse_req_buffer<'h, 'buf>(
     }
 }
 
-/// ★ 枢衡改动 16 ③：与 `common.rs` 的 `populate_headers` 同一套规则（跳过空名），只是写进调用方栈上的
-/// 槽位而不是一个新分配的 `Vec`。返回写了几个 —— 前这么多个槽位都已初始化。
+/// ★ 樞衡改動 16 ③：與 `common.rs` 的 `populate_headers` 同一套規則（跳過空名），只是寫進呼叫方棧上的
+/// 槽位而不是一個新分配的 `Vec`。回傳寫了幾個 —— 前這麼多個槽位都已初始化。
 #[inline]
 fn populate_header_refs(
     base: usize,
@@ -1878,7 +1878,7 @@ fn populate_header_refs(
     let mut n = 0;
     for header in headers.iter() {
         if !header.name.is_empty() {
-            // 下标越界会 panic（不会越界写）；`headers.len()` 不超过槽位数，见调用处。
+            // 下標越界會 panic（不會越界寫）；`headers.len()` 不超過槽位數，見呼叫處。
             refs[n].write(KVRef::new(
                 header.name.as_ptr() as usize - base,
                 header.name.len(),
@@ -2324,9 +2324,9 @@ mod tests_stream {
         assert_eq!(&InvalidHTTPHeader, res.unwrap_err().etype());
     }
 
-    /// ★ 枢衡改动 16 ② ③ 的判据（G157）：两处栈上槽位（不先填）恰好用满时 —— 头数正好是
-    /// `MAX_HEADERS` —— 每个头的名与值都对得上；多一个就照上游拒绝。
-    /// 跨两次读才完整的请求头、URI 转义后重解析，上游自己的测试（`read_2_buf` 等、`escaped_uri_*`）已覆盖。
+    /// ★ 樞衡改動 16 ② ③ 的判據（G157）：兩處棧上槽位（不先填）恰好用滿時 —— 頭數正好是
+    /// `MAX_HEADERS` —— 每個頭的名與值都對得上；多一個就照上游拒絕。
+    /// 跨兩次讀才完整的請求頭、URI 轉義後重解析，上游自己的測試（`read_2_buf` 等、`escaped_uri_*`）已覆蓋。
     #[tokio::test]
     async fn 枢衡改动16_头数正好到上限时逐个对得上_多一个就拒() {
         init_log();
@@ -2353,8 +2353,8 @@ mod tests_stream {
         }
     }
 
-    /// 枢衡改动 18（G163）：缺省保留请求头名的原样大小写；关掉之后名与值照旧可查、只是不建那张表，
-    /// 再写成 h1 时头名照标题化表写、表外的写小写。两个方向都在这里。
+    /// 樞衡改動 18（G163）：預設保留請求頭名的原樣大小寫；關掉之後名與值照舊可查、只是不建那張表，
+    /// 再寫成 h1 時頭名照標題化表寫、表外的寫小寫。兩個方向都在這裡。
     #[tokio::test]
     async fn 枢衡改动18_关掉保留大小写_名值照旧_写回按缺省写法() {
         init_log();

@@ -1,34 +1,34 @@
-//! 三道门，守住 **fork 改动 14**（`SslDigest` 多两格 `sni` / `alpn`）与它换来的那条结论。
+//! 三道門，守住 **fork 改動 14**（`SslDigest` 多兩格 `sni` / `alpn`）與它換來的那條結論。
 //!
-//! # 背景：为什么访问日志的 `tls_sni` / `tls_alpn` 走 fork 而不是走回调
+//! # 背景：為什麼訪問紀錄的 `tls_sni` / `tls_alpn` 走 fork 而不是走回呼
 //!
-//! 上游把这两格留给了 `TlsAccept::handshake_complete_callback` + `SslDigest.extension`。
-//! ⚠ ⚠ 走那条路要求监听器**带回调**（`TlsSettings::with_callbacks(…)`），而带回调时
-//! 上游走的是 `handshake_with_callback()` —— 它的第一行 `start_accept()` **无条件**装一个
-//! 恒回 `-1` 的 `cert_cb`（`SSL_set_cert_cb(raw_cert_block)`）⇒ **每条 TLS 连接都要多走一趟
-//! 「挂起 → `certificate_callback` → `resume_accept`」**（§10 实测，D28）。
+//! 上游把這兩格留給了 `TlsAccept::handshake_complete_callback` + `SslDigest.extension`。
+//! ⚠ ⚠ 走那條路要求監聽器**帶回呼**（`TlsSettings::with_callbacks(…)`），而帶回呼時
+//! 上游走的是 `handshake_with_callback()` —— 它的第一行 `start_accept()` **無條件**裝一個
+//! 恆回 `-1` 的 `cert_cb`（`SSL_set_cert_cb(raw_cert_block)`）⇒ **每條 TLS 連接都要多走一趟
+//! 「掛起 → `certificate_callback` → `resume_accept`」**（§10 實測，D28）。
 //!
-//! ⇒ （D27 + D28 一起结案）改成 **fork 改动 14**：`SslDigest` 直接多两格，
-//! 由 `from_ssl()` 在握手结束后填 —— 那里本来就握着 `&SslRef`，**一分额外开销都没有**。
-//! ★ 顺带 h3 也能自己造一份同类型的 `SslDigest`（`quic_digest`），
-//! 于是 h1/h2 与 h3 在访问日志那一层**走同一段代码**。
+//! ⇒ （D27 + D28 一起結案）改成 **fork 改動 14**：`SslDigest` 直接多兩格，
+//! 由 `from_ssl()` 在握手結束後填 —— 那裡本來就握著 `&SslRef`，**一分額外開銷都沒有**。
+//! ★ 順帶 h3 也能自己造一份同類型的 `SslDigest`（`quic_digest`），
+//! 於是 h1/h2 與 h3 在訪問紀錄那一層**走同一段程式碼**。
 //!
-//! # 三道门各答一个**不同**的问题（★ 不许混着说）
+//! # 三道門各答一個**不同**的問題（★ 不許混著說）
 //!
-//! | 门 | 它答的问题 | 它答不了的 |
+//! | 門 | 它答的問題 | 它答不了的 |
 //! |---|---|---|
-//! | 1 | 上游 `SslDigest` 上**还有没有**那两格 | 它们有没有被填 |
-//! | 2 | 上游 `from_ssl()` **有没有在填**它们 | 运行时真的填对了没有 |
-//! | 3 | 数据面有没有**又**去挂那份回调（把 D28 的开销请回来）| 同上 |
+//! | 1 | 上游 `SslDigest` 上**還有沒有**那兩格 | 它們有沒有被填 |
+//! | 2 | 上游 `from_ssl()` **有沒有在填**它們 | 執行環境真的填對了沒有 |
+//! | 3 | 資料面有沒有**又**去掛那份回呼（把 D28 的開銷請回來）| 同上 |
 //!
-//! ⚠ 三道都是**文本判据**。「运行时真的填对了」由**第二十三个场景**
+//! ⚠ 三道都是**文字判據**。「執行環境真的填對了」由**第二十三個場景**
 //! [`tests/log/run.sh`] 在真握手上量（h1/h2 四格、h3 三格）。
 //!
-//! ★ ★ **门 1 看起来多余（我们的代码读 `ssl.sni`，字段没了编译器就会红）——
-//! 而它留着是有理由的**：编译器给的是「`SslDigest` 没有 `sni` 字段」，
-//! 这道门给的是「**fork 改动 14 被 rebase 冲掉了**」。⚠ 前者会让人去改自己的代码。
+//! ★ ★ **門 1 看起來多餘（我們的程式碼讀 `ssl.sni`，欄位沒了編譯器就會紅）——
+//! 而它留著是有理由的**：編譯器給的是「`SslDigest` 沒有 `sni` 欄位」，
+//! 這道門給的是「**fork 改動 14 被 rebase 沖掉了**」。⚠ 前者會讓人去改自己的程式碼。
 
-/// 仓库根。★ `CARGO_MANIFEST_DIR` 是 `crates/fulcrum`。
+/// 儲存庫根。★ `CARGO_MANIFEST_DIR` 是 `crates/fulcrum`。
 fn repo_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -44,7 +44,7 @@ fn read(rel: &str) -> String {
 const DIGEST_RS: &str = "vendor/pingora/pingora-core/src/protocols/tls/digest.rs";
 const STREAM_RS: &str = "vendor/pingora/pingora-core/src/protocols/tls/boringssl_openssl/stream.rs";
 
-/// 一句「fork 改动 14 没了」的话，三道门共用。
+/// 一句「fork 改動 14 沒了」的話，三道門共用。
 fn fork14(what: &str) -> String {
     format!(
         "\n{what}\n\
@@ -54,7 +54,7 @@ fn fork14(what: &str) -> String {
     )
 }
 
-// ── 门 1：那两格还在 ────────────────────────────────────────────────────────
+// ── 門 1：那兩格還在 ────────────────────────────────────────────────────────
 
 #[test]
 fn 上游的_ssldigest_上还有_sni_与_alpn_两格() {
@@ -76,7 +76,7 @@ fn 上游的_ssldigest_上还有_sni_与_alpn_两格() {
     }
 }
 
-// ── 门 2：`from_ssl()` 真的在填 ─────────────────────────────────────────────
+// ── 門 2：`from_ssl()` 真的在填 ─────────────────────────────────────────────
 
 #[test]
 fn 上游的_from_ssl_真的在填那两格() {
@@ -84,7 +84,7 @@ fn 上游的_from_ssl_真的在填那两格() {
     let start = src
         .find("    pub fn from_ssl(ssl: &SslRef) -> Self {")
         .expect("上游 `SslDigest::from_ssl` 不见了 —— 先去看它变成了什么");
-    // ★ 切到缩进四格的收尾花括号为止：函数内部的闭合花括号都比它深。
+    // ★ 切到縮進四格的收尾花括號為止：函式內部的閉合花括號都比它深。
     let body_end = src[start..]
         .find("\n    }\n")
         .expect("`from_ssl` 的函数体没有缩进四格的收尾花括号，切法失效了");
@@ -96,8 +96,8 @@ fn 上游的_from_ssl_真的在填那两格() {
             fork14(&format!("`from_ssl()` 里找不到 `{f}`。"))
         );
     }
-    // ⚠ 光看「有赋值」不够 —— 一次「赋成 None」的错误 rebase 会通过上面那条。
-    //   ★ 所以再钉住它**取自哪两个 SslRef 方法**。
+    // ⚠ 光看「有賦值」不夠 —— 一次「賦成 None」的錯誤 rebase 會通過上面那條。
+    //   ★ 所以再釘住它**取自哪兩個 SslRef 方法**。
     for f in ["servername(", "selected_alpn_protocol("] {
         assert!(
             body.contains(f),
@@ -109,16 +109,16 @@ fn 上游的_from_ssl_真的在填那两格() {
 
 #[test]
 fn 门_2_自证它切出来的是那个函数() {
-    // ⚠ 切法坏掉时最像样的错答案是「切出来一大段、里面碰巧有那几个串」。
+    // ⚠ 切法壞掉時最像樣的錯答案是「切出來一大段、裡面碰巧有那幾個串」。
     let src = read(STREAM_RS);
     let start = src
         .find("    pub fn from_ssl(ssl: &SslRef) -> Self {")
         .expect("找不到它");
     let body_end = src[start..].find("\n    }\n").expect("切不出函数体");
     let body = &src[start..start + body_end];
-    // ⚠ 上界取 2400 而不是「函数原本多长」：`from_ssl` 里那段解释 fork 改动 14 的
-    //   注释就占了一半多。★ 它要挡的是「切出了半个文件」，不是「注释写长了」——
-    //   一个跟着注释长度走的阈值会在下一次补一句话时红，而那次红什么都不说明。
+    // ⚠ 上界取 2400 而不是「函式原本多長」：`from_ssl` 裡那段解釋 fork 改動 14 的
+    //   註解就佔了一半多。★ 它要擋的是「切出了半個檔案」，不是「註解寫長了」——
+    //   一個跟著註解長度走的閾值會在下一次補一句話時紅，而那次紅什麼都不說明。
     assert!(
         body.len() < 2400,
         "切出来 {} 字节，对 `from_ssl` 来说太长了 —— 切法多半坏了",
@@ -128,26 +128,26 @@ fn 门_2_自证它切出来的是那个函数() {
         body.contains("SslDigest::new("),
         "切出来的这段不像 `from_ssl` 的函数体：\n{body}"
     );
-    // ★ 邻居函数不许被包进来（否则上面几条可能是在看别人）。
+    // ★ 鄰居函式不許被包進來（否則上面幾條可能是在看別人）。
     assert!(
         !body.contains("impl<T> SslStream<T>"),
         "切过头了，把邻居也包进来了"
     );
 }
 
-// ── 门 3：别把那趟握手开销请回来 ────────────────────────────────────────────
+// ── 門 3：別把那趟握手開銷請回來 ────────────────────────────────────────────
 
-/// 把一段源码里的**整行注释**去掉。
+/// 把一段原始碼裡的**整行註解**去掉。
 ///
-/// # ★ ★ ★ 这道门的前身第一次跑就红了，而红它的是**解释它自己的那段注释**
+/// # ★ ★ ★ 這道門的前身第一次跑就紅了，而紅它的是**解釋它自己的那段註解**
 ///
-/// `lib.rs` 里那段说明「为什么这里不用 `with_callbacks`」的注释，字面就带着那个串。
-/// ⚠ 一个文本判据**看得见注释**，于是它给了一个读起来完全成立的错答案。
+/// `lib.rs` 裡那段說明「為什麼這裡不用 `with_callbacks`」的註解，字面就帶著那個串。
+/// ⚠ 一個文字判據**看得見註解**，於是它給了一個讀起來完全成立的錯答案。
 ///
-/// > ★ ★ **先问这把尺子在量什么，再问它量出来对不对。**
+/// > ★ ★ **先問這把尺子在量什麼，再問它量出來對不對。**
 ///
-/// ⚠ 只去**整行**注释：本仓库不用块注释，而**行尾**注释那一行上必然也有代码，
-/// 那时红是对的。⇒ 尺子有意留在「宁可多报，不可漏报」这一侧。
+/// ⚠ 只去**整行**註解：本儲存庫不用塊註解，而**行尾**註解那一行上必然也有程式碼，
+/// 那時紅是對的。⇒ 尺子有意留在「寧可多報，不可漏報」這一側。
 fn strip_line_comments(src: &str) -> String {
     src.lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -155,7 +155,7 @@ fn strip_line_comments(src: &str) -> String {
         .join("\n")
 }
 
-/// 数据面里所有 `.rs`（`vendor/` 不算 —— 那是上游的代码），**注释已去掉**。
+/// 資料面裡所有 `.rs`（`vendor/` 不算 —— 那是上游的程式碼），**註解已去掉**。
 fn data_plane_sources() -> Vec<(String, String)> {
     let root = repo_root().join("crates/fulcrum-server/src");
     let mut out = Vec::new();
@@ -176,7 +176,7 @@ fn data_plane_sources() -> Vec<(String, String)> {
             }
         }
     }
-    // ★ 下界：一个文件都没扫到时，下面那道门会拿空集比，看起来永远是绿的。
+    // ★ 下界：一個檔案都沒掃到時，下面那道門會拿空集比，看起來永遠是綠的。
     assert!(
         out.len() >= 10,
         "只扫到 {} 份数据面源码，扫描多半坏了；本次检查不能采信",
@@ -204,8 +204,8 @@ fn 数据面不许再去挂_tlsaccept_回调() {
 
 #[test]
 fn 尺子自证_它看得见代码_看不见整行注释() {
-    // ★ ★ ★ 这一条是前身那道门第一次跑就红了之后加的：红它的是解释它自己的那段注释。
-    //   ⇒ 尺子必须先拿已知样本自证，而不是只在真文件上跑过。
+    // ★ ★ ★ 這一條是前身那道門第一次跑就紅了之後加的：紅它的是解釋它自己的那段註解。
+    //   ⇒ 尺子必須先拿已知樣本自證，而不是隻在真檔案上跑過。
     let s = strip_line_comments(
         "let a = 1;\n\
          // 这行注释里写着 with_callbacks(cb)\n\
@@ -215,12 +215,12 @@ fn 尺子自证_它看得见代码_看不见整行注释() {
     assert!(!s.contains("with_callbacks("), "整行注释没被去掉：\n{s}");
     assert!(!s.contains("TlsAccept"), "缩进的整行注释没被去掉：\n{s}");
     assert!(s.contains("TlsSettings::from("), "代码被误删了：\n{s}");
-    // ⚠ 而**行尾**注释有意不处理 —— 那一行上必然也有代码，红是对的。
+    // ⚠ 而**行尾**註解有意不處理 —— 那一行上必然也有程式碼，紅是對的。
     let tail = strip_line_comments("let x = with_callbacks(cb); // 说明\n");
     assert!(
         tail.contains("with_callbacks("),
         "行尾注释那一行连代码一起被吞了 —— 尺子太宽，会漏报"
     );
-    // 空输入不能被当成「查过了、没问题」。
+    // 空輸入不能被當成「查過了、沒問題」。
     assert!(strip_line_comments("").is_empty());
 }

@@ -48,46 +48,46 @@ import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ⚠ ⚠ **本机控制台是 GBK，而本门要打印的是扫到的源码原文** —— 里面有 `⚠`（U+26A0）
-#   这种 GBK 编不出来的字符。Python 的 `stderr` 默认 `errors='backslashreplace'`
-#   而 `stdout` 默认 `strict` ⇒ ★★★ **同一份输出走 stdout 会抛 UnicodeEncodeError
-#   直接把门炸成一条 traceback，走 stderr 却安然无恙**。实测：`--list` 当场炸，
-#   而报错那一路（stderr）看起来一切正常。⇒ 两条都钉成 backslashreplace。
+# ⚠ ⚠ **本機控制檯是 GBK，而本門要列印的是掃到的原始碼原文** —— 裡面有 `⚠`（U+26A0）
+#   這種 GBK 編不出來的字元。Python 的 `stderr` 預設 `errors='backslashreplace'`
+#   而 `stdout` 預設 `strict` ⇒ ★★★ **同一份輸出走 stdout 會拋 UnicodeEncodeError
+#   直接把門炸成一條 traceback，走 stderr 卻安然無恙**。實測：`--list` 當場炸，
+#   而回報錯誤那一路（stderr）看起來一切正常。⇒ 兩條都釘成 backslashreplace。
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(errors="backslashreplace")
-    except (AttributeError, ValueError):  # 非 TextIO（被重定向成别的东西）时不强求
+    except (AttributeError, ValueError):  # 非 TextIO（被重定向成別的東西）時不強求
         pass
 
-# 权威与它的镜像。⚠ 这两份**本来就该**谈 §11，判据 ② 对它们豁免；
-#   而镜像那一份由判据 ① 单独守着，⇒ 豁免没有打开缺口。
+# 權威與它的鏡像。⚠ 這兩份**本來就該**談 §11，判據 ② 對它們豁免；
+#   而鏡像那一份由判據 ① 單獨守著，⇒ 豁免沒有打開缺口。
 PLAN_REL = "PLAN.md"
 MIRROR_REL = "docs/governance/open-questions.md"
 
-# 扫哪些地方。★ 目录是**派生**的（os.walk），⛔ 文件名一个都不列举 ——
-#   一份列出来的清单会随着新增文件悄悄失效，而那正是本门要挡的那类漂移。
+# 掃哪些地方。★ 目錄是**派生**的（os.walk），⛔ 檔案名一個都不列舉 ——
+#   一份列出來的清單會隨著新增檔案悄悄失效，而那正是本門要擋的那類漂移。
 SCAN_DIRS = ("crates", "docs", "tests", "tools")
 SCAN_FILES = ("vendor/pingora/FORK.md",)
 SCAN_EXTS = (".rs", ".md", ".sh", ".py", ".yml", ".yaml", ".toml")
 SKIP_DIRS = {"target", "__pycache__", ".git"}
 
-# §11 表格的第一列。★ 只认第一列 ⇒ 正文里顺口提到的 D 号不会被当成「开着的」。
+# §11 表格的第一列。★ 只認第一列 ⇒ 正文裡順口提到的 D 號不會被當成「開著的」。
 ROW_D = re.compile(r"^\|\s*\*\*(D\d+)\*\*\s*\|")
 
-# ★ ★ ★ 「§11 **真的空了**」与「表格格式漂了、`ROW_D` 没认出来」——
-#   这两件事在表面上**一模一样**：两边都是「一个 D 号都提不出来」。
-#   ⇒ 用一个**比 `ROW_D` 宽**的筛子把它们分开（与 `tests/ci/shellcheck-all.sh` 那条
-#     「普查那一步的筛子必须比门禁的宽」同形）：扫**任何表格行**里的 D 号，
-#     不限它在不在第一列、有没有加粗。
-#   ⚠ ⚠ **有意只扫表格行（`^|`），⛔ 不扫整段** —— §11 的说明文字里本来就会
-#     提到刚结案的那几个号（「`D9` 与 `D20` 同日结案」），扫整段会把它误判成格式漂移。
-#   ★ 诚实说出它守不住什么：**把整张表改写成列表**（`- D20: …`）这类漂移它抓不到，
-#     因为那不是表格行。那一格没有门。
+# ★ ★ ★ 「§11 **真的空了**」與「表格格式漂了、`ROW_D` 沒認出來」——
+#   這兩件事在表面上**一模一樣**：兩邊都是「一個 D 號都提不出來」。
+#   ⇒ 用一個**比 `ROW_D` 寬**的篩子把它們分開（與 `tests/ci/shellcheck-all.sh` 那條
+#     「普查那一步的篩子必須比門禁的寬」同形）：掃**任何表格行**裡的 D 號，
+#     不限它在不在第一列、有沒有加粗。
+#   ⚠ ⚠ **有意只掃表格行（`^|`），⛔ 不掃整段** —— §11 的說明文字裡本來就會
+#     提到剛結案的那幾個號（「`D9` 與 `D20` 同日結案」），掃整段會把它誤判成格式漂移。
+#   ★ 誠實說出它守不住什麼：**把整張表改寫成列表**（`- D20: …`）這類漂移它抓不到，
+#     因為那不是表格行。那一格沒有門。
 ROW_ANY_D = re.compile(r"^\|.*\bD\d+\b", re.MULTILINE)
 
-# 「§11（的／里的／待定清单）Dnn」这一小撮**断言成员资格**的句式。
-# ⚠ 窗口只有 8 个字符，而这是承重的：把它放宽到十几个，
-#   「§11 **只列仍然开着的**，D1 早已不在里面」这句**正确**的话就会被判红。
+# 「§11（的／裡的／待定清單）Dnn」這一小撮**斷言成員資格**的句式。
+# ⚠ 視窗只有 8 個字元，而這是承重的：把它放寬到十幾個，
+#   「§11 **只列仍然開著的**，D1 早已不在裡面」這句**正確**的話就會被判紅。
 CLAIM = re.compile(r"§11[^\n]{0,8}?\*{0,2}(D\d+)")
 
 
@@ -128,9 +128,9 @@ def scan_files() -> list[str]:
     for name in sorted(os.listdir(REPO)):
         if name.endswith(".md") and os.path.isfile(os.path.join(REPO, name)):
             found.append(name)
-    # ⚠ ⚠ **本文件自己也要豁免**，而这不是偷懒：判据 ② 的自测夹具里**必须**有几条
-    #   真的过期断言（`§11 的 **D27**`），否则那条自测证不了这道门红得起来。
-    #   ⇒ 它们会被本门自己扫成红的。★ 代价写在明处：**本文件散文里的 D 号没有门守着**。
+    # ⚠ ⚠ **本檔案自己也要豁免**，而這不是偷懶：判據 ② 的自測夾具裡**必須**有幾條
+    #   真的過期斷言（`§11 的 **D27**`），否則那條自測證不了這道門紅得起來。
+    #   ⇒ 它們會被本門自己掃成紅的。★ 代價寫在明處：**本檔案散文裡的 D 號沒有門守著**。
     exempt = {PLAN_REL, MIRROR_REL, "tools/plan-refs.py"}
     return sorted(rel for rel in found if rel not in exempt)
 
@@ -158,14 +158,14 @@ def problems_for(rel: str, text: str, open_set: set[str]) -> list[str]:
     ]
 
 
-# ── 自证：这两条判据都必须能**红得起来** ────────────────────────────────────
-#   ★ 只被观察到绿过的门，与一道根本不跑的门分不开。
+# ── 自證：這兩條判據都必須能**紅得起來** ────────────────────────────────────
+#   ★ 只被觀察到綠過的門，與一道根本不跑的門分不開。
 
 
 def selftest() -> list[str]:
     bad: list[str] = []
 
-    # ① 表格第一列的提取：认得出行，也不把正文里的 D 号当成开着的。
+    # ① 表格第一列的提取：認得出行，也不把正文裡的 D 號當成開著的。
     fixture_plan = (
         "## 11. ⏳ 待定清单\n\n"
         "> 只列仍然开着的。D99 已经结案。\n\n"
@@ -179,9 +179,9 @@ def selftest() -> list[str]:
     if d_rows(section_11("没有第十一节")) != []:
         bad.append("§11 不存在时应当提不出任何 D 号")
 
-    # ①' ★ ★ 「真的空了」与「表格格式漂了」必须**分得开** —— 两者表面上都是
-    #     「一个 D 号都提不出来」，而后果相反（一个放行、一个当场红）。
-    #     ⇒ 两个方向各钉一条；⛔ 只验一边的自测，配一个恒真或恒假的宽筛子照样全绿。
+    # ①' ★ ★ 「真的空了」與「表格格式漂了」必須**分得開** —— 兩者表面上都是
+    #     「一個 D 號都提不出來」，而後果相反（一個放行、一個當場紅）。
+    #     ⇒ 兩個方向各釘一條；⛔ 只驗一邊的自測，配一個恆真或恆假的寬篩子照樣全綠。
     empty_plan = (
         "## 11. ⏳ 待定清单\n\n"
         "> 只列仍然开着的。`D9` 与 `D20` 已于 2026-09-07 结案。\n\n"
@@ -209,8 +209,8 @@ def selftest() -> list[str]:
     if not ROW_ANY_D.search(drifted_body):
         bad.append("宽筛子没认出格式漂了的表格行 —— 那条分辨判据是瞎的，会把漂移放成「真的空」")
 
-    # ② 句式判据：命中得了，也漏得掉。⚠ 两个方向都要跑 ——
-    #    只验「命中」的自测，配一个恒真的正则照样全绿。
+    # ② 句式判據：命中得了，也漏得掉。⚠ 兩個方向都要跑 ——
+    #    只驗「命中」的自測，配一個恆真的正則照樣全綠。
     hits = [
         "那是 §11 的 **D27**，不是遗漏。",
         "`PLAN.md` §11 的 D27 把候选写成三选一。",
@@ -221,7 +221,7 @@ def selftest() -> list[str]:
         if [d for _, d, _ in claims_in(line)] != ["D27"]:
             bad.append("句式判据漏了一条真断言：%s" % line)
     misses = [
-        # ★ 这一条是真事：修完之后 decision-log.md 就是这么写的。
+        # ★ 這一條是真事：修完之後 decision-log.md 就是這麼寫的。
         "§11 **只列仍然开着的**，D1 早已不在里面 —— 结论在 §10 的 G29。",
         "★ **§11 待定项不是需求。** 没拍板之前不得据以实现。",
         "D22 原本登记的是「把探针挂成常设的门」，而 owner",
@@ -231,12 +231,12 @@ def selftest() -> list[str]:
         if claims_in(line):
             bad.append("句式判据误报了一句正确的话：%s" % line)
 
-    # ③ 镜像判据：差一行就要红。
+    # ③ 鏡像判據：差一行就要紅。
     left, right = ["D19", "D9"], ["D19"]
     if left == right:
         bad.append("镜像自测的夹具写错了")
 
-    # ④ 枚举器：递归真的进了子目录，带空格的路径也收得到，扩展名筛得掉。
+    # ④ 枚舉器：遞歸真的進了子目錄，帶空格的路徑也收得到，副檔名篩得掉。
     with tempfile.TemporaryDirectory() as root:
         deep = os.path.join(root, "a b", "c")
         os.makedirs(deep)
@@ -254,9 +254,9 @@ def selftest() -> list[str]:
         if sorted(seen) != ["a b/c/deep.rs", "top.md"]:
             bad.append("枚举器自测：实测 %r" % (sorted(seen),))
 
-        # ⑤ ★★★ **端到端反证**：一份真的写在盘上的文件，走完「读 → 匹配 → 判红」。
-        #    ⚠ 前面那些自测都只喂字符串 —— 它们证不了这一段接线，
-        #    而「只被观察到绿过的门」正是本仓禁止的那种门。
+        # ⑤ ★★★ **端到端反證**：一份真的寫在盤上的檔案，走完「讀 → 匹配 → 判紅」。
+        #    ⚠ 前面那些自測都只喂字串 —— 它們證不了這一段串接，
+        #    而「只被觀察到綠過的門」正是本儲存庫禁止的那種門。
         probe = os.path.join(root, "probe.md")
         with open(probe, "w", encoding="utf-8") as handle:
             handle.write("一句正常的话。\n那是 §11 的 **D27**，不是遗漏。\n")
@@ -267,10 +267,10 @@ def selftest() -> list[str]:
         if problems_for("probe.md", probe_text, {"D19", "D27"}):
             bad.append("端到端反证：D27 还开着时不该红 —— 这道门判的不是它想判的东西")
 
-    # ⑥ ★★★ **红的那条路真的印得出来。** 本门印的是扫到的源码原文，里面有 `⚠`
-    #    这种 GBK 编不出来的字符 ⇒ 一个 `errors='strict'` 的 stdout 会当场抛异常。
-    #    ⚠ ⚠ **判据是「真的拿那个字符去写一次」**，⛔ 不是「检查有没有设某个选项」——
-    #    后者在 stdout 被重定向、编码本来就够用的时候会误报。
+    # ⑥ ★★★ **紅的那條路真的印得出來。** 本門印的是掃到的原始碼原文，裡面有 `⚠`
+    #    這種 GBK 編不出來的字元 ⇒ 一個 `errors='strict'` 的 stdout 會當場拋異常。
+    #    ⚠ ⚠ **判據是「真的拿那個字元去寫一次」**，⛔ 不是「檢查有沒有設某個選項」——
+    #    後者在 stdout 被重定向、編碼本來就夠用的時候會誤報。
     sample = "⚠ ⇒ ★ 一行带着编不出来的字符的原文"
     for name, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
         probe_stream = io.TextIOWrapper(
@@ -301,7 +301,7 @@ def main() -> int:
     body_11 = section_11(read(PLAN_REL))
     open_ds = d_rows(body_11)
     if not open_ds:
-        # ★ 三种「提不出来」，后果完全不同，⛔ 不许合成一种。
+        # ★ 三種「提不出來」，後果完全不同，⛔ 不許合成一種。
         if not body_11:
             print("PLAN.md 里找不到 §11 那一节 —— 提取本身坏了", file=sys.stderr)
             return 1
@@ -312,13 +312,13 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        # ⇒ 真的空：D 号全部结案（2026-09-07 `D9` / `D20` 结案后第一次出现）。
-        #   ★ 下面两条判据**照常跑**，⛔ 不提前返回：
-        #     判据 ① 此刻要求镜像**也**是空的；
-        #     判据 ② 此刻会把每一处「§11 的 Dnn」断言都红出来 —— 那正是结案时最容易漏改的东西。
+        # ⇒ 真的空：D 號全部結案（2026-09-07 `D9` / `D20` 結案後第一次出現）。
+        #   ★ 下面兩條判據**照常跑**，⛔ 不提前回傳：
+        #     判據 ① 此刻要求鏡像**也**是空的；
+        #     判據 ② 此刻會把每一處「§11 的 Dnn」斷言都紅出來 —— 那正是結案時最容易漏改的東西。
     open_set = set(open_ds)
 
-    # ── 判据 ①：镜像逐字相等 ──────────────────────────────────────────────
+    # ── 判據 ①：鏡像逐字相等 ──────────────────────────────────────────────
     mirror_ds = d_rows(read(MIRROR_REL))
     if sorted(mirror_ds) != sorted(open_ds):
         only_plan = sorted(open_set - set(mirror_ds))
@@ -329,7 +329,7 @@ def main() -> int:
             % (MIRROR_REL, only_plan or "无", only_mirror or "无")
         )
 
-    # ── 判据 ②：成员资格断言必须为真 ──────────────────────────────────────
+    # ── 判據 ②：成員資格斷言必須為真 ──────────────────────────────────────
     files = scan_files()
     if not files:
         print("一份文件都没扫到 —— 扫描本身坏了", file=sys.stderr)

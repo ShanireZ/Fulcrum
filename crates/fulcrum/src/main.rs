@@ -1,4 +1,4 @@
-//! 枢衡 Fulcrum 的产品二进制。
+//! 樞衡 Fulcrum 的產品二進位。
 //!
 //! ```text
 //! fulcrum validate <file>          # 只检查，出错走退出码 1
@@ -7,20 +7,20 @@
 //! fulcrum serve    <file>          # 起数据面（HTTP/HTTPS、ACME、反代、管理面）
 //! ```
 //!
-//! ⚠ **不要在这里写现状描述** —— 一句过期的现状描述比没有描述更糟，
-//! 它会让下一个人按一个不存在的世界做判断。能力面以 `PLAN.md` §1 为准。
+//! ⚠ **不要在這裡寫現狀描述** —— 一句過期的現狀描述比沒有描述更糟，
+//! 它會讓下一個人按一個不存在的世界做判斷。能力面以 `PLAN.md` §1 為準。
 //!
-//! ★ `serve` 由 systemd 托管（G31/G33/G37/G78）：前台运行、`Type=notify`、
-//! `SIGUSR2` 触发零停机换代。部署形状见 `docs/platform/deploy.md`。
-//! `spikes/` 下那两个仍是验证台，不是产品代码。
+//! ★ `serve` 由 systemd 託管（G31/G33/G37/G78）：前台執行、`Type=notify`、
+//! `SIGUSR2` 觸發零停機換代。部署形狀見 `docs/platform/deploy.md`。
+//! `spikes/` 下那兩個仍是驗證臺，不是產品程式碼。
 //!
-//! ★ ★ **`validate` 现在跑两层校验，不是一层**：DSL 前端 + **运行时图构建**。
-//! 后者不是重复劳动——结构化配置那一层是**公开入口**（G11：机器直接写它），
-//! 而机器写进来的一份根本不经过词法与语法。正则编不过、CIDR 不合法、上游地址写错，
-//! 都只有构建运行时图时才看得见。
+//! ★ ★ **`validate` 現在跑兩層檢核，不是一層**：DSL 前端 + **執行環境圖建置**。
+//! 後者不是重複勞動——結構化設定那一層是**公開入口**（G11：機器直接寫它），
+//! 而機器寫進來的一份根本不經過詞法與語法。正則編不過、CIDR 不合法、上游位址寫錯，
+//! 都只有建置執行環境圖時才看得見。
 //!
-//! ★ 没有用任何命令行解析库。三条子命令、两个选项，手写二十行比拖一棵依赖树划算，
-//! 而 G29 那套「追新 + 24 小时隔离期 + 每周检查」是按依赖条数收费的。
+//! ★ 沒有用任何命令行解析庫。三條子命令、兩個選項，手寫二十行比拖一棵依賴樹划算，
+//! 而 G29 那套「追新 + 24 小時隔離期 + 每週檢查」是按依賴條數收費的。
 
 use fulcrum_config::model::{MatcherRef, Step, StepBody, StructuredConfig};
 use fulcrum_config::{Outcome, compile_str};
@@ -83,25 +83,25 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("读不到 {path}：{e}"))?;
     let outcome = compile_str(path, &text);
 
-    // 状态目录：证书存储的根。★ 校验 TLS 也要用它，所以在分支之前先定下来。
+    // 狀態目錄：證書儲存的根。★ 檢核 TLS 也要用它，所以在分支之前先定下來。
     let state_dir = flags
         .state_dir
         .clone()
         .unwrap_or_else(|| fulcrum_server::ServeOptions::default().state_dir);
 
-    // ★ 四层校验一次跑完：诊断 → 结构化配置 → 运行时图 → TLS 装载。
+    // ★ 四層檢核一次跑完：診斷 → 結構化設定 → 執行環境圖 → TLS 裝載。
     let Some((cfg, rt)) = prepare(&outcome, &state_dir) else {
         return Ok(ExitCode::from(1));
     };
 
-    // ── ★ ★ ★ 权限门（批 22）─────────────────────────────────────
+    // ── ★ ★ ★ 權限門（批 22）─────────────────────────────────────
     //
-    //   凭据可以内联进 Fulcrumfile 之后，**这份文件的性质变了**：它是秘密了。
-    //   ⇒ 只要配置里出现字面量凭据，就检查一次「别人读不读得到」。
+    //   憑證可以內聯進 Fulcrumfile 之後，**這份檔案的性質變了**：它是秘密了。
+    //   ⇒ 只要設定裡出現字面值憑證，就檢查一次「別人讀不讀得到」。
     //
-    // ★ 它挂在**所有**子命令上，不只是 serve：`validate` 的全部意义就是
-    //   「上线之前先问一遍」，而一份 0644 带着凭据的配置正是它该拦住的东西。
-    // ⚠ 没有字面量凭据时**一个字都不说** —— 不去管别人怎么放一份没有秘密的配置。
+    // ★ 它掛在**所有**子命令上，不只是 serve：`validate` 的全部意義就是
+    //   「上線之前先問一遍」，而一份 0644 帶著憑證的設定正是它該攔住的東西。
+    // ⚠ 沒有字面值憑證時**一個字都不說** —— 不去管別人怎麼放一份沒有秘密的設定。
     match fulcrum_config::secret_guard::check(path, cfg) {
         Ok(None) => {}
         Ok(Some(note)) => eprintln!("· {note}"),
@@ -114,12 +114,12 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     match cmd.as_str() {
         "validate" => {}
         "compile" => {
-            // ★ ★ **默认脱敏。** 这份 JSON 有两个去处：给人看，和 `POST /load` 的载荷。
-            //   前者不该看见凭据，后者需要 —— 而**默认必须服从前者**：
-            //   一个默认吐真值的命令，只要有人把输出贴进 issue 一次就完了，
-            //   而那一次不会有任何提示。
-            // ⚠ 需要真值时显式 `--with-secrets`，并且**在 stderr 上说一声**：
-            //   它是一次有后果的操作，不该悄无声息。
+            // ★ ★ **預設脫敏。** 這份 JSON 有兩個去處：給人看，和 `POST /load` 的載荷。
+            //   前者不該看見憑證，後者需要 —— 而**預設必須服從前者**：
+            //   一個預設吐真值的命令，只要有人把輸出貼進 issue 一次就完了，
+            //   而那一次不會有任何提示。
+            // ⚠ 需要真值時顯式 `--with-secrets`，並且**在 stderr 上說一聲**：
+            //   它是一次有後果的操作，不該悄無聲息。
             let json = if flags.with_secrets {
                 if fulcrum_config::secret_guard::has_inline_secret(cfg) {
                     eprintln!(
@@ -160,7 +160,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
             opts.state_dir = state_dir;
             opts.upgrade = flags.upgrade;
-            // ★ 不返回：Pingora 的 `run_forever()` 接管进程。
+            // ★ 不回傳：Pingora 的 `run_forever()` 接管處理程序。
             fulcrum_server::serve(cfg, rt, opts);
         }
         other => return Err(format!("未知子命令 `{other}`")),
@@ -178,8 +178,8 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// 日志：`serve` 才需要。★ 格式里带 pid，因为零停机换代时**两代会同时在跑**，
-/// 而分不清哪一行是谁打的，升级窗口里的日志就没法读。
+/// 紀錄：`serve` 才需要。★ 格式裡帶 pid，因為零停機換代時**兩代會同時在跑**，
+/// 而分不清哪一行是誰打的，升級視窗裡的紀錄就沒法讀。
 fn init_logging() {
     use std::io::Write as _;
     let mut b = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
@@ -197,11 +197,11 @@ fn init_logging() {
     .init();
 }
 
-/// 诊断 → 结构化配置 → 运行时图。三层都过了才返回 `Some`。
+/// 診斷 → 結構化設定 → 執行環境圖。三層都過了才回傳 `Some`。
 ///
-/// ★ 诊断永远打到 **stderr**，产物永远打到 **stdout**。分开不是洁癖：
-/// `fulcrum compile x.Fulcrumfile > cfg.json` 必须能用，
-/// 而只要有一条诊断混进 stdout，那份 JSON 就坏了——**而且坏得很安静**。
+/// ★ 診斷永遠打到 **stderr**，產物永遠打到 **stdout**。分開不是潔癖：
+/// `fulcrum compile x.Fulcrumfile > cfg.json` 必須能用，
+/// 而只要有一條診斷混進 stdout，那份 JSON 就壞了——**而且壞得很安靜**。
 fn prepare<'a>(
     outcome: &'a Outcome,
     state_dir: &str,
@@ -217,12 +217,12 @@ fn prepare<'a>(
         }
     };
 
-    // ⚠ 这里原本按 G52 逐条列出走回落的路由。回落层（M2 批 G）
-    //   整块删除（G98）⇒ **没有回落路由可列了**。
-    //   ★ G52 那条纪律本身没作废，它换了对象：现在由缓存与静态文件那两处
-    //   「把生效的默认值打出来」承担（`log_cache_summary` / hide 清单）。
+    // ⚠ 這裡原本按 G52 逐條列出走回落的路由。回落層（M2 批 G）
+    //   整塊刪除（G98）⇒ **沒有回落路由可列了**。
+    //   ★ G52 那條紀律本身沒作廢，它換了物件：現在由快取與靜態檔案那兩處
+    //   「把生效的預設值打出來」承擔（`log_cache_summary` / hide 清單）。
 
-    // ★ ★ 第三层：运行时图。结构化配置是公开入口（G11），所以这一层也校验。
+    // ★ ★ 第三層：執行環境圖。結構化設定是公開入口（G11），所以這一層也檢核。
     let rt = match Runtime::build(cfg) {
         Ok(rt) => Arc::new(rt),
         Err(errors) => {
@@ -234,13 +234,13 @@ fn prepare<'a>(
         }
     };
 
-    // ★ ★ 第四层：TLS 装载。**证书路径写错、私钥与证书对不上，要在这里红**，
-    //   而不是等第一个客户端连上来变成一次握手失败——后者在日志里只是一行
-    //   「TLS error」，看不出是配置写错了。
+    // ★ ★ 第四層：TLS 裝載。**證書路徑寫錯、私鑰與證書對不上，要在這裡紅**，
+    //   而不是等第一個用戶端連上來變成一次握手失敗——後者在紀錄裡只是一行
+    //   「TLS error」，看不出是設定寫錯了。
     let cert_root = std::path::Path::new(state_dir).join("certs");
-    // ★ 签发者目录名跟着 `acme_ca` 走 —— `validate` 要看的是**这份配置**会用哪个目录，
-    //   而不是某个写死的默认值。写死它的后果是：换了 CA 之后 validate 一切正常，
-    //   而 serve 起来发现一张证书都没有。
+    // ★ 簽發者目錄名跟著 `acme_ca` 走 —— `validate` 要看的是**這份設定**會用哪個目錄，
+    //   而不是某個寫死的預設值。寫死它的後果是：換了 CA 之後 validate 一切正常，
+    //   而 serve 起來發現一張證書都沒有。
     let issuer = fulcrum_acme::issuer_slug(
         outcome
             .config
@@ -248,8 +248,8 @@ fn prepare<'a>(
             .and_then(|c| c.global.acme_ca.as_deref())
             .unwrap_or(fulcrum_acme::LETSENCRYPT_PRODUCTION),
     );
-    // ★ `default_sni` 与 `issuer` 一样从**这份配置**的全局块取：`validate` 要回答的是
-    //   「这份配置起来之后会怎样」，而不是某个写死的默认值。
+    // ★ `default_sni` 與 `issuer` 一樣從**這份設定**的全域塊取：`validate` 要回答的是
+    //   「這份設定起來之後會怎樣」，而不是某個寫死的預設值。
     match fulcrum_server::tls::plan_tls(&rt, &cert_root, &issuer, cfg.global.default_sni.as_deref())
     {
         Ok(plan) => {
@@ -273,13 +273,13 @@ fn prepare<'a>(
     Some((cfg, rt))
 }
 
-/// 把子命令之后的参数拆成「位置参数」与 `-o` 的取值。
+/// 把子命令之後的參數拆成「位置參數」與 `-o` 的取值。
 ///
-/// ★ **选项与位置参数的顺序是用户自由的，代码不该假定它。**
-/// 固定取 `args[1]` 的话，`fulcrum compile -o out.json in.Fulcrumfile`
-/// 会去读一个名叫 `-o` 的文件。
-/// ⚠ 未知选项**当场报错**而不是当成路径——否则拼错一个选项会变成一句
-/// 「读不到 --ouput」，方向指错。
+/// ★ **選項與位置參數的順序是使用者自由的，程式碼不該假定它。**
+/// 固定取 `args[1]` 的話，`fulcrum compile -o out.json in.Fulcrumfile`
+/// 會去讀一個名叫 `-o` 的檔案。
+/// ⚠ 未知選項**當場回報錯誤**而不是當成路徑——否則拼錯一個選項會變成一句
+/// 「讀不到 --ouput」，方向指錯。
 fn split_args(rest: &[String]) -> Result<(Vec<String>, Flags), String> {
     let mut positional = Vec::new();
     let mut f = Flags::default();
@@ -290,19 +290,19 @@ fn split_args(rest: &[String]) -> Result<(Vec<String>, Flags), String> {
                 .cloned()
                 .ok_or_else(|| format!("`{name}` 后面要跟一个值"))
         };
-        // ★ ★ ★ **每个臂说出自己吃了几个参数，由循环统一推进。**
+        // ★ ★ ★ **每個臂說出自己吃了幾個參數，由循環統一推進。**
         //
-        //   在此之前是「每个臂自己 `i += n`」，而那个约定有一个**不会报错的失效方式**：
-        //   新加一个臂时忘了推进 —— 编译过、clippy 不响、测试跑不到，
-        //   而运行时**死循环**。⚠ 加 `--with-secrets` 时当场踩了一次：
-        //   `fulcrum compile … --with-secrets` 直接挂住，什么都不打印。
+        //   在此之前是「每個臂自己 `i += n`」，而那個約定有一個**不會回報錯誤的失效方式**：
+        //   新加一個臂時忘了推進 —— 編譯過、clippy 不響、測試跑不到，
+        //   而執行環境**死循環**。⚠ 加 `--with-secrets` 時當場踩了一次：
+        //   `fulcrum compile … --with-secrets` 直接掛住，什麼都不列印。
         //
-        //   ⇒ 改成 `let consumed = match … { … => n }`：**忘了给数字就是类型错误**。
-        //   这与本仓库那条「G49 的序号写在每行最前面，忘了给位置这个选项不存在」是同一招：
-        //   **让错误变成写不出来的东西，而不是靠记得。**
+        //   ⇒ 改成 `let consumed = match … { … => n }`：**忘了給數字就是類型錯誤**。
+        //   這與本儲存庫那條「G49 的序號寫在每行最前面，忘了給位置這個選項不存在」是同一招：
+        //   **讓錯誤變成寫不出來的東西，而不是靠記得。**
         let consumed: usize = match rest[i].as_str() {
-            // ★ 只有长写法，没有 `-s`：这是一次有后果的操作，
-            //   而单字母开关最容易在别人的脚本里被顺手加上。
+            // ★ 只有長寫法，沒有 `-s`：這是一次有後果的操作，
+            //   而單字母開關最容易在別人的指令碼里被順手加上。
             "--with-secrets" => {
                 f.with_secrets = true;
                 1
@@ -339,8 +339,8 @@ fn split_args(rest: &[String]) -> Result<(Vec<String>, Flags), String> {
                 1
             }
         };
-        // ⚠ 再加一道：`consumed` 恒 ≥ 1 由上面每个臂保证，但**别让它靠保证**。
-        //   一个返回 0 的臂会把这里变回死循环，而这一行让它变成一句能看懂的错。
+        // ⚠ 再加一道：`consumed` 恆 ≥ 1 由上面每個臂保證，但**別讓它靠保證**。
+        //   一個回傳 0 的臂會把這裡變回死循環，而這一行讓它變成一句能看懂的錯。
         if consumed == 0 {
             return Err(format!(
                 "内部缺陷：解析 `{}` 时没有推进参数索引 —— 请连同命令行一起报告",
@@ -363,9 +363,9 @@ mod arg_tests {
 
     #[test]
     fn 每一个开关都会推进索引() {
-        // ★ ★ 这条测试的价值不在断言的内容，而在**它会不会返回** ——
-        //   一个忘了推进的臂会让它挂死，而挂死是测得出来的（超时）。
-        //   ⚠ 但它只是第二道：第一道是 `consumed: usize` 那个类型。
+        // ★ ★ 這條測試的價值不在斷言的內容，而在**它會不會回傳** ——
+        //   一個忘了推進的臂會讓它掛死，而掛死是測得出來的（超時）。
+        //   ⚠ 但它只是第二道：第一道是 `consumed: usize` 那個類型。
         for one in ["--with-secrets", "-u", "--upgrade"] {
             let (pos, _) = split(&[one, "cfg"]).expect("应当解析得了");
             assert_eq!(pos, vec!["cfg".to_string()], "开关 {one} 之后位置参数丢了");
@@ -397,7 +397,7 @@ mod arg_tests {
 
     #[test]
     fn 选项与位置参数的顺序是自由的() {
-        // ⚠ 钉的是 `compile -o out.json in.Fulcrumfile` 不能去读一个叫 `-o` 的文件。
+        // ⚠ 釘的是 `compile -o out.json in.Fulcrumfile` 不能去讀一個叫 `-o` 的檔案。
         let (pos, f) = split(&["-o", "out.json", "in.Fulcrumfile"]).unwrap();
         assert_eq!(pos, vec!["in.Fulcrumfile".to_string()]);
         assert_eq!(f.out.as_deref(), Some("out.json"));
@@ -412,7 +412,7 @@ struct Flags {
     upgrade_sock: Option<String>,
     state_dir: Option<String>,
     upgrade: bool,
-    /// `compile --with-secrets`：输出里露出真凭据。★ 默认 false。
+    /// `compile --with-secrets`：輸出裡露出真憑證。★ 預設 false。
     with_secrets: bool,
 }
 
@@ -435,13 +435,13 @@ fn serde_json_to_string(cfg: &StructuredConfig) -> Result<String, String> {
     fulcrum_config::model::to_pretty_json(cfg).map_err(|e| e.to_string())
 }
 
-// ── 执行计划 ────────────────────────────────────────────────────────────────
+// ── 執行計畫 ────────────────────────────────────────────────────────────────
 
-/// 人读的执行计划。
+/// 人讀的執行計畫。
 ///
-/// ★ 它存在的理由是 **G49 配套第 4 条**：内建顺序表让书写顺序 ≠ 执行顺序，
-/// 那就必须有一个地方能回答「我这条到底跑在第几步」。
-/// 让人去背 `docs/architecture/dsl-reference.md` §三那张表，是把成本转嫁给用户。
+/// ★ 它存在的理由是 **G49 配套第 4 條**：內建順序表讓書寫順序 ≠ 執行順序，
+/// 那就必須有一個地方能回答「我這條到底跑在第幾步」。
+/// 讓人去背 `docs/architecture/dsl-reference.md` §三那張表，是把成本轉嫁給使用者。
 fn render_plan(cfg: &StructuredConfig) -> String {
     let mut out = String::new();
     out.push_str("执行计划（★ 站点块内按内建顺序表执行，不按书写顺序 —— G49）\n");
@@ -477,10 +477,10 @@ fn render_plan(cfg: &StructuredConfig) -> String {
     if let Some(l4) = &cfg.l4 {
         out.push_str("\nL4 面\n");
         for l in &l4.listeners {
-            // ★ ★ M2 批 A/B：逐条说出**这一条到底由谁来跑**。
-            //   ⚠ 批 A 时这里还要分岔（TCP 自己转发、UDP 走回落），批 B 之后两种都是自研 ——
-            //   而那句「回落 → caddy」也随之整条删掉，连同 `L4Config` 里那个字段。
-            //   ★ `plan` 的全部价值就是回答「我这条到底会怎么跑」，**它说错比不说更贵**。
+            // ★ ★ M2 批 A/B：逐條說出**這一條到底由誰來跑**。
+            //   ⚠ 批 A 時這裡還要分岔（TCP 自己轉發、UDP 走回落），批 B 之後兩種都是自研 ——
+            //   而那句「回落 → caddy」也隨之整條刪掉，連同 `L4Config` 裡那個欄位。
+            //   ★ `plan` 的全部價值就是回答「我這條到底會怎麼跑」，**它說錯比不說更貴**。
             let who = match l.proto.as_str() {
                 "udp" => "枢衡自己转发（按客户端地址分会话，空闲 60s 回收）",
                 _ => "枢衡自己转发（轮询；建连阶段会换下一个上游）",
@@ -535,13 +535,13 @@ fn render_step(out: &mut String, step: &Step, depth: usize) {
                 }
             }
         }
-        // ⚠ 不写 `_`：这类「走遍整张图找某一类步骤」的 match 里，`_` 还兼着
-        //   「这个变体不装步骤、不用下钻」这层意思 —— 而新增一个装步骤的容器
-        //   变体会让那层意思悄悄变假，夹具里只有当时已有的容器，挡不住它。
-        //   ⇒ 规则：新增变体时这一族 match 必须一起改，由编译期穷举来逼。
-        // ★ 这一族**跨两层**：运行时图 `BodyRt` 与配置图 `StepBody` 各有一批
-        //   同形遍历。⛔ 名单不抄进注释（写死的名单没有门守着，当天就会过期）
-        //   —— 要名单就现场 grep 这两个枚举名。
+        // ⚠ 不寫 `_`：這類「走遍整張圖找某一類步驟」的 match 裡，`_` 還兼著
+        //   「這個變體不裝步驟、不用下鑽」這層意思 —— 而新增一個裝步驟的容器
+        //   變體會讓那層意思悄悄變假，夾具裡只有當時已有的容器，擋不住它。
+        //   ⇒ 規則：新增變體時這一族 match 必須一起改，由編譯期窮舉來逼。
+        // ★ 這一族**跨兩層**：執行環境圖 `BodyRt` 與設定圖 `StepBody` 各有一批
+        //   同形遍歷。⛔ 名單不抄進註解（寫死的名單沒有門守著，當天就會過期）
+        //   —— 要名單就現場 grep 這兩個枚舉名。
         StepBody::Tracing
         | StepBody::Header { .. }
         | StepBody::Rewrite { .. }
@@ -555,7 +555,7 @@ fn render_step(out: &mut String, step: &Step, depth: usize) {
     }
 }
 
-// ★ 回落层已整层删除（G98）⇒ 计划输出里**再没有额外跳数可标**。
+// ★ 回落層已整層刪除（G98）⇒ 計畫輸出裡**再沒有額外跳數可標**。
 
 fn detail(body: &StepBody) -> String {
     match body {
@@ -566,12 +566,12 @@ fn detail(body: &StepBody) -> String {
             ..
         } => format!(
             "  {} [{lb_policy}, dns_refresh {}s]",
-            // ★ ★ **权重印出来**（M2 批 N 任务 2）：`plan` 说的是「实际会怎么跑」，
-            //   而四种 `lb_policy` 现在全部按累积权重挑 ⇒ 权重就是「怎么跑」的一部分。
-            // ⚠ **权重为 1 的不加后缀**：1 是默认值（`DEFAULT_UPSTREAM_WEIGHT`），
-            //   给每个上游都缀一个 `*1` 会让绝大多数配置的 plan 输出无端变长，
-            //   而 `plan` 的读法是「与配置逐行对照」—— `*3` 只出现在真写了 `weight` 的地方，
-            //   正好指着那一行。★ 于是没配 `weight` 的配置，`plan` 输出**一个字节都不变**。
+            // ★ ★ **權重印出來**（M2 批 N 任務 2）：`plan` 說的是「實際會怎麼跑」，
+            //   而四種 `lb_policy` 現在全部按累積權重挑 ⇒ 權重就是「怎麼跑」的一部分。
+            // ⚠ **權重為 1 的不加後綴**：1 是預設值（`DEFAULT_UPSTREAM_WEIGHT`），
+            //   給每個上游都綴一個 `*1` 會讓絕大多數設定的 plan 輸出無端變長，
+            //   而 `plan` 的讀法是「與設定逐行對照」—— `*3` 只出現在真寫了 `weight` 的地方，
+            //   正好指著那一行。★ 於是沒配 `weight` 的設定，`plan` 輸出**一個位元組都不變**。
             upstreams
                 .iter()
                 .map(|u| {
@@ -602,8 +602,8 @@ fn detail(body: &StepBody) -> String {
             Some(r) => format!("  root {r}"),
             None => String::new(),
         },
-        // ★ 缓存进 plan 输出（M2 批 G）：`ttl` 是**兜底**不是覆盖（G96），
-        //   ⚠ 而这件事必须在 `plan` 里说出来 —— 从 nginx 迁过来的人默认以为它是覆盖。
+        // ★ 快取進 plan 輸出（M2 批 G）：`ttl` 是**備援**不是覆蓋（G96），
+        //   ⚠ 而這件事必須在 `plan` 裡說出來 —— 從 nginx 遷過來的人預設以為它是覆蓋。
         StepBody::Cache {
             ttl_ms,
             max_size_bytes,
@@ -621,20 +621,20 @@ fn detail(body: &StepBody) -> String {
             capacity_bytes
                 .map(|b| b.to_string())
                 .unwrap_or_else(|| "默认".into()),
-            // ★ 后端进 `plan`（M2 批 H）：`plan` 是「不真跑一遍就能看见会发生什么」
-            //   的那个出口，而「缓存落在内存还是那个盘上」正是要看的东西之一。
-            //   ⚠ 它说的是**配置选了哪个**；「目录用不了于是关掉」那一档只有
-            //   真启动时才知道，由装载日志说 —— 两处各说各能说的那一半。
+            // ★ 後端進 `plan`（M2 批 H）：`plan` 是「不真跑一遍就能看見會發生什麼」
+            //   的那個出口，而「快取落在記憶體還是那個盤上」正是要看的東西之一。
+            //   ⚠ 它說的是**設定選了哪個**；「目錄用不了於是關掉」那一檔只有
+            //   真啟動時才知道，由裝載紀錄說 —— 兩處各說各能說的那一半。
             match disk_dir {
                 Some(d) => format!("磁盘 {d}"),
                 None => "内存".to_string(),
             },
         ),
         StepBody::Tracing => String::new(),
-        // ★ `metrics` 没有参数可打，但**它有没有被匹配器圈住**恰恰是要看的那件事，
-        //   而那一格由 `render_step` 统一打（每一步的匹配器都印在名字后面）。
-        //   ⚠ 编译期那条 `FUL-DSL-0037` 也会说同一件事 —— 两处都说，是因为
-        //   `plan` 常常是唯一被读的那一个（诊断只在改配置那一刻出现一次）。
+        // ★ `metrics` 沒有參數可打，但**它有沒有被匹配器圈住**恰恰是要看的那件事，
+        //   而那一格由 `render_step` 統一打（每一步的匹配器都印在名字後面）。
+        //   ⚠ 編譯期那條 `FUL-DSL-0037` 也會說同一件事 —— 兩處都說，是因為
+        //   `plan` 常常是唯一被讀的那一個（診斷只在改設定那一刻出現一次）。
         StepBody::Metrics => String::new(),
     }
 }
@@ -643,7 +643,7 @@ fn detail(body: &StepBody) -> String {
 mod plan_tests {
     use super::*;
 
-    /// 从一段 DSL 里取出那条 `reverse_proxy` 的 `plan` 明细行。
+    /// 從一段 DSL 裡取出那條 `reverse_proxy` 的 `plan` 明細行。
     fn detail_of(dsl: &str) -> String {
         let o = compile_str("t.Fulcrumfile", dsl);
         assert!(!o.diagnostics.has_errors(), "{}", o.render_diagnostics());
@@ -658,8 +658,8 @@ mod plan_tests {
         panic!("夹具里应当有一条 reverse_proxy");
     }
 
-    /// ★ `plan` 说的是「实际会怎么跑」⇒ 权重接线之后**必须印出来**（M2 批 N 任务 2）。
-    /// ⚠ 任务 1 有意没印：那时调度还不认权重，印 `*3` 等于印一件不成立的事。
+    /// ★ `plan` 說的是「實際會怎麼跑」⇒ 權重串接之後**必須印出來**（M2 批 N 任務 2）。
+    /// ⚠ 任務 1 有意沒印：那時排程還不認權重，印 `*3` 等於印一件不成立的事。
     #[test]
     fn plan_印出非默认的上游权重() {
         let s = detail_of(
@@ -671,21 +671,21 @@ mod plan_tests {
         );
     }
 
-    /// ★ ★ 反向：一条 `weight` 都没写的配置，`plan` 那一行**一个字节都不变**。
-    /// ⚠ 少了这一条，一个给每个上游都缀 `*1` 的实现照样绿 —— 而那会让所有人的
-    /// `plan` 输出在这一批里无端漂移，而漂移本身没有任何东西会说。
+    /// ★ ★ 反向：一條 `weight` 都沒寫的設定，`plan` 那一行**一個位元組都不變**。
+    /// ⚠ 少了這一條，一個給每個上游都綴 `*1` 的實作照樣綠 —— 而那會讓所有人的
+    /// `plan` 輸出在這一批裡無端漂移，而漂移本身沒有任何東西會說。
     #[test]
     fn 没写_weight_的配置_plan_那一行逐字不变() {
         let s = detail_of("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n");
         assert_eq!(s, "  10.0.0.1:1 10.0.0.2:2 [round_robin, dns_refresh 30s]");
     }
 
-    /// ★ ★ **`id` 有意不进 `plan` / `validate` 的输出**（M2 批 N 任务 2.8，计划 §2 的 S7）。
+    /// ★ ★ **`id` 有意不進 `plan` / `validate` 的輸出**（M2 批 N 任務 2.8，計畫 §2 的 S7）。
     ///
-    /// `plan` 说的是「实际会怎么跑」，而 `id` 一个字都不改变怎么跑 —— 它只改变
-    /// **管理面怎么寻址**。⇒ 那件事的出口是 `/stats`（裁决 R6 ⑤ 明写：三格键原样列出来，
-    /// 运维照抄即可），不是 `plan`。
-    /// ⚠ 这条判据同时是 S7 的落点：`fulcrum validate` 一个字节都不变。
+    /// `plan` 說的是「實際會怎麼跑」，而 `id` 一個字都不改變怎麼跑 —— 它只改變
+    /// **管理面怎麼尋址**。⇒ 那件事的出口是 `/stats`（裁決 R6 ⑤ 明寫：三格鍵原樣列出來，
+    /// 維運照抄即可），不是 `plan`。
+    /// ⚠ 這條判據同時是 S7 的落點：`fulcrum validate` 一個位元組都不變。
     #[test]
     fn 写了_id_的配置_plan_那一行也逐字不变() {
         let 没写 = detail_of("a.com {\n  reverse_proxy 10.0.0.1:1 10.0.0.2:2\n}\n");

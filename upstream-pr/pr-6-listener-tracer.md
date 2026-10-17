@@ -1,23 +1,23 @@
-# PR — 投稿六（✅ **已发**）
+# PR — 投稿六（✅ **已發**）
 
-> ✅ **2026-09-04 经 owner 单独授权发出**：
+> ✅ **2026-09-04 經 owner 單獨授權發出**：
 > PR [cloudflare/pingora#995](https://github.com/cloudflare/pingora/pull/995)
-> （base `main` · head `ShanireZ:listener-tracer` · 一个文件 `+135/-1` · 一个提交 `0dda18b`）。
-> ★ 标题与正文用提取器**逐字发出**，发后核过：66 行**逐行相同**。
-> ⚠ 下面这份草稿即发出去的原文，留档用。
+> （base `main` · head `ShanireZ:listener-tracer` · 一個檔案 `+135/-1` · 一個提交 `0dda18b`）。
+> ★ 標題與正文用提取器**逐字發出**，發後核過：66 行**逐行相同**。
+> ⚠ 下面這份草稿即發出去的原文，留檔用。
 
-> ★ 依据本目录纪律：**先 issue、后 PR**。issue 已发＝
+> ★ 依據本目錄紀律：**先 issue、後 PR**。issue 已發＝
 > [cloudflare/pingora#994](https://github.com/cloudflare/pingora/issues/994)，
-> 并已在其下发过一条**更正评论**（形状因此从「给 `ConnectionFilter` 加 `connection_closed`」
-> 换成「让监听器侧能挂 `Tracer`」）。⚠ **本 PR 对应的是更正后的形状。**
+> 並已在其下發過一條**更正評論**（形狀因此從「給 `ConnectionFilter` 加 `connection_closed`」
+> 換成「讓監聽器側能掛 `Tracer`」）。⚠ **本 PR 對應的是更正後的形狀。**
 >
-> 补丁本体：
+> 補丁本體：
 > [`0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch`](0006-Report-downstream-connection-lifetime-through-a-listener-Tracer.patch)
-> （基于上游 `main` = `09696b5`，带 `Signed-off-by`）。验证表见
+> （基於上游 `main` = `09696b5`，帶 `Signed-off-by`）。驗證表見
 > [`issue-6-connection-counter.md`](issue-6-connection-counter.md) §2.2。
 >
-> ⚠ **机制上还差一步**：要先把补丁推成 `ShanireZ/pingora` 上的一个分支
-> （建议名 `listener-tracer`）—— 那也是一次以 owner 名义的外部写入。
+> ⚠ **機制上還差一步**：要先把補丁推成 `ShanireZ/pingora` 上的一個分支
+> （建議名 `listener-tracer`）—— 那也是一次以 owner 名義的外部寫入。
 
 **Title**
 

@@ -1,23 +1,23 @@
-# 枢衡 · 反代吞吐这一类的被测配置（M3，§8 七类之二）。
+# 樞衡 · 反代吞吐這一類的被測設定（M3，§8 七類之二）。
 #
-# ★ 与 [`fulcrum.Fulcrumfile`](fulcrum.Fulcrumfile) 逐条对齐：同一个 worker 数、
-#   访问日志一律关、明文 HTTP/1.1、keep-alive 开。
-#   ⛔ 唯一有意不同的是终结指令：`file_server` → `reverse_proxy`。
+# ★ 與 [`fulcrum.Fulcrumfile`](fulcrum.Fulcrumfile) 逐條對齊：同一個 worker 數、
+#   訪問紀錄一律關、明文 HTTP/1.1、keep-alive 開。
+#   ⛔ 唯一有意不同的是終結指令：`file_server` → `reverse_proxy`。
 #
-# ★ 上游连接复用（对齐口径第 ⑥ 条）：枢衡默认就复用 —— `Connector::new(None)`
-#   配 `get_http_session`（返 `reused`）与 `release_http_session` 归还
-#   （`crates/fulcrum-server/src/lib.rs:302/336/979/1110`）。开发机实测每千请求
-#   0.4 条。⚠ DSL 面今天没有调它的口子 ⇒ 这一格**没有可写的行**，
-#   而另外三家各自要显式写。那道判据对四家一视同仁地判。
+# ★ 上游連接重複使用（對齊口徑第 ⑥ 條）：樞衡預設就重複使用 —— `Connector::new(None)`
+#   配 `get_http_session`（返 `reused`）與 `release_http_session` 歸還
+#   （`crates/fulcrum-server/src/lib.rs:302/336/979/1110`）。開發機實測每千請求
+#   0.4 條。⚠ DSL 面今天沒有調它的口子 ⇒ 這一格**沒有可寫的行**，
+#   而另外三家各自要顯式寫。那道判據對四家一視同仁地判。
 #
-# ⚠ ⚠ ★ **这一趟是四家里唯一的 fulcrum→fulcrum**（源站也是枢衡的 `respond`）
-#   ⇒ 它比另外三家多背一份「同二进制两实例」的代价。**方向对枢衡不利**
-#   ⇒ PASS 更可信；⛔ FAIL 不许拿这一条去辩解。理由与取舍见 `bench/README.md`。
+# ⚠ ⚠ ★ **這一趟是四家裡唯一的 fulcrum→fulcrum**（源站也是樞衡的 `respond`）
+#   ⇒ 它比另外三家多背一份「同二進位兩執行個體」的代價。**方向對樞衡不利**
+#   ⇒ PASS 更可信；⛔ FAIL 不許拿這一條去辯解。理由與取捨見 `bench/README.md`。
 #
-# ⚠ 占位符由 bench/case/reverse-proxy-throughput.sh 替换。
+# ⚠ 佔位符由 bench/case/reverse-proxy-throughput.sh 替換。
 {
-    # ★ ★ L7 数据面的 worker 数（G140）。与源站及另外三家吃**同一个** `BENCH_WORKERS`
-    #   ⇒ 「worker 数四家一致」这条对齐口径在这里落实。
+    # ★ ★ L7 資料面的 worker 數（G140）。與源站及另外三家吃**同一個** `BENCH_WORKERS`
+    #   ⇒ 「worker 數四家一致」這條對齊口徑在這裡落實。
     threads_l7 __WORKERS__
 }
 

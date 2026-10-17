@@ -214,17 +214,17 @@ impl SslDigest {
         };
 
         let mut digest = SslDigest::new(cipher, ssl.version_str(), org, sn, cert_digest);
-        // ★ ★ 枢衡改动 14：顺手把 **SNI 与 ALPN** 也记下来。
+        // ★ ★ 樞衡改動 14：順手把 **SNI 與 ALPN** 也記下來。
         //
-        // ⚠ ⚠ **这里是唯一一处两样东西同时够得到的地方**：`from_ssl` 在握手结束后
-        //   拿着 `&SslRef`，而 `SslDigest` 是 HTTP 层唯一看得见的 TLS 信息载体。
-        //   上游把这两格留给了 `TlsAccept::handshake_complete_callback` + `extension`，
-        //   而那条路要求监听器带回调，代价是**每条握手多一趟挂起/恢复**
-        //   （`start_accept()` 无条件装一个恒回 -1 的 `cert_cb`）。
-        // ★ 见 `vendor/pingora/FORK.md` 改动 14 与 `PLAN.md` §10 第 79 轮。
+        // ⚠ ⚠ **這裡是唯一一處兩樣東西同時夠得到的地方**：`from_ssl` 在握手結束後
+        //   拿著 `&SslRef`，而 `SslDigest` 是 HTTP 層唯一看得見的 TLS 資訊載體。
+        //   上游把這兩格留給了 `TlsAccept::handshake_complete_callback` + `extension`，
+        //   而那條路要求監聽器帶回呼，代價是**每條握手多一趟掛起/恢復**
+        //   （`start_accept()` 無條件裝一個恆回 -1 的 `cert_cb`）。
+        // ★ 見 `vendor/pingora/FORK.md` 改動 14 與 `PLAN.md` §10 第 79 輪。
         //
-        // ⚠ SNI 压成小写：客户端可以发任意大小写，而消费方要能直接拿去比对
-        //   （枢衡的 `SniResolver` 挑证书用的就是小写形态）。
+        // ⚠ SNI 壓成小寫：用戶端可以發任意大小寫，而消費方要能直接拿去比對
+        //   （樞衡的 `SniResolver` 挑證書用的就是小寫形態）。
         digest.sni = ssl
             .servername(ssl_lib::ssl::NameType::HOST_NAME)
             .map(|s| s.to_ascii_lowercase());

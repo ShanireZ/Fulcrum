@@ -4,11 +4,11 @@
 > This changes which crypto provider gets compiled into every `rustls`-feature build,
 > so it is not in their trivial list (typos / small refactors / docs). Issue goes first.
 >
-> ★ **2026-08-19 复审重写**。上一版有两处不合格：
-> ① 全仓只查了代码、**没查未合并的 PR**，而 [#630](https://github.com/cloudflare/pingora/pull/630)
-> 与 [#887](https://github.com/cloudflare/pingora/pull/887) 就在这片地上；
-> ② 提交信息里的「175 → 173」是 **fork 的数字**，上游实测是 **178 → 176**。
-> 两处都已修正，且新增一格实测：**那两个 PR 都没有把 aws-lc-rs 从图里拿掉。**
+> ★ **2026-08-19 複審重寫**。上一版有兩處不合格：
+> ① 全倉只查了程式碼、**沒查未合併的 PR**，而 [#630](https://github.com/cloudflare/pingora/pull/630)
+> 與 [#887](https://github.com/cloudflare/pingora/pull/887) 就在這片地上；
+> ② 提交資訊裡的「175 → 173」是 **fork 的數字**，上游實測是 **178 → 176**。
+> 兩處都已修正，且新增一格實測：**那兩個 PR 都沒有把 aws-lc-rs 從圖裡拿掉。**
 
 **Title**
 

@@ -1,42 +1,42 @@
-//! 内存后端 + LRU 淘汰（**M2 批 G**）。
+//! 記憶體後端 + LRU 淘汰（**M2 批 G**）。
 //!
-//! ★ ★ 这一批**只做内存层**（G95 拍板的切法，也是 `data-path.md` 那条缓解顺序）。
-//! 磁盘后端是批 H，形状已由 G83/G84 定死（两级分片目录 / meta 与 body 两文件 /
-//! `tmp` 后 `rename` / 启动不扫盘）。
+//! ★ ★ 這一批**只做記憶體層**（G95 拍板的切法，也是 `data-path.md` 那條緩解順序）。
+//! 磁碟後端是批 H，形狀已由 G83/G84 定死（兩級分片目錄 / meta 與 body 兩檔案 /
+//! `tmp` 後 `rename` / 啟動不掃盤）。
 //!
-//! ⚠ ⚠ **容量上限不是可选项**：一个没有上限的内存缓存就是一处内存泄漏，
-//! 而那种泄漏的现场是「跑几天之后被 OOM 杀掉」——★ 与缓存本身看不出关系，
-//! 查的人会先去翻上游连接池和 fd。
+//! ⚠ ⚠ **容量上限不是可選項**：一個沒有上限的記憶體快取就是一處記憶體洩漏，
+//! 而那種洩漏的現場是「跑幾天之後被 OOM 殺掉」——★ 與快取本身看不出關係，
+//! 查的人會先去翻上游連接池和 fd。
 
 use super::cc::ResponseCc;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// 一条缓存条目。
+/// 一條快取條目。
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub status: u16,
-    /// 要回给客户端的头（**已经剥掉逐跳头与 `no-cache="…"` 点名的那几个**）。
+    /// 要回給用戶端的頭（**已經剝掉逐跳頭與 `no-cache="…"` 點名的那幾個**）。
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
-    /// 存进来的那一刻（unix 秒）。★ Age 从它算。
+    /// 存進來的那一刻（unix 秒）。★ Age 從它算。
     pub stored_at: i64,
-    /// 新鲜期（秒）。
+    /// 新鮮期（秒）。
     pub fresh_for: u64,
-    /// 存下来时那份 `Cache-Control` —— 重验证与 `must-revalidate` 判定要用。
+    /// 存下來時那份 `Cache-Control` —— 重驗證與 `must-revalidate` 判定要用。
     pub cc: ResponseCc,
-    /// `ETag`（重验证时发 `If-None-Match`）。
+    /// `ETag`（重驗證時發 `If-None-Match`）。
     pub etag: Option<String>,
-    /// `Last-Modified`（重验证时发 `If-Modified-Since`）。
+    /// `Last-Modified`（重驗證時發 `If-Modified-Since`）。
     pub last_modified: Option<String>,
-    /// 这条对应的 `Vary` 头名列表（小写）。
+    /// 這條對應的 `Vary` 頭名列表（小寫）。
     pub vary: Vec<String>,
 }
 
 impl Entry {
-    /// 这条占多少字节（用于容量核算）。★ 只算体与头的粗略量 ——
-    /// 精确到字节没有意义，而**完全不算头**会让一堆小体大头的条目撑爆上限。
+    /// 這條佔多少位元組（用於容量核算）。★ 只算體與頭的粗略量 ——
+    /// 精確到位元組沒有意義，而**完全不算頭**會讓一堆小體大頭的條目撐爆上限。
     pub fn footprint(&self) -> u64 {
         let h: usize = self
             .headers
@@ -47,13 +47,13 @@ impl Entry {
     }
 }
 
-/// 内存缓存。★ 主键 → （次级键 → 条目）两层，理由见 [`super::key`]。
+/// 記憶體快取。★ 主鍵 → （次級鍵 → 條目）兩層，理由見 [`super::key`]。
 #[derive(Debug)]
 pub struct MemStore {
     inner: Mutex<Inner>,
-    /// ★ ★ **原子而不是普通字段，因为 `POST /load` 要改得动它**（D19）。
-    ///   ⚠ 它有意**不在** `Inner` 的锁里：读它的两处都在 `put` 的热路径上，
-    ///   而把它挪进锁会让每一次 `capacity()`（装载日志、管理面回话）都去抢那把锁。
+    /// ★ ★ **原子而不是普通欄位，因為 `POST /load` 要改得動它**（D19）。
+    ///   ⚠ 它有意**不在** `Inner` 的鎖裡：讀它的兩處都在 `put` 的熱路徑上，
+    ///   而把它挪進鎖會讓每一次 `capacity()`（裝載紀錄、管理面回話）都去搶那把鎖。
     capacity: AtomicU64,
 }
 
@@ -61,26 +61,26 @@ pub struct MemStore {
 struct Inner {
     /// `主键 → Vec<(次级键, 条目)>`。
     ///
-    /// ⚠ 内层用 `Vec` 而不是 `HashMap`：同一个主键下的次级键**通常只有一两个**
-    /// （`Accept-Encoding` 那种），而我们还要能整族清掉（purge）。
+    /// ⚠ 內層用 `Vec` 而不是 `HashMap`：同一個主鍵下的次級鍵**通常只有一兩個**
+    /// （`Accept-Encoding` 那種），而我們還要能整族清掉（purge）。
     map: HashMap<String, Vec<(String, Entry)>>,
-    /// LRU 顺序：最近用过的排在后面。存 `(主键, 次级键)`。
+    /// LRU 順序：最近用過的排在後面。存 `(主键, 次级键)`。
     lru: Vec<(String, String)>,
     used: u64,
 }
 
-/// 查询结果。
+/// 查詢結果。
 ///
-/// ⚠ `Hit` 里那份 `Entry` 装了箱：它比另外两个变体大一个数量级，
-/// 而**这个枚举在每一次未命中时也要被构造** —— 不装箱的话，
-/// 每个 miss 都要在栈上腾出一整条缓存条目的空间。
+/// ⚠ `Hit` 裡那份 `Entry` 裝了箱：它比另外兩個變體大一個數量級，
+/// 而**這個枚舉在每一次未命中時也要被建構** —— 不裝箱的話，
+/// 每個 miss 都要在棧上騰出一整條快取條目的空間。
 #[derive(Debug)]
 pub enum Lookup {
-    /// 找到了这一族里匹配次级键的那条。
+    /// 找到了這一族裡匹配次級鍵的那條。
     Hit(Box<Entry>),
-    /// 主键那一族在，但没有匹配的次级键 —— ★ 与「整族都不在」是两件事：
-    /// 前者说明 `Vary` 生效了，后者说明这条 URL 从没被缓存过。
-    /// ⚠ 合成一个 `Miss` 的话，命中率日志会把两种完全不同的原因混在一起。
+    /// 主鍵那一族在，但沒有匹配的次級鍵 —— ★ 與「整族都不在」是兩件事：
+    /// 前者說明 `Vary` 生效了，後者說明這條 URL 從沒被快取過。
+    /// ⚠ 合成一個 `Miss` 的話，命中率紀錄會把兩種完全不同的原因混在一起。
     VaryMiss {
         vary: Vec<String>,
     },
@@ -99,34 +99,34 @@ impl MemStore {
         self.capacity.load(Ordering::Relaxed)
     }
 
-    /// 换一个容量上限（`POST /load` 走这里，D19）。
+    /// 換一個容量上限（`POST /load` 走這裡，D19）。
     ///
-    /// ★ ★ ★ **有意不当场淘汰** —— owner 2026-09-05 拍板：`POST /load` 是接管流量
-    /// 时的关键路径，在那里拿缓存锁扫一遍 LRU 会把一个 O(1) 的动作变成随缓存大小
-    /// 线性增长，与 G84「启动不扫盘」是同一条纪律。
-    /// ⚠ **代价写在明处**：调小之后到下一次写入之前，占用仍可能高于新上限；
-    /// 下一次 `put` 的淘汰循环会把它收紧。判据见本文件测试
+    /// ★ ★ ★ **有意不當場淘汰** —— owner 2026-09-05 拍板：`POST /load` 是接管流量
+    /// 時的關鍵路徑，在那裡拿快取鎖掃一遍 LRU 會把一個 O(1) 的動作變成隨快取大小
+    /// 線性增長，與 G84「啟動不掃盤」是同一條紀律。
+    /// ⚠ **代價寫在明處**：調小之後到下一次寫入之前，佔用仍可能高於新上限；
+    /// 下一次 `put` 的淘汰循環會把它收緊。判據見本檔案測試
     /// `调小容量是惰性的_下一次写入才把占用压回去`。
     ///
-    /// ⚠ `Relaxed` 够用：这里没有「靠它来发布别的数据」的语义，
-    /// 读侧要的只是「早晚会看到新值」，而 `load` 与 `put` 之间没有其它顺序依赖。
+    /// ⚠ `Relaxed` 夠用：這裡沒有「靠它來發布別的資料」的語義，
+    /// 讀側要的只是「早晚會看到新值」，而 `load` 與 `put` 之間沒有其它順序依賴。
     pub fn set_capacity(&self, capacity: u64) {
         self.capacity.store(capacity, Ordering::Relaxed);
     }
 
-    /// 当前占用与条目数（给日志与判据用）。
+    /// 當前佔用與條目數（給紀錄與判據用）。
     pub fn stats(&self) -> (u64, usize) {
         let g = self.lock();
         (g.used, g.lru.len())
     }
 
-    // ⚠ ⚠ 锁中毒不 panic：一个 panic 过的缓存不该把**整个服务**也拖下水。
-    //   ★ `into_inner()` 拿回数据继续用 —— 缓存里最坏的情况是多回一次源。
+    // ⚠ ⚠ 鎖中毒不 panic：一個 panic 過的快取不該把**整個服務**也拖下水。
+    //   ★ `into_inner()` 拿回資料繼續用 —— 快取裡最壞的情況是多回一次源。
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// 按主键 + 一个「给我某个请求头的值」的闭包去找。
+    /// 按主鍵 + 一個「給我某個請求頭的值」的閉包去找。
     pub fn get<'a, F>(&self, primary: &str, mut get_header: F) -> Lookup
     where
         F: FnMut(&str) -> Option<&'a str>,
@@ -135,9 +135,9 @@ impl MemStore {
         let Some(family) = g.map.get(primary) else {
             return Lookup::Miss;
         };
-        // ★ 同一族里所有条目的 `vary` 都应当相同（它来自上游的同一份响应），
-        //   但**不假设**这一点：逐条按它自己的 vary 算次级键。
-        //   ⚠ 假设它们相同的写法，在上游改了 Vary 的那一刻会开始命中错的条目。
+        // ★ 同一族裡所有條目的 `vary` 都應當相同（它來自上游的同一份回應），
+        //   但**不假設**這一點：逐條按它自己的 vary 算次級鍵。
+        //   ⚠ 假設它們相同的寫法，在上游改了 Vary 的那一刻會開始命中錯的條目。
         let mut found: Option<(String, Entry)> = None;
         let mut vary_of_family: Vec<String> = Vec::new();
         for (sk, e) in family {
@@ -161,16 +161,16 @@ impl MemStore {
         }
     }
 
-    /// 存一条。次级键由调用方按响应的 `Vary` 算好。
+    /// 存一條。次級鍵由呼叫方按回應的 `Vary` 算好。
     pub fn put(&self, primary: &str, secondary: String, entry: Entry) {
         let size = entry.footprint();
-        // ★ 容量**在这一次 put 里只读一次**：它是原子的、可能被 `POST /load` 改
-        //   （D19），而守卫与淘汰循环用两个不同的值会让「刚存下又被立刻挤掉」
-        //   这种只在换配置那一瞬出现的行为变得无法复现。
+        // ★ 容量**在這一次 put 裡唯讀一次**：它是原子的、可能被 `POST /load` 改
+        //   （D19），而守衛與淘汰循環用兩個不同的值會讓「剛存下又被立刻擠掉」
+        //   這種只在換設定那一瞬出現的行為變得無法重現。
         let capacity = self.capacity();
-        // ⚠ 一条比整个容量还大的条目**不存** —— 存了会把别的全挤掉，
-        //   然后它自己也马上被挤掉。★ 这不是理论情况：`max_size` 配大于
-        //   `capacity` 时就会撞上，而两条都是用户写的数。
+        // ⚠ 一條比整個容量還大的條目**不存** —— 存了會把別的全擠掉，
+        //   然後它自己也馬上被擠掉。★ 這不是理論情況：`max_size` 配大於
+        //   `capacity` 時就會撞上，而兩條都是使用者寫的數。
         if size > capacity {
             return;
         }
@@ -189,10 +189,10 @@ impl MemStore {
         g.lru.push((primary.to_string(), secondary));
     }
 
-    /// 只更新一条的**元数据**（重验证收到 304 时走这里）。
+    /// 只更新一條的**中繼資料**（重驗證收到 304 時走這裡）。
     ///
-    /// ★ 与 G83 「meta 与 body 分开」是同一条理由的内存版：
-    /// 重验证是缓存最常见的写操作之一，而它**不该动 body**。
+    /// ★ 與 G83 「meta 與 body 分開」是同一條理由的記憶體版：
+    /// 重驗證是快取最常見的寫操作之一，而它**不該動 body**。
     pub fn refresh(
         &self,
         primary: &str,
@@ -212,7 +212,7 @@ impl MemStore {
         g.touch(primary, secondary);
     }
 
-    /// 按主键清掉一整族。返回清掉几条。
+    /// 按主鍵清掉一整族。回傳清掉幾條。
     pub fn purge_primary(&self, primary: &str) -> usize {
         let mut g = self.lock();
         let Some(family) = g.map.remove(primary) else {
@@ -225,7 +225,7 @@ impl MemStore {
         n
     }
 
-    /// 按主键前缀清。返回清掉几条。
+    /// 按主鍵前綴清。回傳清掉幾條。
     pub fn purge_prefix(&self, prefix: &str) -> usize {
         let keys: Vec<String> = {
             let g = self.lock();
@@ -274,7 +274,7 @@ impl Inner {
         self.lru.retain(|(p, s)| !(p == primary && s == secondary));
     }
 
-    /// 淘汰最久没用的那条。返回 `false` = 没得淘汰了。
+    /// 淘汰最久沒用的那條。回傳 `false` = 沒得淘汰了。
     fn evict_one(&mut self) -> bool {
         if self.lru.is_empty() {
             return false;
@@ -326,9 +326,9 @@ mod tests {
         assert!(matches!(s.get("nope", none), Lookup::Miss));
     }
 
-    // ★ ★ 「整族不在」与「族在但 Vary 不匹配」必须分得开 ——
-    //   ⚠ 合成一个 Miss 的话，命中率日志会把两种完全不同的原因混在一起，
-    //   而它们的处置也完全不同（前者要看为什么没缓存，后者要看 Vary 配得对不对）。
+    // ★ ★ 「整族不在」與「族在但 Vary 不匹配」必須分得開 ——
+    //   ⚠ 合成一個 Miss 的話，命中率紀錄會把兩種完全不同的原因混在一起，
+    //   而它們的處置也完全不同（前者要看為什麼沒快取，後者要看 Vary 配得對不對）。
     #[test]
     fn vary_不匹配与整族不在是两件事() {
         let s = MemStore::new(1024);
@@ -336,9 +336,9 @@ mod tests {
         let sk = super::super::key::secondary(&vary, |_| Some("gzip"));
         s.put("k", sk, entry(b"gz", vary.clone()));
 
-        // 同样带 gzip ⇒ 命中
+        // 同樣帶 gzip ⇒ 命中
         assert!(matches!(s.get("k", |_| Some("gzip")), Lookup::Hit(_)));
-        // 不带 ⇒ VaryMiss（不是 Miss）
+        // 不帶 ⇒ VaryMiss（不是 Miss）
         match s.get("k", none) {
             Lookup::VaryMiss { vary: v } => assert_eq!(v, vary),
             other => panic!("该是 VaryMiss，实际 {other:?}"),
@@ -347,11 +347,11 @@ mod tests {
         assert!(matches!(s.get("other", none), Lookup::Miss));
     }
 
-    // ── D19：容量改得动（owner 2026-09-05 拍板 ①+③）────────────────────────
+    // ── D19：容量改得動（owner 2026-09-05 拍板 ①+③）────────────────────────
     //
-    // ★ ★ 缺陷的形状是「两条子指令行为不同，而配置文件上看不出来」：`ttl` / `max_size`
-    //   每请求现读、改了立刻生效，而 `capacity` 在启动时被抄进了后端的一个字段
-    //   ⇒ 一次 `POST /load` 回 200、`plan` 显示新值，**实际仍是旧容量，没有任何东西会说**。
+    // ★ ★ 缺陷的形狀是「兩條子指令行為不同，而設定檔案上看不出來」：`ttl` / `max_size`
+    //   每請求現讀、改了立刻生效，而 `capacity` 在啟動時被抄進了後端的一個欄位
+    //   ⇒ 一次 `POST /load` 回 200、`plan` 顯示新值，**實際仍是舊容量，沒有任何東西會說**。
     #[test]
     fn 容量在线改得动_大条目守卫用的是新值() {
         let s = MemStore::new(10);
@@ -369,14 +369,14 @@ mod tests {
         );
     }
 
-    // ★ ★ ★ **调小容量是惰性的** —— owner 2026-09-05 拍板的语义，本条就是它的判据。
+    // ★ ★ ★ **調小容量是惰性的** —— owner 2026-09-05 拍板的語義，本條就是它的判據。
     //
-    //   ⚠ `set_capacity` **有意不扫 LRU**：`POST /load` 是接管流量时的关键路径，
-    //   在那里拿缓存锁扫一遍 LRU 会把一个 O(1) 的动作变成随缓存大小线性 ——
-    //   与 G84「启动不扫盘」同一条纪律。
-    //   ⇒ 代价写在明处：**调小之后到下一次写入之前，占用仍可能高于新上限**。
-    //   ★ 这条测试两半都验：`set` 当场不动（⚠ 承重，写成「立刻压回去」就把语义搞反了）·
-    //     下一次 `put` 把它收紧。
+    //   ⚠ `set_capacity` **有意不掃 LRU**：`POST /load` 是接管流量時的關鍵路徑，
+    //   在那裡拿快取鎖掃一遍 LRU 會把一個 O(1) 的動作變成隨快取大小線性 ——
+    //   與 G84「啟動不掃盤」同一條紀律。
+    //   ⇒ 代價寫在明處：**調小之後到下一次寫入之前，佔用仍可能高於新上限**。
+    //   ★ 這條測試兩半都驗：`set` 當場不動（⚠ 承重，寫成「立刻壓回去」就把語義搞反了）·
+    //     下一次 `put` 把它收緊。
     #[test]
     fn 调小容量是惰性的_下一次写入才把占用压回去() {
         let s = MemStore::new(1024);
@@ -395,7 +395,7 @@ mod tests {
             "★ 承重：set_capacity 当场**不**淘汰 —— 它扫 LRU 的话这条会红，而那正是要挡的"
         );
 
-        // 下一次写入把它收紧：新条目 50 字节 ⇒ 淘汰循环把旧的 200 挤掉。
+        // 下一次寫入把它收緊：新條目 50 位元組 ⇒ 淘汰循環把舊的 200 擠掉。
         s.put("b", String::new(), entry(&[0u8; 50], vec![]));
         let (used_final, _) = s.stats();
         assert!(
@@ -416,9 +416,9 @@ mod tests {
         assert_eq!(s.stats(), (0, 0));
     }
 
-    // ★ LRU：装满之后淘汰**最久没用**的那条，而不是最先存的那条。
-    //   ⚠ 少了 `touch`，它就退化成 FIFO —— 热点条目会被反复淘汰再取回，
-    //   命中率掉下来而没有任何东西会红。
+    // ★ LRU：裝滿之後淘汰**最久沒用**的那條，而不是最先存的那條。
+    //   ⚠ 少了 `touch`，它就退化成 FIFO —— 熱點條目會被反覆淘汰再取回，
+    //   命中率掉下來而沒有任何東西會紅。
     #[test]
     fn 淘汰的是最久没用的不是最先存的() {
         let s = MemStore::new(30);
@@ -426,9 +426,9 @@ mod tests {
             s.put(k, String::new(), entry(&[0u8; 10], vec![]));
         }
         assert_eq!(s.stats().1, 3);
-        // 用一下 a ⇒ 它变成最近用过的
+        // 用一下 a ⇒ 它變成最近用過的
         assert!(matches!(s.get("a", none), Lookup::Hit(_)));
-        // 再存一条 ⇒ 该被淘汰的是 b（最久没用），不是 a（最先存）
+        // 再存一條 ⇒ 該被淘汰的是 b（最久沒用），不是 a（最先存）
         s.put("d", String::new(), entry(&[0u8; 10], vec![]));
         assert!(
             matches!(s.get("a", none), Lookup::Hit(_)),
@@ -452,7 +452,7 @@ mod tests {
         }
     }
 
-    // ★ 重存同一个键不该把占用算两遍。
+    // ★ 重存同一個鍵不該把佔用算兩遍。
     #[test]
     fn 重存同一个键占用不翻倍() {
         let s = MemStore::new(1000);
@@ -463,7 +463,7 @@ mod tests {
         assert_eq!((u1, n1), (u2, n2), "重存把占用算了两遍");
     }
 
-    // ★ ★ refresh 只改 meta，**不动 body**（G83 那条理由的内存版）。
+    // ★ ★ refresh 只改 meta，**不動 body**（G83 那條理由的記憶體版）。
     #[test]
     fn refresh_只改元数据不动体() {
         let s = MemStore::new(1024);
@@ -497,8 +497,8 @@ mod tests {
         assert_eq!(s.stats(), (0, 0));
     }
 
-    // ★ purge 之后占用要真的降下来 —— ⚠ 只从 map 里删而忘了减 `used`，
-    //   缓存会「越清越满」，最后一条都存不进去，而 `map` 是空的。
+    // ★ purge 之後佔用要真的降下來 —— ⚠ 只從 map 裡刪而忘了減 `used`，
+    //   快取會「越清越滿」，最後一條都存不進去，而 `map` 是空的。
     #[test]
     fn purge_之后占用归零() {
         let s = MemStore::new(1000);
@@ -508,7 +508,7 @@ mod tests {
         assert!(s.stats().0 > 0);
         s.purge_all();
         assert_eq!(s.stats().0, 0);
-        // 清完之后还能正常存。
+        // 清完之後還能正常存。
         s.put("again", String::new(), entry(&[0u8; 50], vec![]));
         assert!(matches!(s.get("again", none), Lookup::Hit(_)));
     }

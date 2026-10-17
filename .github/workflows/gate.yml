@@ -1,23 +1,23 @@
-# 门禁：GitHub Actions 上跑**全量**。
+# 門禁：GitHub Actions 上跑**全量**。
 #
-# ★ ★ ★ **这里只有一条命令，而且与本机那条逐字相同**：`bash tests/m0/docker-run.sh`。
-#   这不是省事，是判据纪律：CI 若自己拼一套「等价的」步骤，就会长出**第二套判据**，
-#   而两套判据迟早分家 —— 那时「CI 绿」与「门禁绿」是两件事，却没有任何东西会说出来。
+# ★ ★ ★ **這裡只有一條命令，而且與本機那條逐字相同**：`bash tests/m0/docker-run.sh`。
+#   這不是省事，是判據紀律：CI 若自己拼一套「等價的」步驟，就會長出**第二套判據**，
+#   而兩套判據遲早分家 —— 那時「CI 綠」與「門禁綠」是兩件事，卻沒有任何東西會說出來。
 #
-# ⚠ ⚠ **有意不写 `paths-ignore`。** `crates/fulcrum-config/tests/doc_contract.rs` 用
-#   `include_str!` 读 `docs/architecture/dsl-reference.md`，`supply_gates.rs` 读根
-#   `Cargo.toml`/`Cargo.lock`，还有一道门反向断言**已接线的能力不许出现在 `dsl-reference.md` 里**
-#   ⇒ **一次纯文档改动是真的能把门禁弄红的**，跳过它等于把这类缺陷放行，而现象是「CI 一直绿」。
+# ⚠ ⚠ **有意不寫 `paths-ignore`。** `crates/fulcrum-config/tests/doc_contract.rs` 用
+#   `include_str!` 讀 `docs/architecture/dsl-reference.md`，`supply_gates.rs` 讀根
+#   `Cargo.toml`/`Cargo.lock`，還有一道門反向斷言**已串接的能力不許出現在 `dsl-reference.md` 裡**
+#   ⇒ **一次純文件改動是真的能把門禁弄紅的**，跳過它等於把這類缺陷放行，而現象是「CI 一直綠」。
 #
-# 两条止血阀：`concurrency` + `cancel-in-progress`（连着推几次时只有最后一次跑到底）、
-# `timeout-minutes`（卡死的任务最多烧这么多，而不是默认的 6 小时）。
+# 兩條止血閥：`concurrency` + `cancel-in-progress`（連著推幾次時只有最後一次跑到底）、
+# `timeout-minutes`（卡死的任務最多燒這麼多，而不是預設的 6 小時）。
 name: gate
 
 on:
-  # ★ 只在 main 上跑：口径是「直接提交 main，不开分支不开 PR」。
+  # ★ 只在 main 上跑：口徑是「直接提交 main，不開分支不開 PR」。
   push:
     branches: [main]
-  # 手工触发，用于改完 workflow 自身之后重跑。
+  # 手動觸發，用於改完 workflow 自身之後重跑。
   workflow_dispatch:
 
 concurrency:
@@ -29,32 +29,32 @@ permissions:
 
 jobs:
   gate:
-    # ★ 钉住大版本，不用 `ubuntu-latest`：M1 的 systemd 场景依赖宿主机是 **cgroup v2**，
-    #   而 `ubuntu-latest` 换代时不会有任何一行输出告诉我们环境变了。
+    # ★ 釘住大版本，不用 `ubuntu-latest`：M1 的 systemd 場景依賴宿主機是 **cgroup v2**，
+    #   而 `ubuntu-latest` 換代時不會有任何一行輸出告訴我們環境變了。
     runs-on: ubuntu-24.04
-    # ⚠ 这个上限是**止血阀**，不是预期耗时；真实耗时见每次运行的记录。
+    # ⚠ 這個上限是**止血閥**，不是預期耗時；真實耗時見每次執行的記錄。
     timeout-minutes: 120
 
     steps:
-      # ── ★ 这几个 action 的大版本 = 它们跑在哪个 Node 上 ─────────────────────
+      # ── ★ 這幾個 action 的大版本 = 它們跑在哪個 Node 上 ─────────────────────
       #
-      # ⚠ ⚠ **本工作流里选不了 Node 版本，也没有一行 Node**：判据是
-      #   `bash tests/m0/docker-run.sh`，全在容器里跑 Rust。Node 只是 GitHub 这几个
-      #   JS action 自己的运行时，版本写在**它们的** `action.yml` 的 `runs.using` 里。
-      #   ⇒ 看见「Node.js 20 is deprecated」时要动的是**这里的大版本**，
-      #   而不是去找一个「把 CI 换成 node24 / node26」的开关 —— 那个开关不存在。
-      #   （`actions/setup-node` 是给项目代码用的，本仓没有 Node 代码，不需要它。）
+      # ⚠ ⚠ **本工作流裡選不了 Node 版本，也沒有一行 Node**：判據是
+      #   `bash tests/m0/docker-run.sh`，全在容器裡跑 Rust。Node 只是 GitHub 這幾個
+      #   JS action 自己的執行環境，版本寫在**它們的** `action.yml` 的 `runs.using` 裡。
+      #   ⇒ 看見「Node.js 20 is deprecated」時要動的是**這裡的大版本**，
+      #   而不是去找一個「把 CI 換成 node24 / node26」的開關 —— 那個開關不存在。
+      #   （`actions/setup-node` 是給專案程式碼用的，本儲存庫沒有 Node 程式碼，不需要它。）
       #
-      # ★ 升到 v7 / v6 / v7 之前逐条读过发布说明，对**本工作流的用法**都不是破坏性改动：
-      #   checkout v7 只多拦 `pull_request_target` / `workflow_run` 的 fork 检出（两者都没用），
-      #   upload-artifact v7 新增的 `archive` 默认 true 就是旧行为，cache v6 只是 ESM 化。
-      # ⚠ 硬前提是 **runner ≥ 2.327.1**；GitHub 托管的 `ubuntu-24.04` 恒满足，
-      #   哪天换成自托管 runner 要先确认这一条。
+      # ★ 升到 v7 / v6 / v7 之前逐條讀過發佈說明，對**本工作流的用法**都不是破壞性改動：
+      #   checkout v7 只多攔 `pull_request_target` / `workflow_run` 的 fork 檢出（兩者都沒用），
+      #   upload-artifact v7 新增的 `archive` 預設 true 就是舊行為，cache v6 只是 ESM 化。
+      # ⚠ 硬前提是 **runner ≥ 2.327.1**；GitHub 託管的 `ubuntu-24.04` 恆滿足，
+      #   哪天換成自託管 runner 要先確認這一條。
       - uses: actions/checkout@v7
 
-      # ★ runner 上 `/` 只有二十几 GB 空余，而这里要放：构建镜像、systemd 测试镜像、
-      #   cargo registry、release 模式的整个 target。⚠ 磁盘满的报错形态五花八门
-      #   （链接器 OOM、docker 写层失败），而没有一条会说「磁盘满了」。
+      # ★ runner 上 `/` 只有二十幾 GB 空餘，而這裡要放：建置鏡像、systemd 測試鏡像、
+      #   cargo registry、release 模式的整個 target。⚠ 磁碟滿的回報錯誤形態五花八門
+      #   （連結器 OOM、docker 寫層失敗），而沒有一條會說「磁碟滿了」。
       - name: 腾出磁盘
         run: |
           echo "── 清理前 ──"; df -h /
@@ -62,10 +62,10 @@ jobs:
                       /usr/local/share/boost /usr/local/.ghcup "$AGENT_TOOLSDIRECTORY" || true
           echo "── 清理后 ──"; df -h /
 
-      # ★ 每次都把环境打出来。§8 要求可复现，而可复现的第一步是**看得见跑的是什么**。
-      #   ⚠ cgroup 那一行是判据相关的：M1 的 `ExitType=cgroup` 要求容器侧 systemd ≥ 250
-      #   且宿主机是 cgroup v2 统一层级。它变成 v1 的那天，M1 场景会以一种
-      #   看起来像产品缺陷的方式红。
+      # ★ 每次都把環境打出來。§8 要求可重現，而可重現的第一步是**看得見跑的是什麼**。
+      #   ⚠ cgroup 那一行是判據相關的：M1 的 `ExitType=cgroup` 要求容器側 systemd ≥ 250
+      #   且宿主機是 cgroup v2 統一層級。它變成 v1 的那天，M1 場景會以一種
+      #   看起來像產品缺陷的方式紅。
       - name: 环境快照
         run: |
           echo "── docker ──"; docker version
@@ -74,20 +74,20 @@ jobs:
           echo "── git 行尾配置（CRLF 门的前提）──"
           git config --get core.autocrlf || echo "core.autocrlf 未设（Linux 上的默认，正是要的）"
 
-      # ── 构建缓存 ───────────────────────────────────────────────────────────
+      # ── 建置快取 ───────────────────────────────────────────────────────────
       #
-      # ⚠ ⚠ **缓存最坏的失效方式不是「没命中」，是「命中了一份不该用的」。**
-      #   两道防线：① 键里带 `Dockerfile.build` 的哈希（工具链身份，连 C 工具链一起）；
-      #   ② `tests/ci/cache.sh` 在归档里另存一份 meta，**灌回前逐字比对**，对不上就跳过。
+      # ⚠ ⚠ **快取最壞的失效方式不是「沒命中」，是「命中了一份不該用的」。**
+      #   兩道防線：① 鍵裡帶 `Dockerfile.build` 的雜湊（工具鏈身分，連 C 工具鏈一起）；
+      #   ② `tests/ci/cache.sh` 在歸檔裡另存一份 meta，**灌回前逐字比對**，對不上就跳過。
       #
-      # ★ **怀疑缓存的时候**：把下面键里的 `v1` 改成 `v2`，整片缓存立即作废。
+      # ★ **懷疑快取的時候**：把下面鍵裡的 `v1` 改成 `v2`，整片快取立即作廢。
       - name: 取构建缓存
         id: buildcache
         uses: actions/cache/restore@v6
         with:
           path: ~/fulcrum-cache
-          # ★ 精确键 = 工具链 + 两把锁；`restore-keys` 让它仍然能从**同一套工具链**的
-          #   上一份热起来（cargo 增量补差）。
+          # ★ 精確鍵 = 工具鏈 + 兩把鎖；`restore-keys` 讓它仍然能從**同一套工具鏈**的
+          #   上一份熱起來（cargo 增量補差）。
           key: fulcrum-buildcache-v1-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build') }}-${{ hashFiles('Cargo.lock', 'vendor/pingora/Cargo.lock') }}
           restore-keys: |
             fulcrum-buildcache-v1-${{ runner.os }}-${{ hashFiles('docker/Dockerfile.build') }}-
@@ -95,25 +95,25 @@ jobs:
       - name: 把缓存灌回 docker 卷
         run: bash tests/ci/cache.sh restore ~/fulcrum-cache
 
-      # ★ ★ ★ 就这一条，退出码就是判据。
-      # ⚠ 绝不接管道：`| tee` / `| tail` 取回的是右边那个命令的退出码（本仓库栽过）。
+      # ★ ★ ★ 就這一條，結束代碼就是判據。
+      # ⚠ 絕不接管道：`| tee` / `| tail` 取回的是右邊那個命令的結束代碼（本儲存庫栽過）。
       - name: 全量门禁
         run: bash tests/m0/docker-run.sh
 
-      # ★ `always()`：门禁红了也要存 —— 依赖照样是编好的。
-      # ⚠ ⚠ **精确命中时整步跳过**：压归档要几分钟，而下面「存构建缓存」在命中时本就不跑
-      #   ⇒ 压出来的东西会被原样扔掉。★ 一步只在「它的产物会被用到」时才该跑。
-      # ★ 代价说在明处：命中时缓存**不刷新**，缓存里那份 target 相对 HEAD 会越来越旧。
-      #   哪天两把锁之一变了，键跟着变、自然重做一份新的。
-      # ★ ★ **诊断必须落到「日志之外」的地方** —— 日志 blob 取不回来的情况真的发生过
-      #   （`gh run view --log` 一直 404 BlobNotFound），那时「加一行 df 让下一轮自己说话」
-      #   本身就没生效：话是说了，只是没人听得见。
+      # ★ `always()`：門禁紅了也要存 —— 依賴照樣是編好的。
+      # ⚠ ⚠ **精確命中時整步跳過**：壓歸檔要幾分鐘，而下面「存建置快取」在命中時本就不跑
+      #   ⇒ 壓出來的東西會被原樣扔掉。★ 一步只在「它的產物會被用到」時才該跑。
+      # ★ 代價說在明處：命中時快取**不刷新**，快取裡那份 target 相對 HEAD 會越來越舊。
+      #   哪天兩把鎖之一變了，鍵跟著變、自然重做一份新的。
+      # ★ ★ **診斷必須落到「紀錄之外」的地方** —— 紀錄 blob 取不回來的情況真的發生過
+      #   （`gh run view --log` 一直 404 BlobNotFound），那時「加一行 df 讓下一輪自己說話」
+      #   本身就沒生效：話是說了，只是沒人聽得見。
       - name: 导出构建缓存
         id: dumpcache
         if: always() && steps.buildcache.outputs.cache-hit != 'true'
         run: bash tests/ci/dump-cache.sh ~/fulcrum-cache ~/cache-diag.txt
 
-      # ★ 与日志分开的那条路：artifact 一定取得回来（`gh run download`）。
+      # ★ 與紀錄分開的那條路：artifact 一定取得回來（`gh run download`）。
       - name: 传诊断
         if: always()
         uses: actions/upload-artifact@v7

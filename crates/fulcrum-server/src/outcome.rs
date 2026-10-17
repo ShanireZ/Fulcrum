@@ -1,39 +1,39 @@
-//! `outcome` 闭集：那八个取值，以及**只能由这里造出取值**的那个类型。
+//! `outcome` 閉集：那八個取值，以及**只能由這裡造出取值**的那個類型。
 //!
-//! # ★ ★ ★ 为什么它是一个独立模块，而不是 `lib.rs` 里的几十行
+//! # ★ ★ ★ 為什麼它是一個獨立模組，而不是 `lib.rs` 裡的幾十行
 //!
-//! [`OutcomeName`] 的字段是私有的，而 **Rust 的私有是模块级的** ——
-//! 把它和 `outcome_name` 放在同一个模块里，`OutcomeName("随便什么")` 在那个模块内部
-//! 照样构造得出来，于是「裸字面量绕过常量表」这条路**只对别的模块关上了**，
-//! 偏偏对最需要关上的那一处（`outcome_name` 自己）敞着。
-//! ⚠ ⚠ 这不是推理出来的：2026-09-04 实测过一次 —— 把一条臂改成
-//! `Outcome::Metrics => OutcomeName("x_smuggled")`，整棵树 `RC=0` 编得过。
-//! ⇒ 边界必须**恰好画在这个类型周围**，屋里只许有宏和它生成的东西。
+//! [`OutcomeName`] 的欄位是私有的，而 **Rust 的私有是模組級的** ——
+//! 把它和 `outcome_name` 放在同一個模組裡，`OutcomeName("随便什么")` 在那個模組內部
+//! 照樣建構得出來，於是「裸字面值繞過常數表」這條路**只對別的模組關上了**，
+//! 偏偏對最需要關上的那一處（`outcome_name` 自己）敞著。
+//! ⚠ ⚠ 這不是推理出來的：2026-09-04 實測過一次 —— 把一條臂改成
+//! `Outcome::Metrics => OutcomeName("x_smuggled")`，整棵樹 `RC=0` 編得過。
+//! ⇒ 邊界必須**恰好畫在這個類型周圍**，屋裡只許有宏和它生成的東西。
 
-/// 访问日志 `outcome` 那一格、也是 `fulcrum_requests_total{outcome}` 那个**闭集**里的一个取值。
+/// 訪問紀錄 `outcome` 那一格、也是 `fulcrum_requests_total{outcome}` 那個**閉集**裡的一個取值。
 ///
-/// ★ ★ ★ **字段私有，而唯一的构造点是 [`outcomes!`] 生成的那批常量。**
-/// ⇒ `Outcome::Foo => "foo"` 这种**绕过常量表往闭集里塞一个新值**的写法**编不过**。
+/// ★ ★ ★ **欄位私有，而唯一的建構點是 [`outcomes!`] 生成的那批常數。**
+/// ⇒ `Outcome::Foo => "foo"` 這種**繞過常數表往閉集裡塞一個新值**的寫法**編不過**。
 ///
-/// ⚠ ⚠ 这一条比「宏把常量与数组一次生成」更靠前，两者缺一不可：
-/// 宏只挡得住「声明了常量却忘了写进数组」，**挡不住裸字面量** ——
-/// 而本 crate 的 `#[cfg(test)]` 夹具里一度就是那么写的（`r.outcome = "reverse_proxy"`），
-/// ⇒ 那条逃逸路不是理论上的。
+/// ⚠ ⚠ 這一條比「宏把常數與陣列一次生成」更靠前，兩者缺一不可：
+/// 宏只擋得住「宣告了常數卻忘了寫進陣列」，**擋不住裸字面值** ——
+/// 而本 crate 的 `#[cfg(test)]` 夾具裡一度就是那麼寫的（`r.outcome = "reverse_proxy"`），
+/// ⇒ 那條逃逸路不是理論上的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutcomeName(&'static str);
 
 impl OutcomeName {
-    /// 渲染成日志字段值 / 指标标签值。
+    /// 繪製成紀錄欄位值 / 指標標籤值。
     pub const fn as_str(self) -> &'static str {
         self.0
     }
 }
 
-/// 生成 `outcome` 闭集：**一行一个取值**，常量与 [`OUTCOMES`] 同时长出来。
+/// 生成 `outcome` 閉集：**一行一個取值**，常數與 [`OUTCOMES`] 同時長出來。
 ///
-/// ★ 与 `fulcrum-config` 的 `chain_directives!` 是同一手法，理由也逐字相同：
-/// **一行少了字面量就编不过，于是「加了取值却没进闭集」这件事无从发生。**
-/// ⇒ [`OUTCOMES`] 与那批常量读的是**同一个** `$lit` token，⛔ 不是两份要靠人对齐的表。
+/// ★ 與 `fulcrum-config` 的 `chain_directives!` 是同一手法，理由也逐字相同：
+/// **一行少了字面值就編不過，於是「加了取值卻沒進閉集」這件事無從發生。**
+/// ⇒ [`OUTCOMES`] 與那批常數讀的是**同一個** `$lit` token，⛔ 不是兩份要靠人對齊的表。
 macro_rules! outcomes {
     ( $( $konst:ident $lit:literal ),* $(,)? ) => {
         $(
@@ -41,23 +41,23 @@ macro_rules! outcomes {
             pub const $konst: OutcomeName = OutcomeName($lit);
         )*
 
-        /// `fulcrum_requests_total{outcome}` 的**取值闭集**，`metrics.rs` 的基数表判据按它算上界。
+        /// `fulcrum_requests_total{outcome}` 的**取值閉集**，`metrics.rs` 的基數表判據按它算上界。
         ///
-        /// ⛔ **它不是一份手抄**：本常量与上面那批常量由 [`outcomes!`] 从同一行生成。
+        /// ⛔ **它不是一份手抄**：本常數與上面那批常數由 [`outcomes!`] 從同一行生成。
         pub const OUTCOMES: &[&str] = &[ $( $lit ),* ];
     };
 }
 
 outcomes! {
-    // ── 由 `outcome_name` 从 `Outcome` 映射来的 ───────────────────────────
+    // ── 由 `outcome_name` 從 `Outcome` 映射來的 ───────────────────────────
     OUTCOME_RESPOND       "respond",
     OUTCOME_REDIR         "redir",
     OUTCOME_REVERSE_PROXY "reverse_proxy",
     OUTCOME_FILE_SERVER   "file_server",
-    // ★ 闭集的**第 8 个值**（M2 批 M，G116）。
+    // ★ 閉集的**第 8 個值**（M2 批 M，G116）。
     OUTCOME_METRICS       "metrics",
-    // ── ⚠ 下面三个是**路由之前、或路由失败之后直接产出**的 ────────────────
-    //    那时根本没有 `Outcome` 可映射。
+    // ── ⚠ 下面三個是**路由之前、或路由失敗之後直接產出**的 ────────────────
+    //    那時根本沒有 `Outcome` 可映射。
     OUTCOME_ERROR         "error",
     OUTCOME_ACME_HTTP01   "acme_http01",
     OUTCOME_NO_SITE_MATCH "no_site_match",

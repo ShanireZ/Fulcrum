@@ -1,29 +1,29 @@
-# docker build 的上下文里不该有的东西。
+# docker build 的上下文裡不該有的東西。
 #
-# ⚠ ⚠ **它只对「上下文 = 仓库根」的那些构建生效**，而 `.dockerignore` 是按上下文根读的：
-#   · `docker/Dockerfile.build` 的上下文是 `docker/` ⇒ 读不到这个文件；
+# ⚠ ⚠ **它只對「上下文 = 儲存庫根」的那些建置生效**，而 `.dockerignore` 是按上下文根讀的：
+#   · `docker/Dockerfile.build` 的上下文是 `docker/` ⇒ 讀不到這個檔案；
 #   · `docker/Dockerfile.musl-probe` 的上下文是 `spikes/musl-boringssl/` ⇒ 同上；
-#   · `docker/Dockerfile.musl-product` 的上下文**是仓库根**（它要 `vendor/pingora`，
-#     因为根 `Cargo.toml` 的 `[patch.crates-io]` 指着它）⇒ **只有它读这份**。
-#   ★ 写清楚是因为「加一条 .dockerignore」听起来是全局动作，而实际上不是。
+#   · `docker/Dockerfile.musl-product` 的上下文**是儲存庫根**（它要 `vendor/pingora`，
+#     因為根 `Cargo.toml` 的 `[patch.crates-io]` 指著它）⇒ **只有它讀這份**。
+#   ★ 寫清楚是因為「加一條 .dockerignore」聽起來是全域動作，而實際上不是。
 #
-# ★ `target/` 那两条是**性能**，不是正确性：G107 的门保证跑门禁时它们是空的，
-#   但有人在门禁之外手工 `docker build` 时它们可能不是，而 1.2 GB 的上下文会
-#   在「发送构建上下文」那一步静默地花掉几十秒。
+# ★ `target/` 那兩條是**效能**，不是正確性：G107 的門保證跑門禁時它們是空的，
+#   但有人在門禁之外手動 `docker build` 時它們可能不是，而 1.2 GB 的上下文會
+#   在「傳送建置上下文」那一步靜默地花掉幾十秒。
 target/
 **/target/
 .git/
 run/
 
-# ★ ★ `handoff/` 这条是**正确性**，不是性能。
+# ★ ★ `handoff/` 這條是**正確性**，不是效能。
 #
-# ⚠ ⚠ 它被 `.gitignore` 挡在**版本控制**外（G115），但那与 **docker 构建上下文**
-#   是两回事 —— 而 `Dockerfile.musl-product` 是 `COPY . .` ⇒ **在门禁跑着的时候写一份
-#   交接单，会让那一层当场失效，于是这一趟量的已经不是它开跑时那棵树了。**
-#   ⛔ 而它不报错：日志看起来完全正常。
-# ★ 2026-09-06 实测：往 `handoff/` 写一个文件再跑 `MUSL_ONLY`，
-#   `COPY . .` 打的是 `DONE 0.2s` 而**不是** `CACHED`（cargo 的两个缓存挂载吸收了重编，
-#   所以那一趟只多花约 20 秒 —— ⚠ 代价小不等于没发生）。
-# ⇒ 与 `AGENTS.md` 里「门禁跑着的时候别动 `tests/` 下的文件」是**同一物种的第二个实例**：
-#   前一条讲的是改脚本，这一条讲的是**新建一个与构建毫无关系的文件**。
+# ⚠ ⚠ 它被 `.gitignore` 擋在**版本控制**外（G115），但那與 **docker 建置上下文**
+#   是兩回事 —— 而 `Dockerfile.musl-product` 是 `COPY . .` ⇒ **在門禁跑著的時候寫一份
+#   交接單，會讓那一層當場失效，於是這一趟量的已經不是它開跑時那棵樹了。**
+#   ⛔ 而它不回報錯誤：紀錄看起來完全正常。
+# ★ 2026-09-06 實測：往 `handoff/` 寫一個檔案再跑 `MUSL_ONLY`，
+#   `COPY . .` 打的是 `DONE 0.2s` 而**不是** `CACHED`（cargo 的兩個快取掛載吸收了重編，
+#   所以那一趟只多花約 20 秒 —— ⚠ 代價小不等於沒發生）。
+# ⇒ 與 `AGENTS.md` 裡「門禁跑著的時候別動 `tests/` 下的檔案」是**同一物種的第二個執行個體**：
+#   前一條講的是改指令碼，這一條講的是**新建一個與建置毫無關係的檔案**。
 handoff/

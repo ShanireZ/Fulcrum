@@ -37,14 +37,14 @@ def read_one(path: pathlib.Path):
     if not isinstance(rps, (int, float)):
         return None, "summary.requestsPerSec不是数字"
 
-    # 成功率必须是 1.0。⚠ 用 `!= 1.0` 而不是「大于某个阈值」：
-    #   本类的口径里**一个失败请求都不许有**，与 tests/stress 那条「零错误」同源。
+    # 成功率必須是 1.0。⚠ 用 `!= 1.0` 而不是「大於某個閾值」：
+    #   本類的口徑裡**一個失敗請求都不許有**，與 tests/stress 那條「零錯誤」同源。
     rate = summary.get("successRate")
     if rate != 1.0:
         return None, f"successRate={rate}(该是1.0)"
 
-    # 状态码必须**只有** 200。⚠ ⚠ 判「只有」，⛔ 不是判「有」：
-    #   `{"200": 5, "503": 99999}` 里 200 是有的，而那份读数量的是 503 有多快。
+    # 狀態碼必須**只有** 200。⚠ ⚠ 判「只有」，⛔ 不是判「有」：
+    #   `{"200": 5, "503": 99999}` 裡 200 是有的，而那份讀數量的是 503 有多快。
     dist = data.get("statusCodeDistribution")
     if not isinstance(dist, dict) or not dist:
         return None, "没有statusCodeDistribution"
@@ -52,21 +52,21 @@ def read_one(path: pathlib.Path):
     if non200:
         return None, f"出现了非200的状态码:{non200}"
 
-    # ── 传输层错误 ─────────────────────────────────────────────────────────
+    # ── 傳輸層錯誤 ─────────────────────────────────────────────────────────
     #
-    # ★ ★ ★ **`aborted due to deadline` 是良性的，其余一概不是。**
-    #   它是 oha 的 `-z <时长>` 到点时把**还在飞的**请求砍掉留下的记录，
-    #   ⇒ 每条并发连接恰好留一条。2026-09-05 实测（nginx，2s）：
-    #   `-c 10` → 10 条，`-c 50` → 50 条，占成功数的 0.018% / 0.092%。
-    #   ⚠ oha 不把它们算进 `successRate`，也不算进 `requestsPerSec` 的分子
-    #   ⇒ 读数本身不受影响。
+    # ★ ★ ★ **`aborted due to deadline` 是良性的，其餘一概不是。**
+    #   它是 oha 的 `-z <时长>` 到點時把**還在飛的**請求砍掉留下的記錄，
+    #   ⇒ 每條並行連接恰好留一條。2026-09-05 實測（nginx，2s）：
+    #   `-c 10` → 10 條，`-c 50` → 50 條，佔成功數的 0.018% / 0.092%。
+    #   ⚠ oha 不把它們算進 `successRate`，也不算進 `requestsPerSec` 的分子
+    #   ⇒ 讀數本身不受影響。
     #
-    # ⚠ ⚠ ⛔ **不许因此就把整条 errorDistribution 判据删掉。** 连接被拒、
-    #   被重置、读超时全都落在这个字段里，而那些正是「这份读数不算数」的样子。
-    #   ⇒ 收窄成「只放行这一个 key，且它的量必须小」，⛔ 不是「不看这个字段」。
+    # ⚠ ⚠ ⛔ **不許因此就把整條 errorDistribution 判據刪掉。** 連接被拒、
+    #   被重置、讀超時全都落在這個欄位裡，而那些正是「這份讀數不算數」的樣子。
+    #   ⇒ 收窄成「只放行這一個 key，且它的量必須小」，⛔ 不是「不看這個欄位」。
     #
-    # ★ 量上再加一道界：良性那一条的条数不该超过成功数的 1%。它判的是
-    #   「deadline 砍掉的远多于并发数」这种反常 —— 那时候它就不再是良性的了。
+    # ★ 量上再加一道界：良性那一條的條數不該超過成功數的 1%。它判的是
+    #   「deadline 砍掉的遠多於並行數」這種反常 —— 那時候它就不再是良性的了。
     errors = dict(data.get("errorDistribution") or {})
     deadline_aborts = errors.pop("aborted due to deadline", 0)
     if errors:

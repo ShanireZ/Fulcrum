@@ -1,33 +1,33 @@
-//! 按 SNI 挑证书 —— **BoringSSL 的 `select_certificate_callback`**（G104）。
+//! 按 SNI 挑證書 —— **BoringSSL 的 `select_certificate_callback`**（G104）。
 //!
-//! §5.1 第 1 条原本要求实现 rustls 的 `ResolvesServerCert`；**G104 推翻了它**。现在走的是
+//! §5.1 第 1 條原本要求實作 rustls 的 `ResolvesServerCert`；**G104 推翻了它**。現在走的是
 //! `SslContextBuilder::set_select_certificate_callback(|ClientHello| …)` ——
-//! 它包的是 BoringSSL 的 `SSL_early_callback_ctx`，**在几乎所有 ClientHello 处理之前**被调用。
+//! 它包的是 BoringSSL 的 `SSL_early_callback_ctx`，**在幾乎所有 ClientHello 處理之前**被呼叫。
 //!
-//! # ★ ★ 换过来之后**变简单**的两件事，与**变麻烦**的一件
+//! # ★ ★ 換過來之後**變簡單**的兩件事，與**變麻煩**的一件
 //!
-//! **变简单 ①：不再需要 fork 的 `TlsSettings::with_cert_resolver`。**
-//! boringssl 那侧的 `TlsSettings` 对 `SslAcceptorBuilder` 实现了 `Deref`/`DerefMut`，
-//! 这个 setter 本来就够得到（FORK.md 改动 8 因此可以删掉）。
+//! **變簡單 ①：不再需要 fork 的 `TlsSettings::with_cert_resolver`。**
+//! boringssl 那側的 `TlsSettings` 對 `SslAcceptorBuilder` 實作了 `Deref`/`DerefMut`，
+//! 這個 setter 本來就夠得到（FORK.md 改動 8 因此可以刪掉）。
 //!
-//! **变简单 ②：`resolve()` 那条「必须同步」的约束没有了。**
-//! rustls 在握手线程上同步调用 `resolve()`，里面不能 `await` ——
-//! 而这正是 `UNWIRED` 里 `on_demand` 登记「需要一座桥」的原因。
-//! BoringSSL 这侧有 `set_async_select_certificate_callback`（原生异步），
-//! 而且 `pingora-boringssl` 自带 `ext::suspend_when_need_ssl_cert` / `unblock_ssl_cert`。
-//! ⏳ 本批不做 On-Demand，但**那条阻塞理由已经到期，别再照抄它**。
+//! **變簡單 ②：`resolve()` 那條「必須同步」的約束沒有了。**
+//! rustls 在握手執行緒上同步呼叫 `resolve()`，裡面不能 `await` ——
+//! 而這正是 `UNWIRED` 裡 `on_demand` 登記「需要一座橋」的原因。
+//! BoringSSL 這側有 `set_async_select_certificate_callback`（原生非同步），
+//! 而且 `pingora-boringssl` 自帶 `ext::suspend_when_need_ssl_cert` / `unblock_ssl_cert`。
+//! ⏳ 本批不做 On-Demand，但**那條阻塞理由已經到期，別再照抄它**。
 //!
-//! **变麻烦的一件：ALPN 要自己从扩展里看。**
-//! ⚠ ⚠ 早回调发生在 **ALPN 协商之前**，所以拿不到「协商结果」，只能看**客户端提供了什么**。
-//! rustls 那侧 `ClientHello::alpn()` 直接给一个迭代器；这边给的是扩展的原始字节，
-//! 要按 RFC 7301 的框架走一遍（见 [`alpn_list`]，[`offers_alpn`] 建在它上面）。
-//! ★ 这**不是**「手写 ClientHello 解析」——BoringSSL 已经把扩展切出来了，
-//! 这里读的是一段长度前缀列表，而且它有自己的判据（下面那组单测，命中与错过都覆盖）。
+//! **變麻煩的一件：ALPN 要自己從擴充裡看。**
+//! ⚠ ⚠ 早回呼發生在 **ALPN 協商之前**，所以拿不到「協商結果」，只能看**用戶端提供了什麼**。
+//! rustls 那側 `ClientHello::alpn()` 直接給一個迭代器；這邊給的是擴充的原始位元組，
+//! 要按 RFC 7301 的框架走一遍（見 [`alpn_list`]，[`offers_alpn`] 建在它上面）。
+//! ★ 這**不是**「手寫 ClientHello 解析」——BoringSSL 已經把擴充切出來了，
+//! 這裡讀的是一段長度前綴列表，而且它有自己的判據（下面那組單測，命中與錯過都覆蓋）。
 //!
-//! ★ ★ **（G104 第 ② 处）：这份框架读法现在有第二个使用者** ——
-//! L4 的 ClientHello 预读（`fulcrum-server` 的 `peek_client_hello`）要的是**整张清单**，
-//! 这里要的是「有没有 `acme-tls/1`」。⇒ 翻出 [`alpn_list`] 让两边共用**一份**实现，
-//! 而不是各写一份（D18/G66 同一条理由：**让分家在结构上做不到**）。
+//! ★ ★ **（G104 第 ② 處）：這份框架讀法現在有第二個使用者** ——
+//! L4 的 ClientHello 預讀（`fulcrum-server` 的 `peek_client_hello`）要的是**整張清單**，
+//! 這裡要的是「有沒有 `acme-tls/1`」。⇒ 翻出 [`alpn_list`] 讓兩邊共用**一份**實作，
+//! 而不是各寫一份（D18/G66 同一條理由：**讓分家在結構上做不到**）。
 
 use log::{debug, warn};
 use pingora_boringssl::error::ErrorStack;
@@ -41,34 +41,34 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
-/// 一张证书连同它的私钥。**leaf 在 `chain[0]`**（PEM 文件里的顺序）。
+/// 一張證書連同它的私鑰。**leaf 在 `chain[0]`**（PEM 檔案裡的順序）。
 ///
-/// ★ 它就是 rustls 那边 `CertifiedKey` 的位置，而形状更朴素：
-/// BoringSSL 不需要「签名密钥对象」这一层抽象，握手期直接把 `X509` 与 `PKey` 装到
+/// ★ 它就是 rustls 那邊 `CertifiedKey` 的位置，而形狀更樸素：
+/// BoringSSL 不需要「簽名金鑰物件」這一層抽象，握手期直接把 `X509` 與 `PKey` 裝到
 /// `SSL` 上即可。
 pub struct CertKey {
     pub chain: Vec<X509>,
     pub key: PKey<Private>,
     /// leaf 的 `notAfter`。
     ///
-    /// ★ ★ **它由 [`crate::cert_key`] 从 `chain[0]` 自己读出来，不由调用方传进来。**
-    /// 收一个参数的话，「这张证书说自己什么时候到期」与「我们以为它什么时候到期」
-    /// 就成了两份，而不一致的那天没有任何东西会说 —— 表现是一条静静报错值的
-    /// `fulcrum_cert_expiry_seconds`，它在告警规则里长得完全正常。
-    /// ⇒ 让分家在结构上做不到（D18/G66 同一条理由）。
+    /// ★ ★ **它由 [`crate::cert_key`] 從 `chain[0]` 自己讀出來，不由呼叫方傳進來。**
+    /// 收一個參數的話，「這張證書說自己什麼時候到期」與「我們以為它什麼時候到期」
+    /// 就成了兩份，而不一致的那天沒有任何東西會說 —— 表現是一條靜靜回報錯誤值的
+    /// `fulcrum_cert_expiry_seconds`，它在告警規則里長得完全正常。
+    /// ⇒ 讓分家在結構上做不到（D18/G66 同一條理由）。
     pub not_after: SystemTime,
 }
 
 impl CertKey {
-    /// 把这张证书装到一条正在握手的连接上。
+    /// 把這張證書裝到一條正在握手的連接上。
     ///
-    /// ★ ★ **顺序是有讲究的**：先 `SSL_use_certificate`（leaf），再逐张
-    /// `SSL_add1_chain_cert`（中间证书）。反过来会把中间证书当成 leaf 发出去 ——
-    /// 而那种连接在多数客户端上表现为「证书链不完整」，**不是**一个当场可见的错。
+    /// ★ ★ **順序是有講究的**：先 `SSL_use_certificate`（leaf），再逐張
+    /// `SSL_add1_chain_cert`（中間證書）。反過來會把中間證書當成 leaf 發出去 ——
+    /// 而那種連接在多數用戶端上表現為「證書鏈不完整」，**不是**一個當場可見的錯。
     pub fn install_on(&self, ssl: &mut SslRef) -> Result<(), ErrorStack> {
         let mut it = self.chain.iter();
         let Some(leaf) = it.next() else {
-            // 空链在 `cert_key()` 就被挡掉了；这里只是不 panic。
+            // 空鏈在 `cert_key()` 就被擋掉了；這裡只是不 panic。
             return Ok(());
         };
         ssl_use_certificate(ssl, leaf)?;
@@ -86,41 +86,41 @@ impl std::fmt::Debug for CertKey {
     }
 }
 
-/// 一份证书表。
+/// 一份證書表。
 #[derive(Default)]
 struct Table {
-    /// 精确域名 → 证书。键一律小写。
+    /// 精確網域 → 證書。鍵一律小寫。
     exact: BTreeMap<String, Arc<CertKey>>,
-    /// `(".example.com", 证书)`，**按后缀长度降序**。
+    /// `(".example.com", 证书)`，**按後綴長度降序**。
     wildcard: Vec<(String, Arc<CertKey>)>,
-    /// 客户端不带 SNI 时**当作**它报了哪个名字（全局选项 `default_sni`）。键一律小写。
+    /// 用戶端不帶 SNI 時**當作**它報了哪個名字（全域選項 `default_sni`）。鍵一律小寫。
     ///
-    /// ★ ★ **存的是名字，不是那张证书。** 存 `Arc<CertKey>` 的话它就是上面两张表里
-    /// 那张的第二份副本，而副本会在两个方向上分家，两次都没有任何东西会说：
-    ///   · 自动签发的那张多半在**装载之后**才装进表 —— 装载时按名字取一次是空的，
-    ///     于是 `default_sni` 对一个自动签发的站点等于没配；
-    ///   · 续期换掉表里那张之后，副本仍指着**旧证书** —— 不带 SNI 的客户端拿到一张
-    ///     过期证书，而 [`SniResolver::expiries`] 只走 exact/wildcard，
+    /// ★ ★ **存的是名字，不是那張證書。** 存 `Arc<CertKey>` 的話它就是上面兩張表裡
+    /// 那張的第二份副本，而副本會在兩個方向上分家，兩次都沒有任何東西會說：
+    ///   · 自動簽發的那張多半在**裝載之後**才裝進表 —— 裝載時按名字取一次是空的，
+    ///     於是 `default_sni` 對一個自動簽發的站台等於沒配；
+    ///   · 續期換掉表裡那張之後，副本仍指著**舊證書** —— 不帶 SNI 的用戶端拿到一張
+    ///     過期證書，而 [`SniResolver::expiries`] 只走 exact/wildcard，
     ///     `fulcrum_cert_expiry_seconds` 上一切正常。
-    /// ⇒ 让分家在结构上做不到（D18/G66 同一条理由）。
+    /// ⇒ 讓分家在結構上做不到（D18/G66 同一條理由）。
     default_name: Option<String>,
 }
 
-/// ACME 的 TLS-ALPN-01 用的那个 ALPN 协议名（RFC 8737 §3）。写死，不可配置。
+/// ACME 的 TLS-ALPN-01 用的那個 ALPN 協定名（RFC 8737 §3）。寫死，不可設定。
 pub const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
-/// 按 SNI 挑证书。可以在运行期热装新证书（ACME 签发完就装进来）。
+/// 按 SNI 挑證書。可以在執行期熱裝新證書（ACME 簽發完就裝進來）。
 #[derive(Default)]
 pub struct SniResolver {
     table: RwLock<Table>,
-    /// ★ TLS-ALPN-01 的挑战证书（G54 的「主」）：域名 → 那张一次性的自签证书。
+    /// ★ TLS-ALPN-01 的挑戰證書（G54 的「主」）：網域 → 那張一次性的自簽證書。
     ///
-    /// ⚠ ⚠ **它与 `table` 是两张互不相通的表，这是安全属性不是洁癖**：
-    ///   · 客户端提供了 `acme-tls/1` 时**只**看这张表 —— 否则会把用户的真证书
-    ///     交给一个只想验证域名归属的对端；
-    ///   · 没提供 `acme-tls/1` 时**绝不**看这张表 —— 否则普通访客会拿到
-    ///     一张自签的挑战证书，浏览器当场报证书错误，而服务端日志里是一次成功的握手。
-    ///   两个方向各由一条断言钉着（`tests/acme/run.sh`）。
+    /// ⚠ ⚠ **它與 `table` 是兩張互不相通的表，這是安全屬性不是潔癖**：
+    ///   · 用戶端提供了 `acme-tls/1` 時**只**看這張表 —— 否則會把使用者的真證書
+    ///     交給一個只想驗證網域歸屬的對端；
+    ///   · 沒提供 `acme-tls/1` 時**絕不**看這張表 —— 否則普通訪客會拿到
+    ///     一張自籤的挑戰證書，瀏覽器當場報證書錯誤，而伺服器端紀錄裡是一次成功的握手。
+    ///   兩個方向各由一條斷言釘著（`tests/acme/run.sh`）。
     challenge: RwLock<BTreeMap<String, Arc<CertKey>>>,
 }
 
@@ -136,21 +136,21 @@ impl SniResolver {
         SniResolver::default()
     }
 
-    /// ★ ★ **把自己挂成这个 context 的证书选择回调。**
+    /// ★ ★ **把自己掛成這個 context 的證書選擇回呼。**
     ///
-    /// 这是 G104 那条决策的落点：h1/h2 入口与（将来的）h3 入口**挂同一个回调**，
-    /// 于是「两个入口各有一套挑证书实现」在结构上做不到 —— 那正是取「统一 BoringSSL」
-    /// 而不是「两套并存」的全部理由（D18/G66 同源）。
+    /// 這是 G104 那條決策的落點：h1/h2 入口與（將來的）h3 入口**掛同一個回呼**，
+    /// 於是「兩個入口各有一套挑證書實作」在結構上做不到 —— 那正是取「統一 BoringSSL」
+    /// 而不是「兩套並存」的全部理由（D18/G66 同源）。
     pub fn install_into(self: &Arc<Self>, builder: &mut SslContextBuilder) {
         let me = self.clone();
         builder.set_select_certificate_callback(move |mut hello| me.select(&mut hello));
     }
 
-    /// 早回调的正体。
+    /// 早回呼的正體。
     ///
-    /// ⚠ 返回 `Err(SelectCertError::ERROR)` = **拒绝这次握手**。
-    /// ★ 那比「挑一张不匹配的证书」好：后者让客户端看到证书错误，
-    /// 而运维在服务端只看到一次成功的握手。
+    /// ⚠ 回傳 `Err(SelectCertError::ERROR)` = **拒絕這次握手**。
+    /// ★ 那比「挑一張不匹配的證書」好：後者讓用戶端看到證書錯誤，
+    /// 而維運在伺服器端只看到一次成功的握手。
     fn select(&self, hello: &mut ClientHello<'_>) -> Result<(), SelectCertError> {
         // ★ SNI 先抄成 owned：下面要 `ssl_mut()`（`&mut`），
         //   而 `servername()` 借的是 `hello` 本身。
@@ -160,15 +160,15 @@ impl SniResolver {
 
         // ── TLS-ALPN-01（RFC 8737）────────────────────────────────────────
         //
-        // ★ ★ **提供了 `acme-tls/1` 的连接走一条完全独立的路**：只查挑战表，
-        //   查不到就**拒绝握手**，绝不回落到真证书。
-        //   ⚠ 回落会把用户的真证书交给一个只需要验证域名归属的对端；
-        //   而且 CA 拿到一张没有 acmeIdentifier 扩展的证书本来就会判失败，
-        //   所以回落连「让它能用」都换不到——纯粹是白送一次证书暴露。
+        // ★ ★ **提供了 `acme-tls/1` 的連接走一條完全獨立的路**：只查挑戰表，
+        //   查不到就**拒絕握手**，絕不回落到真證書。
+        //   ⚠ 回落會把使用者的真證書交給一個只需要驗證網域歸屬的對端；
+        //   而且 CA 拿到一張沒有 acmeIdentifier 擴充的證書本來就會判失敗，
+        //   所以回落連「讓它能用」都換不到——純粹是白送一次證書暴露。
         //
-        // ⚠ ⚠ **这里判的是「客户端提供了」，不是「协商到了」** —— 早回调发生在
-        //   ALPN 协商之前。两者的差别在这条路上不重要（真正的 CA 只提供这一个协议），
-        //   ★ 但**措辞必须准确**：写成「协商到」会让下一个人以为这里能拿到协商结果。
+        // ⚠ ⚠ **這裡判的是「用戶端提供了」，不是「協商到了」** —— 早回呼發生在
+        //   ALPN 協商之前。兩者的差別在這條路上不重要（真正的 CA 只提供這一個協定），
+        //   ★ 但**措辭必須準確**：寫成「協商到」會讓下一個人以為這裡能拿到協商結果。
         let offers_acme_tls = hello
             .get_extension(ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
             .is_some_and(|body| offers_alpn(body, ACME_TLS_ALPN));
@@ -186,13 +186,13 @@ impl SniResolver {
             let got = self.lookup(sni.as_deref());
             match (&sni, &got) {
                 (Some(n), None) => debug!("SNI {n} 没有可用证书，拒绝握手"),
-                // ⚠ ⚠ 这一句以前**恒说「没有配 default_sni」**，而在配了的时候它是**假的**：
-                //   `default_sni` 那时编译得过、结构化配置里也写着，却**没有任何人接**
-                //   （`set_default` 全仓唯一的调用方在一条 `#[cfg(test)]` 里）⇒ 现场是
-                //   「配了它，握手照样被拒，而日志说你没配」——最难查的那一种。
-                // ★ 现在这句话只说**解析器自己知道的东西**：默认名字有没有、够不够得到证书。
-                //   两件事分开说，因为处置完全不同：前者要去加一行配置，
-                //   后者要去看那个名字的证书为什么没签下来。
+                // ⚠ ⚠ 這一句以前**恆說「沒有配 default_sni」**，而在配了的時候它是**假的**：
+                //   `default_sni` 那時編譯得過、結構化設定裡也寫著，卻**沒有任何人接**
+                //   （`set_default` 全倉唯一的呼叫方在一條 `#[cfg(test)]` 裡）⇒ 現場是
+                //   「配了它，握手照樣被拒，而紀錄說你沒配」——最難查的那一種。
+                // ★ 現在這句話只說**解析器自己知道的東西**：預設名字有沒有、夠不夠得到證書。
+                //   兩件事分開說，因為處置完全不同：前者要去加一行設定，
+                //   後者要去看那個名字的證書為什麼沒簽下來。
                 (None, None) => match self.default_name() {
                     None => debug!("客户端没给 SNI，且没有配 default_sni，拒绝握手"),
                     Some(d) => {
@@ -208,24 +208,24 @@ impl SniResolver {
             return Err(SelectCertError::ERROR);
         };
         ck.install_on(hello.ssl_mut()).map_err(|e| {
-            // ⚠ 这一条与「挑不到」是两回事：证书挑到了却装不上，说明存的东西本身有问题
-            //   （私钥与证书对不上之类）。它必须能与上面那几行区分开。
+            // ⚠ 這一條與「挑不到」是兩回事：證書挑到了卻裝不上，說明存的東西本身有問題
+            //   （私鑰與證書對不上之類）。它必須能與上面那幾行區分開。
             warn!("证书挑到了却装不到连接上：{e}");
             SelectCertError::ERROR
         })
     }
 
-    /// 把一张证书装到它覆盖的每个域名上。
+    /// 把一張證書裝到它覆蓋的每個網域上。
     ///
-    /// `domains` 通常来自证书自己的 SAN——**不是**配置里写的站点名。
-    /// ★ 这一点很重要：一张买来的证书可能覆盖比配置里写的更多（或更少）的域名，
-    /// 而握手期该用哪张，取决于**证书说它是谁的**。
+    /// `domains` 通常來自證書自己的 SAN——**不是**設定裡寫的站台名。
+    /// ★ 這一點很重要：一張買來的證書可能覆蓋比設定裡寫的更多（或更少）的網域，
+    /// 而握手期該用哪張，取決於**證書說它是誰的**。
     pub fn install(&self, domains: &[String], ck: Arc<CertKey>) {
         let mut t = match self.table.write() {
             Ok(t) => t,
             Err(e) => {
-                // ⚠ 锁中毒说明某个持锁线程 panic 过。这里不 unwrap——
-                //   一次装载失败不该把整个进程带走。
+                // ⚠ 鎖中毒說明某個持鎖執行緒 panic 過。這裡不 unwrap——
+                //   一次裝載失敗不該把整個處理程序帶走。
                 warn!("证书表的锁中毒了，本次装载被跳过：{e}");
                 return;
             }
@@ -240,42 +240,42 @@ impl SniResolver {
                 t.exact.insert(d, ck.clone());
             }
         }
-        // ★ 长后缀优先：`*.a.example.com` 必须先于 `*.example.com` 被试到。
+        // ★ 長後綴優先：`*.a.example.com` 必須先於 `*.example.com` 被試到。
         t.wildcard
             .sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
     }
 
-    /// 客户端不带 SNI 时**当作**它报了这个名字（全局选项 `default_sni`）。
+    /// 用戶端不帶 SNI 時**當作**它報了這個名字（全域選項 `default_sni`）。
     ///
-    /// ⚠ **这里不检查这个名字现在有没有证书**：自动签发的那张多半是启动之后才签下来的，
-    /// 装载时按「取不到就报错」处置，等于把一个正常的启动瞬态说成配置错误。
-    /// 够不够得到由**每次握手现查**；装载时该说的那句话由
-    /// `fulcrum_server::tls::plan_tls` 说 —— 它看得见配置里有没有站点服务这个名字，
-    /// 而这里只看得见证书表。
+    /// ⚠ **這裡不檢查這個名字現在有沒有證書**：自動簽發的那張多半是啟動之後才簽下來的，
+    /// 裝載時按「取不到就回報錯誤」處置，等於把一個正常的啟動瞬態說成設定錯誤。
+    /// 夠不夠得到由**每次握手現查**；裝載時該說的那句話由
+    /// `fulcrum_server::tls::plan_tls` 說 —— 它看得見設定裡有沒有站台服務這個名字，
+    /// 而這裡只看得見證書表。
     pub fn set_default_name(&self, name: &str) {
         if let Ok(mut t) = self.table.write() {
             t.default_name = Some(name.to_ascii_lowercase());
         }
     }
 
-    /// 现在配着的 `default_sni` 是哪个名字。给装载日志与握手日志用。
+    /// 現在配著的 `default_sni` 是哪個名字。給裝載紀錄與握手紀錄用。
     pub fn default_name(&self) -> Option<String> {
         self.table.read().ok()?.default_name.clone()
     }
 
-    /// 已装载的精确域名与通配后缀，给装载日志用。
+    /// 已裝載的精確網域與通配後綴，給裝載紀錄用。
     ///
-    /// ★ 它从 [`Self::expiries`] 派生 —— 两处各拼一遍键的写法迟早分家，
-    /// 而分家之后「装载日志里的那批域名」与「指标里的那批域名」看起来都言之凿凿。
+    /// ★ 它從 [`Self::expiries`] 派生 —— 兩處各拼一遍鍵的寫法遲早分家，
+    /// 而分家之後「裝載紀錄裡的那批網域」與「指標裡的那批網域」看起來都言之鑿鑿。
     pub fn known(&self) -> Vec<String> {
         self.expiries().into_iter().map(|(d, _)| d).collect()
     }
 
-    /// 每个已装载域名的证书 `notAfter`。**键的写法与 [`Self::known`] 是同一份。**
+    /// 每個已裝載網域的證書 `notAfter`。**鍵的寫法與 [`Self::known`] 是同一份。**
     ///
-    /// ⛔ ⚠ **挑战表不在里面**：TLS-ALPN-01 那张一次性自签证书只活几秒、也不是站点证书，
-    /// 混进来会让「快过期了」那类告警一直在叫，而叫的是一个根本不该被续期的东西。
-    /// ★ 两张表本来就互不相通（见 `challenge` 字段），这里只是不去把它们合起来。
+    /// ⛔ ⚠ **挑戰表不在裡面**：TLS-ALPN-01 那張一次性自簽證書只活幾秒、也不是站台證書，
+    /// 混進來會讓「快過期了」那類告警一直在叫，而叫的是一個根本不該被續期的東西。
+    /// ★ 兩張表本來就互不相通（見 `challenge` 欄位），這裡只是不去把它們合起來。
     pub fn expiries(&self) -> Vec<(String, SystemTime)> {
         let Ok(t) = self.table.read() else {
             return Vec::new();
@@ -293,11 +293,11 @@ impl SniResolver {
         out
     }
 
-    /// 一张证书都没装上。
+    /// 一張證書都沒裝上。
     ///
-    /// ⚠ `default_sni` **不算**：它是个名字，不是一张证书。把它算进来的话，一份
-    /// 「配了 `default_sni`、而一张证书都没签下来」的部署会被说成「装上了东西」，
-    /// 而那正是装载日志最该喊的一种情形。
+    /// ⚠ `default_sni` **不算**：它是個名字，不是一張證書。把它算進來的話，一份
+    /// 「配了 `default_sni`、而一張證書都沒簽下來」的部署會被說成「裝上了東西」，
+    /// 而那正是裝載紀錄最該喊的一種情形。
     pub fn is_empty(&self) -> bool {
         self.table
             .read()
@@ -305,11 +305,11 @@ impl SniResolver {
             .unwrap_or(true)
     }
 
-    /// 挂一张 TLS-ALPN-01 的挑战证书上去，拿到一个到期自动摘掉的守卫。
+    /// 掛一張 TLS-ALPN-01 的挑戰證書上去，拿到一個到期自動摘掉的守衛。
     ///
-    /// ★ 形状照 `fulcrum_acme::Http01Store::provision`：**手写一对 insert/remove
-    /// 迟早会漏一次**，而漏掉的后果是一张自签证书永远留在表上——
-    /// 虽然它只在 `acme-tls/1` 那条路上才会被挑到，但那仍是一条不该留的面。
+    /// ★ 形狀照 `fulcrum_acme::Http01Store::provision`：**手寫一對 insert/remove
+    /// 遲早會漏一次**，而漏掉的後果是一張自簽證書永遠留在表上——
+    /// 雖然它只在 `acme-tls/1` 那條路上才會被挑到，但那仍是一條不該留的面。
     pub fn provision_challenge(self: &Arc<Self>, domain: &str, ck: Arc<CertKey>) -> ChallengeCert {
         let domain = domain.to_ascii_lowercase();
         if let Ok(mut c) = self.challenge.write() {
@@ -322,16 +322,16 @@ impl SniResolver {
         }
     }
 
-    /// 现在挂着几张挑战证书。给日志与测试用。
+    /// 現在掛著幾張挑戰證書。給紀錄與測試用。
     pub fn challenge_len(&self) -> usize {
         self.challenge.read().map(|c| c.len()).unwrap_or(0)
     }
 
-    /// ★ 挑战证书**只做精确匹配**，不吃通配、不落 default。
+    /// ★ 挑戰證書**只做精確匹配**，不吃通配、不落 default。
     ///
-    /// ⚠ 通配符域名的 TLS-ALPN-01 挑战，CA 连的是**被授权的那个名字本身**
-    /// （`example.com`，不是 `*.example.com`），所以这里按 CA 会给的 SNI 存取即可。
-    /// 让它吃通配或落 default，等于给「随便一个 SNI 都能换到一张挑战证书」开门。
+    /// ⚠ 通配符網域的 TLS-ALPN-01 挑戰，CA 連的是**被授權的那個名字本身**
+    /// （`example.com`，不是 `*.example.com`），所以這裡按 CA 會給的 SNI 存取即可。
+    /// 讓它吃通配或落 default，等於給「隨便一個 SNI 都能換到一張挑戰證書」開門。
     fn lookup_challenge(&self, sni: Option<&str>) -> Option<Arc<CertKey>> {
         let name = sni?.to_ascii_lowercase();
         self.challenge.read().ok()?.get(&name).cloned()
@@ -345,25 +345,25 @@ impl SniResolver {
                 lowered = n.to_ascii_lowercase();
                 lowered.as_str()
             }
-            // 不带 SNI（老客户端、或直接用 IP 访问）→ **当作它报了 `default_sni` 那个名字**。
-            // ★ 「当作报了这个名字」而不是「取那张存好的证书」，是这条指令唯一正确的形状：
-            //   名字每次现查，于是后来才签下来的、以及续期换过的，都自动跟着走。
+            // 不帶 SNI（老用戶端、或直接用 IP 訪問）→ **當作它報了 `default_sni` 那個名字**。
+            // ★ 「當作報了這個名字」而不是「取那張存好的證書」，是這條指令唯一正確的形狀：
+            //   名字每次現查，於是後來才簽下來的、以及續期換過的，都自動跟著走。
             None => t.default_name.as_deref()?,
         };
         lookup_named(&t, name)
     }
 }
 
-/// 一个**已经折成小写**的名字，在这张表里对应哪张证书。精确 → 通配（长后缀优先）。
+/// 一個**已經摺成小寫**的名字，在這張表裡對應哪張證書。精確 → 通配（長後綴優先）。
 ///
-/// ⚠ ⚠ **它不回落到 `default_sni`。** 客户端报了一个我们没有证书的名字，正确处置是
-/// 拒绝握手（理由见 `SniResolver::select` 上面那段：拿一张不匹配的证书去应答，
-/// 客户端看到证书错误，而运维在服务端只看到一次成功的握手）。
-/// ★ Caddy 把这两件事分成两个选项：`default_sni`（客户端**没报**名字）与
-/// `fallback_sni`（报了、但没有对应的证书）。**我们只有前者**，
-/// `dsl-reference.md` 全局选项那一行也是这么写的 —— 两边一致。
-/// 反向那半由 `tests/serve/run.sh` 9c 与 `tests/smoke/run.sh` 4c 钉着：
-/// **配着 `default_sni` 的部署上，未知 SNI 仍然必须被拒绝握手。**
+/// ⚠ ⚠ **它不回落到 `default_sni`。** 用戶端報了一個我們沒有證書的名字，正確處置是
+/// 拒絕握手（理由見 `SniResolver::select` 上面那段：拿一張不匹配的證書去應答，
+/// 用戶端看到證書錯誤，而維運在伺服器端只看到一次成功的握手）。
+/// ★ Caddy 把這兩件事分成兩個選項：`default_sni`（用戶端**沒報**名字）與
+/// `fallback_sni`（報了、但沒有對應的證書）。**我們只有前者**，
+/// `dsl-reference.md` 全域選項那一行也是這麼寫的 —— 兩邊一致。
+/// 反向那半由 `tests/serve/run.sh` 9c 與 `tests/smoke/run.sh` 4c 釘著：
+/// **配著 `default_sni` 的部署上，未知 SNI 仍然必須被拒絕握手。**
 fn lookup_named(t: &Table, name: &str) -> Option<Arc<CertKey>> {
     if let Some(ck) = t.exact.get(name) {
         return Some(ck.clone());
@@ -374,31 +374,31 @@ fn lookup_named(t: &Table, name: &str) -> Option<Arc<CertKey>> {
         .map(|(_, ck)| ck.clone())
 }
 
-/// 客户端在 ALPN 扩展里提供的**全部**协议名，按原顺序。
+/// 用戶端在 ALPN 擴充裡提供的**全部**協定名，按原順序。
 ///
-/// 收的是 `ClientHello::get_extension(APPLICATION_LAYER_PROTOCOL_NEGOTIATION)` 的原始体，
-/// 按 RFC 7301 §3.1 的框架：**2 字节列表总长，随后是若干「1 字节长度 + 名字」**。
+/// 收的是 `ClientHello::get_extension(APPLICATION_LAYER_PROTOCOL_NEGOTIATION)` 的原始體，
+/// 按 RFC 7301 §3.1 的框架：**2 位元組列表總長，隨後是若干「1 位元組長度 + 名字」**。
 ///
-/// ★ ★ **这不是「手写 ClientHello 解析」**：BoringSSL 已经把扩展切出来了，
-/// 这里读的是一段自带长度的列表，边界全部显式检查，而且下面那组单测**命中与错过都覆盖**。
+/// ★ ★ **這不是「手寫 ClientHello 解析」**：BoringSSL 已經把擴充切出來了，
+/// 這裡讀的是一段自帶長度的列表，邊界全部顯式檢查，而且下面那組單測**命中與錯過都覆蓋**。
 ///
-/// ⚠ ⚠ **`None` 与 `Some(vec![])` 是两件事，不许合并**：
-/// 前者是「这段字节我们没读懂」，后者是「一份合法的空清单」。
-/// 两个调用方对它们的处置**恰好相同**（都按「没提供」算），
-/// ★ 但那是两条各自成立的判断，不是同一条 —— 把它们在这里压成一个 `bool`，
-/// 下一个需要区分的调用方就再也拿不回来了。
+/// ⚠ ⚠ **`None` 與 `Some(vec![])` 是兩件事，不許合併**：
+/// 前者是「這段位元組我們沒讀懂」，後者是「一份合法的空清單」。
+/// 兩個呼叫方對它們的處置**恰好相同**（都按「沒提供」算），
+/// ★ 但那是兩條各自成立的判斷，不是同一條 —— 把它們在這裡壓成一個 `bool`，
+/// 下一個需要區分的呼叫方就再也拿不回來了。
 ///
-/// ★ ★ ★ **（G104 第 ② 处）：本函数从 [`offers_alpn`] 里翻出来了。**
-/// L4 的 ClientHello 预读换到 BoringSSL 之后要的是**整张清单**（分流规则按集合比），
-/// 而这里要的是「有没有 `acme-tls/1`」。⇒ 两个问题共用**一份** RFC 7301 框架读法，
-/// 而不是各写一份 —— 与 D18/G66 同一条理由：**让分家在结构上做不到**。
+/// ★ ★ ★ **（G104 第 ② 處）：本函式從 [`offers_alpn`] 裡翻出來了。**
+/// L4 的 ClientHello 預讀換到 BoringSSL 之後要的是**整張清單**（分流規則按集合比），
+/// 而這裡要的是「有沒有 `acme-tls/1`」。⇒ 兩個問題共用**一份** RFC 7301 框架讀法，
+/// 而不是各寫一份 —— 與 D18/G66 同一條理由：**讓分家在結構上做不到**。
 pub fn alpn_list(ext_body: &[u8]) -> Option<Vec<Vec<u8>>> {
     if ext_body.len() < 2 {
         return None;
     }
     let declared = u16::from_be_bytes([ext_body[0], ext_body[1]]) as usize;
     let list = &ext_body[2..];
-    // ★ 声明长度与实际长度必须严丝合缝。宽容一个字节，就等于接受一份我们没读懂的输入。
+    // ★ 宣告長度與實際長度必須嚴絲合縫。寬容一個位元組，就等於接受一份我們沒讀懂的輸入。
     if declared != list.len() {
         return None;
     }
@@ -407,7 +407,7 @@ pub fn alpn_list(ext_body: &[u8]) -> Option<Vec<Vec<u8>>> {
     while i < list.len() {
         let n = list[i] as usize;
         i += 1;
-        // 零长名字不合法（RFC 7301：`ProtocolName<1..2^8-1>`）；越界同理。
+        // 零長名字不合法（RFC 7301：`ProtocolName<1..2^8-1>`）；越界同理。
         if n == 0 || i + n > list.len() {
             return None;
         }
@@ -417,10 +417,10 @@ pub fn alpn_list(ext_body: &[u8]) -> Option<Vec<Vec<u8>>> {
     Some(out)
 }
 
-/// 客户端在 ALPN 扩展里**提供**了某个协议吗。
+/// 用戶端在 ALPN 擴充裡**提供**了某個協定嗎。
 ///
-/// ⚠ 一切对不上的输入一律回 `false`（= 当作没提供），而不是「尽力猜」——
-/// 猜错的方向是「把真证书发给一个 ACME 验证连接」，那是这一整块要防的事。
+/// ⚠ 一切對不上的輸入一律回 `false`（= 當作沒提供），而不是「盡力猜」——
+/// 猜錯的方向是「把真證書發給一個 ACME 驗證連接」，那是這一整塊要防的事。
 pub fn offers_alpn(ext_body: &[u8], want: &[u8]) -> bool {
     if want.is_empty() {
         return false;
@@ -428,15 +428,15 @@ pub fn offers_alpn(ext_body: &[u8], want: &[u8]) -> bool {
     alpn_list(ext_body).is_some_and(|l| l.iter().any(|p| p == want))
 }
 
-/// `*.example.com`（这里传的是 `.example.com`）覆盖谁——**语义在别处，这里只是转出去**。
+/// `*.example.com`（這裡傳的是 `.example.com`）覆蓋誰——**語義在別處，這裡只是轉出去**。
 ///
-/// ★ ★ （D18 / G66）之前这里自己有一份实现，而站点索引那边**另有一份、
-/// 而且不一样**（`ends_with` 的后缀匹配）。后果不是抽象的：`a.b.example.com`
-/// 被路由到通配站点、然后在这里拿不到证书 ⇒ 握手失败，而配置里看不出问题。
-/// → 现在两边都调 [`fulcrum_config::host::wildcard_covers`]，**只有一份语义**。
+/// ★ ★ （D18 / G66）之前這裡自己有一份實作，而站台索引那邊**另有一份、
+/// 而且不一樣**（`ends_with` 的後綴匹配）。後果不是抽象的：`a.b.example.com`
+/// 被路由到通配站台、然後在這裡拿不到證書 ⇒ 握手失敗，而設定裡看不出問題。
+/// → 現在兩邊都調 [`fulcrum_config::host::wildcard_covers`]，**只有一份語義**。
 pub use fulcrum_config::host::wildcard_covers;
 
-/// 一张挂着的 TLS-ALPN-01 挑战证书。析构时自动摘掉。
+/// 一張掛著的 TLS-ALPN-01 挑戰證書。析構時自動摘掉。
 pub struct ChallengeCert {
     resolver: Arc<SniResolver>,
     domain: String,
@@ -463,16 +463,16 @@ mod tests {
 
     #[test]
     fn 通配符只吃一层() {
-        // ★ 这一条是 RFC 6125 与浏览器的实际行为，不是我们的偏好。
+        // ★ 這一條是 RFC 6125 與瀏覽器的實際行為，不是我們的偏好。
         assert!(wildcard_covers(".example.com", "a.example.com"));
         assert!(wildcard_covers(".example.com", "www.example.com"));
-        // 裸域不在覆盖范围内
+        // 裸域不在覆蓋範圍內
         assert!(!wildcard_covers(".example.com", "example.com"));
-        // 两层不在覆盖范围内
+        // 兩層不在覆蓋範圍內
         assert!(!wildcard_covers(".example.com", "a.b.example.com"));
-        // 别的域名当然不在
+        // 別的網域當然不在
         assert!(!wildcard_covers(".example.com", "a.example.org"));
-        // 空标签不算
+        // 空標籤不算
         assert!(!wildcard_covers(".example.com", ".example.com"));
     }
 
@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(r.default_name(), None);
     }
 
-    /// 一张现造的自签证书。★ 每次调都是**新的**一张，所以下面可以按 `Arc::ptr_eq` 判身份。
+    /// 一張現造的自簽證書。★ 每次調都是**新的**一張，所以下面可以按 `Arc::ptr_eq` 判身分。
     fn 自签(domains: &[&str]) -> Arc<CertKey> {
         let key = rcgen::KeyPair::generate().expect("测试密钥");
         let names: Vec<String> = domains.iter().map(|d| d.to_string()).collect();
@@ -497,17 +497,17 @@ mod tests {
 
     #[test]
     fn default_sni_存的是名字而不是配它那一刻的那张证书() {
-        // ★ ★ 这一条钉的是 `default_name` 那段注释里说的两次分家。一个存
-        //   `Arc<CertKey>` 的实现在①就取到空、在③还发着旧证书，而两处都没人会说。
+        // ★ ★ 這一條釘的是 `default_name` 那段註解裡說的兩次分家。一個存
+        //   `Arc<CertKey>` 的實作在①就取到空、在③還發著舊證書，而兩處都沒人會說。
         let r = SniResolver::new();
 
-        // ① 先配 default_sni，此刻表里还没有它的证书 —— 自动签发就是这个时序：
-        //    证书要等后台巡检签下来，那是**装载之后**的事。
+        // ① 先配 default_sni，此刻表裡還沒有它的證書 —— 自動簽發就是這個時序：
+        //    證書要等後台巡檢簽下來，那是**裝載之後**的事。
         r.set_default_name("A.Com");
         assert_eq!(r.default_name().as_deref(), Some("a.com"), "名字要折成小写");
         assert!(r.lookup(None).is_none(), "还没有证书，这时候不该挑出东西来");
 
-        // ② 证书后来才装进来 ⇒ 不带 SNI 的握手必须**跟着**有。
+        // ② 證書後來才裝進來 ⇒ 不帶 SNI 的握手必須**跟著**有。
         let 第一张 = 自签(&["a.com"]);
         r.install(&["a.com".to_string()], 第一张.clone());
         let got = r.lookup(None).expect("装上了就该挑得到");
@@ -516,9 +516,9 @@ mod tests {
             "default_sni 指的名字后来才有证书，而不带 SNI 的握手没跟上"
         );
 
-        // ③ 续期换掉表里那张 ⇒ 必须发**新的**那张。
-        //    ⚠ 发旧的那张的表现是「不带 SNI 的客户端拿到一张过期证书」，
-        //    而 `expiries()` 里看不到它 —— 到期指标上一切正常。
+        // ③ 續期換掉表裡那張 ⇒ 必須發**新的**那張。
+        //    ⚠ 發舊的那張的表現是「不帶 SNI 的用戶端拿到一張過期證書」，
+        //    而 `expiries()` 裡看不到它 —— 到期指標上一切正常。
         let 续期后 = 自签(&["a.com"]);
         r.install(&["a.com".to_string()], 续期后.clone());
         let got = r.lookup(None).expect("续期后照样该挑得到");
@@ -530,11 +530,11 @@ mod tests {
 
     #[test]
     fn default_sni_不给未知的_sni_兜底() {
-        // ⚠ 反向那半：配了 `default_sni` 之后，**报了名字**的客户端不许被兜底。
-        //   兜底会让客户端看到证书错误，而服务端日志里是一次**成功**的握手。
-        //   ★ 同一条纪律在真流量上由 `tests/serve/run.sh` 9c 与 `tests/smoke/run.sh` 4c 钉着；
-        //   少了这一条，把 `lookup_named` 的结果 `.or(default)` 一下，两边都还是绿的
-        //   （那两个场景的部署此前根本没配 `default_sni`）。
+        // ⚠ 反向那半：配了 `default_sni` 之後，**報了名字**的用戶端不許被備援。
+        //   備援會讓用戶端看到證書錯誤，而伺服器端紀錄裡是一次**成功**的握手。
+        //   ★ 同一條紀律在真流量上由 `tests/serve/run.sh` 9c 與 `tests/smoke/run.sh` 4c 釘著；
+        //   少了這一條，把 `lookup_named` 的結果 `.or(default)` 一下，兩邊都還是綠的
+        //   （那兩個場景的部署此前根本沒配 `default_sni`）。
         let r = SniResolver::new();
         r.install(&["a.com".to_string()], 自签(&["a.com"]));
         r.set_default_name("a.com");
@@ -547,18 +547,18 @@ mod tests {
 
     #[test]
     fn default_sni_走的是与_sni_同一套匹配() {
-        // ★ 通配站点下的一个名字也能当 default_sni —— 因为两条路查的是**同一份**
-        //   `lookup_named`。另写一份「只查精确表」的实现，这一条会红。
+        // ★ 通配站台下的一個名字也能當 default_sni —— 因為兩條路查的是**同一份**
+        //   `lookup_named`。另寫一份「只查精確表」的實作，這一條會紅。
         let r = SniResolver::new();
         r.install(&["*.a.com".to_string()], 自签(&["*.a.com"]));
         r.set_default_name("www.a.com");
         assert!(r.lookup(None).is_some());
-        // 通配只吃一层，这一条对 default_sni 同样成立。
+        // 通配只吃一層，這一條對 default_sni 同樣成立。
         r.set_default_name("x.y.a.com");
         assert!(r.lookup(None).is_none());
     }
 
-    /// 造一份合法的 ALPN 扩展体。
+    /// 造一份合法的 ALPN 擴充體。
     fn alpn_ext(protos: &[&[u8]]) -> Vec<u8> {
         let mut list = Vec::new();
         for p in protos {
@@ -577,7 +577,7 @@ mod tests {
             &alpn_ext(&[b"h2", b"http/1.1", ACME_TLS_ALPN]),
             ACME_TLS_ALPN
         ));
-        // 在第一个也算
+        // 在第一個也算
         assert!(offers_alpn(
             &alpn_ext(&[ACME_TLS_ALPN, b"h2"]),
             ACME_TLS_ALPN
@@ -586,14 +586,14 @@ mod tests {
 
     #[test]
     fn alpn_扫描器也能错过() {
-        // ★ 这一半同样重要：一个恒真的扫描器会把每一条普通连接都当成 ACME 验证连接，
-        //   于是普通访客拿到自签的挑战证书。
+        // ★ 這一半同樣重要：一個恆真的掃描器會把每一條普通連接都當成 ACME 驗證連接，
+        //   於是普通訪客拿到自籤的挑戰證書。
         assert!(!offers_alpn(
             &alpn_ext(&[b"h2", b"http/1.1"]),
             ACME_TLS_ALPN
         ));
         assert!(!offers_alpn(&alpn_ext(&[]), ACME_TLS_ALPN));
-        // 前缀不算命中（长度必须相等）
+        // 前綴不算命中（長度必須相等）
         assert!(!offers_alpn(&alpn_ext(&[b"acme-tls/"]), ACME_TLS_ALPN));
         assert!(!offers_alpn(&alpn_ext(&[b"acme-tls/11"]), ACME_TLS_ALPN));
     }
@@ -603,28 +603,28 @@ mod tests {
         // 太短
         assert!(!offers_alpn(&[], ACME_TLS_ALPN));
         assert!(!offers_alpn(&[0x00], ACME_TLS_ALPN));
-        // 声明长度与实际不符（多一个字节）
+        // 宣告長度與實際不符（多一個位元組）
         let mut bad = alpn_ext(&[ACME_TLS_ALPN]);
         bad.push(0x00);
         assert!(!offers_alpn(&bad, ACME_TLS_ALPN));
-        // 声明长度与实际不符（少一个字节）
+        // 宣告長度與實際不符（少一個位元組）
         let mut short = alpn_ext(&[ACME_TLS_ALPN]);
         short.pop();
         assert!(!offers_alpn(&short, ACME_TLS_ALPN));
-        // 名字长度越界：声明 200 字节而后面只有几个
+        // 名字長度越界：宣告 200 位元組而後面只有幾個
         let body = [0x00u8, 0x03, 200, b'a', b'b'];
         assert!(!offers_alpn(&body, ACME_TLS_ALPN));
-        // 零长名字
+        // 零長名字
         let body = [0x00u8, 0x01, 0x00];
         assert!(!offers_alpn(&body, ACME_TLS_ALPN));
-        // 想找的东西是空的
+        // 想找的東西是空的
         assert!(!offers_alpn(&alpn_ext(&[b"h2"]), b""));
     }
 
     #[test]
     fn alpn_清单读得出原顺序与原字节() {
-        // ★ L4 的分流规则按**集合**比，但清单必须是原样的字节 ——
-        //   `h2c` 不许被读成 `h2`，那正是 tests/l4/run.sh ⑤ 钉的那条。
+        // ★ L4 的分流規則按**集合**比，但清單必須是原樣的位元組 ——
+        //   `h2c` 不許被讀成 `h2`，那正是 tests/l4/run.sh ⑤ 釘的那條。
         let got = alpn_list(&alpn_ext(&[b"h2", b"http/1.1", ACME_TLS_ALPN])).expect("该读得出");
         assert_eq!(
             got,
@@ -634,28 +634,28 @@ mod tests {
 
     #[test]
     fn alpn_清单把没读懂与空清单分开() {
-        // ⚠ ⚠ 这一条是本函数存在的全部理由：两者**恰好**都按「没提供」处置，
-        //   而它们是两条各自成立的判断。合并成一个 bool 就再也拿不回来了。
+        // ⚠ ⚠ 這一條是本函式存在的全部理由：兩者**恰好**都按「沒提供」處置，
+        //   而它們是兩條各自成立的判斷。合併成一個 bool 就再也拿不回來了。
         assert_eq!(alpn_list(&alpn_ext(&[])), Some(Vec::new()), "合法的空清单");
         assert_eq!(alpn_list(&[]), None, "两个字节都没有 ⇒ 没读懂");
         assert_eq!(alpn_list(&[0x00]), None, "只有一个字节 ⇒ 没读懂");
-        // 声明长度与实际不符（两个方向）
+        // 宣告長度與實際不符（兩個方向）
         let mut long = alpn_ext(&[ACME_TLS_ALPN]);
         long.push(0x00);
         assert_eq!(alpn_list(&long), None);
         let mut short = alpn_ext(&[ACME_TLS_ALPN]);
         short.pop();
         assert_eq!(alpn_list(&short), None);
-        // 名字长度越界 / 零长名字
+        // 名字長度越界 / 零長名字
         assert_eq!(alpn_list(&[0x00, 0x03, 200, b'a', b'b']), None);
         assert_eq!(alpn_list(&[0x00, 0x01, 0x00]), None);
     }
 
     #[test]
     fn alpn_扫描器不会因为跨条目而误命中() {
-        // ⚠ 一个按「在整段字节里 memmem」写的实现会在这里假命中：
-        //   `h2` + `acme-tls/1` 拼起来含有子串，但按条目扫就不会。
-        //   ★ 这一条是特意冲着「省事的写法」来的。
+        // ⚠ 一個按「在整段位元組裡 memmem」寫的實作會在這裡假命中：
+        //   `h2` + `acme-tls/1` 拼起來含有子串，但按條目掃就不會。
+        //   ★ 這一條是特意衝著「省事的寫法」來的。
         let body = alpn_ext(&[b"xacme-tls/1x"]);
         assert!(!offers_alpn(&body, ACME_TLS_ALPN));
     }

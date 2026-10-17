@@ -1,9 +1,9 @@
 ---
-type: 技术基线
-title: HTTP/3 库选型事实表（D11）
-description: 三条候选路线在「按 DCID 路由」「rustls 整合面」「维护活跃度」上的实测事实；★ quiche 用 BoringSSL 而不是 rustls，s2n-quic 根本不带 HTTP/3。
+type: 技術基線
+title: HTTP/3 庫選型事實表（D11）
+description: 三條候選路線在「按 DCID 路由」「rustls 整合面」「維護活躍度」上的實測事實；★ quiche 用 BoringSSL 而不是 rustls，s2n-quic 根本不帶 HTTP/3。
 resource: ../../PLAN.md
-tags: [依赖, 待定, 必读, 易错]
+tags: [依賴, 待定, 必讀, 易錯]
 status: draft
 generated:
   by: claude-code/opus-5
@@ -11,204 +11,204 @@ generated:
 sources:
   - id: plan-10-d11
     resource: /references/plan.md
-    title: PLAN.md §10 G103（D11 结案：HTTP/3 取 quiche）与它的两条前置
+    title: PLAN.md §10 G103（D11 結案：HTTP/3 取 quiche）與它的兩條前置
   - id: plan-51
     resource: /references/plan.md
-    title: PLAN.md §5.1 G6 三条硬约束（① TLS 后端 —— 原文锁 rustls，已由 G104 改成统一 BoringSSL；② tower 用不上；③ QUIC 监听器必须参与 socket 移交 —— 已由 M0 解除）
+    title: PLAN.md §5.1 G6 三條硬約束（① TLS 後端 —— 原文鎖 rustls，已由 G104 改成統一 BoringSSL；② tower 用不上；③ QUIC 監聽器必須參與 socket 移交 —— 已由 M0 解除）
   - id: open-seams
     resource: /verification/open-seams.md
-    title: 升级窗口内的 QUIC 连接归属；`ResolvesServerCert` 能否同时服务两个入口
+    title: 升級視窗內的 QUIC 連接歸屬；`ResolvesServerCert` 能否同時服務兩個入口
   - id: crates-io
     resource: https://crates.io/api/v1/crates
-    title: 各 crate 在 crates.io 上**自己声明**的版本、依赖与 feature 表
+    title: 各 crate 在 crates.io 上**自己宣告**的版本、依賴與 feature 表
   - id: docs-rs
     resource: https://docs.rs
-    title: quiche / quinn-proto / s2n-quic 的公开 API 文档
+    title: quiche / quinn-proto / s2n-quic 的公開 API 文件
 ---
 
-# 这份表是干什么的
+# 這份表是幹什麼的
 
-✅ ★★★ **D11 2026-08-25 由 G103–G105 结案：取 `quiche`**（§10）。
-**本页原样保留** —— 它是拍板时看的那张表，不是拍板之后的追述。
+✅ ★★★ **D11 2026-08-25 由 G103–G105 結案：取 `quiche`**（§10）。
+**本頁原樣保留** —— 它是拍板時看的那張表，不是拍板之後的追述。
 
-> ★ ★ **「原样保留」保的是哪一部分**（owner 2026-09-03 拍板，写在这里免得下一个人再猜）：
-> **保的是当时查到的事实与比较** —— 版本号、feature 表、依赖关系、各条路线的取舍，
-> ⛔ **一个字都不许改**，错了也留着（本页第 3 节那条「没有实测、只是把两句话放在一起」
-> 就是这么留下来的，而它后来被实测换成了另一件事）。
-> ⚠ **不保路标**：指向 `§` 号、`D` 号、`G` 号、文件路径这一类**引用**允许后补更正 ——
-> 一个指错地方的路标不是历史，是坏链。★ 更正要**当场说明它是后补的**。
-> ⇒ 于是本页既不必对着一个已经结案的 `§11` 说话，也不必给引用门开豁免。
+> ★ ★ **「原樣保留」保的是哪一部分**（owner 2026-09-03 拍板，寫在這裡免得下一個人再猜）：
+> **保的是當時查到的事實與比較** —— 版本號、feature 表、依賴關係、各條路線的取捨，
+> ⛔ **一個字都不許改**，錯了也留著（本頁第 3 節那條「沒有實測、只是把兩句話放在一起」
+> 就是這麼留下來的，而它後來被實測換成了另一件事）。
+> ⚠ **不保路標**：指向 `§` 號、`D` 號、`G` 號、檔案路徑這一類**引用**允許後補更正 ——
+> 一個指錯地方的路標不是歷史，是壞鏈。★ 更正要**當場說明它是後補的**。
+> ⇒ 於是本頁既不必對著一個已經結案的 `§11` 說話，也不必給引用門開豁免。
 
-> ★ 拍板同时定了另外两条，都由本页的事实直接推出来：
-> **G104** TLS 栈**整体换到 BoringSSL**（⚠ 推翻 §5.1 第 1 条 —— 因为第 2 节那条
-> 「quiche 用 BoringSSL、依赖表里没有 rustls」使得「继续锁 rustls」等价于「两套 TLS 并存」）；
-> **G105** HTTP/3 语义层用 `quiche::h3` **不自研**（第 0 节 (b) 与安全基线第 5 条）。
-> ✅ ★ **那条未验前置已验完，通过**：
-> 记录 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md) —— **G103 不重议**。
-> ⚠ ⚠ ★ 而下面第 3 条那句「没有实测，只是把两句话放在一起」，实测之后的答案与它的**方向**
-> 一致（能做到）而**卡点完全不同**：卡的不是 BoringSSL 与 musl，是 **`boring-sys` 的
-> bindgen 要 `dlopen`，而 Alpine 上 build script 默认是静态的**。
-> ★ **一条「把两句话放在一起」的担心，实测之后往往不是被证实或证伪，而是被换成另一件事**
-> —— 而那件事没有人预先写在任何清单上。
+> ★ 拍板同時定了另外兩條，都由本頁的事實直接推出來：
+> **G104** TLS 棧**整體換到 BoringSSL**（⚠ 推翻 §5.1 第 1 條 —— 因為第 2 節那條
+> 「quiche 用 BoringSSL、依賴表裡沒有 rustls」使得「繼續鎖 rustls」等價於「兩套 TLS 並存」）；
+> **G105** HTTP/3 語義層用 `quiche::h3` **不自研**（第 0 節 (b) 與安全基線第 5 條）。
+> ✅ ★ **那條未驗前置已驗完，通過**：
+> 記錄 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md) —— **G103 不重議**。
+> ⚠ ⚠ ★ 而下面第 3 條那句「沒有實測，只是把兩句話放在一起」，實測之後的答案與它的**方向**
+> 一致（能做到）而**卡點完全不同**：卡的不是 BoringSSL 與 musl，是 **`boring-sys` 的
+> bindgen 要 `dlopen`，而 Alpine 上 build script 預設是靜態的**。
+> ★ **一條「把兩句話放在一起」的擔心，實測之後往往不是被證實或證偽，而是被換成另一件事**
+> —— 而那件事沒有人預先寫在任何清單上。
 
-以下是拍板前的原文。它**只记查到了什么，不给推荐项** —— 推荐项与拍板走 §10 的常规流程。
+以下是拍板前的原文。它**只記查到了什麼，不給推薦項** —— 推薦項與拍板走 §10 的常規流程。
 
-★ 口径照 **G100 那次**：读的是源码与各 crate 自己声明的元数据，不是印象；
-★ 也照 [尚未验证的接缝](/verification/open-seams.md) 结尾那条方法论：**推断不是证据** ——
-下面凡是推断，都单独标着，并写明要拿什么把它坐实。
+★ 口徑照 **G100 那次**：讀的是原始碼與各 crate 自己宣告的中繼資料，不是印象；
+★ 也照 [尚未驗證的接縫](/verification/open-seams.md) 結尾那條方法論：**推斷不是證據** ——
+下面凡是推斷，都單獨標著，並寫明要拿什麼把它坐實。
 
-⚠ **全部数字的采集日期是 2026-08-25。** 这一页的每次复查都要换日期 ——
-「上游停更了」与「我们上次看是三个月前」在句子里长得一样。
+⚠ **全部數字的採集日期是 2026-08-25。** 這一頁的每次複查都要換日期 ——
+「上游停更了」與「我們上次看是三個月前」在句子里長得一樣。
 
 ---
 
-# 0. ★★★ 先纠正 D11 那行里的一处比较错位
+# 0. ★★★ 先糾正 D11 那行裡的一處比較錯位
 
-D11 当初把候选写成 **`h3` / `quiche` / `s2n-quic` 三选一**（⚠ **它已由 G103 结案取
-`quiche`**，不在 §11 里了 —— 本节记的是那次拍板前的比较）。
-而实测出来的分层是：
+D11 當初把候選寫成 **`h3` / `quiche` / `s2n-quic` 三選一**（⚠ **它已由 G103 結案取
+`quiche`**，不在 §11 裡了 —— 本節記的是那次拍板前的比較）。
+而實測出來的分層是：
 
-| | QUIC 传输层 | HTTP/3 语义层 | 合起来要几个 crate |
+| | QUIC 傳輸層 | HTTP/3 語義層 | 合起來要幾個 crate |
 |---|---|---|---|
-| 路线 A | **quinn** | **h3**（靠 `h3-quinn` 适配） | 3 |
-| 路线 B | **quiche** | **`quiche::h3`（同一个 crate 里）** | 1 |
-| 路线 C | **s2n-quic** | ⚠ **没有** —— 它是 QUIC-only | 3（仍要 `h3` + 自写 backend）|
+| 路線 A | **quinn** | **h3**（靠 `h3-quinn` 適配） | 3 |
+| 路線 B | **quiche** | **`quiche::h3`（同一個 crate 裡）** | 1 |
+| 路線 C | **s2n-quic** | ⚠ **沒有** —— 它是 QUIC-only | 3（仍要 `h3` + 自寫 backend）|
 
-⇒ 两条结论直接从这张表出来：
+⇒ 兩條結論直接從這張表出來：
 
-1. ★ **D11 那行是拿一层去比两层。** 「`h3` 自 2025-05-06 起十五个月未更新」说的只是**上面那层**；
-   下面那层 quinn，`quinn-proto 0.11.17` 是 **2026-08-17 发的（8 天前）**。
-   ⇒ 「这条路线停滞了」这句话，对 h3 成立、对 quinn **不成立**，而原文把两者写成了一件事。
-2. ★★ **路线 C 绕不开 h3。** s2n-quic 的 crate 描述原话是「An implementation of the IETF QUIC protocol」，
-   feature 表 22 条里没有任何一条通向 HTTP/3。⇒ 选 s2n-quic **仍然要把 `h3` 摞在上面**，
-   而且要走它那个名字就是警告的 feature：`i-implement-a-third-party-backend-and-opt-into-breaking-changes`。
-   ⇒ **「换掉 h3」不是选 s2n-quic 能换来的东西。**
+1. ★ **D11 那行是拿一層去比兩層。** 「`h3` 自 2025-05-06 起十五個月未更新」說的只是**上面那層**；
+   下面那層 quinn，`quinn-proto 0.11.17` 是 **2026-08-17 發的（8 天前）**。
+   ⇒ 「這條路線停滯了」這句話，對 h3 成立、對 quinn **不成立**，而原文把兩者寫成了一件事。
+2. ★★ **路線 C 繞不開 h3。** s2n-quic 的 crate 描述原話是「An implementation of the IETF QUIC protocol」，
+   feature 表 22 條裡沒有任何一條通向 HTTP/3。⇒ 選 s2n-quic **仍然要把 `h3` 摞在上面**，
+   而且要走它那個名字就是警告的 feature：`i-implement-a-third-party-backend-and-opt-into-breaking-changes`。
+   ⇒ **「換掉 h3」不是選 s2n-quic 能換來的東西。**
 
 ---
 
-# 1. 维护活跃度
+# 1. 維護活躍度
 
-## crates.io（各 crate 自己声明的版本元数据）
+## crates.io（各 crate 自己宣告的版本中繼資料）
 
-| crate | 最新未 yank 版本 | 发布日期 | 距 2026-08-25 | 总下载 |
+| crate | 最新未 yank 版本 | 發佈日期 | 距 2026-08-25 | 總下載 |
 |---|---|---|---|---|
-| `h3` | 0.0.8 | 2025-05-06 | **15.6 个月** | 4,024,685 |
-| `h3-quinn` | 0.0.10 | 2025-05-06 | **15.6 个月** | 3,482,179 |
-| `quinn` | 0.11.11 | 2026-06-22 | 2.1 个月 | 275,272,724 |
+| `h3` | 0.0.8 | 2025-05-06 | **15.6 個月** | 4,024,685 |
+| `h3-quinn` | 0.0.10 | 2025-05-06 | **15.6 個月** | 3,482,179 |
+| `quinn` | 0.11.11 | 2026-06-22 | 2.1 個月 | 275,272,724 |
 | `quinn-proto` | 0.11.17 | **2026-08-17** | **8 天** | 282,292,550 |
-| `quiche` | 0.29.3 | 2026-07-14 | 1.3 个月 | 2,467,607 |
+| `quiche` | 0.29.3 | 2026-07-14 | 1.3 個月 | 2,467,607 |
 | `s2n-quic` | 1.88.0 | **2026-08-21** | **4 天** | 672,917 |
 
-★ `h3` 与 `h3-quinn` **同一天发的**（2025-05-06）—— 适配器与本体一起停在那里，不是只停了一个。
+★ `h3` 與 `h3-quinn` **同一天發的**（2025-05-06）—— 適配器與本體一起停在那裡，不是隻停了一個。
 
 ## GitHub（2026-08-25 查）
 
-| 仓库 | 最后一次提交 | 近半年提交数 | stars | open issues |
+| 儲存庫 | 最後一次提交 | 近半年提交數 | stars | open issues |
 |---|---|---|---|---|
 | `hyperium/h3` | 2026-08-13 | **7** | 884 | 48 |
 | `quinn-rs/quinn` | 2026-08-23 | **≥100** | 5,233 | 199 |
 | `cloudflare/quiche` | 2026-08-13 | **≥100** | 11,793 | 337 |
 | `aws/s2n-quic` | 2026-08-24 | **≥100** | 1,363 | 272 |
 
-⚠ **那三个 `≥100` 是查询上限不是计数**：`gh api commits?since=…&per_page=100` 一页取满就没再翻。
-★ 而 `h3` 的 **7** 是真数出来的（一页没取满）。**一个取满了上限的数字与一个真实计数放在同一列里，
-必须标出来** —— 否则下一个人会拿 100 去跟 7 比。
+⚠ **那三個 `≥100` 是查詢上限不是計數**：`gh api commits?since=…&per_page=100` 一頁取滿就沒再翻。
+★ 而 `h3` 的 **7** 是真數出來的（一頁沒取滿）。**一個取滿了上限的數字與一個真實計數放在同一列裡，
+必須標出來** —— 否則下一個人會拿 100 去跟 7 比。
 
-## ★★ 一条最容易读错的：`h3` **没停止开发，它是没发版**
+## ★★ 一條最容易讀錯的：`h3` **沒停止開發，它是沒發版**
 
-| 事实 | 值 |
+| 事實 | 值 |
 |---|---|
-| 最后一次 **发版** | 2025-05-06（15.6 个月前）|
-| 最后一次 **提交** | 2026-08-13（12 天前）|
+| 最後一次 **發版** | 2025-05-06（15.6 個月前）|
+| 最後一次 **提交** | 2026-08-13（12 天前）|
 | 近半年提交 | 7 |
-| 仓库 archived？ | 否 |
+| 儲存庫 archived？ | 否 |
 
-⇒ 「十五个月未更新」这句话，按**发版**读是对的，按**开发**读是错的。
-★ 两者的差别在选型上是实的：一个不发版的库意味着**修好的东西你拿不到**（除非钉 git rev），
-而一个停止开发的库意味着**根本没人修**。⇒ D11 拍板时要说清楚记的是哪一个。
+⇒ 「十五個月未更新」這句話，按**發版**讀是對的，按**開發**讀是錯的。
+★ 兩者的差別在選型上是實的：一個不發版的庫意味著**修好的東西你拿不到**（除非釘 git rev），
+而一個停止開發的庫意味著**根本沒人修**。⇒ D11 拍板時要說清楚記的是哪一個。
 
 ---
 
 # 2. rustls 整合面
 
-> ⚠ 这一栏挂着 §5.1 的**第 1 条硬约束**（TLS 后端锁死 rustls）与 G6 的原话
-> 「一套证书、一套 ALPN、一套会话缓存」。★ 我们现在锁的是 **rustls 0.23.43**（`Cargo.lock`）。
+> ⚠ 這一欄掛著 §5.1 的**第 1 條硬約束**（TLS 後端鎖死 rustls）與 G6 的原話
+> 「一套證書、一套 ALPN、一套工作階段快取」。★ 我們現在鎖的是 **rustls 0.23.43**（`Cargo.lock`）。
 
-| | TLS 后端 | 与我们这份 rustls 的关系 |
+| | TLS 後端 | 與我們這份 rustls 的關係 |
 |---|---|---|
-| **quinn 0.11.11** | `rustls ^0.23.5`（可选，但 `default` 里含 `rustls-ring` ⇒ 默认就开）| ✅ **同一个大版本**，不产生第二份 rustls |
-| **quiche 0.29.3** | `boring ^4.3`（BoringSSL），`default = ["boringssl-boring-crate"]` | ❌ **依赖表里没有 rustls，9 个 feature 没有一条通向它** |
-| **s2n-quic 1.88.0** | 默认 `provider-tls-default` → `s2n-quic-tls-default`（平台探测，即 s2n-tls）；`provider-tls-rustls` → `s2n-quic-rustls` | ✅ 拿得到，但**要显式关掉 default**；`s2n-quic-rustls 0.88.0` 声明的是 `rustls ^0.23`（**非可选**）⇒ 同大版本 |
+| **quinn 0.11.11** | `rustls ^0.23.5`（可選，但 `default` 裡含 `rustls-ring` ⇒ 預設就開）| ✅ **同一個大版本**，不產生第二份 rustls |
+| **quiche 0.29.3** | `boring ^4.3`（BoringSSL），`default = ["boringssl-boring-crate"]` | ❌ **依賴表裡沒有 rustls，9 個 feature 沒有一條通向它** |
+| **s2n-quic 1.88.0** | 預設 `provider-tls-default` → `s2n-quic-tls-default`（平台探測，即 s2n-tls）；`provider-tls-rustls` → `s2n-quic-rustls` | ✅ 拿得到，但**要顯式關掉 default**；`s2n-quic-rustls 0.88.0` 宣告的是 `rustls ^0.23`（**非可選**）⇒ 同大版本 |
 
-## ★★★ quiche 那一格的后果比「不整合」严重
+## ★★★ quiche 那一格的後果比「不整合」嚴重
 
-选 quiche 不是「rustls 那套用不上」，是**三件事同时发生**：
+選 quiche 不是「rustls 那套用不上」，是**三件事同時發生**：
 
-1. **产物里两套 TLS**：rustls 给 h1/h2，BoringSSL 给 h3 ——
-   而 G6 的原话是一套证书、一套 ALPN、一套会话缓存。
-2. ★★★ **`ResolvesServerCert` 在 BoringSSL 那侧根本不存在。**
-   ⇒ D11 的第二条前置（[「`ResolvesServerCert` 能否同时服务两个入口」](/verification/open-seams.md)）
-   对 quiche **不是「要验」，是「结构上做不到」** —— 两个入口会有两套完全独立的挑证书机制，
-   而自动 HTTPS / On-Demand 全建在 rustls 那一条路上（§5.1 第 1 条，**选定后不能改主意**）。
-3. **BoringSSL 是 C 依赖**，而 §5 的分发口径是 **musl 单静态二进制**。
-   ⚠ 这一条**没有实测**，只是把两句话放在一起；要判它得真去 musl 上编一次。
-   > ✅ **2026-08-25 补记（本页其余部分维持拍板时的原文）**：真去编过了，**通过** ——
-   > 见 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md)。
+1. **產物裡兩套 TLS**：rustls 給 h1/h2，BoringSSL 給 h3 ——
+   而 G6 的原話是一套證書、一套 ALPN、一套工作階段快取。
+2. ★★★ **`ResolvesServerCert` 在 BoringSSL 那側根本不存在。**
+   ⇒ D11 的第二條前置（[「`ResolvesServerCert` 能否同時服務兩個入口」](/verification/open-seams.md)）
+   對 quiche **不是「要驗」，是「結構上做不到」** —— 兩個入口會有兩套完全獨立的挑證書機制，
+   而自動 HTTPS / On-Demand 全建在 rustls 那一條路上（§5.1 第 1 條，**選定後不能改主意**）。
+3. **BoringSSL 是 C 依賴**，而 §5 的散布口徑是 **musl 單靜態二進位**。
+   ⚠ 這一條**沒有實測**，只是把兩句話放在一起；要判它得真去 musl 上編一次。
+   > ✅ **2026-08-25 補記（本頁其餘部分維持拍板時的原文）**：真去編過了，**通過** ——
+   > 見 [`musl + BoringSSL 静态链接`](/verification/musl-boringssl.md)。
 
-## ⚠ 一条会当场作废既有成果的坑：`aws-lc-rs`
+## ⚠ 一條會當場作廢既有成果的坑：`aws-lc-rs`
 
-quinn 的三个 rustls feature：
+quinn 的三個 rustls feature：
 
-| feature | 后果 |
+| feature | 後果 |
 |---|---|
-| `rustls-ring` | ring（**我们现在就是 ring**，`Cargo.lock` 里 `ring 0.17.14`）|
-| `rustls-aws-lc-rs` | ⚠ **把 `aws-lc-rs` 拖回依赖图** |
+| `rustls-ring` | ring（**我們現在就是 ring**，`Cargo.lock` 裡 `ring 0.17.14`）|
+| `rustls-aws-lc-rs` | ⚠ **把 `aws-lc-rs` 拖回依賴圖** |
 | `rustls-aws-lc-rs-fips` | 同上 |
 
-★ 本仓库为把 `aws-lc-rs` 挡在依赖图外面付过**三次**代价：G41/G45 那轮
-（`pingora-core/rustls` 实测多解析 46 个包、**而 aws-lc-rs 不在其中**，`PLAN.md` §1）、
+★ 本儲存庫為把 `aws-lc-rs` 擋在依賴圖外面付過**三次**代價：G41/G45 那輪
+（`pingora-core/rustls` 實測多解析 46 個包、**而 aws-lc-rs 不在其中**，`PLAN.md` §1）、
 `instant-acme` 的 default feature、`hyper-rustls` 的 default feature。
 
-✅ **好消息**：quinn 的 `default` 用的正是 `rustls-ring`，顺路。
-⚠ **但别照抄 `default`**：它是 `['log', 'platform-verifier', 'runtime-tokio', 'rustls-ring', 'bloom']`，
-其中 `platform-verifier` 是**客户端**验服务端证书用的 —— 我们这一侧是服务端。
-⇒ 该写 `default-features = false` + 显式挑。
+✅ **好訊息**：quinn 的 `default` 用的正是 `rustls-ring`，順路。
+⚠ **但別照抄 `default`**：它是 `['log', 'platform-verifier', 'runtime-tokio', 'rustls-ring', 'bloom']`，
+其中 `platform-verifier` 是**用戶端**驗伺服器端證書用的 —— 我們這一側是伺服器端。
+⇒ 該寫 `default-features = false` + 顯式挑。
 
 ---
 
-# 3. 「按 DCID 路由」的原语
+# 3. 「按 DCID 路由」的原語
 
-> 这一栏挂着 D11 的**第一条前置**：升级窗口内两代进程持有同一个 UDP socket，
-> 数据报会被分流，而 QUIC 的连接状态只在某一代的内存里 ——
-> 被分到另一代的包**不是「换条会话」，是解不开**。见 [尚未验证的接缝](/verification/open-seams.md)。
+> 這一欄掛著 D11 的**第一條前置**：升級視窗內兩代處理程序持有同一個 UDP socket，
+> 資料報會被分流，而 QUIC 的連接狀態只在某一代的記憶體裡 ——
+> 被分到另一代的包**不是「換條工作階段」，是解不開**。見 [尚未驗證的接縫](/verification/open-seams.md)。
 
-## quiche：✅ 有，而且在连接存在之前就能用
+## quiche：✅ 有，而且在連接存在之前就能用
 
 ```rust
 pub fn from_slice<'b>(buf: &'b mut [u8], dcid_len: usize) -> Result<Header<'a>>
 ```
 
-公开函数，**不解密、不需要先有连接**，返回的 `Header` 公开字段里就有 `dcid` 与 `scid`。
-★ 再加上 quiche 是 **sans-IO**（crate 文档原话：应用负责提供 I/O 与带定时器的事件循环），
-socket 与事件循环本来就在我们手里 ⇒ **「先看 DCID 再决定交给哪一代」这件事写在我们自己的代码里**，
-不需要库同意。
+公開函式，**不解密、不需要先有連接**，回傳的 `Header` 公開欄位裡就有 `dcid` 與 `scid`。
+★ 再加上 quiche 是 **sans-IO**（crate 文件原話：應用負責提供 I/O 與帶定時器的事件循環），
+socket 與事件循環本來就在我們手裡 ⇒ **「先看 DCID 再決定交給哪一代」這件事寫在我們自己的程式碼裡**，
+不需要庫同意。
 
-## quinn：⚠ 路由在库内部，我们只有两个钩子
+## quinn：⚠ 路由在庫內部，我們只有兩個鉤子
 
-`Endpoint::handle(...) -> Option<DatagramEvent>`，而 `DatagramEvent` **只有三个变体**：
+`Endpoint::handle(...) -> Option<DatagramEvent>`，而 `DatagramEvent` **只有三個變體**：
 
-| 变体 | 载荷 | 文档原话 |
+| 變體 | 載荷 | 文件原話 |
 |---|---|---|
 | `ConnectionEvent` | `(ConnectionHandle, ConnectionEvent)` | The datagram is redirected to its `Connection` |
 | `NewConnection` | `Incoming` | The datagram may result in starting a new `Connection` |
 | `Response` | `Transmit` | Response generated directly by the endpoint |
 
-⇒ **没有一个变体表示「这个 DCID 我不认识」**，而返回类型是 `Option`。
+⇒ **沒有一個變體表示「這個 DCID 我不認識」**，而回傳類型是 `Option`。
 
-### ✅ ★★★ 2026-08-25 已读源码坐实，而答案比推断**严重得多**
+### ✅ ★★★ 2026-08-25 已讀原始碼坐實，而答案比推斷**嚴重得多**
 
-读的是 `quinn-proto-0.11.17` 这个 tag 的 `quinn-proto/src/endpoint.rs`（48648 字节，不是 docs.rs 的摘要页）。
-`handle()` 末尾那串 `else if` 链的**最后一格**是：
+讀的是 `quinn-proto-0.11.17` 這個 tag 的 `quinn-proto/src/endpoint.rs`（48648 位元組，不是 docs.rs 的摘要頁）。
+`handle()` 末尾那串 `else if` 鏈的**最後一格**是：
 
 ```rust
 } else {
@@ -219,17 +219,17 @@ socket 与事件循环本来就在我们手里 ⇒ **「先看 DCID 再决定交
 }
 ```
 
-⚠ ⚠ ⚠ **认不出的数据报不是被丢掉，是被回一个 stateless reset** ——
-而 stateless reset 的语义是**告诉对端「这条连接死了，拆掉它」**。
+⚠ ⚠ ⚠ **認不出的資料報不是被丟掉，是被回一個 stateless reset** ——
+而 stateless reset 的語義是**告訴對端「這條連接死了，拆掉它」**。
 
-⇒ ★ ★ ★ **推断错在方向上**：我原以为最坏是「丢一个包」（QUIC 自己会重传，连接扛得住），
-实际是**升级窗口里新一代会主动杀掉老一代的在飞连接**。
-> ★ ★ **「拿不回那个数据报」与「替我们把连接杀了」，在 `Option<DatagramEvent>`
-> 这个签名上长得一模一样。** 只看类型签名推不出方向，得读实现。
+⇒ ★ ★ ★ **推斷錯在方向上**：我原以為最壞是「丟一個包」（QUIC 自己會重傳，連接扛得住），
+實際是**升級視窗裡新一代會主動殺掉老一代的在飛連接**。
+> ★ ★ **「拿不回那個資料報」與「替我們把連接殺了」，在 `Option<DatagramEvent>`
+> 這個簽名上長得一模一樣。** 只看類型簽名推不出方向，得讀實作。
 
-### ✅ 而同一段源码里就有解药，是个**现成类型**
+### ✅ 而同一段原始碼裡就有解藥，是個**現成類型**
 
-那条 `else` 链的**前一格**是：
+那條 `else` 鏈的**前一格**是：
 
 ```rust
 } else if !event.first_decode.is_initial()
@@ -240,43 +240,43 @@ socket 与事件循环本来就在我们手里 ⇒ **「先看 DCID 再决定交
 }
 ```
 
-⇒ **只要 `validate()` 判 `Err`，quinn 就走「丢包」而不是「stateless reset」。**
+⇒ **只要 `validate()` 判 `Err`，quinn 就走「丟包」而不是「stateless reset」。**
 
-关键在于**默认实现是什么**（`quinn-proto/src/cid_generator.rs`）：
+關鍵在於**預設實作是什麼**（`quinn-proto/src/cid_generator.rs`）：
 
-| generator | `validate` | 后果 |
+| generator | `validate` | 後果 |
 |---|---|---|
-| trait 默认 | `fn validate(&self, _cid) -> Result<(), InvalidCid> { Ok(()) }` —— **无条件放行** | ⚠ 落进 `else` ⇒ **stateless reset** |
-| `RandomConnectionIdGenerator` | **不覆盖**，用默认 | ⚠ 同上 |
-| **`HashedConnectionIdGenerator::from_key(key)`** | 按 key 对 nonce 算 FxHash 签名并比对 | ✅ **两代用不同 key ⇒ 互相拒认 ⇒ 丢包，不 reset** |
+| trait 預設 | `fn validate(&self, _cid) -> Result<(), InvalidCid> { Ok(()) }` —— **無條件放行** | ⚠ 落進 `else` ⇒ **stateless reset** |
+| `RandomConnectionIdGenerator` | **不覆蓋**，用預設 | ⚠ 同上 |
+| **`HashedConnectionIdGenerator::from_key(key)`** | 按 key 對 nonce 算 FxHash 簽名並比對 | ✅ **兩代用不同 key ⇒ 互相拒認 ⇒ 丟包，不 reset** |
 
-★ ★ 而 `from_key` 的文档原话就是冲着这件事写的：
+★ ★ 而 `from_key` 的文件原話就是衝著這件事寫的：
 **"Allows `validate` to recognize a consistent set of connection IDs across restarts"**。
 
-⇒ **降级路线是现成的**：每一代一个自己的 key，失效形态从「杀死连接」降到「丢一个数据报」，
-而后者 QUIC 自己会重传扛过去。⚠ **但它仍然只是降级，不是解决** ——
-落到新一代手里的那些包**还是回不到老一代**（`handle` 回的是 `None`，
-数据报和 DCID 都拿不回来）。**真正的「转交」只能在 quinn 之外做**：
-`Endpoint::new` 收的是我们自己的 socket，所以路由要写在
-我们自己实现的 `AsyncUdpSocket::poll_recv` 里，在喂给 quinn 之前分流。
-⚠ ⚠ 而两代是**两个进程**，跨进程转交那一段与选哪个库无关 —— 三条路线都要自己写。
+⇒ **降級路線是現成的**：每一代一個自己的 key，失效形態從「殺死連接」降到「丟一個資料報」，
+而後者 QUIC 自己會重傳扛過去。⚠ **但它仍然只是降級，不是解決** ——
+落到新一代手裡的那些包**還是回不到老一代**（`handle` 回的是 `None`，
+資料報和 DCID 都拿不回來）。**真正的「轉交」只能在 quinn 之外做**：
+`Endpoint::new` 收的是我們自己的 socket，所以路由要寫在
+我們自己實作的 `AsyncUdpSocket::poll_recv` 裡，在餵給 quinn 之前分流。
+⚠ ⚠ 而兩代是**兩個處理程序**，跨處理程序轉交那一段與選哪個庫無關 —— 三條路線都要自己寫。
 
-我们**确实有**的钩子是 `ConnectionIdGenerator`：
+我們**確實有**的鉤子是 `ConnectionIdGenerator`：
 
 | 方法 | 用途 |
 |---|---|
-| `generate_cid(&mut self) -> ConnectionId` | ★ **CID 的字节由我们自己造** ⇒ 可以埋一个「第几代」的标记 |
-| `cid_len(&self) -> usize` | 长度 |
+| `generate_cid(&mut self) -> ConnectionId` | ★ **CID 的位元組由我們自己造** ⇒ 可以埋一個「第幾代」的標記 |
+| `cid_len(&self) -> usize` | 長度 |
 | `cid_lifetime(&self) -> Option<Duration>` | 有效期 |
-| `validate(&self, cid) -> Result<(), InvalidCid>`（有默认实现）| 快速筛掉「不像本 generator 发的」，**允许假阳性** |
+| `validate(&self, cid) -> Result<(), InvalidCid>`（有預設實作）| 快速篩掉「不像本 generator 發的」，**允許假陽性** |
 
-⚠ ⚠ **但「筛掉」与「转交给上一代」是两件事。** 前者 quinn 给了，后者正是这条前置要答的问题，
-而上面那个推断说的恰恰是：**后者可能在这个 API 面上做不到。**
+⚠ ⚠ **但「篩掉」與「轉交給上一代」是兩件事。** 前者 quinn 給了，後者正是這條前置要答的問題，
+而上面那個推斷說的恰恰是：**後者可能在這個 API 面上做不到。**
 
-## s2n-quic：形状与 quinn 同族，但 `Validator` 能**从原始报文里解析长度**
+## s2n-quic：形狀與 quinn 同族，但 `Validator` 能**從原始訊息裡解析長度**
 
-`provider::connection_id` 里三个 trait：**`Generator`** / **`Validator`** / **`Format`**。
-✅ **2026-08-25 已读源码拿到签名**（`quic/s2n-quic/src/provider/connection_id.rs`，v1.88.0 那个 tag）：
+`provider::connection_id` 裡三個 trait：**`Generator`** / **`Validator`** / **`Format`**。
+✅ **2026-08-25 已讀原始碼拿到簽名**（`quic/s2n-quic/src/provider/connection_id.rs`，v1.88.0 那個 tag）：
 
 ```rust
 fn generate(&mut self, connection_info: &ConnectionInfo) -> connection::LocalId;
@@ -284,92 +284,92 @@ fn lifetime(&self) -> Option<Duration>;
 fn validate(&self, connection_info: &ConnectionInfo, buffer: &[u8]) -> Option<usize>;
 ```
 
-★ **注意 `validate` 的形状与 quinn 的不是一回事**：quinn 那个收一个已经解析好的
-`&ConnectionId`、回 `Result<(), InvalidCid>`（"这个像不像我发的"）；
-而这个收的是**原始字节缓冲**、回 `Option<usize>` —— **它回的是「CID 有多长」**，
-也就是说它承担的是**从报文里把 CID 解析出来**这件事，比 quinn 那个钩子靠前一层。
+★ **注意 `validate` 的形狀與 quinn 的不是一回事**：quinn 那個收一個已經解析好的
+`&ConnectionId`、回 `Result<(), InvalidCid>`（"這個像不像我發的"）；
+而這個收的是**原始位元組緩衝**、回 `Option<usize>` —— **它回的是「CID 有多長」**，
+也就是說它承擔的是**從訊息裡把 CID 解析出來**這件事，比 quinn 那個鉤子靠前一層。
 
-⚠ **但仍然没有证据说明 s2n-quic 对认不出的 CID 做什么**（丢包？stateless reset？）——
-★ 这正是 quinn 那条栽过的地方：**钩子的形状说明不了失效形态。**
-⇒ 要判它得读 `s2n-quic-transport` 的 endpoint 分发路径，与读 quinn 那次同样的做法。
+⚠ **但仍然沒有證據說明 s2n-quic 對認不出的 CID 做什麼**（丟包？stateless reset？）——
+★ 這正是 quinn 那條栽過的地方：**鉤子的形狀說明不了失效形態。**
+⇒ 要判它得讀 `s2n-quic-transport` 的 endpoint 散布路徑，與讀 quinn 那次同樣的做法。
 
-## 一句话对比
+## 一句話對比
 
-| | 能在「连接存在之前」拿到 DCID？ | 能控制自己发出去的 CID 字节？ | 认不出的数据报能拿回来吗？ | ★ **认不出时的失效形态** |
+| | 能在「連接存在之前」拿到 DCID？ | 能控制自己發出去的 CID 位元組？ | 認不出的資料報能拿回來嗎？ | ★ **認不出時的失效形態** |
 |---|---|---|---|---|
-| quiche | ✅ `Header::from_slice` | ✅ `accept(scid, odcid, local, peer, config)` —— 服务端 CID 由调用方传进去 | ✅ 数据报从头到尾都在我们手里 | ✅ **由我们决定** —— 库根本没机会自作主张 |
-| quinn | ❌ 没有公开的部分解码，`handle` 回 `None` | ✅ `generate_cid` | ❌ **不能**（已读源码坐实）| ⚠ ⚠ **默认是 stateless reset ⇒ 杀掉对端连接**；换 `HashedConnectionIdGenerator::from_key` 后降级为丢包 |
-| s2n-quic | ✅ `Validator::validate(_, buffer) -> Option<usize>` 收原始字节 | ✅ `Generator::generate` | ⚠ 未核实 | ⚠ **未核实** —— 而 quinn 那条正说明**钩子的形状说明不了失效形态** |
+| quiche | ✅ `Header::from_slice` | ✅ `accept(scid, odcid, local, peer, config)` —— 伺服器端 CID 由呼叫方傳進去 | ✅ 資料報從頭到尾都在我們手裡 | ✅ **由我們決定** —— 庫根本沒機會自作主張 |
+| quinn | ❌ 沒有公開的部分解碼，`handle` 回 `None` | ✅ `generate_cid` | ❌ **不能**（已讀原始碼坐實）| ⚠ ⚠ **預設是 stateless reset ⇒ 殺掉對端連接**；換 `HashedConnectionIdGenerator::from_key` 後降級為丟包 |
+| s2n-quic | ✅ `Validator::validate(_, buffer) -> Option<usize>` 收原始位元組 | ✅ `Generator::generate` | ⚠ 未核實 | ⚠ **未核實** —— 而 quinn 那條正說明**鉤子的形狀說明不了失效形態** |
 
 ---
 
-# 4. ★ 第四条维度：socket 移交（§5.1 第 3 条要它）
+# 4. ★ 第四條維度：socket 移交（§5.1 第 3 條要它）
 
-> 这一条不在最初点名的三条里，但它是**硬约束**：自建 QUIC(UDP) 监听器
-> **必须接入 Pingora 的 socket 移交**，否则优雅升级时这条会断连。
+> 這一條不在最初點名的三條裡，但它是**硬約束**：自建 QUIC(UDP) 監聽器
+> **必須接入 Pingora 的 socket 移交**，否則優雅升級時這條會斷連。
 
-| | 能不能喂一个已经 bind 好的 socket |
+| | 能不能喂一個已經 bind 好的 socket |
 |---|---|
-| **quinn** | ✅ **能**。`Endpoint::new(config, server_config, socket: std::net::UdpSocket, runtime: Arc<dyn Runtime>)` 直接收一个已 bind 的 `UdpSocket`；另有 `Endpoint::new_with_abstract_socket(..., socket: Arc<dyn AsyncUdpSocket>, ...)` |
+| **quinn** | ✅ **能**。`Endpoint::new(config, server_config, socket: std::net::UdpSocket, runtime: Arc<dyn Runtime>)` 直接收一個已 bind 的 `UdpSocket`；另有 `Endpoint::new_with_abstract_socket(..., socket: Arc<dyn AsyncUdpSocket>, ...)` |
 | **quiche** | ✅ **天然如此**。sans-IO ⇒ 它根本不碰 socket |
-| **s2n-quic** | ✅ **能**（2026-08-25 读源码核实，`quic/s2n-quic-platform/src/io/tokio/builder.rs`，v1.88.0）：`Builder::with_rx_socket(socket: std::net::UdpSocket)` 与 `with_tx_socket(…)` 各收一个**已 bind 的** `std::net::UdpSocket`（另有 `with_prioritized_socket`）|
+| **s2n-quic** | ✅ **能**（2026-08-25 讀原始碼核實，`quic/s2n-quic-platform/src/io/tokio/builder.rs`，v1.88.0）：`Builder::with_rx_socket(socket: std::net::UdpSocket)` 與 `with_tx_socket(…)` 各收一個**已 bind 的** `std::net::UdpSocket`（另有 `with_prioritized_socket`）|
 
-★ **三条路线在这一栏上没有区别** —— §5.1 第 3 条对选库**不构成筛选条件**。
+★ **三條路線在這一欄上沒有區別** —— §5.1 第 3 條對選庫**不構成篩選條件**。
 
 ---
 
-# 5. ★ 仓库里已有两道门在管这件事，选型要连它们一起看
+# 5. ★ 儲存庫裡已有兩道門在管這件事，選型要連它們一起看
 
-`crates/fulcrum/tests/supply_gates.rs` 里：
+`crates/fulcrum/tests/supply_gates.rs` 裡：
 
-| | 门 | 它对三条路线各说什么 |
+| | 門 | 它對三條路線各說什麼 |
 |---|---|---|
-| 门 1 | `两把锁里都不许出现_aws_lc_rs()` —— 扫根锁与 `vendor/pingora` 的锁，任何 `aws-lc*` 开头的包都判红 | ✅ quinn 走 `rustls-ring` 不触发；⚠ 走 `rustls-aws-lc-rs` **当场红** |
-| 门 2 | `会自带_crypto_provider_的依赖必须写_default_features_false()` —— 按一张**手写名单** `MUST_DISABLE_DEFAULT` 查 | ✅ ★ **`quinn` 已经在那张名单里**（`supply_gates.rs:133`，早就有人替它留了位）|
+| 門 1 | `两把锁里都不许出现_aws_lc_rs()` —— 掃根鎖與 `vendor/pingora` 的鎖，任何 `aws-lc*` 開頭的包都判紅 | ✅ quinn 走 `rustls-ring` 不觸發；⚠ 走 `rustls-aws-lc-rs` **當場紅** |
+| 門 2 | `会自带_crypto_provider_的依赖必须写_default_features_false()` —— 按一張**手寫名單** `MUST_DISABLE_DEFAULT` 查 | ✅ ★ **`quinn` 已經在那張名單裡**（`supply_gates.rs:133`，早就有人替它留了位）|
 
-## ⚠ ⚠ 而门 2 那张名单里**没有** `s2n-quic`
+## ⚠ ⚠ 而門 2 那張名單裡**沒有** `s2n-quic`
 
 s2n-quic 的 `default` 是 `['provider-address-token-default', 'provider-tls-default']`，
-后者通向 `s2n-quic-tls-default`（平台探测 ⇒ **s2n-tls**）。
-⇒ 一份照默认写的 `s2n-quic = "1"` 会把**另一套 TLS 栈**编进产物，
-而**门 1 不会红**（s2n-tls 不叫 `aws-lc*`）、**门 2 也不会红**（名字不在名单上）。
+後者通向 `s2n-quic-tls-default`（平台探測 ⇒ **s2n-tls**）。
+⇒ 一份照預設寫的 `s2n-quic = "1"` 會把**另一套 TLS 棧**編進產物，
+而**門 1 不會紅**（s2n-tls 不叫 `aws-lc*`）、**門 2 也不會紅**（名字不在名單上）。
 
-★ ★ 这正是 `unwired_contract.rs` 顶上引的那条纪律说的事：**手写清单在清单本身漏了一项时照样绿。**
-⇒ **若 D11 选 s2n-quic，把 `s2n-quic` 加进 `MUST_DISABLE_DEFAULT` 是同一批里必须做的一步**，
-不是「记得也可以」。
+★ ★ 這正是 `unwired_contract.rs` 頂上引的那條紀律說的事：**手寫清單在清單本身漏了一項時照樣綠。**
+⇒ **若 D11 選 s2n-quic，把 `s2n-quic` 加進 `MUST_DISABLE_DEFAULT` 是同一批裡必須做的一步**，
+不是「記得也可以」。
 
-⚠ `quiche` 不在名单上**不是同一个洞**：它拖进来的是 `boring`（BoringSSL），
-既不是 rustls 的 crypto provider，也不叫 `aws-lc*` —— 两道门对它**结构上就说不出话**。
-⇒ 选 quiche 的话，「产物里有几套 TLS」这件事**目前没有任何门看着**。
-
----
-
-# 6. ✅ 原先欠的三条**2026-08-25 全部补上**（读的是各自 release tag 的源码）
-
-| | 欠什么 | 结果 |
-|---|---|---|
-| ① | quinn 对认不出的 DCID 怎么处理 | ✅ **查清了，而且推断是错的**：默认**回 stateless reset**（杀连接），不是丢包；换 `HashedConnectionIdGenerator::from_key` 可降级为丢包。见第 3 节 |
-| ② | s2n-quic `connection_id` 三个 trait 的签名 | ✅ 拿到了，且 `validate` 收**原始字节**回 `Option<usize>`，比 quinn 的钩子靠前一层 |
-| ③ | s2n-quic 能不能接一个继承来的 UDP fd | ✅ **能**（`with_rx_socket` / `with_tx_socket`）⇒ 三条路线在这一栏无差别 |
-
-## ⏳ 而补完之后新长出来的两条
-
-| | 欠什么 | 怎么补 |
-|---|---|---|
-| ④ | **s2n-quic 对认不出的 CID 做什么**（丢包？stateless reset？）| 读 `s2n-quic-transport` 的 endpoint 分发路径 —— ★ ① 那条教训正是：**钩子的形状说明不了失效形态** |
-| ⑤ | **quiche 对认不出的 CID 做什么** | ★ 严格说这一条不存在：quiche 是 sans-IO，报文交给谁由我们决定，库没有机会自作主张。⇒ 登记在这里只是为了让这一栏三家都有话说 |
-
-> ★ ★ ★ **补 ① 的过程本身值得记一句**：三条欠账里，只有 ① 的答案**改变了结论的方向** ——
-> ②③ 只是把「未核实」换成「能」，而 ① 把「最坏是丢一个包」换成了
-> **「新一代会主动杀掉老一代的在飞连接」**。
-> ⚠ 而这两种结局在 `Option<DatagramEvent>` 这个类型签名上**长得一模一样**。
+⚠ `quiche` 不在名單上**不是同一個洞**：它拖進來的是 `boring`（BoringSSL），
+既不是 rustls 的 crypto provider，也不叫 `aws-lc*` —— 兩道門對它**結構上就說不出話**。
+⇒ 選 quiche 的話，「產物裡有幾套 TLS」這件事**目前沒有任何門看著**。
 
 ---
 
-# 相关
+# 6. ✅ 原先欠的三條**2026-08-25 全部補上**（讀的是各自 release tag 的原始碼）
 
-[尚未验证的接缝](/verification/open-seams.md)（两条前置的完整推导） ·
-[决策日志](/governance/decision-log.md)（D11 由 **G103** 结案：取 `quiche`） ·
-[技术栈](/platform/tech-stack.md) ·
-[供应链现状](/platform/supply-chain.md)（脱字号需求自带上界；重复依赖让整张回归网停摆过一次） ·
-[TLS 与自动 HTTPS](/architecture/tls.md)
+| | 欠什麼 | 結果 |
+|---|---|---|
+| ① | quinn 對認不出的 DCID 怎麼處理 | ✅ **查清了，而且推斷是錯的**：預設**回 stateless reset**（殺連接），不是丟包；換 `HashedConnectionIdGenerator::from_key` 可降級為丟包。見第 3 節 |
+| ② | s2n-quic `connection_id` 三個 trait 的簽名 | ✅ 拿到了，且 `validate` 收**原始位元組**回 `Option<usize>`，比 quinn 的鉤子靠前一層 |
+| ③ | s2n-quic 能不能接一個繼承來的 UDP fd | ✅ **能**（`with_rx_socket` / `with_tx_socket`）⇒ 三條路線在這一欄無差別 |
+
+## ⏳ 而補完之後新長出來的兩條
+
+| | 欠什麼 | 怎麼補 |
+|---|---|---|
+| ④ | **s2n-quic 對認不出的 CID 做什麼**（丟包？stateless reset？）| 讀 `s2n-quic-transport` 的 endpoint 散布路徑 —— ★ ① 那條教訓正是：**鉤子的形狀說明不了失效形態** |
+| ⑤ | **quiche 對認不出的 CID 做什麼** | ★ 嚴格說這一條不存在：quiche 是 sans-IO，訊息交給誰由我們決定，庫沒有機會自作主張。⇒ 登記在這裡只是為了讓這一欄三家都有話說 |
+
+> ★ ★ ★ **補 ① 的過程本身值得記一句**：三條欠賬裡，只有 ① 的答案**改變了結論的方向** ——
+> ②③ 只是把「未核實」換成「能」，而 ① 把「最壞是丟一個包」換成了
+> **「新一代會主動殺掉老一代的在飛連接」**。
+> ⚠ 而這兩種結局在 `Option<DatagramEvent>` 這個類型簽名上**長得一模一樣**。
+
+---
+
+# 相關
+
+[尚未驗證的接縫](/verification/open-seams.md)（兩條前置的完整推導） ·
+[決策紀錄](/governance/decision-log.md)（D11 由 **G103** 結案：取 `quiche`） ·
+[技術棧](/platform/tech-stack.md) ·
+[供應鏈現狀](/platform/supply-chain.md)（脫字號需求自帶上界；重複依賴讓整張迴歸網停擺過一次） ·
+[TLS 與自動 HTTPS](/architecture/tls.md)

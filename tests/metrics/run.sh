@@ -1,56 +1,56 @@
 #!/usr/bin/env bash
-# Prometheus 指标端到端（**M2 批 M**；G116–G121，裁决 R1–R8）。
+# Prometheus 指標端到端（**M2 批 M**；G116–G121，裁決 R1–R8）。
 #
-# ★ ★ 为什么它是**独立一格**：与 `tests/log/` 同一个理由 —— 它验的不是「响应对不对」，
-#   而是**响应之外的那份计数**。它有自己的格式契约（text exposition 0.0.4）、
-#   自己的访问控制（`metrics` 是站点块里的终结指令，序号 75）、自己的基数上界。
-#   ⚠ 混进 `tests/serve/run.sh` 的话，一条指标断言红了，读日志的人会先去看路由。
+# ★ ★ 為什麼它是**獨立一格**：與 `tests/log/` 同一個理由 —— 它驗的不是「回應對不對」，
+#   而是**回應之外的那份計數**。它有自己的格式契約（text exposition 0.0.4）、
+#   自己的訪問控制（`metrics` 是站台塊裡的終結指令，序號 75）、自己的基數上界。
+#   ⚠ 混進 `tests/serve/run.sh` 的話，一條指標斷言紅了，讀紀錄的人會先去看路由。
 #
-# ★ ★ ★ **判据挂在「谁在数、数出来的和别处对不对得上」，不挂在「抓到了东西」**：
-#   一个把整份指标硬编码成字符串的实现，能通过每一条只问「正文里有没有那几个字」的判据。
-#   ⇒ 本格的重量全在**增量**与**交叉对照**上：
-#     · 增量：抓两次做差（⚠ 计数发生在 `Record::finish`，即**响应写完之后**
+# ★ ★ ★ **判據掛在「誰在數、數出來的和別處對不對得上」，不掛在「抓到了東西」**：
+#   一個把整份指標硬編碼成字串的實作，能通過每一條只問「正文裡有沒有那幾個字」的判據。
+#   ⇒ 本格的重量全在**增量**與**交叉對照**上：
+#     · 增量：抓兩次做差（⚠ 計數發生在 `Record::finish`，即**回應寫完之後**
 #       ⇒ 第 N 次抓取看到的是前 N−1 次的量）；
-#     · 交叉对照：同一批请求，指标那一侧的增量必须与**访问日志**那一侧的新增行数对得上。
+#     · 交叉對照：同一批請求，指標那一側的增量必須與**訪問紀錄**那一側的新增行數對得上。
 #
-# 端口（★ 与其余场景全都错开，见 AGENTS.md 那张端口表）：
-#   9920 站点 A —— **两条地址** `a.example` / `a2.example`（★ G121 的正面判据要第二条）；
-#        配 `log { output file … level info }`（一致性门要它记全部）；
+# 連接埠（★ 與其餘場景全都錯開，見 AGENTS.md 那張連接埠表）：
+#   9920 站台 A —— **兩條位址** `a.example` / `a2.example`（★ G121 的正面判據要第二條）；
+#        配 `log { output file … level info }`（一致性門要它記全部）；
 #        `@internal { remote_ip 127.0.0.0/8 · path /metrics }` + `handle @internal { metrics }`
-#        + 兜底 `respond 403`。
-#   9921 站点 B —— `b.example`，**整块里一个 `metrics` 都没有**（反向判据 ① 要它）。
-#   9921 站点 C —— `c.example`，`@outsider remote_ip 10.0.0.0/8` + `handle @outsider { metrics }`
-#        + 兜底 `respond 403`。★ 我们打不进 10.0.0.0/8 ⇒ 拿到的是 403 而不是指标
-#        （访问控制的**反向**那一半，在容器里真的造得出来的形状）。
-#   9921 站点 W —— `*.wild.example`，**一条通配地址**（G121 的折叠判据要它，判据 6）。
-#   9922 站点 T —— `a.example:9922` + `tls`（**M2 批 M′ 任务 3**，`fulcrum_tls_requests_total`）。
-#        ★ G110 让有 TLS 的端口在**同一个端口号**上自动听 UDP ⇒ h1 / h2 / h3 三条路
-#          都在这一个端口上量，不另起服务。
-#   9923 **不是枢衡的监听器**，是一个 python 慢上游（**M2 批 M′ 任务 4**，G124）：
-#        睡 1.5s 才回话，而且**有意不带 `Content-Length`**。理由见本文件末尾那一节。
+#        + 備援 `respond 403`。
+#   9921 站台 B —— `b.example`，**整塊裡一個 `metrics` 都沒有**（反向判據 ① 要它）。
+#   9921 站台 C —— `c.example`，`@outsider remote_ip 10.0.0.0/8` + `handle @outsider { metrics }`
+#        + 備援 `respond 403`。★ 我們打不進 10.0.0.0/8 ⇒ 拿到的是 403 而不是指標
+#        （訪問控制的**反向**那一半，在容器裡真的造得出來的形狀）。
+#   9921 站台 W —— `*.wild.example`，**一條通配位址**（G121 的摺疊判據要它，判據 6）。
+#   9922 站台 T —— `a.example:9922` + `tls`（**M2 批 M′ 任務 3**，`fulcrum_tls_requests_total`）。
+#        ★ G110 讓有 TLS 的連接埠在**同一個連接埠號**上自動聽 UDP ⇒ h1 / h2 / h3 三條路
+#          都在這一個連接埠上量，不另起服務。
+#   9923 **不是樞衡的監聽器**，是一個 python 慢上游（**M2 批 M′ 任務 4**，G124）：
+#        睡 1.5s 才回話，而且**有意不帶 `Content-Length`**。理由見本檔案末尾那一節。
 #
-# ⚠ ⚠ ★ **站点 W 补的是夹具形状上的洞，不是多一条覆盖。** 另外四条地址全是**精确**
-#   字面量 ⇒ 对每一条命中站点的请求，`ctx.host` 与命中的那条地址**逐字相等**。
-#   于是一个把 `site` 标签取成 `ctx.host` 的实现（G121 明令禁止的正是这一个）
-#   在本格别的每一条判据上都是绿的 —— 连那条「取值闭集」也绿，因为两者给出同一个集合。
-#   ★ ★ **盲区在夹具里，而判据的条数说明不了这件事**（AGENTS.md「Gate discipline」第一条）。
+# ⚠ ⚠ ★ **站台 W 補的是夾具形狀上的洞，不是多一條覆蓋。** 另外四條位址全是**精確**
+#   字面值 ⇒ 對每一條命中站台的請求，`ctx.host` 與命中的那條位址**逐字相等**。
+#   於是一個把 `site` 標籤取成 `ctx.host` 的實作（G121 明令禁止的正是這一個）
+#   在本格別的每一條判據上都是綠的 —— 連那條「取值閉集」也綠，因為兩者給出同一個集合。
+#   ★ ★ **盲區在夾具裡，而判據的條數說明不了這件事**（AGENTS.md「Gate discipline」第一條）。
 #
-# ⚠ ⚠ **`@internal` 里那条 `path /metrics` 是有意加的，不是从 brief 抄漏的**：
-#   只写 `remote_ip 127.0.0.0/8` 的话，本格所有请求都来自 127.0.0.1 ⇒ 站点 A 上
-#   **任何路径都会命中 `metrics`**，兜底的 `respond 403` 一次也走不到 ——
-#   而一致性门要求同一个站点上至少出现 `metrics` 与 `respond` 两种 `outcome`。
-#   ★ 顺带：它让「站点 B 上打**同一路径**」这句话有了确定的所指。
+# ⚠ ⚠ **`@internal` 裡那條 `path /metrics` 是有意加的，不是從 brief 抄漏的**：
+#   只寫 `remote_ip 127.0.0.0/8` 的話，本格所有請求都來自 127.0.0.1 ⇒ 站台 A 上
+#   **任何路徑都會命中 `metrics`**，備援的 `respond 403` 一次也走不到 ——
+#   而一致性門要求同一個站台上至少出現 `metrics` 與 `respond` 兩種 `outcome`。
+#   ★ 順帶：它讓「站台 B 上打**同一路徑**」這句話有了確定的所指。
 #
-# ⚠ ⚠ **本场景仍然不碰共享的 `:80`，而现在它需要一句显式的话才成立。**
-#   前四个站点全写 `http://` ⇒ 天然不合成重定向站点；而站点 T 写的是
-#   `a.example:9922`（没写 scheme ⇒ 按 `compile.rs` 的规则推成 `https` ⇒ `auto_https`）
-#   ——那本来**会**让 `synthesize_http_redirect` 给它合成一个 `:80` 的 308 站点，
-#   于是本格变成 AGENTS.md 那张表上第八个隐式绑 `:80` 的场景。
-#   ⇒ 三份配置的全局块都写 `auto_http_redirect false` 把它按住。
-#   ★ 那一行今天**不改变任何既有判据**（前四个站点本来就不合成）——它守的正是
-#     站点 T 这一条，⛔ 别当成可以顺手删掉的样板。
-#   ★ cleanup 照旧断言 9920/9921/9922 都已经还回去
-#   （照 `tests/quic-relay/run.sh`：判据挂在「端口还回去了没有」，不挂在「进程还在不在」）。
+# ⚠ ⚠ **本場景仍然不碰共享的 `:80`，而現在它需要一句顯式的話才成立。**
+#   前四個站台全寫 `http://` ⇒ 天然不合成重定向站台；而站台 T 寫的是
+#   `a.example:9922`（沒寫 scheme ⇒ 按 `compile.rs` 的規則推成 `https` ⇒ `auto_https`）
+#   ——那本來**會**讓 `synthesize_http_redirect` 給它合成一個 `:80` 的 308 站台，
+#   於是本格變成 AGENTS.md 那張表上第八個隱式綁 `:80` 的場景。
+#   ⇒ 三份設定的全域塊都寫 `auto_http_redirect false` 把它按住。
+#   ★ 那一行今天**不改變任何既有判據**（前四個站台本來就不合成）——它守的正是
+#     站台 T 這一條，⛔ 別當成可以順手刪掉的樣板。
+#   ★ cleanup 照舊斷言 9920/9921/9922 都已經還回去
+#   （照 `tests/quic-relay/run.sh`：判據掛在「連接埠還回去了沒有」，不掛在「處理程序還在不在」）。
 
 set -euo pipefail
 
@@ -60,33 +60,33 @@ BIN="$REPO/target/release/fulcrum"
 WORK=$(mktemp -d)
 HOST=127.0.0.1
 A_PORT=${A_PORT:-9920}
-# ★ 站点 B 与站点 C **共用**这一个端口：站点按 `(host, port)` 匹配，同端口不同主机名
-#   是合法的两个站点。⇒ 反向判据 ① 与访问控制的反向半边在同一个监听器上量，
-#   「监听器不一样」这条解释被排除掉了。
+# ★ 站台 B 與站台 C **共用**這一個連接埠：站台按 `(host, port)` 匹配，同連接埠不同主機名
+#   是合法的兩個站台。⇒ 反向判據 ① 與訪問控制的反向半邊在同一個監聽器上量，
+#   「監聽器不一樣」這條解釋被排除掉了。
 BC_PORT=${BC_PORT:-9921}
-# 站点 T：TLS 那一格（M2 批 M′ 任务 3）。★ 同一个端口号上同时有 TCP 与 UDP（G110）
-#   ⇒ h1 / h2 / h3 三条路共用它。
+# 站台 T：TLS 那一格（M2 批 M′ 任務 3）。★ 同一個連接埠號上同時有 TCP 與 UDP（G110）
+#   ⇒ h1 / h2 / h3 三條路共用它。
 TLS_PORT=${TLS_PORT:-9922}
-# status_class="none" 那条路（M2 批 M′ 任务 4，G124）要的**慢上游**。
-# ⚠ 它不是枢衡的监听器，但它照样占着一个端口 ⇒ 进 AGENTS.md 指的那张端口表，
-#   也进 cleanup 那份「走的时候还回去了没有」的单子。
+# status_class="none" 那條路（M2 批 M′ 任務 4，G124）要的**慢上游**。
+# ⚠ 它不是樞衡的監聽器，但它照樣佔著一個連接埠 ⇒ 進 AGENTS.md 指的那張連接埠表，
+#   也進 cleanup 那份「走的時候還回去了沒有」的單子。
 ABORT_UP_PORT=${ABORT_UP_PORT:-9923}
-# ── 连接指标（M2 批 O，G122 的连接那半）用的 L4 两格 ────────────────────────
-# ★ ★ 为什么 l4 也要摆进本场景：这个族的核心断言是「**四个互不相干的 accept 循环
-#   都记进了同一个族，而 entrypoint 分得开**」—— 那句话只有在同一个进程里同时有
-#   五种入口（http / admin / quic / l4_tcp / l4_udp）时才验得了。拆到 tests/l4 去，
-#   它就永远验不到。
-# ★ L4 TCP 的上游复用 $ABORT_UP_PORT（那个慢上游是个 TCP 监听器，透传够用）；
-#   UDP 另起一个回显上游。
+# ── 連接指標（M2 批 O，G122 的連接那半）用的 L4 兩格 ────────────────────────
+# ★ ★ 為什麼 l4 也要擺進本場景：這個族的核心斷言是「**四個互不相干的 accept 循環
+#   都記進了同一個族，而 entrypoint 分得開**」—— 那句話只有在同一個處理程序裡同時有
+#   五種入口（http / admin / quic / l4_tcp / l4_udp）時才驗得了。拆到 tests/l4 去，
+#   它就永遠驗不到。
+# ★ L4 TCP 的上游重複使用 $ABORT_UP_PORT（那個慢上游是個 TCP 監聽器，透傳夠用）；
+#   UDP 另起一個回顯上游。
 L4T_PORT=${L4T_PORT:-9924}
 L4U_PORT=${L4U_PORT:-9925}
 UDPUP_PORT=${UDPUP_PORT:-9926}
 LOGFILE="$WORK/access.json"
 EXPO="$WORK/expo.py"
-# 抓取路径。★ 它同时是「站点 B 上打的同一路径」。
+# 抓取路徑。★ 它同時是「站台 B 上打的同一路徑」。
 MPATH=/metrics
-# ── fulcrum_overrides_active（M2 批 N 任务 6.5，G126）用：管理面 Unix socket ──
-#   ★ 不需要新端口（G14：admin 只走 unix socket）——不占用 AGENTS.md 那张端口表。
+# ── fulcrum_overrides_active（M2 批 N 任務 6.5，G126）用：管理面 Unix socket ──
+#   ★ 不需要新連接埠（G14：admin 只走 unix socket）——不佔用 AGENTS.md 那張連接埠表。
 ADMIN_SOCK="$WORK/admin.sock"
 
 FAILS=0
@@ -114,13 +114,13 @@ cleanup() {
     kill -9 "$pid" 2>/dev/null || true
   done
 
-  # ── ★ ★ 收尾自证：本场景用过的端口，走的时候必须全部还回去 ──────────────────
+  # ── ★ ★ 收尾自證：本場景用過的連接埠，走的時候必須全部還回去 ──────────────────
   #
-  # 照 `tests/quic-relay/run.sh` 那段。⚠ 它守的是**上面那个 `PIDS` 收全了没有**，
-  # 而判据挂在「端口还回去了没有」而不是「进程还在不在」：前者才是下一个场景真会
-  # 被绊到的东西，后者要先知道该找哪个 pid —— 而一个没被登记的 pid 恰恰最找不到。
-  # ⚠ 本格不碰 `:80`：前四个站点都是 `http://`，而 `auto_https` 的站点 T 由全局
-  #   `auto_http_redirect false` 按住（见文件头）⇒ 单子里没有它。
+  # 照 `tests/quic-relay/run.sh` 那段。⚠ 它守的是**上面那個 `PIDS` 收全了沒有**，
+  # 而判據掛在「連接埠還回去了沒有」而不是「處理程序還在不在」：前者才是下一個場景真會
+  # 被絆到的東西，後者要先知道該找哪個 pid —— 而一個沒被登記的 pid 恰恰最找不到。
+  # ⚠ 本格不碰 `:80`：前四個站台都是 `http://`，而 `auto_https` 的站台 T 由全域
+  #   `auto_http_redirect false` 按住（見檔案頭）⇒ 單子裡沒有它。
   local p leaked=""
   for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$ABORT_UP_PORT" "$L4T_PORT" "$L4U_PORT" "$UDPUP_PORT"; do
     waited=0
@@ -137,8 +137,8 @@ cleanup() {
     echo "METRICS TESTS FAILED: 收尾没干净 —— 退出时这些端口还有人在听：$leaked" >&2
     echo "  ⇒ 多半是某个 pid 没进 \$PIDS（经典写法：\`X=\$(start …)\`，\$(…) 是子 shell，" >&2
     echo "     数组改的是副本）。⚠ 后果不在本场景：泄漏的进程活到下一个场景去。" >&2
-    # ★ 用 `pgrep -af` 而不是 `ps | grep`：一个 defunct 进程攥不住监听 socket，
-    #   所以这里要的只是「还活着的是哪几个」——而那正好是 pgrep 答得了的。
+    # ★ 用 `pgrep -af` 而不是 `ps | grep`：一個 defunct 處理程序攥不住監聽 socket，
+    #   所以這裡要的只是「還活著的是哪幾個」——而那正好是 pgrep 答得了的。
     pgrep -af "fulcrum serve" >&2 || true
     exit 1
   fi
@@ -159,11 +159,11 @@ wait_port() {
   return 1
 }
 
-# 访问日志那一侧的两个读数。★ 与 `tests/log/run.sh` 逐字同一套写法。
+# 訪問紀錄那一側的兩個讀數。★ 與 `tests/log/run.sh` 逐字同一套寫法。
 lines() { wc -l < "$LOGFILE" | tr -d ' '; }
 
-# 取访问日志**最后一行**的某个字段。⚠ 用 python3 而不是 grep：一个
-# `grep '"site":"http://a.example:9920"'` 会在字段顺序、空格、转义任一处变化时静默漏判。
+# 取訪問紀錄**最後一行**的某個欄位。⚠ 用 python3 而不是 grep：一個
+# `grep '"site":"http://a.example:9920"'` 會在欄位順序、空格、轉義任一處變化時靜默漏判。
 field() {
   python3 -c '
 import json, sys
@@ -174,23 +174,23 @@ print(o[k] if k in o else "<缺>")
 ' "$LOGFILE" "$1"
 }
 
-# 一条普通请求，只回 HTTP 码。$1 端口 · $2 Host · $3 路径。
+# 一條普通請求，只回 HTTP 碼。$1 連接埠 · $2 Host · $3 路徑。
 req() {
   curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $2" \
     "http://$HOST:$1$3" 2>/dev/null || echo 000
 }
 
-# 一条请求，正文落到 $4、响应头落到 $4.hdr，回 HTTP 码。
+# 一條請求，正文落到 $4、回應頭落到 $4.hdr，回 HTTP 碼。
 get() {
   curl -sS -o "$4" -D "$4.hdr" -w '%{http_code}' --max-time 5 -H "Host: $2" \
     "http://$HOST:$1$3" 2>/dev/null || echo 000
 }
 
-# 抓一次指标（Host: a.example，来源自然是 127.0.0.1 ⇒ `@internal` 命中）。
+# 抓一次指標（Host: a.example，來源自然是 127.0.0.1 ⇒ `@internal` 命中）。
 scrape() { get "$A_PORT" a.example "$MPATH" "$1"; }
 
-# 响应头里 `Content-Type` 的**原文**。★ 不走 curl 的 `%{content_type}`：那是 curl
-# 规整过的，而这一格判的恰恰是**我们写出去的那一串逐字对不对**（抓取端按它挑解析器）。
+# 回應頭裡 `Content-Type` 的**原文**。★ 不走 curl 的 `%{content_type}`：那是 curl
+# 規整過的，而這一格判的恰恰是**我們寫出去的那一串逐字對不對**（抓取端按它挑解析器）。
 content_type() {
   python3 - "$1" <<'PY'
 import sys
@@ -207,12 +207,12 @@ PY
 
 expo() { python3 "$EXPO" "$@"; }
 
-# ★ ★ ★ 「捕获一个可能失败的命令」的唯一写法，连同它为什么存在，都在
-#   `tests/lib/capture.sh` 里（任务 7 从本文件与 `tests/serve/run.sh` 各一份收敛而来）。
+# ★ ★ ★ 「捕獲一個可能失敗的命令」的唯一寫法，連同它為什麼存在，都在
+#   `tests/lib/capture.sh` 裡（任務 7 從本檔案與 `tests/serve/run.sh` 各一份收斂而來）。
 # shellcheck source=tests/lib/capture.sh
 . "$REPO/tests/lib/capture.sh"
 
-# 一个数值断言。$1 说明 · $2 期望 · $3 实际。
+# 一個數值斷言。$1 說明 · $2 期望 · $3 實際。
 eq() {
   if [ "$2" = "$3" ]; then
     ok "$1（$3）"
@@ -221,12 +221,12 @@ eq() {
   fi
 }
 
-# ── exposition 的读取端 ─────────────────────────────────────────────────────
+# ── exposition 的讀取端 ─────────────────────────────────────────────────────
 #
-# ★ ★ **判据要问的是「这个 series 的值涨了多少」，而不是「正文里有没有那几个字」**：
-#   后者对「把指标硬编码成一段常量」的实现完全无效。⇒ 需要一个真的解析器。
-# ⚠ 它自己也可能坏。坏了的表现是**恒答 0 / 恒答有**，而那会让下面每一条判据变成空转
-#   ⇒ 它带一个 `selftest`，每次开跑先证「它命中得了，也落空得了」。
+# ★ ★ **判據要問的是「這個 series 的值漲了多少」，而不是「正文裡有沒有那幾個字」**：
+#   後者對「把指標硬編碼成一段常數」的實作完全無效。⇒ 需要一個真的解析器。
+# ⚠ 它自己也可能壞。壞了的表現是**恆答 0 / 恆答有**，而那會讓下面每一條判據變成空轉
+#   ⇒ 它帶一個 `selftest`，每次開跑先證「它命中得了，也落空得了」。
 cat > "$EXPO" <<'PY'
 #!/usr/bin/env python3
 """Prometheus text exposition（0.0.4）的读取端 —— 只服务于 tests/metrics/run.sh。
@@ -446,10 +446,10 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv))
 PY
 
-# ── [0/8] 基线 ──────────────────────────────────────────────────────────────
+# ── [0/8] 基線 ──────────────────────────────────────────────────────────────
 #
-# ★ ★ 三条自证：端口没被占（否则量的是别人的服务）；访问日志此刻不存在
-#   （否则「多了几行」分不出「刚写的」与「本来就有的」）；读取端量得了东西。
+# ★ ★ 三條自證：連接埠沒被佔（否則量的是別人的服務）；訪問紀錄此刻不存在
+#   （否則「多了幾行」分不出「剛寫的」與「本來就有的」）；讀取端量得了東西。
 echo "=== [0/8] 基线：端口空着 · 日志文件还不存在 · exposition 读取端自证 ==="
 for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$L4T_PORT" "$ABORT_UP_PORT" "$UDPUP_PORT"; do
   if port_listening "$p"; then
@@ -457,9 +457,9 @@ for p in "$A_PORT" "$BC_PORT" "$TLS_PORT" "$L4T_PORT" "$ABORT_UP_PORT" "$UDPUP_P
     exit 1
   fi
 done
-# ⛔ 不在这句话里写个数：那个计数一道门都没有，加一个端口时它当场过期而不会红。
-# ⚠ $L4U_PORT 与 $UDPUP_PORT 是 UDP，`port_listening` 是 TCP 探测 ⇒ 探不到它们，
-#   基线里有意不查（查了也恒为「空着」，那是一条读起来成立而实际空转的断言）。
+# ⛔ 不在這句話裡寫個數：那個計數一道門都沒有，加一個連接埠時它當場過期而不會紅。
+# ⚠ $L4U_PORT 與 $UDPUP_PORT 是 UDP，`port_listening` 是 TCP 探測 ⇒ 探不到它們，
+#   基線裡有意不查（查了也恆為「空著」，那是一條讀起來成立而實際空轉的斷言）。
 ok "本格用到的 TCP 端口都空着（$A_PORT $BC_PORT $TLS_PORT $L4T_PORT $ABORT_UP_PORT $UDPUP_PORT）"
 if [ -e "$LOGFILE" ]; then
   echo "METRICS TESTS FAILED: $LOGFILE 已经存在，本次结果不可采信。" >&2
@@ -473,18 +473,18 @@ else
   exit 1
 fi
 
-# ── 配置 ────────────────────────────────────────────────────────────────────
+# ── 設定 ────────────────────────────────────────────────────────────────────
 #
-# ⚠ ⚠ **`admin unix/$ADMIN_SOCK` 从第一代就开着**（G126 那节要用它 POST /runtime
-#   与 GET /stats）：admin 是启动时才绑的监听（与数据面监听器同一条纪律），
-#   POST /load 换不了它 —— 必须在这里，不能等后面 [reload] 再加。
-#   ★ 它是一个独立的 Unix socket 监听，不影响这份配置上任何一条既有判据
-#   （不产生新的 `site`、不产生新的 `reverse_proxy`）。
+# ⚠ ⚠ **`admin unix/$ADMIN_SOCK` 從第一代就開著**（G126 那節要用它 POST /runtime
+#   與 GET /stats）：admin 是啟動時才綁的監聽（與資料面監聽器同一條紀律），
+#   POST /load 換不了它 —— 必須在這裡，不能等後面 [reload] 再加。
+#   ★ 它是一個獨立的 Unix socket 監聽，不影響這份設定上任何一條既有判據
+#   （不產生新的 `site`、不產生新的 `reverse_proxy`）。
 
-# ── 自签证书（站点 T 要，M2 批 M′ 任务 3）─────────────────────────────────
+# ── 自簽證書（站台 T 要，M2 批 M′ 任務 3）─────────────────────────────────
 #
-# ⚠ SAN 必须有 `a.example`：枢衡按**证书自己的 SAN** 决定这张证书装在哪些 SNI 上。
-# ★ 与 `tests/log/run.sh` 那段逐字同一套（现签，⛔ 不入库）。
+# ⚠ SAN 必須有 `a.example`：樞衡按**證書自己的 SAN** 決定這張證書裝在哪些 SNI 上。
+# ★ 與 `tests/log/run.sh` 那段逐字同一套（現籤，⛔ 不入庫）。
 openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   -keyout "$WORK/tls.key" -out "$WORK/tls.crt" \
   -subj "/CN=a.example" \
@@ -495,10 +495,10 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   exit 1
 }
 
-# ⚠ ⚠ ⚠ **站点 T 必须出现在下面**三份**配置里**（`a` / `ov` / `ov-dangling`）。
-#   `POST /load` 明确拒绝监听端口集发生变化（`admin.rs`：「监听端口集变了，本进程
-#   换不了」，回 409）⇒ 少写一份，后面那两次 reload 会 409，**而红的地方会在
-#   `fulcrum_overrides_active` 那一节**，指向一个与真正原因完全无关的方向。
+# ⚠ ⚠ ⚠ **站台 T 必須出現在下面**三份**設定裡**（`a` / `ov` / `ov-dangling`）。
+#   `POST /load` 明確拒絕監聽連接埠集發生變化（`admin.rs`：「監聽連接埠集變了，本處理程序
+#   換不了」，回 409）⇒ 少寫一份，後面那兩次 reload 會 409，**而紅的地方會在
+#   `fulcrum_overrides_active` 那一節**，指向一個與真正原因完全無關的方向。
 cat > "$WORK/a.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -562,14 +562,14 @@ l4 {
 }
 CONF
 
-# 一份**没有任何来源匹配器**的 metrics 配置 —— 只用来证那条诊断真的会说话。
+# 一份**沒有任何來源匹配器**的 metrics 設定 —— 只用來證那條診斷真的會說話。
 cat > "$WORK/unguarded.Fulcrumfile" <<CONF
 http://a.example:$A_PORT {
     metrics
 }
 CONF
 
-# ── [1/8] 起服务 ────────────────────────────────────────────────────────────
+# ── [1/8] 起服務 ────────────────────────────────────────────────────────────
 echo "=== [1/8] 起被测实例 ==="
 RUST_LOG=${RUST_LOG:-info} "$BIN" serve "$WORK/a.Fulcrumfile" \
   --bind-host "$HOST" \
@@ -593,9 +593,9 @@ else
   fail "访问日志此刻不是「存在且空」—— 一致性门的基线不成立"
 fi
 
-# ★ 那条诊断的**两个方向**：本格这份配置圈住了来源 ⇒ 不该报；
-#   而一份没圈的配置**必须**报。⚠ 只验前者的话，一条从来不会说话的诊断也全绿 ——
-#   而 G116 明写「matcher 写错就会把指标暴露出去，只能靠文档与诊断兜」。
+# ★ 那條診斷的**兩個方向**：本格這份設定圈住了來源 ⇒ 不該報；
+#   而一份沒圈的設定**必須**報。⚠ 只驗前者的話，一條從來不會說話的診斷也全綠 ——
+#   而 G116 明寫「matcher 寫錯就會把指標暴露出去，只能靠文件與診斷兜」。
 if "$BIN" validate "$WORK/a.Fulcrumfile" > "$WORK/validate.out" 2>&1; then
   if grep -q "FUL-DSL-0037" "$WORK/validate.out"; then
     fail "★★ 本格的 metrics 被 remote_ip 圈住了，却仍报 FUL-DSL-0037"
@@ -612,19 +612,19 @@ else
   fail "★★★ 没圈来源的 metrics 竟然一声不吭：$(head -5 "$WORK/unguarded.out" | tr '\n' ' ')"
 fi
 
-# ── [2/8] 判据 1：格式 ──────────────────────────────────────────────────────
+# ── [2/8] 判據 1：格式 ──────────────────────────────────────────────────────
 echo "=== [2/8] 判据 1：抓到的正文是合法 exposition ==="
 #
-# ⚠ ⚠ **先打三条预热请求再抓**：计数发生在 `Record::finish`（响应写完之后）
-#   ⇒ 第一次抓取的正文里 `fulcrum_requests_total` **一条样本都没有**，
-#   而「四个标签都在」这条判据在没有样本时会退化成空转。
+# ⚠ ⚠ **先打三條預熱請求再抓**：計數發生在 `Record::finish`（回應寫完之後）
+#   ⇒ 第一次抓取的正文裡 `fulcrum_requests_total` **一條樣本都沒有**，
+#   而「四個標籤都在」這條判據在沒有樣本時會退化成空轉。
 CODE=$(req "$A_PORT" a.example "/")
 eq "预热①：站点 A 上非 /metrics 的路径走兜底 respond" 403 "$CODE"
 CODE=$(req "$A_PORT" nobody-warm.invalid "$MPATH")
 eq "预热②：9920 上的未知 Host ⇒ 无站点匹配" 421 "$CODE"
-# ★ 预热③是**已知地址字面量、错端口**：`b.example` 只配在 9921 上 ⇒ 9920 上它无站点匹配，
-#   而它**是**一条地址字面量 ⇒ G118 给它自己一格，而不是并进 `<other>`。
-#   ⚠ 少了它，判据 4 里「series 条数不增长」在一个「把 host 恒写成 <other>」的实现上也全绿。
+# ★ 預熱③是**已知位址字面值、錯連接埠**：`b.example` 只配在 9921 上 ⇒ 9920 上它無站台匹配，
+#   而它**是**一條位址字面值 ⇒ G118 給它自己一格，而不是並進 `<other>`。
+#   ⚠ 少了它，判據 4 裡「series 條數不增長」在一個「把 host 恆寫成 <other>」的實作上也全綠。
 CODE=$(req "$A_PORT" b.example "$MPATH")
 eq "预热③：已知字面量打错端口 ⇒ 无站点匹配" 421 "$CODE"
 sleep 0.2
@@ -636,11 +636,11 @@ eq "抓取端点回 200" 200 "$CODE"
 CT=$(content_type "$S1.hdr")
 eq "★★ Content-Type 逐字" "text/plain; version=0.0.4; charset=utf-8" "$CT"
 
-# 每个族的 `# HELP` / `# TYPE` 一个都不许少。
+# 每個族的 `# HELP` / `# TYPE` 一個都不許少。
 #
-# ⛔ **这里不写族的个数**：一个写在注释里的计数没有任何门守着，加族时它当场过期
-#   而不会红（批 N 任务 8 因此把这类计数从五个文件里全部拿掉了）。
-#   ★ 下面那条 `# TYPE` 行数比对**就是**那个计数，而它是从真实抓取里数出来的。
+# ⛔ **這裡不寫族的個數**：一個寫在註解裡的計數沒有任何門守著，加族時它當場過期
+#   而不會紅（批 N 任務 8 因此把這類計數從五個檔案裡全部拿掉了）。
+#   ★ 下面那條 `# TYPE` 行數比對**就是**那個計數，而它是從真實抓取裡數出來的。
 FAMILIES_EXPECTED="fulcrum_requests_total fulcrum_request_duration_seconds
 fulcrum_cache_events_total fulcrum_cache_purged_entries_total
 fulcrum_no_site_match_total fulcrum_upstream_inflight fulcrum_upstream_healthy
@@ -656,19 +656,19 @@ for f in $FAMILIES_EXPECTED; do
   fi
 done
 
-# ★ ★ ★ **反向那半：抓取里不许有这张单子之外的族。**
+# ★ ★ ★ **反向那半：抓取裡不許有這張單子之外的族。**
 #
-# ⚠ ⚠ 少了它，上面那个循环只证明「单子里的都在」—— 新增一个族却忘了写进单子时
-#   **一条都不会红**，而这个文件正是那种遗漏唯一会露头的地方
-#   （`FAMILIES` ↔ 基数表那道门在单测里，它看不见这份手抄单子）。
-# ★ 判据是**数出来的**：`# TYPE` 一族一行，拿它与单子的条数比。
+# ⚠ ⚠ 少了它，上面那個循環只證明「單子裡的都在」—— 新增一個族卻忘了寫進單子時
+#   **一條都不會紅**，而這個檔案正是那種遺漏唯一會露頭的地方
+#   （`FAMILIES` ↔ 基數表那道門在單測裡，它看不見這份手抄單子）。
+# ★ 判據是**數出來的**：`# TYPE` 一族一行，拿它與單子的條數比。
 TYPE_LINES=$(grep -c '^# TYPE ' "$S1")
 WANT_FAMILIES=$(echo "$FAMILIES_EXPECTED" | wc -w)
 eq "★★★ 抓取里的族数与上面这张单子逐个对得上（多一个族没写进单子就红）" \
   "$WANT_FAMILIES" "$TYPE_LINES"
 
-# ★ 整份正文过一遍结构检查：每条样本都有声明 · 没有重复的 series · counter 名字带 `_total`。
-#   ⚠ 「重复的 series」这一条尤其值钱：抓取端会把它算成两条，而正文读起来完全正常。
+# ★ 整份正文過一遍結構檢查：每條樣本都有宣告 · 沒有重複的 series · counter 名字帶 `_total`。
+#   ⚠ 「重複的 series」這一條尤其值錢：抓取端會把它算成兩條，而正文讀起來完全正常。
 LINT=$(expo lint "$S1" || true)
 if [ -z "$LINT" ]; then
   ok "★★ 整份 exposition 结构检查通过（声明齐全 · 无重复 series · counter 名字带 _total）"
@@ -676,30 +676,30 @@ else
   fail "★★ exposition 结构检查没过：$(echo "$LINT" | tr '\n' '；')"
 fi
 
-# `fulcrum_requests_total` 的**每一条**样本都必须正好带那四个标签。
-# ★ 判的是**键的集合逐字相等**，不是「含有」——「含有」在多出一个 `uri` 标签时照样绿，
-#   而「任何形态都不加 uri 标签」是 G116 那张基数表写死的一条。
+# `fulcrum_requests_total` 的**每一條**樣本都必須正好帶那四個標籤。
+# ★ 判的是**鍵的集合逐字相等**，不是「含有」——「含有」在多出一個 `uri` 標籤時照樣綠，
+#   而「任何形態都不加 uri 標籤」是 G116 那張基數表寫死的一條。
 KEYS=$(expo labelkeys "$S1" fulcrum_requests_total)
 eq "★★★ fulcrum_requests_total 的标签键集合（每条样本都一样）" \
   "outcome,proto,site,status_class" "$KEYS"
 
-# ★ ★ 上游那两族：**族在、样本无**。
-#   本配置里一个 `reverse_proxy` 都没有 ⇒ 它们没有任何数据源。
-#   ⚠ 这一条分得开「没接上」与「没数据」：族都不出现才是没接上，而那正是
-#   「一个指标存在、只是还没发生过」与「这个指标根本没做」之间唯一的区别。
+# ★ ★ 上游那兩族：**族在、樣本無**。
+#   本設定裡一個 `reverse_proxy` 都沒有 ⇒ 它們沒有任何資料源。
+#   ⚠ 這一條分得開「沒接上」與「沒資料」：族都不出現才是沒接上，而那正是
+#   「一個指標存在、只是還沒發生過」與「這個指標根本沒做」之間唯一的區別。
 for f in fulcrum_upstream_inflight fulcrum_upstream_healthy; do
   eq "★★★ $f 有 HELP/TYPE 但零条样本（没有上游 ⇒ 没数据，不是没接上）" \
     0 "$(expo series "$S1" "$f")"
 done
 
-# ★ ★ ★ fulcrum_overrides_active（G126，批 N 任务 6.5）：与上面两族**相反**——
-#   它是**无标签**的单值 gauge，即便这一刻登记处一项覆盖都没有，也必须
-#   **出一条样本**（值是 0），而不是跟着「没数据」一起整族消失。⚠ 这是判据
-#   写法纪律的第 4 条：0 与「不存在」在这个族身上必须能分得开——族仍然出现，
-#   只是恰好一项覆盖都没有。
-#   ⚠ ⚠ 先证「样本真的存在」再问「值是多少」：`expo sum` 在「一条样本都没有」
-#   与「样本存在、值恰好是 0」两种情况下算出的都是 0（没有匹配项时 `sum` 的
-#   初值就是 0）——单独看 sum 挡不住「count==0 就整族不出样本」这种实现。
+# ★ ★ ★ fulcrum_overrides_active（G126，批 N 任務 6.5）：與上面兩族**相反**——
+#   它是**無標籤**的單值 gauge，即便這一刻登記處一項覆蓋都沒有，也必須
+#   **出一條樣本**（值是 0），而不是跟著「沒資料」一起整族消失。⚠ 這是判據
+#   寫法紀律的第 4 條：0 與「不存在」在這個族身上必須能分得開——族仍然出現，
+#   只是恰好一項覆蓋都沒有。
+#   ⚠ ⚠ 先證「樣本真的存在」再問「值是多少」：`expo sum` 在「一條樣本都沒有」
+#   與「樣本存在、值恰好是 0」兩種情況下算出的都是 0（沒有匹配項時 `sum` 的
+#   初值就是 0）——單獨看 sum 擋不住「count==0 就整族不出樣本」這種實作。
 eq "★★★ fulcrum_overrides_active 基数恒为 1（判据 5，0 覆盖时的基线；顺带证明判据 4 的样本真的存在）" \
   1 "$(expo series "$S1" fulcrum_overrides_active)"
 eq "★★★ fulcrum_overrides_active 此刻 0 覆盖，值是 0（判据 4：族仍出现，不是整族消失）" \
@@ -707,7 +707,7 @@ eq "★★★ fulcrum_overrides_active 此刻 0 覆盖，值是 0（判据 4：�
 eq "★★★ fulcrum_overrides_active 不带任何标签（判据 1）" \
   "" "$(expo labelkeys "$S1" fulcrum_overrides_active)"
 
-# ── [3/8] 判据 2：访问控制的两个方向 ────────────────────────────────────────
+# ── [3/8] 判據 2：訪問控制的兩個方向 ────────────────────────────────────────
 echo "=== [3/8] 判据 2：够得着的抓得到，够不着的拿到 403 ==="
 if grep -q '^# TYPE ' "$S1"; then
   ok "正向：127.0.0.1 打站点 A ⇒ 200 且正文真的是指标（有 # TYPE 行）"
@@ -715,10 +715,10 @@ else
   fail "正向：抓到的正文里没有 # TYPE 行 —— 那它不是一份 exposition"
 fi
 
-# 反向：站点 C 把 `metrics` 圈在 10.0.0.0/8 里，而我们从 127.0.0.1 打过去 ——
-# ⇒ `@outsider` 不命中，落到兜底那条 `respond 403`。
-# ★ 这是本格里**在容器里真的造得出来**的那个反向形状：不需要第二块网卡，
-#   只需要一个我们不可能来自的网段。
+# 反向：站台 C 把 `metrics` 圈在 10.0.0.0/8 裡，而我們從 127.0.0.1 打過去 ——
+# ⇒ `@outsider` 不命中，落到備援那條 `respond 403`。
+# ★ 這是本格里**在容器裡真的造得出來**的那個反向形狀：不需要第二塊網卡，
+#   只需要一個我們不可能來自的網段。
 C_OUT="$WORK/c.txt"
 CODE=$(get "$BC_PORT" c.example "$MPATH" "$C_OUT")
 eq "★★★ 反向：来源不在 10.0.0.0/8 ⇒ 站点 C 给的是兜底 403" 403 "$CODE"
@@ -734,11 +734,11 @@ else
   ok "★★ 而它的 Content-Type 也不是 exposition 那一串（$CT）"
 fi
 
-# ── [4/8] 判据 3（反向 ①）：没写 metrics 的站点 ─────────────────────────────
+# ── [4/8] 判據 3（反向 ①）：沒寫 metrics 的站台 ─────────────────────────────
 echo "=== [4/8] 判据 3：站点 B 没写 metrics ⇒ 同一路径拿到的不是指标 ==="
 #
-# ★ ★ ★ 少了这一条，「抓到了指标」证明不了是 `metrics` 这条指令干的 ——
-#   一个「见到 /metrics 就渲染指标」的实现（把端点做成了硬编码路径）在上面每一条判据上全绿。
+# ★ ★ ★ 少了這一條，「抓到了指標」證明不了是 `metrics` 這條指令乾的 ——
+#   一個「見到 /metrics 就繪製指標」的實作（把端點做成了硬編碼路徑）在上面每一條判據上全綠。
 B_OUT="$WORK/b.txt"
 CODE=$(get "$BC_PORT" b.example "$MPATH" "$B_OUT")
 eq "站点 B 上打 $MPATH 回 200" 200 "$CODE"
@@ -749,19 +749,19 @@ else
 fi
 eq "★★ 而它给的是自己那条 respond 的正文" "b-ok" "$(cat "$B_OUT")"
 
-# ── [5/8] 判据 4（反向 ②）：50 个互不相同的未知 Host ────────────────────────
+# ── [5/8] 判據 4（反向 ②）：50 個互不相同的未知 Host ────────────────────────
 echo "=== [5/8] 判据 4：未知 Host 打 50 次 ⇒ series 不增长，而那一格正好 +50 ==="
 #
-# ⚠ ⚠ **两句都要断言**。只断言前半（「series 条数不增长」）的话，
-#   一个「计数器根本没在加」的实现也能过 —— 而那时 series 条数当然不增长。
+# ⚠ ⚠ **兩句都要斷言**。只斷言前半（「series 條數不增長」）的話，
+#   一個「計數器根本沒在加」的實作也能過 —— 而那時 series 條數當然不增長。
 S2="$WORK/s2.txt"
 CODE=$(scrape "$S2")
 eq "抓取回 200（取基线）" 200 "$CODE"
 N1=$(expo series "$S2" fulcrum_no_site_match_total)
 V1=$(expo sum "$S2" fulcrum_no_site_match_total 'host=<other>')
 W1=$(expo sum "$S2" fulcrum_no_site_match_total host=b.example)
-# ★ 尺子自证：两格都得有值 —— 一个把 host 恒写成 `<other>` 的实现在这里当场红，
-#   而它在「series 不增长」那一句上是全绿的。
+# ★ 尺子自證：兩格都得有值 —— 一個把 host 恆寫成 `<other>` 的實作在這裡當場紅，
+#   而它在「series 不增長」那一句上是全綠的。
 if [ "$V1" -ge 1 ] && [ "$W1" -ge 1 ]; then
   ok "★★★ 基线上两格都有值：host=<other> 是 $V1，host=b.example 是 $W1（尺子读得出两种值）"
 else
@@ -783,19 +783,19 @@ eq "★★★ 而 host=<other> 那一格正好 +50（计数器真的在加）" \
 eq "★★ 已知字面量那一格没被这 50 条带动" \
   "$W1" "$(expo sum "$S3" fulcrum_no_site_match_total host=b.example)"
 
-# ── [6/8] 判据 5：一致性门 ──────────────────────────────────────────────────
+# ── [6/8] 判據 5：一致性門 ──────────────────────────────────────────────────
 echo "=== [6/8] 判据 5：指标的增量与访问日志新增的行数逐条对得上 ==="
 #
-# ★ ★ ★ 它守的是「两处不分家」：`fulcrum_requests_total` 与访问日志那一行
-#   由**同一个 `Record::finish`** 喂出来。⚠ 各算各的话，两个数字都会言之凿凿、
-#   却对不上 —— 而那正是 D18 / G66 那个形状。
+# ★ ★ ★ 它守的是「兩處不分家」：`fulcrum_requests_total` 與訪問紀錄那一行
+#   由**同一個 `Record::finish`** 喂出來。⚠ 各算各的話，兩個數字都會言之鑿鑿、
+#   卻對不上 —— 而那正是 D18 / G66 那個形狀。
 #
 # ⚠ 三件要算清楚的事：
-#   ① 站点 A 配的是 `level info` ⇒ 它记全部（`LogLevel::All`）；
-#   ② `no_site_match` 的请求**不属于任何站点** ⇒ 记不进访问日志，它们在指标里是
-#      `site="<none>"` —— **两边都不算它**；
-#   ③ 抓取那一条请求自己也会被计一次、也会被记一行（`outcome="metrics"`），
-#      而计数在**渲染之后** ⇒ 第 N 次抓取看到的是前 N−1 次的量。⇒ 抓两次做差。
+#   ① 站台 A 配的是 `level info` ⇒ 它記全部（`LogLevel::All`）；
+#   ② `no_site_match` 的請求**不屬於任何站台** ⇒ 記不進訪問紀錄，它們在指標裡是
+#      `site="<none>"` —— **兩邊都不算它**；
+#   ③ 抓取那一條請求自己也會被計一次、也會被記一行（`outcome="metrics"`），
+#      而計數在**繪製之後** ⇒ 第 N 次抓取看到的是前 N−1 次的量。⇒ 抓兩次做差。
 site_a_total() {
   local a b
   a=$(expo sum "$1" fulcrum_requests_total site=a.example)
@@ -811,7 +811,7 @@ NONE_A=$(expo sum "$S4" fulcrum_requests_total 'site=<none>')
 sleep 0.3
 L_A=$(lines)
 
-# 一串**已知形状**的请求：站点 A 上两种 outcome 各两条，外加一条不属于任何站点的。
+# 一串**已知形狀**的請求：站台 A 上兩種 outcome 各兩條，外加一條不屬於任何站台的。
 CODE=$(req "$A_PORT" a.example "$MPATH"); eq "  k1 站点 A · metrics" 200 "$CODE"
 CODE=$(req "$A_PORT" a.example "/nope"); eq "  k2 站点 A · respond" 403 "$CODE"
 CODE=$(req "$A_PORT" a2.example "/nope"); eq "  k3 站点 A（第二条地址）· respond" 403 "$CODE"
@@ -827,37 +827,37 @@ S5="$WORK/s5.txt"
 CODE=$(scrape "$S5")
 eq "抓取回 200（一致性门的右端）" 200 "$CODE"
 M_B=$(site_a_total "$S5")
-# ⇒ 指标那一侧多出来的是：k1 k2 k3 k5 这 4 条，**加上 S4 那次抓取自己**（它在渲染之后才计）。
+# ⇒ 指標那一側多出來的是：k1 k2 k3 k5 這 4 條，**加上 S4 那次抓取自己**（它在繪製之後才計）。
 eq "★★★ fulcrum_requests_total 在站点 A 上的增量 = 日志新增行数 + 1（+1 是左端那次抓取自己）" \
   "$((L_B - L_A + 1))" "$((M_B - M_A))"
 eq "★★ 而 site=<none> 那一格只涨了 1（k4），它一行日志都没多" \
   1 "$(($(expo sum "$S5" fulcrum_requests_total 'site=<none>') - NONE_A))"
 
-# ── ★ ★ ★ 顺带把**两个族**的数对起来 ────────────────────────────────────────
+# ── ★ ★ ★ 順帶把**兩個族**的數對起來 ────────────────────────────────────────
 #
-# `fulcrum_no_site_match_total`（G118，记在写 `outcome` 的同一处）与
-# `fulcrum_requests_total{site="<none>",outcome="no_site_match"}`（收尾那一处）
-# 数的是**同一批事件**，只是前者按 `host` 分、后者按 `status_class` / `proto` 分
-# ⇒ **两个族的总和必须恒等**。而它们由两个文件里的两条语句各加一次。
+# `fulcrum_no_site_match_total`（G118，記在寫 `outcome` 的同一處）與
+# `fulcrum_requests_total{site="<none>",outcome="no_site_match"}`（收尾那一處）
+# 數的是**同一批事件**，只是前者按 `host` 分、後者按 `status_class` / `proto` 分
+# ⇒ **兩個族的總和必須恆等**。而它們由兩個檔案裡的兩條語句各加一次。
 #
-# ⚠ 今天两处一致 —— 这条断言防的不是今天，是**将来多一条「不算命中站点」的早退路径**
-#   （批 N 的 stats 端点、第二种 421 场景……）时有人只写了其中一句：
-#   两个数字各自都在涨、各自都言之凿凿，而从此差一个常数，**没有任何东西会说**。
-#   ★ 这正是 D18 / G66 那个形状：批 M 为请求那两族躲开了它，却在这两族之间留了同一个口子。
-# ★ 上面两节把两个读数都已经量过了（判据 4 量前者、本节量后者）——**只差这一条把它俩对起来**。
-# ⚠ 判据读的是**同一份抓取正文**，不是两次抓取：两句 `inc` 一前一后（一句在早退处、
-#   一句在收尾），跨两次抓取比会把一条在途请求读成假红。
+# ⚠ 今天兩處一致 —— 這條斷言防的不是今天，是**將來多一條「不算命中站台」的早退路徑**
+#   （批 N 的 stats 端點、第二種 421 場景……）時有人只寫了其中一句：
+#   兩個數字各自都在漲、各自都言之鑿鑿，而從此差一個常數，**沒有任何東西會說**。
+#   ★ 這正是 D18 / G66 那個形狀：批 M 為請求那兩族躲開了它，卻在這兩族之間留了同一個口子。
+# ★ 上面兩節把兩個讀數都已經量過了（判據 4 量前者、本節量後者）——**只差這一條把它倆對起來**。
+# ⚠ 判據讀的是**同一份抓取正文**，不是兩次抓取：兩句 `inc` 一前一後（一句在早退處、
+#   一句在收尾），跨兩次抓取比會把一條在途請求讀成假紅。
 eq "★★★ 两个族数的是同一批事件：sum(no_site_match_total) = requests_total{site=<none>,outcome=no_site_match}" \
   "$(expo sum "$S5" fulcrum_no_site_match_total)" \
   "$(expo sum "$S5" fulcrum_requests_total 'site=<none>' outcome=no_site_match)"
 
-# ── [7/8] 判据 6：G121 的正面判据 ───────────────────────────────────────────
+# ── [7/8] 判據 6：G121 的正面判據 ───────────────────────────────────────────
 echo "=== [7/8] 判据 6：两个「site」给出不同的值 · 通配站点折叠成自己的字面量 ==="
 #
-# ★ ★ ★ 这是本批**最容易被做成同一件事**的地方：两者共用「site」这个名字纯属巧合。
-#   · 指标的 `site` 标签（G121）= 请求**实际命中的那条地址字面量** ⇒ `a2.example`；
-#   · 访问日志的 `site` 字段（R3）= **站点的名字** = 第一个地址的原文 ⇒ `http://a.example:9920`。
-#   ⚠ 一个把指标的 site 直接取自日志那个字段的实现，在别的每一条判据上都是绿的。
+# ★ ★ ★ 這是本批**最容易被做成同一件事**的地方：兩者共用「site」這個名字純屬巧合。
+#   · 指標的 `site` 標籤（G121）= 請求**實際命中的那條位址字面值** ⇒ `a2.example`；
+#   · 訪問紀錄的 `site` 欄位（R3）= **站台的名字** = 第一個位址的原文 ⇒ `http://a.example:9920`。
+#   ⚠ 一個把指標的 site 直接取自紀錄那個欄位的實作，在別的每一條判據上都是綠的。
 S6="$WORK/s6.txt"
 CODE=$(scrape "$S6")
 eq "抓取回 200（取 a2.example 那一格的基线）" 200 "$CODE"
@@ -868,21 +868,21 @@ CODE=$(req "$A_PORT" a2.example "/g121")
 eq "用 Host: a2.example 打一条（落到兜底 respond）" 403 "$CODE"
 sleep 0.3
 
-# 同一条请求的**日志那一面**：`host` 是 a2.example，而 `site` 仍是第一条地址的原文。
+# 同一條請求的**紀錄那一面**：`host` 是 a2.example，而 `site` 仍是第一條位址的原文。
 eq "★★★ 这条请求的日志行：host" "a2.example" "$(field host)"
 eq "★★★ 这条请求的日志行：site（= 站点的名字 = 第一条地址的原文）" \
   "http://a.example:$A_PORT" "$(field site)"
 
-# ── ★ ★ ★ 通配站点：两个不同的子域名，指标上必须折叠成同一格 ────────────────
+# ── ★ ★ ★ 通配站台：兩個不同的子網域，指標上必須摺疊成同一格 ────────────────
 #
-# ★ ★ ★ **这几行守的是 `site_addr` 那个赋值点本身**（`fulcrum-server/src/lib.rs` 里
-#   `session.record.site_addr = Some(routed.site_addr.clone())` —— 整批里 `site` 标签
-#   **唯一**的赋值点）。把它换成 `Arc::from(host.as_str())`，运行时单测（够不到 server 这一层）、
-#   access_log 单测（夹具自己塞值，绕开了这一行）与本文件其余每一条判据**全都仍然绿**：
-#   四条精确地址上 `host` 与地址字面量逐字相等，两者在那份配置上是同一个字符串。
-# ⚠ ⚠ **必须两个不同的子域名各打一次**：只打一个的话，「取 host」在那一次上也只产生
-#   一格 —— 闭集断言照样绿，错的只是那一格的名字，而名字对不对没有第二条判据在问。
-#   ⇒ 两个子域名之后，「取 host」的实现会多出**两格**，三条断言一起红。
+# ★ ★ ★ **這幾行守的是 `site_addr` 那個賦值點本身**（`fulcrum-server/src/lib.rs` 裡
+#   `session.record.site_addr = Some(routed.site_addr.clone())` —— 整批裡 `site` 標籤
+#   **唯一**的賦值點）。把它換成 `Arc::from(host.as_str())`，執行環境單測（夠不到 server 這一層）、
+#   access_log 單測（夾具自己塞值，繞開了這一行）與本檔案其餘每一條判據**全都仍然綠**：
+#   四條精確位址上 `host` 與位址字面值逐字相等，兩者在那份設定上是同一個字串。
+# ⚠ ⚠ **必須兩個不同的子網域各打一次**：只打一個的話，「取 host」在那一次上也只產生
+#   一格 —— 閉集斷言照樣綠，錯的只是那一格的名字，而名字對不對沒有第二條判據在問。
+#   ⇒ 兩個子網域之後，「取 host」的實作會多出**兩格**，三條斷言一起紅。
 CODE=$(req "$BC_PORT" w1.wild.example "/g121-wild")
 eq "  通配站点 · 子域名 ①" 200 "$CODE"
 CODE=$(req "$BC_PORT" w2.wild.example "/g121-wild")
@@ -902,22 +902,22 @@ for sub in w1.wild.example w2.wild.example; do
     0 "$(expo series "$S7" fulcrum_requests_total "site=$sub")"
 done
 
-# ★ ★ 封口：`site` 这个标签**出现过的全部取值**是一个闭集，正好 = 五条地址字面量 + `<none>`。
-#   ⇒ ① 同一个站点的两条地址各自成格（G121，不并成一格）；
-#      ② 日志那种带 scheme 与端口的写法**一次都没出现**在标签里；
-#      ③ 通配站点占的是**它自己那条字面量**那一格，两个子域名各自都不在集合里；
-#      ④ 上界 = 地址数 + 1，由配置定、不由访问者定（R2）。
-#   ⚠ 判的是**集合逐字相等**，不是「含有 a2.example」——「含有」在多冒出一格时照样绿。
+# ★ ★ 封口：`site` 這個標籤**出現過的全部取值**是一個閉集，正好 = 五條位址字面值 + `<none>`。
+#   ⇒ ① 同一個站台的兩條位址各自成格（G121，不併成一格）；
+#      ② 紀錄那種帶 scheme 與連接埠的寫法**一次都沒出現**在標籤裡；
+#      ③ 通配站台佔的是**它自己那條字面值**那一格，兩個子網域各自都不在集合裡；
+#      ④ 上界 = 位址數 + 1，由設定定、不由訪問者定（R2）。
+#   ⚠ 判的是**集合逐字相等**，不是「含有 a2.example」——「含有」在多冒出一格時照樣綠。
 eq "★★★ site 标签的取值是闭集：五条地址字面量 + <none>" \
   "*.wild.example <none> a.example a2.example b.example c.example" \
   "$(expo labelvalues "$S7" fulcrum_requests_total site | tr '\n' ' ' | sed 's/ $//')"
 
-# ── [8/8] 收尾前的一条：抓取自己也被计进去了 ────────────────────────────────
+# ── [8/8] 收尾前的一條：抓取自己也被計進去了 ────────────────────────────────
 echo "=== [8/8] 抓取端点自己也在被计（它不是一条特权请求）==="
 #
-# ★ 它把「第 N 次抓取看到的是前 N−1 次的量」这句话钉成判据：`outcome="metrics"`
-#   那一格必须随着抓取次数增长。⚠ 一个「抓取不计数」的实现会让上面那条一致性门
-#   的 `+1` 变成 `+0`，而那条判据会红得像是别的地方出了问题 —— 这里说清楚它。
+# ★ 它把「第 N 次抓取看到的是前 N−1 次的量」這句話釘成判據：`outcome="metrics"`
+#   那一格必須隨著抓取次數增長。⚠ 一個「抓取不計數」的實作會讓上面那條一致性門
+#   的 `+1` 變成 `+0`，而那條判據會紅得像是別的地方出了問題 —— 這裡說清楚它。
 Y1=$(expo sum "$S7" fulcrum_requests_total site=a.example outcome=metrics)
 S8="$WORK/s8.txt"
 CODE=$(scrape "$S8")
@@ -925,20 +925,20 @@ eq "抓取回 200" 200 "$CODE"
 eq "★★ outcome=metrics 那一格随抓取增长（上一次抓取被这一次看见了）" \
   1 "$(($(expo sum "$S8" fulcrum_requests_total site=a.example outcome=metrics) - Y1))"
 
-# ── fulcrum_tls_requests_total：走 TLS 的请求（M2 批 M′ 任务 3，G122 / G127）──
+# ── fulcrum_tls_requests_total：走 TLS 的請求（M2 批 M′ 任務 3，G122 / G127）──
 #
-# ★ ★ ★ 这一族的判据**全部挂在「与访问日志那一行读出来的值对得上」上**，
-#   ⛔ 不挂在写死的套件名上：把 `TLS_AES_256_GCM_SHA384` 写进判据，等于让这道门
-#   在 BoringSSL 换一次默认套件时红，而那时红的地方指向的是一个完全正确的实现。
-#   ⇒ 每一条 TLS 请求先从日志里读出这条连接真的协商出了什么，再拿它去指标里找那条 series。
+# ★ ★ ★ 這一族的判據**全部掛在「與訪問紀錄那一行讀出來的值對得上」上**，
+#   ⛔ 不掛在寫死的套件名上：把 `TLS_AES_256_GCM_SHA384` 寫進判據，等於讓這道門
+#   在 BoringSSL 換一次預設套件時紅，而那時紅的地方指向的是一個完全正確的實作。
+#   ⇒ 每一條 TLS 請求先從紀錄裡讀出這條連接真的協商出了什麼，再拿它去指標裡找那條 series。
 #
-# ⚠ ⚠ **⛔ 这里没有、也不许有「这个族的总数 = requests_total 的总数」那种判据**：
-#   明文请求的 `record.tls` 是 `None` ⇒ 不计（G122 / 计划 S5）。那条判据会在第一条
-#   明文请求上红，而那条请求什么问题都没有。★ 说得出口的关系只有「小于等于」。
+# ⚠ ⚠ **⛔ 這裡沒有、也不許有「這個族的總數 = requests_total 的總數」那種判據**：
+#   明文請求的 `record.tls` 是 `None` ⇒ 不計（G122 / 計畫 S5）。那條判據會在第一條
+#   明文請求上紅，而那條請求什麼問題都沒有。★ 說得出口的關係只有「小於等於」。
 echo "=== fulcrum_tls_requests_total（M2 批 M′ 任务 3，G122 的 TLS 半 / G127）==="
 
-# 一条走 TLS 的请求。$1 = 路径，其余 = 额外的 curl 参数。回 HTTP 码。
-# ⚠ `-k`：证书是现签自签的。⚠ `--resolve`：SNI 要是 `a.example`（证书的 SAN 就是它）。
+# 一條走 TLS 的請求。$1 = 路徑，其餘 = 額外的 curl 參數。回 HTTP 碼。
+# ⚠ `-k`：證書是現籤自籤的。⚠ `--resolve`：SNI 要是 `a.example`（證書的 SAN 就是它）。
 tls_req() {
   local path=$1
   shift
@@ -947,16 +947,16 @@ tls_req() {
     "https://a.example:$TLS_PORT$path" 2>/dev/null || echo 000
 }
 
-# 这个族此刻的总数。★ 只有一个取数处，写成函数免得三处各抄一遍。
+# 這個族此刻的總數。★ 只有一個取數處，寫成函式免得三處各抄一遍。
 tls_total() { expo sum "$1" fulcrum_tls_requests_total; }
 
-# ── ★ 夹具自证：`--http3-only` 真的在走 QUIC，不是悄悄回落到 TCP ─────────────
+# ── ★ 夾具自證：`--http3-only` 真的在走 QUIC，不是悄悄回落到 TCP ─────────────
 #
-# ⚠ ⚠ `--http3-only` 不许写成 `--http3`：后者在 QUIC 不通时**回落到 TCP**，
-#   于是下面 h3 那半会在「h3 根本没起来」时照样全绿（本仓在 tests/h3/run.sh 里
-#   白纸黑字记过这一条）。★ 对着一个**没有 UDP 监听**的端口（站点 A 是纯 HTTP）
-#   打一次，它必须失败 —— 少了这条，一个「curl 没编进 QUIC 后端」的镜像会让
-#   h3 那一整半变成空转。
+# ⚠ ⚠ `--http3-only` 不許寫成 `--http3`：後者在 QUIC 不通時**回落到 TCP**，
+#   於是下面 h3 那半會在「h3 根本沒起來」時照樣全綠（本儲存庫在 tests/h3/run.sh 裡
+#   白紙黑字記過這一條）。★ 對著一個**沒有 UDP 監聽**的連接埠（站台 A 是純 HTTP）
+#   打一次，它必須失敗 —— 少了這條，一個「curl 沒編進 QUIC 後端」的鏡像會讓
+#   h3 那一整半變成空轉。
 if curl -sS --http3-only --max-time 5 -o /dev/null \
     "https://$HOST:$A_PORT/" >/dev/null 2>&1; then
   fail "★ 对着一个没有 UDP 监听的端口 --http3-only 竟然成功了 —— 这把尺子量不了东西"
@@ -969,29 +969,29 @@ CODE=$(scrape "$ST0"); eq "抓取回 200（TLS 族的基线）" 200 "$CODE"
 T0=$(tls_total "$ST0")
 R0=$(expo sum "$ST0" fulcrum_requests_total)
 
-# ── ① 明文请求**一笔都不记** ────────────────────────────────────────────────
+# ── ① 明文請求**一筆都不記** ────────────────────────────────────────────────
 CODE=$(req "$BC_PORT" b.example "/p1"); eq "  明文 1（站点 B）" 200 "$CODE"
 CODE=$(req "$BC_PORT" b.example "/p2"); eq "  明文 2（站点 B）" 200 "$CODE"
 CODE=$(req "$BC_PORT" b.example "/p3"); eq "  明文 3（站点 B）" 200 "$CODE"
 sleep 0.3
 ST1="$WORK/st1.txt"
 CODE=$(scrape "$ST1"); eq "抓取回 200" 200 "$CODE"
-# ★ 先自证这三条请求真的被数到了 —— 否则下面那条「TLS 族没涨」在一个
-#   「三条请求根本没发出去」的世界里也全绿。⚠ 4 = 3 条明文 + ST0 那次抓取自己
-#   （计数在渲染之后 ⇒ 第 N 次抓取看到的是前 N−1 次的量）。
+# ★ 先自證這三條請求真的被數到了 —— 否則下面那條「TLS 族沒漲」在一個
+#   「三條請求根本沒發出去」的世界裡也全綠。⚠ 4 = 3 條明文 + ST0 那次抓取自己
+#   （計數在繪製之後 ⇒ 第 N 次抓取看到的是前 N−1 次的量）。
 eq "★ 夹具自证：requests_total 涨了 4（3 条明文 + ST0 那次抓取自己）" \
   4 "$(($(expo sum "$ST1" fulcrum_requests_total) - R0))"
 eq "★★★ 而 TLS 族一笔都没涨 —— 明文请求的 record.tls 是 None（G122，⛔ 别写成两族总数相等）" \
   0 "$(($(tls_total "$ST1") - T0))"
 
-# ── ② h1 与 h2 各一条：分开断，⛔ 不合成一条 ────────────────────────────────
+# ── ② h1 與 h2 各一條：分開斷，⛔ 不合成一條 ────────────────────────────────
 #
-# ⚠ ⚠ 合成一条（「打两次、涨 2」）的话，一个**只在 h2 上记**的实现照样全绿：
-#   两条请求走的是同一份 `{version,cipher}`，两次 +1 与一次 +2 在总数上分不开。
-#   ⇒ 一条一条打、一条一条断。
-# 打一条 TLS 请求并把它量完。$1 = 这一格的名字（也用作抓取文件名与路径）·
-# $2 = curl 的协议开关 · $3 = 期望的 `proto` 字段 · $4 = 上一份抓取正文（做差的左端）。
-# ★ 量完把这一次的抓取正文路径写进 `$LAST_SCRAPE`，给下一格当左端。
+# ⚠ ⚠ 合成一條（「打兩次、漲 2」）的話，一個**只在 h2 上記**的實作照樣全綠：
+#   兩條請求走的是同一份 `{version,cipher}`，兩次 +1 與一次 +2 在總數上分不開。
+#   ⇒ 一條一條打、一條一條斷。
+# 打一條 TLS 請求並把它量完。$1 = 這一格的名字（也用作抓取檔案名與路徑）·
+# $2 = curl 的協定開關 · $3 = 期望的 `proto` 欄位 · $4 = 上一份抓取正文（做差的左端）。
+# ★ 量完把這一次的抓取正文路徑寫進 `$LAST_SCRAPE`，給下一格當左端。
 LAST_SCRAPE=""
 tls_case() {
   local name=$1 flag=$2 want_proto=$3 prev=$4
@@ -1002,8 +1002,8 @@ tls_case() {
   eq "  ★ 它真的走的是 $want_proto（否则下面量的是另一条路）" "$want_proto" "$(field proto)"
   ver=$(field tls_version)
   cipher=$(field tls_cipher)
-  # ★ 夹具自证：h1/h2 上套件**真的问得出来** —— 否则下面那条交叉断言会退化成
-  #   「<unknown> 那一格涨了 1」，而它在一个什么都读不出来的实现上也全绿。
+  # ★ 夾具自證：h1/h2 上套件**真的問得出來** —— 否則下面那條交叉斷言會退化成
+  #   「<unknown> 那一格漲了 1」，而它在一個什麼都讀不出來的實作上也全綠。
   if [ -n "$cipher" ] && [ "$cipher" != "<缺>" ] && [ "$cipher" != "<unknown>" ]; then
     ok "  ★ 夹具自证：$name 上真的协商出了套件（$cipher），不是 <unknown>"
   else
@@ -1013,8 +1013,8 @@ tls_case() {
   code=$(scrape "$here")
   eq "  抓取回 200" 200 "$code"
   eq "★★★ $name：TLS 族正好 +1" 1 "$(($(tls_total "$here") - $(tls_total "$prev")))"
-  # ★ ★ ★ 交叉对照：涨的那一笔必须落在**访问日志刚刚报出来的那一对值**上，
-  #   ⛔ 不是落在写死的套件名上，也不是「随便哪条 series 涨了」。
+  # ★ ★ ★ 交叉對照：漲的那一筆必須落在**訪問紀錄剛剛報出來的那一對值**上，
+  #   ⛔ 不是落在寫死的套件名上，也不是「隨便哪條 series 漲了」。
   before=$(expo sum "$prev" fulcrum_tls_requests_total "version=$ver" "cipher=$cipher")
   after=$(expo sum "$here" fulcrum_tls_requests_total "version=$ver" "cipher=$cipher")
   eq "★★★ $name：涨的正好是 {version=$ver, cipher=$cipher} 那一条（与访问日志同一对值）" \
@@ -1022,23 +1022,23 @@ tls_case() {
   LAST_SCRAPE="$here"
 }
 
-# ⚠ ⚠ 两格**分开打、分开断**：合成一条（「打两次、涨 2」）的话，一个**只在 h2 上记**
-#   的实现照样全绿 —— 两条请求走的是同一份 `{version,cipher}`，两次 +1 与一次 +2
-#   在总数上分不开。
+# ⚠ ⚠ 兩格**分開打、分開斷**：合成一條（「打兩次、漲 2」）的話，一個**只在 h2 上記**
+#   的實作照樣全綠 —— 兩條請求走的是同一份 `{version,cipher}`，兩次 +1 與一次 +2
+#   在總數上分不開。
 tls_case http1.1 --http1.1 "HTTP/1.1" "$ST1"
 tls_case h2 --http2 "HTTP/2.0" "$LAST_SCRAPE"
 ST2="$LAST_SCRAPE"
 
-# ── ③ h3：取不到的那一格记 `<unknown>`，⛔ 不记空串（G127）─────────────────
+# ── ③ h3：取不到的那一格記 `<unknown>`，⛔ 不記空串（G127）─────────────────
 CODE=$(tls_req "/t-h3" --http3-only)
 eq "  TLS 请求（h3）回 200" 200 "$CODE"
 sleep 0.3
 eq "  ★ 它真的走的是 HTTP/3.0" "HTTP/3.0" "$(field proto)"
-# RFC 9001 §4.2：QUIC 只能用 TLS 1.3。★ 这是规范，不是我们猜的。
+# RFC 9001 §4.2：QUIC 只能用 TLS 1.3。★ 這是規範，不是我們猜的。
 eq "  ★ h3 的 tls_version 是 TLSv1.3（RFC 9001 §4.2）" "TLSv1.3" "$(field tls_version)"
-# ⚠ ⚠ **两侧处置不同，这里一并钉住**：访问日志里那一格**不出现**（契约：取不到的
-#   字段不出现）；而指标里它必须是 `<unknown>`（指标没有「那一格不出现」这回事）。
-#   ★ 少了上面这半，「日志与指标是同一套处置」这句假话没有任何东西挡得住。
+# ⚠ ⚠ **兩側處置不同，這裡一併釘住**：訪問紀錄裡那一格**不出現**（契約：取不到的
+#   欄位不出現）；而指標裡它必須是 `<unknown>`（指標沒有「那一格不出現」這回事）。
+#   ★ 少了上面這半，「紀錄與指標是同一套處置」這句假話沒有任何東西擋得住。
 eq "★★★ h3：访问日志里 tls_cipher **不出现**（取不到的字段不出现）" "<缺>" "$(field tls_cipher)"
 ST3="$WORK/st-h3.txt"
 CODE=$(scrape "$ST3"); eq "  抓取回 200" 200 "$CODE"
@@ -1048,14 +1048,14 @@ UNK_AFTER=$(expo sum "$ST3" fulcrum_tls_requests_total version=TLSv1.3 'cipher=<
 eq "★★★ h3：涨的正好是 {version=TLSv1.3, cipher=<unknown>} 那一条（G127）" \
   1 "$((UNK_AFTER - UNK_BEFORE))"
 
-# ── ④ ★ ★ ★ G127 的正主：这个族里**一个空标签值都不许有** ──────────────────
+# ── ④ ★ ★ ★ G127 的正主：這個族裡**一個空標籤值都不許有** ──────────────────
 #
-# ⚠ ⚠ 在 Prometheus 数据模型里空标签值等同于「这个标签不存在」⇒ 记空串的话，
-#   「今天这一格取不到」与「明天把 cipher 整个删掉」在抓取端**分不开**；
-#   而 `cipher=""` 恰好是 PromQL 里「该标签不存在」的惯用写法。
-# ★ ★ 这一条**不看是不是 h3**：它问的是「有没有哪条 series 的哪一格是空的」——
-#   与 G127 把判据落在「值为空」上、⛔ 不落在「是不是 h3」上逐字同一个形状。
-# ⚠ 取样前先自证样本里真有东西：一个恒答空集的读法会让下面那条恒绿。
+# ⚠ ⚠ 在 Prometheus 資料模型裡空標籤值等同於「這個標籤不存在」⇒ 記空串的話，
+#   「今天這一格取不到」與「明天把 cipher 整個刪掉」在抓取端**分不開**；
+#   而 `cipher=""` 恰好是 PromQL 裡「該標籤不存在」的慣用寫法。
+# ★ ★ 這一條**不看是不是 h3**：它問的是「有沒有哪條 series 的哪一格是空的」——
+#   與 G127 把判據落在「值為空」上、⛔ 不落在「是不是 h3」上逐字同一個形狀。
+# ⚠ 取樣前先自證樣本里真有東西：一個恆答空集的讀法會讓下面那條恆綠。
 TLS_SERIES=$(expo series "$ST3" fulcrum_tls_requests_total)
 if [ "$TLS_SERIES" -ge 2 ]; then
   ok "★ 取样自证：这个族此刻有 $TLS_SERIES 条 series（h1/h2 那对 + h3 的 <unknown> 那条）"
@@ -1070,15 +1070,15 @@ for lbl in version cipher; do
   fi
 done
 
-# ── ⑤ 标签键逐字，⛔ 不许多出 sni / alpn ────────────────────────────────────
+# ── ⑤ 標籤鍵逐字，⛔ 不許多出 sni / alpn ────────────────────────────────────
 #
-# ★ 判的是**键的集合逐字相等**（`labelkeys` 打的是排序后的键名）：写成「含有
-#   version 与 cipher」的话，多出一个 `sni` 标签照样绿 —— 而那正是 G122 明令
-#   挡住的东西（`sni`/`alpn` 是**访问者给的**，与 G121 挡住 host 是同一件事）。
+# ★ 判的是**鍵的集合逐字相等**（`labelkeys` 打的是排序後的鍵名）：寫成「含有
+#   version 與 cipher」的話，多出一個 `sni` 標籤照樣綠 —— 而那正是 G122 明令
+#   擋住的東西（`sni`/`alpn` 是**訪問者給的**，與 G121 擋住 host 是同一件事）。
 eq "★★★ 这个族只带 {cipher, version} 两个标签（⛔ 不许有 sni / alpn）" \
   "cipher,version" "$(expo labelkeys "$ST3" fulcrum_tls_requests_total)"
 
-# ── ⑥ 与 requests_total 的关系：**小于**，⛔ 不是相等 ───────────────────────
+# ── ⑥ 與 requests_total 的關係：**小於**，⛔ 不是相等 ───────────────────────
 TLS_SUM=$(tls_total "$ST3")
 REQ_SUM=$(expo sum "$ST3" fulcrum_requests_total)
 if [ "$TLS_SUM" -gt 0 ] && [ "$TLS_SUM" -lt "$REQ_SUM" ]; then
@@ -1088,33 +1088,33 @@ else
 明文请求被计进 TLS 族了，或者 TLS 请求一条都没被计"
 fi
 
-# ── fulcrum_overrides_active：与 GET /stats 同源、悬空的照样计入 ───────────
-#   （M2 批 N 任务 6.5，G126，裁决 R13）
+# ── fulcrum_overrides_active：與 GET /stats 同源、懸空的照樣計入 ───────────
+#   （M2 批 N 任務 6.5，G126，裁決 R13）
 #
-# ⚠ ⚠ ⚠ 判据 1/2/3/5 必须从真的 /metrics 出口上抓，不许只在 Rust 单测里
-#   直接调渲染函数（任务 4 的教训：16 条判据全直接调 handler，删掉路由那一行
-#   21 条判据照样全绿）。/stats 那一侧同理必须走真 admin socket，不直接调
-#   `AdminApp::stats()`——否则「路由真的接在生产会走的那条线上」这件事
-#   本身就没有判据在守。
+# ⚠ ⚠ ⚠ 判據 1/2/3/5 必須從真的 /metrics 出口上抓，不許只在 Rust 單測裡
+#   直接調繪製函式（任務 4 的教訓：16 條判據全直接調 handler，刪掉路由那一行
+#   21 條判據照樣全綠）。/stats 那一側同理必須走真 admin socket，不直接調
+#   `AdminApp::stats()`——否則「路由真的接在生產會走的那條線上」這件事
+#   本身就沒有判據在守。
 echo "=== fulcrum_overrides_active（M2 批 N 任务 6.5，G126，R13）==="
 
 admin_post() {
-  # $1 = 路径，$2 = body。回状态码，正文落 $WORK/admin.out（与 tests/serve/run.sh 同一个约定）。
+  # $1 = 路徑，$2 = body。回狀態碼，正文落 $WORK/admin.out（與 tests/serve/run.sh 同一個約定）。
   curl -s -o "$WORK/admin.out" -w '%{http_code}' \
     --unix-socket "$ADMIN_SOCK" -X POST --data-binary "$2" \
     "http://localhost$1" 2>/dev/null || echo "000"
 }
 
 admin_get() {
-  # $1 = 路径。回状态码，正文落 $WORK/admin.out。
+  # $1 = 路徑。回狀態碼，正文落 $WORK/admin.out。
   curl -s -o "$WORK/admin.out" -w '%{http_code}' \
     --unix-socket "$ADMIN_SOCK" -X GET \
     "http://localhost$1" 2>/dev/null || echo "000"
 }
 
-# /stats 那一侧只服务本节：overrides 数组的总条目数、其中 dangling=true 的条数。
-# ★ 与 tests/serve/run.sh 的 stats_check.py 是同一种分工（判据本身落在 bash 这层
-# 的 eq 上，python3 只负责把 JSON 读成一个数）。
+# /stats 那一側只服務本節：overrides 陣列的總條目數、其中 dangling=true 的條數。
+# ★ 與 tests/serve/run.sh 的 stats_check.py 是同一種分工（判據本身落在 bash 這層
+# 的 eq 上，python3 只負責把 JSON 讀成一個數）。
 stats_overrides_total() {
   python3 -c '
 import json, sys
@@ -1131,17 +1131,17 @@ print(sum(1 for e in v["overrides"] if e["dangling"]))
 }
 
 OV_SITE="http://ov.example:$BC_PORT"
-# ★ 沿用任务 6 报告点名过的那个「幽灵端口」惯例：19999 从不监听，只用来登记
-#   覆盖键，不需要真的发起连接——不在 AGENTS.md 的端口表里，因为它从不是
-#   真正被占用的端口。
+# ★ 沿用任務 6 報告點名過的那個「幽靈連接埠」慣例：19999 從不監聽，只用來登記
+#   覆蓋鍵，不需要真的發起連接——不在 AGENTS.md 的連接埠表裡，因為它從不是
+#   真正被佔用的連接埠。
 OV_UP="127.0.0.1:19999"
 
-# ★ ★ 两代配置都在**原有四个站点原封不动**的基础上，只新增 `ov.example` 这
-#   一个站点——不碰 A_PORT/BC_PORT 已经在监听的那两个监听器（`listen_ports`
-#   只按「端口 + 是否 TLS」比较，加一个新主机名不会让它们对不上而撞 409）。
-#   ⚠ ⚠ 不能把这个站点摆进**第一代**：那样一来 [2/8] 那条「没有 reverse_proxy
-#   ⇒ upstream_inflight/healthy 零样本」的判据就会被这里的真实上游破坏——
-#   「两族族在、样本无」这条判据与本节的覆盖夹具互斥，天然只能分两代摆。
+# ★ ★ 兩代設定都在**原有四個站台原封不動**的基礎上，只新增 `ov.example` 這
+#   一個站台——不碰 A_PORT/BC_PORT 已經在監聽的那兩個監聽器（`listen_ports`
+#   只按「連接埠 + 是否 TLS」比較，加一個新主機名不會讓它們對不上而撞 409）。
+#   ⚠ ⚠ 不能把這個站台擺進**第一代**：那樣一來 [2/8] 那條「沒有 reverse_proxy
+#   ⇒ upstream_inflight/healthy 零樣本」的判據就會被這裡的真實上游破壞——
+#   「兩族族在、樣本無」這條判據與本節的覆蓋夾具互斥，天然只能分兩代擺。
 cat > "$WORK/ov.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1228,9 +1228,9 @@ CONF
   exit 1
 }
 
-# 同样的骨架，但 `ov.example` 只留默认 handle 那一条路——写了 `id ova` 的那把
-# 键因此悬空，没写 id 的那把仍然活着（与 tests/serve/run.sh 的 ov-dangling
-# 手法同一个形状）。
+# 同樣的骨架，但 `ov.example` 只留預設 handle 那一條路——寫了 `id ova` 的那把
+# 鍵因此懸空，沒寫 id 的那把仍然活著（與 tests/serve/run.sh 的 ov-dangling
+# 手法同一個形狀）。
 cat > "$WORK/ov-dangling.Fulcrumfile" <<CONF
 {
     admin unix/$ADMIN_SOCK
@@ -1309,28 +1309,28 @@ CONF
 CODE=$(admin_post "/load?overrides=clear" "$(cat "$WORK/ov.json")")
 eq "装载 ov.Fulcrumfile（新增 ov.example，两把可覆盖的键）" 200 "$CODE"
 
-# ── 判据 4（更强的一版）：这一刻真的有 reverse_proxy 了，但一项覆盖都还没设 ──
-#   ⇒ fulcrum_overrides_active 仍然是 0——证明它数的是「覆盖」，不是「随便什么
-#   跟 reverse_proxy 沾边的东西」。
+# ── 判據 4（更強的一版）：這一刻真的有 reverse_proxy 了，但一項覆蓋都還沒設 ──
+#   ⇒ fulcrum_overrides_active 仍然是 0——證明它數的是「覆蓋」，不是「隨便什麼
+#   跟 reverse_proxy 沾邊的東西」。
 S9A="$WORK/s9a.txt"
 CODE=$(scrape "$S9A")
 eq "重新抓取回 200" 200 "$CODE"
-# ⚠ ⚠ `expo sum` 在「一条样本都没有」与「样本存在、值是 0」两种情况下算出
-#   的都是 0（没有匹配项时 `sum` 的初值就是 0）——光看 sum 挡不住「count==0
-#   就整族不出样本」这种实现。⇒ 先用 `series` 证「样本真的存在」，sum 那条
-#   才谈得上是在量「值」而不是在量一个巧合。
+# ⚠ ⚠ `expo sum` 在「一條樣本都沒有」與「樣本存在、值是 0」兩種情況下算出
+#   的都是 0（沒有匹配項時 `sum` 的初值就是 0）——光看 sum 擋不住「count==0
+#   就整族不出樣本」這種實作。⇒ 先用 `series` 證「樣本真的存在」，sum 那條
+#   才談得上是在量「值」而不是在量一個巧合。
 eq "★★★ fulcrum_overrides_active 此刻仍出一条样本（不是被 0 值悄悄吞掉）" \
   1 "$(expo series "$S9A" fulcrum_overrides_active)"
 eq "★★★ 有上游了，但还没设覆盖 ⇒ fulcrum_overrides_active 仍是 0" \
   0 "$(expo sum "$S9A" fulcrum_overrides_active)"
 
-# ── 摆两把覆盖键：没写 id 的那把（之后仍然活着）+ id=ova 的那把（之后会悬空）──
+# ── 擺兩把覆蓋鍵：沒寫 id 的那把（之後仍然活著）+ id=ova 的那把（之後會懸空）──
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$OV_SITE\",\"upstream\":\"$OV_UP\"}]}")
 eq "POST /runtime：摘掉默认 handle 那条路（没写 id）" 200 "$CODE"
 CODE=$(admin_post /runtime "{\"actions\":[{\"verb\":\"disable\",\"site\":\"$OV_SITE\",\"id\":\"ova\",\"upstream\":\"$OV_UP\"}]}")
 eq "POST /runtime：摘掉 id=ova 那条路" 200 "$CODE"
 
-# ── 判据 2（第一次，0 悬空）：GET /stats 与 GET /metrics 同一时刻各抓一次 ──
+# ── 判據 2（第一次，0 懸空）：GET /stats 與 GET /metrics 同一時刻各抓一次 ──
 CODE=$(admin_get /stats)
 eq "GET /stats（真 socket）" 200 "$CODE"
 cp "$WORK/admin.out" "$WORK/ov_stats1.json"
@@ -1346,11 +1346,11 @@ eq "★ 夹具前提：/stats 里总数是 2" 2 "$ST1_TOTAL"
 eq "★★★ 判据 2：fulcrum_overrides_active 与 /stats 的 overrides 总条目数同源（0 悬空这一刻）" \
   "$ST1_TOTAL" "$M1_VALUE"
 
-# ── 换成只留默认路那条的配置 ⇒ id=ova 那把键悬空，没写 id 的那把仍然活着 ──
+# ── 換成只留預設路那條的設定 ⇒ id=ova 那把鍵懸空，沒寫 id 的那把仍然活著 ──
 CODE=$(admin_post "/load?overrides=keep" "$(cat "$WORK/ov-dangling.json")")
 eq "overrides=keep：换成不带 id=ova 那条路的配置" 200 "$CODE"
 
-# ── 判据 2（第二次，1 悬空）+ 判据 3：悬空的照样计入 ─────────────────────
+# ── 判據 2（第二次，1 懸空）+ 判據 3：懸空的照樣計入 ─────────────────────
 CODE=$(admin_get /stats)
 eq "GET /stats（换代之后，真 socket）" 200 "$CODE"
 cp "$WORK/admin.out" "$WORK/ov_stats2.json"
@@ -1363,10 +1363,10 @@ capture_ok "/stats 悬空条目数（1 悬空这一刻）" stats_overrides_dangl
 capture_ok "/metrics 的 overrides_active（1 悬空这一刻）" expo sum "$S9C" fulcrum_overrides_active; M2_VALUE="$CAPTURE_OUT"
 eq "★ 夹具前提：/stats 里总数还是 2（R8：设过覆盖的悬空了也不删）" 2 "$ST2_TOTAL"
 eq "★ 夹具前提：/stats 里悬空数是 1（id=ova 那把）" 1 "$ST2_DANGLING"
-# ⚠ ⚠ 判据写法纪律：总数（2）与悬空数（1）必须不相等，否则一个把两者读串了
-#   的实现（比如把 fulcrum_overrides_active 接成悬空数、或接成「非悬空数」）
-#   在这份夹具上也可能蒙对——上面这条断言先把「$ST2_TOTAL != $ST2_DANGLING」
-#   钉死，下面两条才真的分得清读对了还是读串了。
+# ⚠ ⚠ 判據寫法紀律：總數（2）與懸空數（1）必須不相等，否則一個把兩者讀串了
+#   的實作（比如把 fulcrum_overrides_active 接成懸空數、或接成「非懸空數」）
+#   在這份夾具上也可能蒙對——上面這條斷言先把「$ST2_TOTAL != $ST2_DANGLING」
+#   釘死，下面兩條才真的分得清讀對了還是讀串了。
 if [ "$ST2_TOTAL" = "$ST2_DANGLING" ]; then
   fail "夹具写法纪律没守住：总数与悬空数相等（$ST2_TOTAL），两者会被读串也测不出来"
 else
@@ -1377,37 +1377,37 @@ eq "★★★ 判据 3：悬空的照样计入——fulcrum_overrides_active 是
 eq "★★★ 判据 2：换代之后仍与 /stats 的 overrides 总条目数同源（1 悬空这一刻）" \
   "$ST2_TOTAL" "$M2_VALUE"
 
-# ── 判据 5（非退化版）：登记处里明明有 2 项覆盖，正文里仍然只有一行 ──────────
+# ── 判據 5（非退化版）：登記處裡明明有 2 項覆蓋，正文裡仍然只有一行 ──────────
 eq "★★★ 判据 5：即便有 2 项覆盖，fulcrum_overrides_active 也只出一条 series（基数恒为 1）" \
   1 "$(expo series "$S9C" fulcrum_overrides_active)"
 eq "★ 那一行不带任何标签" "" "$(expo labelkeys "$S9C" fulcrum_overrides_active)"
 
-# ── status_class="none"：那条路真的走得到（M2 批 M′ 任务 4，G124 / D30 结案）──
+# ── status_class="none"：那條路真的走得到（M2 批 M′ 任務 4，G124 / D30 結案）──
 #
-# ★ ★ ★ G124 明写这一格要**两边一起断**：访问日志真的多了一行 `status=0`，
+# ★ ★ ★ G124 明寫這一格要**兩邊一起斷**：訪問紀錄真的多了一行 `status=0`，
 #   且 `fulcrum_requests_total{status_class="none"}` 正好 +1。
-#   ⇒ 在这之前，闭集里的第六个值只存在于代码与文档里，**一条端到端判据都没走过**。
+#   ⇒ 在這之前，閉集裡的第六個值只存在於程式碼與文件裡，**一條端到端判據都沒走過**。
 #
-# ⚠ ⚠ ⚠ **「下游断开」本身不足以让 status 变成 0**，而那句话读起来像是够的。
-#   开工前的探针实测（三种构型，同一棵树同一天）：
-#     · `respond` 站点 + 发完请求立刻 RST                      ⇒ status **200**
-#     · 慢上游（**带** Content-Length）+ RST 之后 1.2s 才写     ⇒ status **200**（resp_size 是 0）
-#     · 慢上游（**不带** Content-Length）+ RST                  ⇒ status **0** ✅
+# ⚠ ⚠ ⚠ **「下游斷開」本身不足以讓 status 變成 0**，而那句話讀起來像是夠的。
+#   開工前的探針實測（三種構型，同一棵樹同一天）：
+#     · `respond` 站台 + 發完請求立刻 RST                      ⇒ status **200**
+#     · 慢上游（**帶** Content-Length）+ RST 之後 1.2s 才寫     ⇒ status **200**（resp_size 是 0）
+#     · 慢上游（**不帶** Content-Length）+ RST                  ⇒ status **0** ✅
 #
-#   机制在 pingora 的 `write_response_header`（`v1/server.rs`）：响应头 `write_all`
-#   进的是**带缓冲的流**，而 flush 只在「1xx 或**没有** Content-Length」时才发生
-#   ⇒ 带 CL 的响应头**根本不产生 syscall**，`write_all` 返回 Ok，`response_written`
-#   照样被置上，于是 status 是 200。★ 只有会 flush 的那一支才真的碰 socket，
-#   也只有它会在一条被 RST 掉的连接上失败 —— 失败了 `response_written` 才留在 None。
+#   機制在 pingora 的 `write_response_header`（`v1/server.rs`）：回應頭 `write_all`
+#   進的是**帶緩衝的流**，而 flush 只在「1xx 或**沒有** Content-Length」時才發生
+#   ⇒ 帶 CL 的回應頭**根本不產生 syscall**，`write_all` 回傳 Ok，`response_written`
+#   照樣被置上，於是 status 是 200。★ 只有會 flush 的那一支才真的碰 socket，
+#   也只有它會在一條被 RST 掉的連接上失敗 —— 失敗了 `response_written` 才留在 None。
 #
-# ⇒ 夹具用的是**不带 Content-Length 的慢上游**：它把「服务端此刻还一个字节都没写」
-#   与「写的时候真的会有一次 syscall」两件事同时钉住 —— ⛔ **这不是一场竞赛**。
-# ★ 对照组（同一条路、客户端正常收完）拿到 200，那证明这把尺子量得了两边。
+# ⇒ 夾具用的是**不帶 Content-Length 的慢上游**：它把「伺服器端此刻還一個位元組都沒寫」
+#   與「寫的時候真的會有一次 syscall」兩件事同時釘住 —— ⛔ **這不是一場競賽**。
+# ★ 對照組（同一條路、用戶端正常收完）拿到 200，那證明這把尺子量得了兩邊。
 echo "=== status_class=\"none\"（M2 批 M′ 任务 4，G124 / D30 结案）==="
 
-# 慢上游：睡 1.5s，再回一个**不带 Content-Length** 的响应（关闭定界）。
-# ⚠ 每条连接一个线程：`wait_port` 的探测连接会被 accept 一次，单线程的话它会把
-#   accept 循环占住 1.5s，真正那条请求就排在后面了。
+# 慢上游：睡 1.5s，再回一個**不帶 Content-Length** 的回應（關閉定界）。
+# ⚠ 每條連接一個執行緒：`wait_port` 的探測連接會被 accept 一次，單執行緒的話它會把
+#   accept 循環佔住 1.5s，真正那條請求就排在後面了。
 cat > "$WORK/slow_up.py" <<'PY'
 import signal
 import socket
@@ -1457,9 +1457,9 @@ finally:
     srv.close()
 PY
 
-# 客户端。$1 = read | rst · $2 端口 · $3 路径 · $4 Host。
-# ⚠ curl 做不了这件事：要的是 **SO_LINGER(1,0) + close ⇒ 立刻发 RST**，
-#   而不是正常的 FIN —— 半关之下服务端第一次写照样成功（探针实测过）。
+# 用戶端。$1 = read | rst · $2 連接埠 · $3 路徑 · $4 Host。
+# ⚠ curl 做不了這件事：要的是 **SO_LINGER(1,0) + close ⇒ 立刻發 RST**，
+#   而不是正常的 FIN —— 半關之下伺服器端第一次寫照樣成功（探針實測過）。
 cat > "$WORK/abort_req.py" <<'PY'
 import socket
 import struct
@@ -1497,11 +1497,11 @@ wait_port "$ABORT_UP_PORT" || {
   cat "$WORK/slow_up.log" >&2 || true
   exit 1
 }
-# ⛔ 这句话有意**只说端口起来了**：「它睡 1.5s 且不带 Content-Length」是夹具的性质，
-#   写进这一行就成了一句**没有任何东西验证的散文** —— 实测过：给上游加回
-#   `Content-Length` 之后这一行照样打印「且不带 Content-Length」，而下面三条判据红。
-# ★ 那两个性质**有门守着，只是门在下面**：带了 CL 的话 status 就是 200，
-#   「那一行的 status 是 0」当场红。⇒ 属性由判据说，不由这一行说。
+# ⛔ 這句話有意**只說連接埠起來了**：「它睡 1.5s 且不帶 Content-Length」是夾具的性質，
+#   寫進這一行就成了一句**沒有任何東西驗證的散文** —— 實測過：給上游加回
+#   `Content-Length` 之後這一行照樣列印「且不帶 Content-Length」，而下面三條判據紅。
+# ★ 那兩個性質**有門守著，只是門在下面**：帶了 CL 的話 status 就是 200，
+#   「那一行的 status 是 0」當場紅。⇒ 屬性由判據說，不由這一行說。
 ok "慢上游起来了（$ABORT_UP_PORT）"
 
 SN0="$WORK/sn0.txt"
@@ -1510,8 +1510,8 @@ NONE0=$(expo sum "$SN0" fulcrum_requests_total status_class=none)
 sleep 0.3
 LN0=$(lines)
 
-# ── ★ 对照组先跑：同一条路、客户端**正常收完** ⇒ 200，而 none 那一格不涨 ──────
-#   ⚠ 少了它，下面那两条在一个「status 恒为 0」的实现上也全绿。
+# ── ★ 對照組先跑：同一條路、用戶端**正常收完** ⇒ 200，而 none 那一格不漲 ──────
+#   ⚠ 少了它，下面那兩條在一個「status 恆為 0」的實作上也全綠。
 capture_ok "对照组请求（正常收完）" python3 "$WORK/abort_req.py" read "$A_PORT" /abort a.example
 CTRL_LINE="$CAPTURE_OUT"
 case "$CTRL_LINE" in
@@ -1528,20 +1528,20 @@ CODE=$(scrape "$SN1"); eq "抓取回 200" 200 "$CODE"
 NONE1=$(expo sum "$SN1" fulcrum_requests_total status_class=none)
 eq "★★ 对照：status_class=none 一格没涨（这把尺子不是恒答有）" 0 "$((NONE1 - NONE0))"
 sleep 0.3
-# ⚠ 基线要在**这次抓取自己那一行**写进去之后再取：抓取也是一条被记的请求，
-#   拿 LN1 当左端的话，下面那条「多了一行」会算成 2。
+# ⚠ 基線要在**這次抓取自己那一行**寫進去之後再取：抓取也是一條被記的請求，
+#   拿 LN1 當左端的話，下面那條「多了一行」會算成 2。
 LN1B=$(lines)
 
-# ── ★ ★ ★ 正主：发完请求立刻 RST，而上游还要 1.5s 才回话 ────────────────────
+# ── ★ ★ ★ 正主：發完請求立刻 RST，而上游還要 1.5s 才回話 ────────────────────
 capture_ok "abort 请求（发完立刻 RST）" python3 "$WORK/abort_req.py" rst "$A_PORT" /abort a.example
 sleep 2.5
 LN2=$(lines)
 eq "★★★ G124 ①：访问日志真的多了一行（站点匹配上了 ⇒ 它记得进去）" 1 "$((LN2 - LN1B))"
 eq "★★★ G124 ①：那一行的 status 是 0 —— 一个响应头都没写出去" 0 "$(field status)"
-# ⚠ ⚠ 这一条守的是契约里那句「此时 outcome 仍是执行链给的那个值」。
-# ★ 它立起来时防的是 `Record` 上那个 `aborted` 默认值；那个字段今天已经删掉
-#   （outcome 改成 serve_one 的返回值）⇒ 防的东西在类型上没有了，而**判据留着**：
-#   它守的是「链给的值不被收尾那一步覆盖掉」，那件事与字段在不在无关。
+# ⚠ ⚠ 這一條守的是契約裡那句「此時 outcome 仍是執行鏈給的那個值」。
+# ★ 它立起來時防的是 `Record` 上那個 `aborted` 預設值；那個欄位今天已經刪掉
+#   （outcome 改成 serve_one 的回傳值）⇒ 防的東西在類型上沒有了，而**判據留著**：
+#   它守的是「鏈給的值不被收尾那一步覆蓋掉」，那件事與欄位在不在無關。
 eq "★★★ 而 outcome 仍是执行链给的那个值" reverse_proxy "$(field outcome)"
 eq "★ 那一行也有 site（它属于站点 A，所以才记得进访问日志）" \
   "http://a.example:$A_PORT" "$(field site)"
@@ -1549,25 +1549,25 @@ SN2="$WORK/sn2.txt"
 CODE=$(scrape "$SN2"); eq "抓取回 200" 200 "$CODE"
 eq "★★★ G124 ②：fulcrum_requests_total{status_class=\"none\"} 正好 +1" \
   1 "$(($(expo sum "$SN2" fulcrum_requests_total status_class=none) - NONE1))"
-# ★ 两边一起断的最后一句：那一笔落在**站点 A** 上，而不是 site=<none> ——
-#   ⚠ 它证明「日志有那一行、指标有那一笔」说的是**同一条请求**，不是两件碰巧同时发生的事。
+# ★ 兩邊一起斷的最後一句：那一筆落在**站台 A** 上，而不是 site=<none> ——
+#   ⚠ 它證明「紀錄有那一行、指標有那一筆」說的是**同一條請求**，不是兩件碰巧同時發生的事。
 NONE_A_BEFORE=$(expo sum "$SN1" fulcrum_requests_total site=a.example status_class=none)
 NONE_A_AFTER=$(expo sum "$SN2" fulcrum_requests_total site=a.example status_class=none)
 eq "★★★ 而且那一笔落在 site=a.example 上（与日志那一行是同一条请求）" \
   1 "$((NONE_A_AFTER - NONE_A_BEFORE))"
 
-# ── 连接那两个族（M2 批 O，G122 的连接那半）─────────────────────────────────
+# ── 連接那兩個族（M2 批 O，G122 的連接那半）─────────────────────────────────
 #
-# ★ ★ ★ 这一节的核心断言只有一句：**四个互不相干的 accept 循环都记进了同一个族，
-#   而 entrypoint 分得开。** 五种入口（http / admin / quic / l4_tcp / l4_udp）
-#   必须在**同一个进程**里同时存在，那句话才验得了 —— 这就是 l4 块摆进本场景的理由。
+# ★ ★ ★ 這一節的核心斷言只有一句：**四個互不相干的 accept 循環都記進了同一個族，
+#   而 entrypoint 分得開。** 五種入口（http / admin / quic / l4_tcp / l4_udp）
+#   必須在**同一個處理程序**裡同時存在，那句話才驗得了 —— 這就是 l4 塊擺進本場景的理由。
 #
-# ⚠ 判据一律**从夹具派生** listen 的值，⛔ 不写死：它随 --bind-host 变，
-#   而 admin 那条是每次跑都不同的 $WORK/admin.sock。
+# ⚠ 判據一律**從夾具派生** listen 的值，⛔ 不寫死：它隨 --bind-host 變，
+#   而 admin 那條是每次跑都不同的 $WORK/admin.sock。
 echo "=== 连接那两个族（M2 批 O，G122 的连接那半）==="
 
-# UDP 回显上游（L4 UDP 那一格要）。★ 接住 SIGINT/SIGTERM 干净退出，
-# 否则收尾那段要走到 kill -9，日志末尾会多出一行「Killed」被读成「有东西崩了」。
+# UDP 回顯上游（L4 UDP 那一格要）。★ 接住 SIGINT/SIGTERM 乾淨退出，
+# 否則收尾那段要走到 kill -9，紀錄末尾會多出一行「Killed」被讀成「有東西崩了」。
 cat > "$WORK/udp_echo.py" <<'PY'
 import signal
 import socket
@@ -1594,9 +1594,9 @@ python3 "$WORK/udp_echo.py" "$UDPUP_PORT" > "$WORK/udp_echo.log" 2>&1 &
 PIDS+=($!)
 ok "UDP 回显上游起来了（$UDPUP_PORT）"
 
-# 这个族此刻的某一格。$1 抓取文件 · $2 族名 · $3 entrypoint · $4 listen。
+# 這個族此刻的某一格。$1 抓取檔案 · $2 族名 · $3 entrypoint · $4 listen。
 conn_val() { expo sum "$1" "$2" "entrypoint=$3" "listen=$4"; }
-# 这个族此刻的全部 (entrypoint,listen) 对，排序后一行一个。
+# 這個族此刻的全部 (entrypoint,listen) 對，排序後一行一個。
 conn_keys() {
   python3 - "$1" <<'PY'
 import re
@@ -1618,10 +1618,10 @@ PY
 SC0="$WORK/sc0.txt"
 CODE=$(scrape "$SC0"); eq "抓取回 200（连接族的基线）" 200 "$CODE"
 
-# ── 判据 1：series 集合 == 本进程的监听器集合（逐字，从夹具派生）──────────────
+# ── 判據 1：series 集合 == 本處理程序的監聽器集合（逐字，從夾具派生）──────────────
 #
-# ★ 一条断言同时验掉两件事：「建成就出样本」（不是有连接才出现）与
-#   「**四处都记进了同一个族**」—— 少接一处，这一条当场少一行。
+# ★ 一條斷言同時驗掉兩件事：「建成就出樣本」（不是有連接才出現）與
+#   「**四處都記進了同一個族**」—— 少接一處，這一條當場少一行。
 EXPECT_KEYS=$(printf '%s\n' \
   "admin $ADMIN_SOCK" \
   "http $HOST:$A_PORT" \
@@ -1639,12 +1639,12 @@ else
     实际：$(echo "$GOT_KEYS" | tr '\n' '|')"
 fi
 
-# ── 判据 2：五个 entrypoint **各打一条连接 ⇒ 那一格 total 正好 +1** ───────────
+# ── 判據 2：五個 entrypoint **各打一條連接 ⇒ 那一格 total 正好 +1** ───────────
 #
-# ⚠ ⚠ **分开打、分开断**：合成一条（「打五次、涨 5」）的话，一个只在 http 上记的
-#   实现照样全绿 —— 与批 M′ 任务 3 里 h1/h2 那条同一形状。
+# ⚠ ⚠ **分開打、分開斷**：合成一條（「打五次、漲 5」）的話，一個只在 http 上記的
+#   實作照樣全綠 —— 與批 M′ 任務 3 裡 h1/h2 那條同一形狀。
 conn_case() {
-  # $1 说明 · $2 entrypoint · $3 listen · $4 上一份抓取 · 其余 = 打一条连接的命令
+  # $1 說明 · $2 entrypoint · $3 listen · $4 上一份抓取 · 其餘 = 打一條連接的命令
   local what=$1 ep=$2 listen=$3 prev=$4
   shift 4
   local before after here
@@ -1658,8 +1658,8 @@ conn_case() {
   LAST_CONN_SCRAPE="$here"
 }
 
-# ⚠ http 那一格：抓取自己也走 http ⇒ 用一条**别的** http 请求量它会多算抓取那一笔。
-#   ⇒ 这一格改成量 BC_PORT（抓取走的是 A_PORT），两者是不同的监听器、不同的 series。
+# ⚠ http 那一格：抓取自己也走 http ⇒ 用一條**別的** http 請求量它會多算抓取那一筆。
+#   ⇒ 這一格改成量 BC_PORT（抓取走的是 A_PORT），兩者是不同的監聽器、不同的 series。
 conn_case "l4_tcp：连一下 L4 TCP 端口" l4_tcp "$HOST:$L4T_PORT" "$SC0" \
   timeout 3 bash -c "exec 3<>/dev/tcp/$HOST/$L4T_PORT"
 conn_case "http：打一条到站点 B 的请求" http "$HOST:$BC_PORT" "$LAST_CONN_SCRAPE" \
@@ -1669,7 +1669,7 @@ conn_case "admin：一次 GET /stats" admin "$ADMIN_SOCK" "$LAST_CONN_SCRAPE" \
 conn_case "quic：一次 --http3-only" quic "$HOST:$TLS_PORT" "$LAST_CONN_SCRAPE" \
   curl -sS -o /dev/null -k --max-time 5 --http3-only \
     --resolve "a.example:$TLS_PORT:$HOST" "https://a.example:$TLS_PORT/conn-h3"
-# ⚠ L4 UDP 那一格的 total 是**事件点**（新建会话那一处），active 才是派生的。
+# ⚠ L4 UDP 那一格的 total 是**事件點**（新建工作階段那一處），active 才是派生的。
 conn_case "l4_udp：发一个数据报" l4_udp "$HOST:$L4U_PORT" "$LAST_CONN_SCRAPE" \
   python3 -c "
 import socket,sys
@@ -1682,21 +1682,21 @@ s.close()
 
 SC1="$LAST_CONN_SCRAPE"
 
-# ── 判据 6：L4 UDP 那一格的 active 是从**会话表**派生的 ─────────────────────
+# ── 判據 6：L4 UDP 那一格的 active 是從**工作階段表**派生的 ─────────────────────
 #
-# ★ ★ UDP 上没有连接，只有会话。上面那个数据报刚建了一条会话（空闲超时 60s，
-#   此刻它还在表里）⇒ active 必须是 1。
-# ⚠ ⚠ 这一条是**唯一**碰得到 `BoundConn::set_active` 的判据 —— 判据 2 走的是
-#   `bump_total`，两者有意是两条不同的路。少了这一条，把循环开头那行 `set_active`
-#   整个删掉**不会有任何东西红**。
+# ★ ★ UDP 上沒有連接，只有工作階段。上面那個資料報剛建了一條工作階段（空閒超時 60s，
+#   此刻它還在表裡）⇒ active 必須是 1。
+# ⚠ ⚠ 這一條是**唯一**碰得到 `BoundConn::set_active` 的判據 —— 判據 2 走的是
+#   `bump_total`，兩者有意是兩條不同的路。少了這一條，把循環開頭那行 `set_active`
+#   整個刪掉**不會有任何東西紅**。
 eq "★★★ 判据 6：发过一个数据报之后，l4_udp 那一格 active = 1（从 sessions.len() 派生）" \
   1 "$(conn_val "$SC1" fulcrum_connections_active l4_udp "$HOST:$L4U_PORT")"
 
-# ── 判据 3：★★★ **握手中也算** —— Drop 守卫在非正常退出路径上真的在守 ─────────
+# ── 判據 3：★★★ **握手中也算** —— Drop 守衛在非正常退出路徑上真的在守 ─────────
 #
-# 连上 TLS 端口**什么都不发**并保持 ⇒ 那条连接卡在握手里，而 enter 在握手之前
-# ⇒ active 必须 +1。★ 这一条是「enter 在 spawn 之前」那条口径的唯一实据，
-#   也是「run_endpoint 里那句 let _conn_guard 写成裸 let _」唯一抓得住的地方。
+# 連上 TLS 連接埠**什麼都不發**並保持 ⇒ 那條連接卡在握手裡，而 enter 在握手之前
+# ⇒ active 必須 +1。★ 這一條是「enter 在 spawn 之前」那條口徑的唯一實據，
+#   也是「run_endpoint 裡那句 let _conn_guard 寫成裸 let _」唯一抓得住的地方。
 BEFORE_ACTIVE=$(conn_val "$SC1" fulcrum_connections_active http "$HOST:$TLS_PORT")
 python3 - "$HOST" "$TLS_PORT" "$WORK" <<'PY' &
 import socket
@@ -1725,7 +1725,7 @@ scrape "$SC3" >/dev/null
 eq "★★★ 判据 3（另一半）：那条连接断掉之后 active 回到基线（Drop 守卫收了它）" \
   "$BEFORE_ACTIVE" "$(conn_val "$SC3" fulcrum_connections_active http "$HOST:$TLS_PORT")"
 
-# ── 判据 4：握手失败 ⇒ total +1 而 active 回到基线 ──────────────────────────
+# ── 判據 4：握手失敗 ⇒ total +1 而 active 回到基線 ──────────────────────────
 BEFORE_T=$(conn_val "$SC3" fulcrum_connections_total http "$HOST:$TLS_PORT")
 BEFORE_A=$(conn_val "$SC3" fulcrum_connections_active http "$HOST:$TLS_PORT")
 python3 - "$HOST" "$TLS_PORT" <<'PY' || true
@@ -1749,7 +1749,7 @@ eq "★★★ 判据 4：往 TLS 端口发垃圾字节 ⇒ total +1（握手失�
 eq "★★★ 判据 4（另一半）：而 active 回到基线 —— 握手失败那条退出路径也被 Drop 守卫收了" \
   "$BEFORE_A" "$(conn_val "$SC4" fulcrum_connections_active http "$HOST:$TLS_PORT")"
 
-# ── 判据 5：active ≤ total 逐格成立 ─────────────────────────────────────────
+# ── 判據 5：active ≤ total 逐格成立 ─────────────────────────────────────────
 BAD=$(python3 - "$SC4" <<'PY'
 import re
 import sys
@@ -1772,14 +1772,14 @@ else
   fail "★★ 判据 5：这些格子上 active > total —— $BAD"
 fi
 
-# ⚠ ⚠ **两条路径有意不验，理由写在这里**，免得下一个人当成漏了：
-#   ① fork 的握手超时（60s，写死）：它与握手失败是**同一个 future 的两种结束方式**，
-#      而判据 4 已经走过那个 future 的非正常结束。等 60 秒买不到新信息。
-#   ② L4 UDP 的会话空闲超时（60s）：那一格是 sessions.len() 的**恒等式派生**
-#      （一处写入、一个表达式），且 UdpSessionTable::sweep 自己有注入时钟的单测
-#      「到点才回收而且回收的是空闲的那条」。
-# ⛔ 另外不写「sum(fulcrum_connections_total) 等于某个数」：抓取自己走 http，
-#   每抓一次就 +1，那种判据会在自己身上红。
+# ⚠ ⚠ **兩條路徑有意不驗，理由寫在這裡**，免得下一個人當成漏了：
+#   ① fork 的握手超時（60s，寫死）：它與握手失敗是**同一個 future 的兩種結束方式**，
+#      而判據 4 已經走過那個 future 的非正常結束。等 60 秒買不到新資訊。
+#   ② L4 UDP 的工作階段空閒超時（60s）：那一格是 sessions.len() 的**恆等式派生**
+#      （一處寫入、一個表達式），且 UdpSessionTable::sweep 自己有注入時鐘的單測
+#      「到點才回收而且回收的是空閒的那條」。
+# ⛔ 另外不寫「sum(fulcrum_connections_total) 等於某個數」：抓取自己走 http，
+#   每抓一次就 +1，那種判據會在自己身上紅。
 
 echo
 if [ "$FAILS" -ne 0 ]; then

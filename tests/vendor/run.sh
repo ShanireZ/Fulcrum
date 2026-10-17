@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# fork 回归网（G30）：跑 vendor/pingora 自带的单元测试。
-# 这个脚本在容器里跑（G26），退出码即结论。
+# fork 迴歸網（G30）：跑 vendor/pingora 自帶的單元測試。
+# 這個指令碼在容器裡跑（G26），結束代碼即結論。
 #
-# ★ 为什么需要它：`vendor/pingora` 自带 `[workspace]` 且被根 `Cargo.toml` `exclude`，
-#   所以根目录的 cargo **一个字都跑不到它**——而 fork 改过的每一处上界，
-#   上游都自带正对着的单元测试：
+# ★ 為什麼需要它：`vendor/pingora` 自帶 `[workspace]` 且被根 `Cargo.toml` `exclude`，
+#   所以根目錄的 cargo **一個字都跑不到它**——而 fork 改過的每一處上界，
+#   上游都自帶正對著的單元測試：
 #
 #     sfv    0.10→0.15  →  compression/mod.rs   test_accept_encoding_req_header
 #                                               test_decide_on_accept_encoding
-#     brotli 3→8        →  compression/brotli.rs 压缩/解压往返
+#     brotli 3→8        →  compression/brotli.rs 壓縮/解壓往返
 #     nix    0.24→0.31  →  server/transfer_fd/mod.rs、protocols/l4/stream.rs
 #     lru    0.16→0.18  →  pingora-pool/src/lru.rs、connection.rs
 #
-#   在这个脚本存在之前，FORK.md 里那句「M0 接缝验证是这次改动唯一的回归网」
-#   是**字面属实**的：M0 一个字节的压缩协商都不测。
+#   在這個指令碼存在之前，FORK.md 裡那句「M0 接縫驗證是這次改動唯一的迴歸網」
+#   是**字面屬實**的：M0 一個位元組的壓縮協商都不測。
 set -euo pipefail
 
 REPO=${REPO:-/w}
@@ -24,26 +24,26 @@ TARGET=${VENDOR_TARGET:-$REPO/target/vendor}
 
 fail() { echo; echo "VENDOR TESTS FAILED: $*"; exit 1; }
 
-# ── [1/5] 锁文件 ────────────────────────────────────────────────────────────
-# vendor 是独立 workspace，有自己的一份解析结果。没有锁文件，每次跑用的版本都可能不同。
+# ── [1/5] 鎖定檔 ────────────────────────────────────────────────────────────
+# vendor 是獨立 workspace，有自己的一份解析結果。沒有鎖定檔，每次跑用的版本都可能不同。
 if [ ! -f "$LOCK" ]; then
   echo "=== [1/5] 生成 vendor/pingora/Cargo.lock ==="
   cargo generate-lockfile --manifest-path "$MANIFEST"
 else
   echo "=== [1/5] 已有 vendor/pingora/Cargo.lock ==="
-  # ★ 锁文件存在 ≠ 锁文件还对得上清单。
-  #   FORK.md 的 rebase 步骤第 3、4 步改的正是 vendor 里的 Cargo.toml，
-  #   改完之后这份锁就过期了，而下面用的是 `--locked`——cargo 抛的原始错误
-  #   离「删锁重生成」这条修法**隔着一层**。**每次 rebase 必踩**，
-  #   所以这里提前用一次不编译的 `cargo metadata --locked` 把它问出来。
-  # ⚠ ⚠ ★ 但**隔着一层 ≠ 该丢掉**：它是唯一分得开「锁过期」与「网络／鉴权／取不到 crate」
-  #   的东西。⇒ 下面把它原样打出来，再补那条最常见的解读，⛔ 不是拿解读替掉它。
-  # ⚠ ⚠ ★ 原先这里把 cargo 的 stderr 丢进 `/dev/null`，然后**断言**死因是「锁过期」
-  #   并教人 `rm vendor/pingora/Cargo.lock`。实测（2026-09-08，把 cargo 换成一个
-  #   报网络错的桩）：一次**取不到 crate** 的失败，得到的也是那一整段「删掉锁」——
-  #   ⇒ 照着敲会**删掉一份入库的解析结果**，而且删了也修不好。
-  # ★ 现在先把 cargo 的原话原样打出来，再把「最常见的那一种」降级成**建议**，
-  #   并写明什么情况下**不该**删锁。⛔ 判据不替 cargo 说它没说过的话。
+  # ★ 鎖定檔存在 ≠ 鎖定檔還對得上清單。
+  #   FORK.md 的 rebase 步驟第 3、4 步改的正是 vendor 裡的 Cargo.toml，
+  #   改完之後這份鎖就過期了，而下面用的是 `--locked`——cargo 拋的原始錯誤
+  #   離「刪鎖重生成」這條修法**隔著一層**。**每次 rebase 必踩**，
+  #   所以這裡提前用一次不編譯的 `cargo metadata --locked` 把它問出來。
+  # ⚠ ⚠ ★ 但**隔著一層 ≠ 該丟掉**：它是唯一分得開「鎖過期」與「網路／鑑權／取不到 crate」
+  #   的東西。⇒ 下面把它原樣打出來，再補那條最常見的解讀，⛔ 不是拿解讀替掉它。
+  # ⚠ ⚠ ★ 原先這裡把 cargo 的 stderr 丟進 `/dev/null`，然後**斷言**死因是「鎖過期」
+  #   並教人 `rm vendor/pingora/Cargo.lock`。實測（2026-09-08，把 cargo 換成一個
+  #   報網路錯的樁）：一次**取不到 crate** 的失敗，得到的也是那一整段「刪掉鎖」——
+  #   ⇒ 照著敲會**刪掉一份入庫的解析結果**，而且刪了也修不好。
+  # ★ 現在先把 cargo 的原話原樣打出來，再把「最常見的那一種」降級成**建議**，
+  #   並寫明什麼情況下**不該**刪鎖。⛔ 判據不替 cargo 說它沒說過的話。
   cargo_rc=0
   cargo_err=$(cargo metadata --manifest-path "$MANIFEST" --format-version 1 --locked 2>&1 >/dev/null) || cargo_rc=$?
   if [ "$cargo_rc" -ne 0 ]; then
@@ -63,9 +63,9 @@ else
   echo "  ✓ 锁文件与清单一致"
 fi
 
-# ── [2/5] ★ 证明这次跑的是「二进制里那套版本」 ─────────────────────────────
-# 这一步不能省。vendor 独立解析，如果它解出来的 brotli 跟根 Cargo.lock 里的
-# 不是同一个，那测试全绿也证明不了任何关于实际产物的事——只证明了另一套组合能跑。
+# ── [2/5] ★ 證明這次跑的是「二進位裡那套版本」 ─────────────────────────────
+# 這一步不能省。vendor 獨立解析，如果它解出來的 brotli 跟根 Cargo.lock 裡的
+# 不是同一個，那測試全綠也證明不了任何關於實際產物的事——只證明了另一套組合能跑。
 echo "=== [2/5] 比对 vendor 与根 Cargo.lock 的版本一致性 ==="
 
 dump_lock() {
@@ -78,34 +78,34 @@ dump_lock() {
 dump_lock "$ROOT_LOCK" > /tmp/root.pkgs
 dump_lock "$LOCK"      > /tmp/vendor.pkgs
 
-# ★ 不变量是「根 lock 里出现的每个版本，vendor lock 里都必须有」，**不是**「两边逐字相等」。
-#   （2026-09-24 起收窄成「……除非没有任何 pingora crate 用它」，由 cargo 答，见下面 `who_uses` 那段。）
-#   Cargo.lock 允许同名包多版本共存：vendor 侧多解析出 dev-dependencies 与未启用的可选依赖
-#   （sentry、reqwest、rstest 这些），它们会合法地拖进老版本——例如 rand 0.8.7 与 0.10.2 并存。
-#   那些不进产物，不该判红。**只有根侧那个版本在 vendor 侧缺席才是真问题。**
+# ★ 不變數是「根 lock 裡出現的每個版本，vendor lock 裡都必須有」，**不是**「兩邊逐字相等」。
+#   （2026-09-24 起收窄成「……除非沒有任何 pingora crate 用它」，由 cargo 答，見下面 `who_uses` 那段。）
+#   Cargo.lock 允許同名包多版本共存：vendor 側多解析出 dev-dependencies 與未啟用的可選依賴
+#   （sentry、reqwest、rstest 這些），它們會合法地拖進老版本——例如 rand 0.8.7 與 0.10.2 並存。
+#   那些不進產物，不該判紅。**只有根側那個版本在 vendor 側缺席才是真問題。**
 #
-# ★ ★ **查的是两边都有的全部包，不是一张手写名单。**
-#   原先这里是 `BUMPED="lru prometheus protobuf nix brotli ..."` —— 一张 16 项的手写清单，
-#   是 FORK.md §1 那张上界表的**人工镜像**。它的危险方向不是「多写了几项」（无害），
-#   而是**下一次 rebase 抬了一条新上界、没人往名单里加**：这道门会安静地少覆盖一个包，
-#   而它看起来照样是绿的。这与 `supply-audit.py` 的 `ACCEPTED`、`unclaimed.sh` 的忽略名单
-#   是同一个形状——**不自省的名单**。
+# ★ ★ **查的是兩邊都有的全部包，不是一張手寫名單。**
+#   原先這裡是 `BUMPED="lru prometheus protobuf nix brotli ..."` —— 一張 16 項的手寫清單，
+#   是 FORK.md §1 那張上界表的**人工鏡像**。它的危險方向不是「多寫了幾項」（無害），
+#   而是**下一次 rebase 抬了一條新上界、沒人往名單里加**：這道門會安靜地少覆蓋一個包，
+#   而它看起來照樣是綠的。這與 `supply-audit.py` 的 `ACCEPTED`、`unclaimed.sh` 的忽略名單
+#   是同一個形狀——**不自省的名單**。
 #
-#   改成全量之后没有名单可维护，覆盖面从 16 个变成 170 个。
-#   实测：root 171 包 / vendor 332 包 / 共有 170，**零不一致**；
-#   唯一只在 root 侧的是 `m0-seam` 自己（工作区成员，vendor 本就测不到，按规则自动跳过）。
+#   改成全量之後沒有名單可維護，覆蓋面從 16 個變成 170 個。
+#   實測：root 171 包 / vendor 332 包 / 共有 170，**零不一致**；
+#   唯一隻在 root 側的是 `m0-seam` 自己（工作區成員，vendor 本就測不到，按規則自動跳過）。
 versions_of() { awk -v k="$2" '$1 == k { print $2 }' "$1" | sort -u; }
 
-# 把多行／多空格的版本列表压成一行、单空格分隔。
-# ★ 原先写的是 `$(echo $rvs)`——靠**未加引号的词拆分**再重新拼起来。它能工作，
-#   但和 CRLF 门里那个 `printf '...' $CRLF_FILES` 是同一个形状：把「分词」当字符串处理手段。
-#   SC2116 / SC2086 正是冲这个来的。
-#   ⚠ 注意别让注释里某一行以 `#` + 空白 + 那个工具名开头——它会被当成 **directive** 解析，
-#     报 SC1072/SC1073。这一条本身就是写这段注释时踩出来的。
+# 把多行／多空格的版本列表壓成一行、單空格分隔。
+# ★ 原先寫的是 `$(echo $rvs)`——靠**未加引號的詞拆分**再重新拼起來。它能工作，
+#   但和 CRLF 門裡那個 `printf '...' $CRLF_FILES` 是同一個形狀：把「分詞」當字串處理手段。
+#   SC2116 / SC2086 正是衝這個來的。
+#   ⚠ 注意別讓註解裡某一行以 `#` + 空白 + 那個工具名開頭——它會被當成 **directive** 解析，
+#     報 SC1072/SC1073。這一條本身就是寫這段註解時踩出來的。
 squash() { printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'; }
 
-# 两边都有的包 = 本次真正要比的对象。只在 root 一侧的（工作区成员）vendor 本就测不到；
-# 只在 vendor 一侧的是 dev-dep，不进产物。
+# 兩邊都有的包 = 本次真正要比的物件。只在 root 一側的（工作區成員）vendor 本就測不到；
+# 只在 vendor 一側的是 dev-dep，不進產物。
 cut -d' ' -f1 /tmp/root.pkgs   | sort -u > /tmp/root.names
 cut -d' ' -f1 /tmp/vendor.pkgs | sort -u > /tmp/vendor.names
 comm -12 /tmp/root.names /tmp/vendor.names > /tmp/shared.names
@@ -117,16 +117,16 @@ MISMATCH=0
 DRAGGED=0
 ROOT_ONLY_PATH=0
 
-# ★ ★ 根侧有、vendor 侧缺的那个版本，**产物里是谁在用它** —— 问 cargo，不猜（2026-09-24 加）。
-#   起因：rcgen 0.14.10 → pem 4 把 base64 0.23.1 带进了根锁，而 pingora 用的仍是 0.22.1（两把锁都有）。
-#   按包名比，这与「pingora 自己在产物里用着一个 vendor 没解析出来的版本」长得一模一样 ——
-#   而本步要拦的只有后者：vendor 测试跑的不是产物里 **pingora 那一侧** 的组合。
-#   ⇒ 反向树上有 `pingora-*` = 真问题（红）；没有 = 只经根侧独有的包进产物，vendor 测不到也不必测（信息）。
-#   ⛔ 不用手写名单：将来若 pingora 自己也升到那个版本而 vendor 滞后，名单会把真问题盖住，而这里会红。
-# ★ `--target all`：宁可多算路径（多算只会更容易红），不让「只在某个 target 上出现的依赖」漏掉。
-# ★ `-e normal,build`：问的是产物里的图；dev 边只来自工作区成员自己，碰不到 pingora 那一侧。
-# ★ `</dev/null`：它跑在 `while read` 循环里，不许碰循环的 stdin。
-# ⚠ 反证（2026-09-24 实测）：只在根锁里把 pingora 用的 lru 退一个补丁版本 ⇒ 本步红、点名 pingora-pool。
+# ★ ★ 根側有、vendor 側缺的那個版本，**產物裡是誰在用它** —— 問 cargo，不猜（2026-09-24 加）。
+#   起因：rcgen 0.14.10 → pem 4 把 base64 0.23.1 帶進了根鎖，而 pingora 用的仍是 0.22.1（兩把鎖都有）。
+#   按包名比，這與「pingora 自己在產物裡用著一個 vendor 沒解析出來的版本」長得一模一樣 ——
+#   而本步要攔的只有後者：vendor 測試跑的不是產物裡 **pingora 那一側** 的組合。
+#   ⇒ 反向樹上有 `pingora-*` = 真問題（紅）；沒有 = 只經根側獨有的包進產物，vendor 測不到也不必測（資訊）。
+#   ⛔ 不用手寫名單：將來若 pingora 自己也升到那個版本而 vendor 滯後，名單會把真問題蓋住，而這裡會紅。
+# ★ `--target all`：寧可多算路徑（多算只會更容易紅），不讓「只在某個 target 上出現的依賴」漏掉。
+# ★ `-e normal,build`：問的是產物裡的圖；dev 邊只來自工作區成員自己，碰不到 pingora 那一側。
+# ★ `</dev/null`：它跑在 `while read` 循環裡，不許碰循環的 stdin。
+# ⚠ 反證（2026-09-24 實測）：只在根鎖裡把 pingora 用的 lru 退一個補丁版本 ⇒ 本步紅、點名 pingora-pool。
 ROOT_MANIFEST="$REPO/Cargo.toml"
 who_uses() {
   cargo tree --locked --manifest-path "$ROOT_MANIFEST" -i "$1@$2" \
@@ -144,7 +144,7 @@ while IFS= read -r p; do
 
   if [ -z "$missing" ]; then
     if [ "$(printf '%s\n' "$vvs" | wc -l)" -gt "$(printf '%s\n' "$rvs" | wc -l)" ]; then
-      # vendor 侧多解析出别的版本——合法（dev-dep／未启用的可选依赖），只作信息
+      # vendor 側多解析出別的版本——合法（dev-dep／未啟用的可選依賴），只作資訊
       DRAGGED=$((DRAGGED + 1))
     fi
     continue
@@ -152,7 +152,7 @@ while IFS= read -r p; do
 
   for v in $missing; do
     if ! tree=$(who_uses "$p" "$v"); then
-      # ⛔ 问不出来 ≠ 没人用：失败一律判红。
+      # ⛔ 問不出來 ≠ 沒人用：失敗一律判紅。
       printf '  ✗  %-24s 根侧的 %s 在 vendor 侧缺席，且问不出产物里谁在用它（cargo tree 失败）：\n' "$p" "$v"
       printf '%s\n' "$tree" | sed -n '1,5s/^/        /p'
       MISMATCH=$((MISMATCH + 1))
@@ -186,27 +186,27 @@ printf '（其中 %s 个 vendor 另有旧版本，来自 dev-dep／未启用的�
 [ "$ROOTONLY" -eq 0 ] || printf '  ·  另有 %s 个只在 root 侧（工作区成员，vendor 本就测不到）：%s\n' \
      "$ROOTONLY" "$(squash "$(cat /tmp/rootonly.names)")"
 
-# ★ 这道门必须能红。它唯一的失效方式是「共有包数量掉到 0」——那时循环一次都不跑，
-#   `MISMATCH` 恒为 0，于是它在**什么都没比**的情况下报绿。给个下界钉住。
+# ★ 這道門必須能紅。它唯一的失效方式是「共有包數量掉到 0」——那時循環一次都不跑，
+#   `MISMATCH` 恆為 0，於是它在**什麼都沒比**的情況下報綠。給個下界釘住。
 [ "$SHARED" -ge 100 ] || fail "只比出 $SHARED 个共有包（正常应有 170 上下）——
        两份 lock 的解析结果之一多半是空的或格式变了，本次比对没有意义。"
 echo "  ✓ 产物里 pingora 那一侧用到的版本在 vendor 侧全部在场——下面的测试结果对实际产物有效"
 
-# ── [3/5] ★ ★ 自证「黑洞」真的是黑洞 ────────────────────────────────────────
+# ── [3/5] ★ ★ 自證「黑洞」真的是黑洞 ────────────────────────────────────────
 #
-# 下面那批连接超时测试全部依赖一个前提：`192.0.2.1:79` 发出去的 SYN 被**静默丢弃**。
-# 这个前提**不是天然成立的**——Docker 默认网络会替这个地址应答（实测 1.7ms 就
-# CONNECTED），要靠 docker-run.sh 装的那条 iptables DROP 规则才成立。
+# 下面那批連接超時測試全部依賴一個前提：`192.0.2.1:79` 發出去的 SYN 被**靜默丟棄**。
+# 這個前提**不是天然成立的**——Docker 預設網路會替這個位址應答（實測 1.7ms 就
+# CONNECTED），要靠 docker-run.sh 裝的那條 iptables DROP 規則才成立。
 #
-# ★ ★ 判据挂在**行为**上，不挂在「规则在不在」上。`iptables -L` 能列出规则，
-#   不等于它生效了：容器可能没有 NET_ADMIN、内核模块可能缺、也可能被前面的链
-#   抢先 ACCEPT。**能证明它生效的只有「连过去真的会超时」这一件事。**
+# ★ ★ 判據掛在**行為**上，不掛在「規則在不在」上。`iptables -L` 能列出規則，
+#   不等於它生效了：容器可能沒有 NET_ADMIN、核心模組可能缺、也可能被前面的鏈
+#   搶先 ACCEPT。**能證明它生效的只有「連過去真的會超時」這一件事。**
 #
-# 三种结果必须分清，它们对应完全不同的修法：
-#   超时      → 真丢包，前提成立
-#   连上      → Docker 网络在替它应答，规则没装或没生效
-#   立刻失败  → EHOSTUNREACH/ECONNREFUSED 一类。★ 这**也不对**——测试等的是
-#               ConnectTimedout，立刻失败给的是 ConnectError，照样红。
+# 三種結果必須分清，它們對應完全不同的修法：
+#   超時      → 真丟包，前提成立
+#   連上      → Docker 網路在替它應答，規則沒裝或沒生效
+#   立刻失敗  → EHOSTUNREACH/ECONNREFUSED 一類。★ 這**也不對**——測試等的是
+#               ConnectTimedout，立刻失敗給的是 ConnectError，照樣紅。
 #               （所以不能用 `ip route add blackhole` 代替 DROP。）
 echo "=== [3/5] 自证 192.0.2.1:79 是真黑洞 ==="
 
@@ -235,36 +235,36 @@ case "$BH_RC" in
 esac
 echo
 
-# ── [4/5] ★ ★ 自证公网可达 ─────────────────────────────────────────────────
+# ── [4/5] ★ ★ 自證公用網路可達 ─────────────────────────────────────────────────
 #
-# `connectors::http::*` 里有一批测试**连的是真的 1.1.1.1:443 / :80**
-# （`one.one.one.one`，见 pingora-core/src/connectors/http/{mod,v1,v2}.rs）。
-# 也就是说这道门**一直挂着一个没人写下来的外部前提**，而 §8 要求环境可复现。
+# `connectors::http::*` 裡有一批測試**連的是真的 1.1.1.1:443 / :80**
+# （`one.one.one.one`，見 pingora-core/src/connectors/http/{mod,v1,v2}.rs）。
+# 也就是說這道門**一直掛著一個沒人寫下來的外部前提**，而 §8 要求環境可重現。
 #
-# ★ ★ 这一步不修那个前提（改上游测试的目标地址是另一件事，见 FORK.md §3 的讨论），
-#   它做的是**把隐式前提变成显式前提**：连不上就当场说清楚，
-#   而不是让人对着 6 条名字古怪的失败去猜是不是自己刚改坏了什么。
-#   ★ 判据同 [3/5]：挂在**行为**上（真连一次），不挂在「有没有网卡」上。
+# ★ ★ 這一步不修那個前提（改上游測試的目標位址是另一件事，見 FORK.md §3 的討論），
+#   它做的是**把隱式前提變成顯式前提**：連不上就當場說清楚，
+#   而不是讓人對著 6 條名字古怪的失敗去猜是不是自己剛改壞了什麼。
+#   ★ 判據同 [3/5]：掛在**行為**上（真連一次），不掛在「有沒有網卡」上。
 #
-# ── 2026-09-08 owner 拍板：**本地维持现状，只留这道自证** ──────────────────
+# ── 2026-09-08 owner 拍板：**本機維持現狀，只留這道自證** ──────────────────
 #
-#   量了一遍才拍的（单变量：只用 iptables REJECT 掉 1.1.1.1，网络栈完整，
-#   两趟都照旧 DROP 192.0.2.0/24 免得 `test_conn_timeout` 在两趟之间变量不一致）：
-#     · 默认 feature：通网 2 红 → 封掉 7 红 ⇒ **差集正好 5 条**
-#     · `--features rustls`（本门用的）：通网 2 红 → 封掉 20 红 ⇒ **差集正好 18 条**
-#     （那 2 条基线是 `test_bind_to_port_range_on_connect` 与
-#       `test_req_header_no_eos_empty_data_with_eos`，与公网无关）
-#   ⚠ ⚠ 其中 5 条在**默认 feature** 下就跑 ⇒ 连 `cargo test -p pingora-core` 都要出网。
+#   量了一遍才拍的（單變數：只用 iptables REJECT 掉 1.1.1.1，網路棧完整，
+#   兩趟都照舊 DROP 192.0.2.0/24 免得 `test_conn_timeout` 在兩趟之間變數不一致）：
+#     · 預設 feature：通網 2 紅 → 封掉 7 紅 ⇒ **差集正好 5 條**
+#     · `--features rustls`（本門用的）：通網 2 紅 → 封掉 20 紅 ⇒ **差集正好 18 條**
+#     （那 2 條基線是 `test_bind_to_port_range_on_connect` 與
+#       `test_req_header_no_eos_empty_data_with_eos`，與公用網路無關）
+#   ⚠ ⚠ 其中 5 條在**預設 feature** 下就跑 ⇒ 連 `cargo test -p pingora-core` 都要出網。
 #
-#   ⛔ **没有改成「容器内假上游 + DNAT」**，虽然基础设施是现成的（NET_ADMIN + iptables
-#   本文件上下都在用）。两条理由：① 迄今**没有一次红是公网抖动引起的**，而这道自证
-#   已经把「说不清的失败」变成「说得清的失败」；② 劫持到本地假上游会**改变那批测试
-#   测的东西**（真实互联网 TLS 握手 → 本地假上游），拿信号换环境纯净度。
-#   ⛔ 也没有把它们从回归网里摘掉：`FORK.md` §5.3 那条 rustls dev-dependency
-#   **就是为这批测试存在的**，摘掉等于把守门人拆了。
+#   ⛔ **沒有改成「容器內假上游 + DNAT」**，雖然基礎設施是現成的（NET_ADMIN + iptables
+#   本檔案上下都在用）。兩條理由：① 迄今**沒有一次紅是公用網路抖動引起的**，而這道自證
+#   已經把「說不清的失敗」變成「說得清的失敗」；② 劫持到本機假上游會**改變那批測試
+#   測的東西**（真實網際網路 TLS 握手 → 本機假上游），拿信號換環境純淨度。
+#   ⛔ 也沒有把它們從迴歸網裡摘掉：`FORK.md` §5.3 那條 rustls dev-dependency
+#   **就是為這批測試存在的**，摘掉等於把守門人拆了。
 #
-#   ⇒ 已报上游：`cloudflare/pingora#999`（带上面这组单变量读数）。
-#     ⚠ 即使被接受也要等发版 + rebase 才落地，**解决不了当下** —— 所以本地维持现状。
+#   ⇒ 已報上游：`cloudflare/pingora#999`（帶上面這組單變數讀數）。
+#     ⚠ 即使被接受也要等發版 + rebase 才完成實作，**解決不了當下** —— 所以本機維持現狀。
 echo "=== [4/5] 自证 1.1.1.1 可达（那批 connectors 测试的前提）==="
 
 net_probe() {
@@ -296,112 +296,112 @@ if [ "$NET_BAD" -ne 0 ]; then
 fi
 echo
 
-# ── [5/5] 跑测试 ───────────────────────────────────────────────────────────
+# ── [5/5] 跑測試 ───────────────────────────────────────────────────────────
 #
-# ★ 判据不是「零失败」，是「与官方原版 0.9.0 的失败集合逐项相同」。
+# ★ 判據不是「零失敗」，是「與官方原版 0.9.0 的失敗集合逐項相同」。
 #
-# 这个容器里会有测试**在官方原版上同样失败**（依赖容器外的行为，与 fork 无关）——
-# 0.8.1 时是 2 条；0.9.0 在同款容器里只剩下面「宿主机相关」那 1 条（见「名单的来历」）。
-# 硬要求零失败会让这道门**永远红**，而永远亮着的告警等于没有告警。
+# 這個容器裡會有測試**在官方原版上同樣失敗**（依賴容器外的行為，與 fork 無關）——
+# 0.8.1 時是 2 條；0.9.0 在同款容器裡只剩下面「宿主機相關」那 1 條（見「名單的來歷」）。
+# 硬要求零失敗會讓這道門**永遠紅**，而永遠亮著的告警等於沒有告警。
 #
-# ★ ★ 但也不能简单 --skip 掉：那样「某条环境性失败变成了真回归」和
-#   「环境修好了、该把它从名单里删掉」这两件事都会被吞掉。所以**双向比对**。
+# ★ ★ 但也不能簡單 --skip 掉：那樣「某條環境性失敗變成了真迴歸」和
+#   「環境修好了、該把它從名單裡刪掉」這兩件事都會被吞掉。所以**雙向比對**。
 #
-# 名单的来历（可重跑的对照实验，2026-09-24 rebase 到 0.9.0 时重做）：
-#   git -c core.autocrlf=false archive 0.9.0 | tar -x      # 702f690；⚠ 本机全局 autocrlf=true，
-#                                                          #   不加 -c 会导出 CRLF、凭空多出失败
-#   在**本门同款容器**里（fulcrum-build 镜像 · NET_ADMIN · 192.0.2.0/24 DROP）：
+# 名單的來歷（可重跑的對照實驗，2026-09-24 rebase 到 0.9.0 時重做）：
+#   git -c core.autocrlf=false archive 0.9.0 | tar -x      # 702f690；⚠ 本機全域 autocrlf=true，
+#                                                          #   不加 -c 會匯出 CRLF、憑空多出失敗
+#   在**本門同款容器**裡（fulcrum-build 鏡像 · NET_ADMIN · 192.0.2.0/24 DROP）：
 #   cargo test -p pingora-core -p pingora-error -p pingora-http -p pingora-pool \
 #     -p pingora-runtime -p pingora-timeout -p pingora-rustls -p pingora-boringssl \
 #     --features pingora-core/rustls --no-fail-fast
-#   ⇒ 19 个二进制，735 过 / 1 败 / 12 忽略；败的只有 `test_bind_to_port_range_on_connect`
-#     （下面 HOST_DEPENDENT_FAILURES 那条）。0.8.1 时名单里的
+#   ⇒ 19 個二進位，735 過 / 1 敗 / 12 忽略；敗的只有 `test_bind_to_port_range_on_connect`
+#     （下面 HOST_DEPENDENT_FAILURES 那條）。0.8.1 時名單裡的
 #     `protocols::http::v2::server::test::test_req_header_no_eos_empty_data_with_eos`
-#     在 0.9.0 上**已通过** ⇒ 本名单清空。
+#     在 0.9.0 上**已通過** ⇒ 本名單清空。
 #
-# ★ ★ **「登记为环境性失败」是把问题挂起，不是把问题解决。** 名单里的每一条都欠着一次
-#   根因调查 —— `test_conn_timeout` 挂了很久，查出来是 Docker 默认网络会替
-#   `192.0.2.1`（RFC 5737 TEST-NET-1）应答，于是 1ms 的连接超时永远等不到；
-#   docker-run.sh 装一条 `iptables … -j DROP` 把它变成真丢包之后，这条测试就真的过了。
+# ★ ★ **「登記為環境性失敗」是把問題掛起，不是把問題解決。** 名單裡的每一條都欠著一次
+#   根因調查 —— `test_conn_timeout` 掛了很久，查出來是 Docker 預設網路會替
+#   `192.0.2.1`（RFC 5737 TEST-NET-1）應答，於是 1ms 的連接超時永遠等不到；
+#   docker-run.sh 裝一條 `iptables … -j DROP` 把它變成真丟包之後，這條測試就真的過了。
 EXPECTED_FAILURES=""
 
-# ★ ★ ★ 第三类：**宿主机相关**的失败（CI 上线当天量出来的）。
+# ★ ★ ★ 第三類：**宿主機相關**的失敗（CI 上線當天量出來的）。
 #
-# 它既不是「在官方原版上也失败」那一类（那是 EXPECTED_FAILURES，两个方向都严），
-# 也不是「偶发」那一类（那是下面那段重跑逻辑）。它是**在这台机器上稳定失败、
-# 在另一台机器上稳定通过** —— 而两边跑的是同一份 fork。
+# 它既不是「在官方原版上也失敗」那一類（那是 EXPECTED_FAILURES，兩個方向都嚴），
+# 也不是「偶發」那一類（那是下面那段重跑邏輯）。它是**在這臺機器上穩定失敗、
+# 在另一臺機器上穩定通過** —— 而兩邊跑的是同一份 fork。
 #
-# ⚠ ⚠ **一条在不同宿主机上给出相反结论的测试，不能充当回归信号**：
-#   把它留在 EXPECTED_FAILURES 里，CI 上会因为「名单里的这条现在过了」判红；
-#   把它删掉，本机会因为「出现了名单外的失败」判红。**两边都对，而门两边都红。**
+# ⚠ ⚠ **一條在不同宿主機上給出相反結論的測試，不能充當迴歸信號**：
+#   把它留在 EXPECTED_FAILURES 裡，CI 上會因為「名單裡的這條現在過了」判紅；
+#   把它刪掉，本機會因為「出現了名單外的失敗」判紅。**兩邊都對，而門兩邊都紅。**
 #
-# ── `connectors::l4::tests::test_bind_to_port_range_on_connect` 的实测记录 ──
+# ── `connectors::l4::tests::test_bind_to_port_range_on_connect` 的實測記錄 ──
 #
-#   · Docker Desktop / WSL2：**10/10 失败**　· GitHub Actions（ubuntu-24.04）：**通过**
+#   · Docker Desktop / WSL2：**10/10 失敗**　· GitHub Actions（ubuntu-24.04）：**通過**
 #
-#   根因在断言本身：测试把源端口夹到 **2 个**，顺序连 10 次、每次连完就 drop session，
-#   然后断言「至少有一次 AddrNotAvailable」—— 成立与否取决于**宿主机回收源端口有多快**。
-#   ★ 不在 fork 里改这条断言：它是上游测试**要测的那件事本身**（源端口夹紧到耗尽），
-#     改断言＝改这条测试的含义，那不叫修，叫让它闭嘴。
-#   ★ 代价说在明处：这一条**不再充当 fork 的回归信号**；可接受的理由是 fork 从没动过
-#     `BindTo` / 端口范围那条路径（见 FORK.md 的改动清单）。
+#   根因在斷言本身：測試把源連接埠夾到 **2 個**，順序連 10 次、每次連完就 drop session，
+#   然後斷言「至少有一次 AddrNotAvailable」—— 成立與否取決於**宿主機回收源連接埠有多快**。
+#   ★ 不在 fork 裡改這條斷言：它是上游測試**要測的那件事本身**（源連接埠夾緊到耗盡），
+#     改斷言＝改這條測試的含義，那不叫修，叫讓它閉嘴。
+#   ★ 代價說在明處：這一條**不再充當 fork 的迴歸信號**；可接受的理由是 fork 從沒動過
+#     `BindTo` / 連接埠範圍那條路徑（見 FORK.md 的改動清單）。
 #
-# ⚠ **这张表要短，而且每加一条都要带上「在哪台机器上量的、错在哪一行」**。
-#   没有实测记录的条目就是一句「我猜它是环境问题」—— 那正是
-#   `test_conn_timeout` 那条被挂了一年多的形状。
+# ⚠ **這張表要短，而且每加一條都要帶上「在哪臺機器上量的、錯在哪一行」**。
+#   沒有實測記錄的條目就是一句「我猜它是環境問題」—— 那正是
+#   `test_conn_timeout` 那條被掛了一年多的形狀。
 HOST_DEPENDENT_FAILURES="connectors::l4::tests::test_bind_to_port_range_on_connect"
 
-# ★ ★ ★ （G45 那一轮顺手撞出来的）：这里此前**没有 `--no-fail-fast`**。
-#   `pingora-core` 的 lib 测试恒有 2 条已知失败，于是 cargo **每一次都停在第一个二进制**——
-#   后面 6 个 crate 的单测、pingora-core 自己的 3 个集成测试二进制、以及全部文档测试
-#   **一次都没跑过**，而这道门一直是绿的、脚本自己 echo 的是「7 个 crate」。
-#   实测补上 `--no-fail-fast` 之后多跑出 **64 条单测 + 3 个文档测试**：
+# ★ ★ ★ （G45 那一輪順手撞出來的）：這裡此前**沒有 `--no-fail-fast`**。
+#   `pingora-core` 的 lib 測試恆有 2 條已知失敗，於是 cargo **每一次都停在第一個二進位**——
+#   後面 6 個 crate 的單測、pingora-core 自己的 3 個整合測試二進位、以及全部文件測試
+#   **一次都沒跑過**，而這道門一直是綠的、指令碼自己 echo 的是「7 個 crate」。
+#   實測補上 `--no-fail-fast` 之後多跑出 **64 條單測 + 3 個文件測試**：
 #     server_phase_fastshutdown 1 · gracefulshutdown 1 · test_basic 3 ·
 #     pingora-error 8 · pingora-http 8 · pingora-pool 9 · pingora-runtime 3 ·
 #     pingora-rustls 18 · pingora-timeout 13
-#   ★ 是被 G45 逼出来的：那一轮给 pingora-rustls 新写了 18 条测试，跑完总数却还是 359——
-#     **「新加的测试没让计数变化」是这类缺陷唯一会露头的地方**。
-#   ★ 判据本身不用改：失败集合是扫全部 `test ... FAILED` 行得来的，跨二进制天然成立。
+#   ★ 是被 G45 逼出來的：那一輪給 pingora-rustls 新寫了 18 條測試，跑完總數卻還是 359——
+#     **「新加的測試沒讓計數變化」是這類缺陷唯一會露頭的地方**。
+#   ★ 判據本身不用改：失敗集合是掃全部 `test ... FAILED` 行得來的，跨二進位天然成立。
 echo "=== [5/5] cargo test（vendor/pingora，8 个 crate + 集成测试 + 文档测试）==="
 echo "  ★ 已知环境性失败（在官方 0.9.0 上同样失败，见脚本注释；0.9.0 起为空）："
-# ★ 一行一条，**不靠词拆分**。这与 tests/m0/docker-run.sh 的 CRLF 门是**同一个缺陷**，
-#   那边上午修掉了，这边直到同日下午 shellcheck 上线才被揪出来——
-#   ★ 「修完一个形状要当场把同形的全扫一遍」，靠人眼扫是扫不干净的，得有工具。
-# ⚠ ⚠ 循环体必须写成 `if`，⛔ 不能写 `[ -n "$ef" ] && printf …`（2026-09-24 实付一次）：
-#   名单为空时 `printf '%s\n' ""` 仍给出一行空行 ⇒ 最后一次迭代的 `&&` 列表返回 1 ⇒ 整个循环返回 1
-#   ⇒ `set -e` 下脚本当场退出，门禁 RC=1 而一条测试都没跑。名单非空时它恰好不露头 ——
-#   与本文件末尾「这里必须用 if」是同一个形状。
+# ★ 一行一條，**不靠詞拆分**。這與 tests/m0/docker-run.sh 的 CRLF 門是**同一個缺陷**，
+#   那邊上午修掉了，這邊直到同日下午 shellcheck 上線才被揪出來——
+#   ★ 「修完一個形狀要當場把同形的全掃一遍」，靠人眼掃是掃不乾淨的，得有工具。
+# ⚠ ⚠ 循環體必須寫成 `if`，⛔ 不能寫 `[ -n "$ef" ] && printf …`（2026-09-24 實付一次）：
+#   名單為空時 `printf '%s\n' ""` 仍給出一行空行 ⇒ 最後一次迭代的 `&&` 列表回傳 1 ⇒ 整個循環回傳 1
+#   ⇒ `set -e` 下指令碼當場退出，門禁 RC=1 而一條測試都沒跑。名單非空時它恰好不露頭 ——
+#   與本檔案末尾「這裡必須用 if」是同一個形狀。
 printf '%s\n' "$EXPECTED_FAILURES" | while IFS= read -r ef; do
   if [ -n "$ef" ]; then printf '      %s\n' "$ef"; fi
 done
 
 OUTFILE=${VENDOR_TEST_OUT:-/tmp/vendor-test.out}
-# --locked：锁文件已入库，测试不许顺手改它（同 G29 第 2 条的精神）
-# --target-dir：落进 docker 命名卷，不写 Windows 挂载点，也不污染 vendor 目录
+# --locked：鎖定檔已入庫，測試不許順手改它（同 G29 第 2 條的精神）
+# --target-dir：落進 docker 命名卷，不寫 Windows 掛載點，也不汙染 vendor 目錄
 set +e
 cargo test --manifest-path "$MANIFEST" --target-dir "$TARGET" --locked \
   --features pingora-core/rustls --no-fail-fast 2>&1 | tee "$OUTFILE"
 CARGO_RC=${PIPESTATUS[0]}
 set -e
 
-# 编译不过 / 跑不起来，和「测试跑完有失败」是两回事，不能混在一起判
+# 編譯不過 / 跑不起來，和「測試跑完有失敗」是兩回事，不能混在一起判
 if ! grep -q "^test result:" "$OUTFILE"; then
   fail "cargo test 没能跑到出结果（退出码 $CARGO_RC）——多半是编译错误，看上面的输出"
 fi
 
-# 用字段而不是正则，避开 `test result: FAILED.` 那一行
+# 用欄位而不是正則，避開 `test result: FAILED.` 那一行
 awk '$1 == "test" && $(NF-1) == "..." && $NF == "FAILED" { print $2 }' "$OUTFILE" \
   | sort -u > /tmp/vendor-actual.f
 printf '%s\n' "$EXPECTED_FAILURES" | sed '/^$/d' | sort -u > /tmp/vendor-expected.f
 printf '%s\n' "$HOST_DEPENDENT_FAILURES" | sed '/^$/d' | sort -u > /tmp/vendor-hostdep.f
 
-# ★ ★ ★ **自证：宿主机相关名单里的每一条都必须真的跑过。**
+# ★ ★ ★ **自證：宿主機相關名單裡的每一條都必須真的跑過。**
 #
-# 少了这一条，一个**打错字的**条目会安静地什么都不做：它永远不匹配任何东西，
-# 于是「两个方向都豁免」变成「豁免了一个不存在的测试」，而门照样全绿。
-# ⚠ 这与本仓库反复抓到的「不自省的名单」是同一个形状
-#   （vendor 那张 16 项手写清单、`unclaimed.sh` 的忽略名单、`supply-audit.py` 的 ACCEPTED）。
-# 判据取「这个名字在测试输出里出现过」——出现成 ok 还是 FAILED 都行，那正是本类的定义。
+# 少了這一條，一個**打錯字的**條目會安靜地什麼都不做：它永遠不匹配任何東西，
+# 於是「兩個方向都豁免」變成「豁免了一個不存在的測試」，而門照樣全綠。
+# ⚠ 這與本儲存庫反覆抓到的「不自省的名單」是同一個形狀
+#   （vendor 那張 16 項手寫清單、`unclaimed.sh` 的忽略名單、`supply-audit.py` 的 ACCEPTED）。
+# 判據取「這個名字在測試輸出裡出現過」——出現成 ok 還是 FAILED 都行，那正是本類的定義。
 while IFS= read -r hd; do
   [ -n "$hd" ] || continue
   if ! awk -v t="$hd" '$1 == "test" && $2 == t { found = 1 } END { exit !found }' "$OUTFILE"; then
@@ -412,7 +412,7 @@ while IFS= read -r hd; do
   fi
 done < /tmp/vendor-hostdep.f
 
-# ★ 摘出去之后再比对。⚠ grep 无匹配时返回 1，set -e 下要接住。
+# ★ 摘出去之後再比對。⚠ grep 無匹配時回傳 1，set -e 下要接住。
 grep -vxF -f /tmp/vendor-hostdep.f /tmp/vendor-actual.f > /tmp/vendor-actual2.f || true
 mv /tmp/vendor-actual2.f /tmp/vendor-actual.f
 
@@ -420,84 +420,84 @@ comm -23 /tmp/vendor-actual.f /tmp/vendor-expected.f > /tmp/vendor-new.f
 comm -13 /tmp/vendor-actual.f /tmp/vendor-expected.f > /tmp/vendor-gone.f
 
 echo
-# ★ 名单外的失败先**定向重跑一次**再定性。偶发有**两个已知来源**：
+# ★ 名單外的失敗先**定向重跑一次**再定性。偶發有**兩個已知來源**：
 #
-#   ① 时间竞态。上游的 `protocols::l4::stream::tests::test_rx_timestamp` 自己的注释写着
-#      「setsockopt for SO_TIMESTAMPING is asynchronous so sleep a little bit」，而那个 sleep
-#      只有 100µs。空载连跑 12 次全过，机器有负载时会挂在 `assert!(rx_ts.is_some())`。
+#   ① 時間競態。上游的 `protocols::l4::stream::tests::test_rx_timestamp` 自己的註解寫著
+#      「setsockopt for SO_TIMESTAMPING is asynchronous so sleep a little bit」，而那個 sleep
+#      只有 100µs。空載連跑 12 次全過，機器有負載時會掛在 `assert!(rx_ts.is_some())`。
 #
-#   ② `connectors::*` 那一批，偶发过几次而**归因没有查实**（「公网抖动」解释不了其中那条
-#      纯本地的 UDS 测试）。⚠ **在查实之前不许把它们登记进 EXPECTED_FAILURES。**
+#   ② `connectors::*` 那一批，偶發過幾次而**歸因沒有查實**（「公用網路抖動」解釋不了其中那條
+#      純本機的 UDS 測試）。⚠ **在查實之前不許把它們登記進 EXPECTED_FAILURES。**
 #
-#      ── `connectors::tests::test_connect_uds` 的实测记录（2026-09-08 查了一层）──
+#      ── `connectors::tests::test_connect_uds` 的實測記錄（2026-09-08 查了一層）──
 #
-#      **它红在哪一行**：`pingora-core/src/connectors/mod.rs:545` 的 `assert!(reused)`
-#      （panic 原话就是 `assertion failed: reused`）⇒ 连接**没能从池里复用**，
-#      `get_stream` 新建了一条。⛔ 与「读到的字节不对」无关，那是另一个缺陷、已由
-#      FORK.md §3 的 `read_exact` 改动治掉了，⛔ 别把两者混起来。
+#      **它紅在哪一行**：`pingora-core/src/connectors/mod.rs:545` 的 `assert!(reused)`
+#      （panic 原話就是 `assertion failed: reused`）⇒ 連接**沒能從池裡重複使用**，
+#      `get_stream` 新建了一條。⛔ 與「讀到的位元組不對」無關，那是另一個缺陷、已由
+#      FORK.md §3 的 `read_exact` 改動治掉了，⛔ 別把兩者混起來。
 #
-#      **两边各跑了多少趟**（这是本类条目要求的「在哪台机器上量的」）：
-#        · GitHub runner：09-03 红 · 09-04 过×3 · 09-05 过×2 · 09-08 红×2 ⇒ **约 3/8，间歇**
-#        · `ShanireHomePC`：完整门禁 2 趟 · 单跑该条 `--cpus=2` 3 趟 ·
-#          整套 lib 并行 `--cpus=2` 3 趟 ⇒ **0/8，一次都没红**
-#        ⚠ 两趟之间 `vendor/` **一个字节没动**，runner 镜像也**逐字相同**
+#      **兩邊各跑了多少趟**（這是本類條目要求的「在哪臺機器上量的」）：
+#        · GitHub runner：09-03 紅 · 09-04 過×3 · 09-05 過×2 · 09-08 紅×2 ⇒ **約 3/8，間歇**
+#        · `ShanireHomePC`：完整門禁 2 趟 · 單跑該條 `--cpus=2` 3 趟 ·
+#          整套 lib 並行 `--cpus=2` 3 趟 ⇒ **0/8，一次都沒紅**
+#        ⚠ 兩趟之間 `vendor/` **一個位元組沒動**，runner 鏡像也**逐字相同**
 #          （`ubuntu-24.04` / Provisioner `20260828.587` / Image `20260831.293.1`）
-#          ⇒ ⛔ 不是代码变了，也不是镜像换了。
+#          ⇒ ⛔ 不是程式碼變了，也不是鏡像換了。
 #
-#      **机制：`reused_stream()` 里的 TOCTOU —— 2026-09-08 复现并坐实。**
-#      `release_stream()` 把**第二个 Arc** 交了出去 —— 它藏在 `OwnedMutexGuard`
-#      （`stream.clone().try_lock_owned()`）里，随 `rt.spawn(idle_poll(...))` 去了别的线程。
-#      而 `reused_stream()` 等的是**互斥锁**（`s.lock().await`），`Arc::try_unwrap(s)`
-#      要的却是**引用计数 == 1**。`OwnedMutexGuard` 析构时**先放锁、再掉 Arc**，
-#      两步之间另一个线程可以醒过来跑到 `try_unwrap` ⇒ 计数仍是 2 ⇒ 走
+#      **機制：`reused_stream()` 裡的 TOCTOU —— 2026-09-08 重現並坐實。**
+#      `release_stream()` 把**第二個 Arc** 交了出去 —— 它藏在 `OwnedMutexGuard`
+#      （`stream.clone().try_lock_owned()`）裡，隨 `rt.spawn(idle_poll(...))` 去了別的執行緒。
+#      而 `reused_stream()` 等的是**互斥鎖**（`s.lock().await`），`Arc::try_unwrap(s)`
+#      要的卻是**引用計數 == 1**。`OwnedMutexGuard` 析構時**先放鎖、再掉 Arc**，
+#      兩步之間另一個執行緒可以醒過來跑到 `try_unwrap` ⇒ 計數仍是 2 ⇒ 走
 #      `Err(_) => error!("failed to acquire reusable stream"); None` ⇒ `reused == false`。
-#      ★ 这与观察到的每一条都对得上：`flavor = "multi_thread"`（两个线程才有窗口）、
-#        只在整套并行时红、**单独重跑必过**、机器越闲越不出现。
+#      ★ 這與觀察到的每一條都對得上：`flavor = "multi_thread"`（兩個執行緒才有視窗）、
+#        只在整套並行時紅、**單獨重跑必過**、機器越閒越不出現。
 #
-#      **怎么坐实的**（⛔ 没有改 vendor 一个字节）：写一个一次性 crate，用 path 依赖
-#      引 `pingora-core`，**自带一个计数 `log::Log`** 把那四条路的原话各数一个计数器
-#      （vendor 单测不初始化 logger，所以 CI 日志里什么都没有 —— 这是它一直查不下去的原因）。
-#      ★ 翻转它的**单一变量是「每次迭代新建一个 `multi_thread` runtime」** ——
-#        那正是 `#[tokio::test(flavor = "multi_thread")]` 的形状：
-#          · 共用一个 runtime 死循环：**0 / 18400**（0.5～24 核都试过，一次都不出）
-#          · 每次新建 runtime：**出得来**，且随超订单调升高（下方剂量-反应）
-#      **读数**（容器内 `--cpus=2`，48 线程 × 100 次 = 4800 次）：
-#          reused==false 264 · **try_unwrap 失败 264** ·
+#      **怎麼坐實的**（⛔ 沒有改 vendor 一個位元組）：寫一個一次性 crate，用 path 依賴
+#      引 `pingora-core`，**自帶一個計數 `log::Log`** 把那四條路的原話各數一個計數器
+#      （vendor 單測不初始化 logger，所以 CI 紀錄裡什麼都沒有 —— 這是它一直查不下去的原因）。
+#      ★ 翻轉它的**單一變數是「每次迭代新建一個 `multi_thread` runtime」** ——
+#        那正是 `#[tokio::test(flavor = "multi_thread")]` 的形狀：
+#          · 共用一個 runtime 死循環：**0 / 18400**（0.5～24 核都試過，一次都不出）
+#          · 每次新建 runtime：**出得來**，且隨超訂單調升高（下方劑量-反應）
+#      **讀數**（容器內 `--cpus=2`，48 執行緒 × 100 次 = 4800 次）：
+#          reused==false 264 · **try_unwrap 失敗 264** ·
 #          test_reusable 三支全 0 · matches_fd 不匹配 0 ·
 #          入池（find reusable）4800/4800 · matches_fd 匹配 4536
-#        ⇒ **4536 + 264 = 4800，每一次尝试都有着落**（仪器没漏账），
-#          而 `reused==false` **100% 来自 `Arc::try_unwrap` 失败**，其余三条路一次都没走。
-#      **剂量-反应**（`--cpus=2`，越超订越高）：4 线程 0.75% · 16 线程 1.50% · 48 线程 4.69%
-#        ⇒ 与「CI 上 365 条测试并行、runtime 反复创建销毁时高发，单独重跑必过」完全一致。
-#      ⚠ 那个一次性 crate **有意不入库**（G115），留在 `handoff/spike-uds-toctou/`。
-#        要重建它只需三样：path 依赖 `pingora-core` · 计数 logger · 每次迭代新建 runtime。
+#        ⇒ **4536 + 264 = 4800，每一次嘗試都有著落**（儀器沒漏賬），
+#          而 `reused==false` **100% 來自 `Arc::try_unwrap` 失敗**，其餘三條路一次都沒走。
+#      **劑量-反應**（`--cpus=2`，越超訂越高）：4 執行緒 0.75% · 16 執行緒 1.50% · 48 執行緒 4.69%
+#        ⇒ 與「CI 上 365 條測試並行、runtime 反覆建立銷燬時高發，單獨重跑必過」完全一致。
+#      ⚠ 那個一次性 crate **有意不入庫**（G115），留在 `handoff/spike-uds-toctou/`。
+#        要重建它只需三樣：path 依賴 `pingora-core` · 計數 logger · 每次迭代新建 runtime。
 #
-#      ⛔ ⛔ **有意没有把它登记进下面的 `HOST_DEPENDENT_FAILURES`**（owner 2026-09-08 拍板）。
-#      两条理由：① 那张表的判据是「在这台机器上**稳定**失败」，而这条是**间歇**（CI 4/9），
-#      对不上；② 那张表**两个方向都不判红**（`grep -vxF` 直接从 actual 里摘掉）⇒ 登记进去
-#      就**放弃了「它哪天变成真回归时判红」的能力**。
-#      ⚠ 归因现在**已经查实**（见上），⛔ 但那**不**改变结论：机制是并发窗口，
-#        ⇒ 它平时是过的 ⇒ 按本节开头那条，**也不能塞进 `EXPECTED_FAILURES`**
-#        （「它平时是过的，塞进去会让『少一条也红』每次都触发」）。
-#      ⇒ 仍然留给下面那段重跑逻辑管：重跑仍失败才判红，且每次都打「它确实红过一次」。
-#      ★ 真要根治，方向在**上游**：`release_stream()` 不该把第二个 Arc 交给 spawn 出去的任务，
-#        或 `reused_stream()` 不该用 `Arc::try_unwrap` 这种对引用计数敏感的取法。
-#        ⛔ 本仓不改 vendor 去修它 —— 那是上游的缺陷，改了要自己背 rebase 成本。
-#      ⇒ **已报上游：`cloudflare/pingora#998`**（2026-09-08，含两份复现与逐档读数）。
-#        ⚠ 上游 `main`（`09696b5`）与 0.8.1 在这三个函数上**逐字相同** ⇒ 升 vendor 不会自动解决。
-#        ★ 2026-09-24 升到 0.9.0 时重核：形状**没变** —— `reused_stream` 仍是 `Arc::try_unwrap`，
-#          `release_stream` 仍把 `try_lock_owned()` 出来的第二个 Arc 交给 spawn 出去的 `idle_poll`；
-#          变的只有 `test_reusable_stream` 多了一个计数参数与一个 keepalive 回调 ⇒ #998 照旧成立。
-#        ★ 它与 `#967`（短读，本仓已用 `read_exact` 治掉）是**同一条测试的两个独立原因**，
-#          ⛔ 别把两者混成一件事。
+#      ⛔ ⛔ **有意沒有把它登記進下面的 `HOST_DEPENDENT_FAILURES`**（owner 2026-09-08 拍板）。
+#      兩條理由：① 那張表的判據是「在這臺機器上**穩定**失敗」，而這條是**間歇**（CI 4/9），
+#      對不上；② 那張表**兩個方向都不判紅**（`grep -vxF` 直接從 actual 裡摘掉）⇒ 登記進去
+#      就**放棄了「它哪天變成真迴歸時判紅」的能力**。
+#      ⚠ 歸因現在**已經查實**（見上），⛔ 但那**不**改變結論：機制是並行視窗，
+#        ⇒ 它平時是過的 ⇒ 按本節開頭那條，**也不能塞進 `EXPECTED_FAILURES`**
+#        （「它平時是過的，塞進去會讓『少一條也紅』每次都觸發」）。
+#      ⇒ 仍然留給下面那段重跑邏輯管：重跑仍失敗才判紅，且每次都打「它確實紅過一次」。
+#      ★ 真要根治，方向在**上游**：`release_stream()` 不該把第二個 Arc 交給 spawn 出去的任務，
+#        或 `reused_stream()` 不該用 `Arc::try_unwrap` 這種對引用計數敏感的取法。
+#        ⛔ 本儲存庫不改 vendor 去修它 —— 那是上游的缺陷，改了要自己背 rebase 成本。
+#      ⇒ **已報上游：`cloudflare/pingora#998`**（2026-09-08，含兩份重現與逐檔讀數）。
+#        ⚠ 上游 `main`（`09696b5`）與 0.8.1 在這三個函式上**逐字相同** ⇒ 升 vendor 不會自動解決。
+#        ★ 2026-09-24 升到 0.9.0 時重核：形狀**沒變** —— `reused_stream` 仍是 `Arc::try_unwrap`，
+#          `release_stream` 仍把 `try_lock_owned()` 出來的第二個 Arc 交給 spawn 出去的 `idle_poll`；
+#          變的只有 `test_reusable_stream` 多了一個計數參數與一個 keepalive 回呼 ⇒ #998 照舊成立。
+#        ★ 它與 `#967`（短讀，本儲存庫已用 `read_exact` 治掉）是**同一條測試的兩個獨立原因**，
+#          ⛔ 別把兩者混成一件事。
 #
-#   ★ 一条相关事实：`connectors::*` 里那批测试**连的是真的 1.1.1.1:443 / :80**
-#     （见 `pingora-core/src/connectors/http/{mod,v1,v2}.rs`）——**这道门一直悄悄依赖容器
-#     能上公网**，而 §8 要求环境可复现。真要处置，方向是把它们指向容器内的假上游。
+#   ★ 一條相關事實：`connectors::*` 裡那批測試**連的是真的 1.1.1.1:443 / :80**
+#     （見 `pingora-core/src/connectors/http/{mod,v1,v2}.rs`）——**這道門一直悄悄依賴容器
+#     能上公用網路**，而 §8 要求環境可重現。真要處置，方向是把它們指向容器內的假上游。
 #
-#   ★ ★ **不能把偶发项塞进 EXPECTED_FAILURES**——它平时是过的，塞进去会让「少一条也红」
-#     那条规则每次都触发。也不能放任它间歇性红：那会训练人「重跑一次就好」，
-#     等于废掉这道门。所以：重跑一次，仍失败才判红，**而且不稳定要打出来**。
+#   ★ ★ **不能把偶發項塞進 EXPECTED_FAILURES**——它平時是過的，塞進去會讓「少一條也紅」
+#     那條規則每次都觸發。也不能放任它間歇性紅：那會訓練人「重跑一次就好」，
+#     等於廢掉這道門。所以：重跑一次，仍失敗才判紅，**而且不穩定要打出來**。
 if [ -s /tmp/vendor-new.f ]; then
   echo "★ 名单外的失败，定向重跑一次以区分「真回归」与「偶发（时间竞态 / 公网抖动）」："
   sed 's/^/      /' /tmp/vendor-new.f
@@ -525,8 +525,8 @@ if [ -s /tmp/vendor-gone.f ]; then
   echo "★ 名单里的这几条**现在过了**——环境变了，把它们从 EXPECTED_FAILURES 删掉："
   sed 's/^/      /' /tmp/vendor-gone.f
 fi
-# ★ ★ 宿主机相关的那几条：两个方向都不判红，但**必须说出这一轮是哪个方向**。
-#   一条被豁免又不被报告的测试，等于从这道门上消失了。
+# ★ ★ 宿主機相關的那幾條：兩個方向都不判紅，但**必須說出這一輪是哪個方向**。
+#   一條被豁免又不被報告的測試，等於從這道門上消失了。
 if [ -s /tmp/vendor-hostdep.f ]; then
   echo "★ 宿主机相关（两个方向都不判红，见脚本里的实测记录）："
   while IFS= read -r hd; do
@@ -538,8 +538,8 @@ if [ -s /tmp/vendor-hostdep.f ]; then
     fi
   done < /tmp/vendor-hostdep.f
 fi
-# ★ 这里必须用 if，不能写 `[ -s f ] && fail ...`——set -e 下条件为假时
-#   整条 && 列表返回 1，脚本会当场静默退出，红绿全乱。
+# ★ 這裡必須用 if，不能寫 `[ -s f ] && fail ...`——set -e 下條件為假時
+#   整條 && 列表回傳 1，指令碼會當場靜默退出，紅綠全亂。
 if [ -s /tmp/vendor-new.f ]; then fail "出现了官方原版上没有的失败"; fi
 if [ -s /tmp/vendor-gone.f ]; then fail "已知失败名单已过期，请更新"; fi
 

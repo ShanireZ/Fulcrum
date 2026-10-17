@@ -24,13 +24,13 @@ rustls = { version = "0.23.12", default-features = false, features = [
     "std",
     "tls12",
 ] }
-# ★ 枢衡 fork §5 ②（G41）：上游 `^0.7.1` 把它钉在 0.7.x，抬到 0.8.4。
-#   ⚠ 有调用点适配：0.8 的 load_native_certs() 返回 CertificateResult { certs, errors }，
-#   语义按 0.7.3 逐字保留，见 src/lib.rs。
+# ★ 樞衡 fork §5 ②（G41）：上游 `^0.7.1` 把它釘在 0.7.x，抬到 0.8.4。
+#   ⚠ 有呼叫點適配：0.8 的 load_native_certs() 回傳 CertificateResult { certs, errors }，
+#   語義按 0.7.3 逐字保留，見 src/lib.rs。
 rustls-native-certs = "0.8.4"
-# ★ 枢衡 fork §6（G45）：`rustls-pemfile` 整条删掉（RUSTSEC-2025-0134：失维、无可升版本）。
-#   它本来就是 rustls-pki-types 里同一份代码的薄包装 ⇒ 搬家不是换实现；ECHCONFIG 被静默跳过
-#   那一处语义逐字保留（src/lib.rs 的 RUSTLS_PEMFILE_ITEM_KINDS 与 18 条特征化测试）。
+# ★ 樞衡 fork §6（G45）：`rustls-pemfile` 整條刪掉（RUSTSEC-2025-0134：失維、無可升版本）。
+#   它本來就是 rustls-pki-types 裡同一份程式碼的薄包裝 ⇒ 搬家不是換實作；ECHCONFIG 被靜默跳過
+#   那一處語義逐字保留（src/lib.rs 的 RUSTLS_PEMFILE_ITEM_KINDS 與 18 條特徵化測試）。
 #   下界抬到 1.9：`PemObject` 自 1.9.0 起才有。
 rustls-pki-types = "1.9"
 tokio-rustls = { version = "0.26.0", default-features = false, features = [

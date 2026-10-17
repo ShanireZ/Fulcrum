@@ -1,22 +1,22 @@
-# 枢衡 · 缓存命中 p99 诊断的**源站**（M3，G150 ②）。
+# 樞衡 · 快取命中 p99 診斷的**源站**（M3，G150 ②）。
 #
-# ★ ★ ★ 为什么必须有它：`crates/fulcrum-server/src/lib.rs:654` 写着
-#   「缓存**只裹 `reverse_proxy`**：`respond` / `redir` 没有上游可省，
-#     而 `file_server` 的字节已经在本机磁盘上、再存一份内存是净亏」
-#   ⇒ ⛔ 不能把 `cache` 直接挂在 `file_server` 上把这一层省掉。
-#   ★ 同处还写着：`cache` 写在别处时**装载日志会说出来**（`log_load_summary`），
-#     不是静默忽略。
+# ★ ★ ★ 為什麼必須有它：`crates/fulcrum-server/src/lib.rs:654` 寫著
+#   「快取**只裹 `reverse_proxy`**：`respond` / `redir` 沒有上游可省，
+#     而 `file_server` 的位元組已經在本機磁碟上、再存一份記憶體是淨虧」
+#   ⇒ ⛔ 不能把 `cache` 直接掛在 `file_server` 上把這一層省掉。
+#   ★ 同處還寫著：`cache` 寫在別處時**裝載紀錄會說出來**（`log_load_summary`），
+#     不是靜默忽略。
 #
-# ★ 用枢衡自己而不是 nginx 当源站：nginx 是 §8 的竞品之一，拿它当源站会让
-#   「这一格量的是谁」说不清。
-# ⚠ 而**命中之后源站根本不被访问** ⇒ 它在测量窗口里的 CPU 成本 ≈ 0，
-#   ⇒ 两个变体量到的差值不含源站的份。
+# ★ 用樞衡自己而不是 nginx 當源站：nginx 是 §8 的競品之一，拿它當源站會讓
+#   「這一格量的是誰」說不清。
+# ⚠ 而**命中之後源站根本不被訪問** ⇒ 它在測量視窗裡的 CPU 成本 ≈ 0，
+#   ⇒ 兩個變體量到的差值不含源站的份。
 #
-# ⚠ ⚠ 本文件**有意不配 `cache`**：它是被缓存的那一端，不是缓存本身。
+# ⚠ ⚠ 本檔案**有意不配 `cache`**：它是被快取的那一端，不是快取本身。
 #
-# ⚠ 占位符由 bench/diag/cache-hit-p99.sh 替换。
+# ⚠ 佔位符由 bench/diag/cache-hit-p99.sh 替換。
 {
-    # ★ L7 数据面的 worker 数（G140）。与两个变体吃**同一个** `BENCH_WORKERS`。
+    # ★ L7 資料面的 worker 數（G140）。與兩個變體吃**同一個** `BENCH_WORKERS`。
     threads_l7 __WORKERS__
 }
 

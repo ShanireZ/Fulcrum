@@ -20,17 +20,17 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-# ★ 枢衡 fork §1：上游 0.8，抬到 0.10（调用点在 src/lib.rs，见 FORK.md §2）。
+# ★ 樞衡 fork §1：上游 0.8，抬到 0.10（呼叫點在 src/lib.rs，見 FORK.md §2）。
 rand = "0.10"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 once_cell = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 thread_local = "1"
 log = { workspace = true }
-# ★ 枢衡 fork（2026-09-24，0.9.0 起）：上游这里还有两个可选依赖 dial9-tokio-telemetry 与 aws-sdk-s3，
-#   连同下面 [features] 里的 dial9 三条一起删。vendor 锁会记下成员 crate 的全部可选依赖，
-#   而 aws-sdk-s3 的默认特性会把 aws-lc-rs 拉进锁里 ⇒ supply_gates.rs 门 1 当场红。见 FORK.md。
-#   源码里 #[cfg(feature = "dial9…")] 的分支原样保留，永远不会被点亮。
+# ★ 樞衡 fork（2026-09-24，0.9.0 起）：上游這裡還有兩個可選依賴 dial9-tokio-telemetry 與 aws-sdk-s3，
+#   連同下面 [features] 裡的 dial9 三條一起刪。vendor 鎖會記下成員 crate 的全部可選依賴，
+#   而 aws-sdk-s3 的預設特性會把 aws-lc-rs 拉進鎖裡 ⇒ supply_gates.rs 門 1 當場紅。見 FORK.md。
+#   原始碼裡 #[cfg(feature = "dial9…")] 的分支原樣保留，永遠不會被點亮。
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "net"] }

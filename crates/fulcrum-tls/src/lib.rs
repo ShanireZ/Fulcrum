@@ -1,33 +1,33 @@
-//! 枢衡的 TLS 层。
+//! 樞衡的 TLS 層。
 //!
-//! | 模块 | 管什么 | 拍板 |
+//! | 模組 | 管什麼 | 拍板 |
 //! |---|---|---|
-//! | [`store`] | 证书存储：每域一目录的 PEM、原子写、文件锁 | G55 |
-//! | [`resolver`] | 按 SNI 挑证书（BoringSSL 的 `select_certificate_callback`）| **G104** / G12 |
-//! | [`renewal`] | 续期判定：ARI 优先，回退剩余寿命 1/3，退避 + 抖动 | G56 |
+//! | [`store`] | 證書儲存：每域一目錄的 PEM、原子寫、檔案鎖 | G55 |
+//! | [`resolver`] | 按 SNI 挑證書（BoringSSL 的 `select_certificate_callback`）| **G104** / G12 |
+//! | [`renewal`] | 續期判定：ARI 優先，退回剩餘壽命 1/3，退避 + 抖動 | G56 |
 //!
-//! # ⚠ ⚠ 后端是 BoringSSL（G104）
+//! # ⚠ ⚠ 後端是 BoringSSL（G104）
 //!
-//! §5.1 第 1 条原本把 TLS 后端锁死在 rustls（理由：rustls 不支持 `certificate_callback`，
-//! 动态证书选择必须实现 `ResolvesServerCert`）。**G104 推翻了它** —— 本项目第一次推翻
-//! 一条写着「不可回头」的约束，成因是 G103 取 `quiche` 做 HTTP/3 而 quiche 用 BoringSSL。
+//! §5.1 第 1 條原本把 TLS 後端鎖死在 rustls（理由：rustls 不支援 `certificate_callback`，
+//! 動態證書選擇必須實作 `ResolvesServerCert`）。**G104 推翻了它** —— 本專案第一次推翻
+//! 一條寫著「不可回頭」的約束，成因是 G103 取 `quiche` 做 HTTP/3 而 quiche 用 BoringSSL。
 //!
-//! ⇒ 本 crate 的载体类型整条换过：
+//! ⇒ 本 crate 的載體類型整條換過：
 //!
-//! | 原来（rustls）| 现在（BoringSSL）|
+//! | 原來（rustls）| 現在（BoringSSL）|
 //! |---|---|
-//! | `CertifiedKey`（链 + 签名密钥）| [`CertKey`]（`Vec<X509>` + `PKey<Private>`）|
-//! | `impl ResolvesServerCert`（同步 `resolve()`）| [`SniResolver::install_into`] 挂 `set_select_certificate_callback` |
+//! | `CertifiedKey`（鏈 + 簽名金鑰）| [`CertKey`]（`Vec<X509>` + `PKey<Private>`）|
+//! | `impl ResolvesServerCert`（同步 `resolve()`）| [`SniResolver::install_into`] 掛 `set_select_certificate_callback` |
 //! | `CertificateDer` / `PrivateKeyDer` | `X509` / `PKey<Private>` |
 //!
-//! ★ ★ **换的是载体，不是对证书的理解**：有效期与 SAN 仍由 [`store::validity_of`]
-//! 走 `x509-parser` 从 DER 里读，逐字未改。⇒ 这一批红了，红的一定是后端那一层。
+//! ★ ★ **換的是載體，不是對證書的理解**：有效期與 SAN 仍由 [`store::validity_of`]
+//! 走 `x509-parser` 從 DER 裡讀，逐字未改。⇒ 這一批紅了，紅的一定是後端那一層。
 //!
-//! ★ ★ **BoringSSL 的类型只经 `pingora-boringssl` 拿**，本 crate 不直接依赖 `boring`。
-//! 理由与「只经 `pingora-rustls` 拿 rustls」完全一样，而且更硬：
-//! `boring` 的版本必须与 `quiche` 解到同一个（G103/G104），
-//! **多一处版本声明就多一个把它们劈成两份的机会**，而劈开之后
-//! `SslContextBuilder` 同名却是两个类型。
+//! ★ ★ **BoringSSL 的類型只經 `pingora-boringssl` 拿**，本 crate 不直接依賴 `boring`。
+//! 理由與「只經 `pingora-rustls` 拿 rustls」完全一樣，而且更硬：
+//! `boring` 的版本必須與 `quiche` 解到同一個（G103/G104），
+//! **多一處版本宣告就多一個把它們劈成兩份的機會**，而劈開之後
+//! `SslContextBuilder` 同名卻是兩個類型。
 
 pub mod renewal;
 pub mod resolver;
@@ -41,33 +41,33 @@ use pingora_boringssl::x509::X509;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// 一张装好的证书，连同它自己声明覆盖哪些域名。
+/// 一張裝好的證書，連同它自己宣告覆蓋哪些網域。
 pub struct LoadedCert {
     pub key: Arc<CertKey>,
-    /// 来自证书的 SAN，**不是**配置里写的站点名。
+    /// 來自證書的 SAN，**不是**設定裡寫的站台名。
     pub domains: Vec<String>,
     pub not_before: SystemTime,
     pub not_after: SystemTime,
 }
 
-/// 把证书链与私钥变成握手期能用的 [`CertKey`]。
+/// 把證書鏈與私鑰變成握手期能用的 [`CertKey`]。
 ///
-/// ★ ★ **G104 之前这里要先 `install_default_crypto_provider()`** ——
-/// rustls 0.23+ 把「用哪个 crypto provider」做成一个进程级的全局选择，
-/// 不装就会在**第一次签名时**才炸，而那时已经在握手路径上了。
-/// **BoringSSL 没有这个概念**：算法实现就在库里，没有第二个候选，也就没有装错的可能。
-/// ⇒ 这里因此不再需要那一步，而**那条「不调就会在握手时才炸」的坑整条消失了**。
+/// ★ ★ **G104 之前這裡要先 `install_default_crypto_provider()`** ——
+/// rustls 0.23+ 把「用哪個 crypto provider」做成一個處理程序級的全域選擇，
+/// 不裝就會在**第一次簽名時**才炸，而那時已經在握手路徑上了。
+/// **BoringSSL 沒有這個概念**：演算法實作就在庫裡，沒有第二個候選，也就沒有裝錯的可能。
+/// ⇒ 這裡因此不再需要那一步，而**那條「不調就會在握手時才炸」的坑整條消失了**。
 ///
-/// ★ ★ **`not_after` 在这里从 leaf 自己读出来**（`M2 批 M`）：这个函数是
-/// [`CertKey`] 唯一的构造点，于是「一张证书说自己什么时候到期」在结构上只有一个答案。
-/// ⚠ 改成收一个参数就等于在证书旁边再记一份 —— 而 `fulcrum_cert_expiry_seconds`
-/// 报出一个与证书本身不符的时刻时，告警规则看不出任何异样。
+/// ★ ★ **`not_after` 在這裡從 leaf 自己讀出來**（`M2 批 M`）：這個函式是
+/// [`CertKey`] 唯一的建構點，於是「一張證書說自己什麼時候到期」在結構上只有一個答案。
+/// ⚠ 改成收一個參數就等於在證書旁邊再記一份 —— 而 `fulcrum_cert_expiry_seconds`
+/// 報出一個與證書本身不符的時刻時，告警規則看不出任何異樣。
 pub fn cert_key(chain: Vec<X509>, key: PKey<Private>) -> Result<Arc<CertKey>, String> {
     let not_after = match chain.first() {
         None => return Err("证书链是空的".to_string()),
-        // ⚠ 真证书那两条路（[`load_pem_pair`] / [`to_loaded`]）在到这里之前已经
-        //   解析成功过一次，所以这一支实际只对现造的挑战证书生效；留着它是因为
-        //   「BoringSSL 收得下、x509-parser 读不懂」在类型上是可表达的。
+        // ⚠ 真證書那兩條路（[`load_pem_pair`] / [`to_loaded`]）在到這裡之前已經
+        //   解析成功過一次，所以這一支實際只對現造的挑戰證書生效；留著它是因為
+        //   「BoringSSL 收得下、x509-parser 讀不懂」在類型上是可表達的。
         Some(leaf) => {
             store::validity_of(leaf)
                 .map_err(|e| format!("读不出证书的有效期：{e}"))?
@@ -81,13 +81,13 @@ pub fn cert_key(chain: Vec<X509>, key: PKey<Private>) -> Result<Arc<CertKey>, St
     }))
 }
 
-/// 把一张**裸 DER** 证书与一份 PKCS#8 DER 私钥变成 [`CertKey`]。
+/// 把一張**裸 DER** 證書與一份 PKCS#8 DER 私鑰變成 [`CertKey`]。
 ///
-/// ★ 只给 TLS-ALPN-01 的挑战证书用（RFC 8737）：那张证书是现造的、只活几秒、
-/// 从不落盘，走 PEM 编解码一圈纯属多余。
-/// ⚠ 它**不校验证书的内容**——调用方造出来的东西自己负责（有效期由
-/// [`cert_key`] 读一次，那是 [`CertKey`] 的构造契约，不是对这张证书的检查）。
-/// 真证书那条路走 [`load_pem_pair`] / [`to_loaded`]，前面还有 SAN 抽取与有效期检查。
+/// ★ 只給 TLS-ALPN-01 的挑戰證書用（RFC 8737）：那張證書是現造的、只活幾秒、
+/// 從不寫入磁碟，走 PEM 編解碼一圈純屬多餘。
+/// ⚠ 它**不檢核證書的內容**——呼叫方造出來的東西自己負責（有效期由
+/// [`cert_key`] 讀一次，那是 [`CertKey`] 的建構契約，不是對這張證書的檢查）。
+/// 真證書那條路走 [`load_pem_pair`] / [`to_loaded`]，前面還有 SAN 抽取與有效期檢查。
 pub fn cert_key_from_der(
     cert_der: Vec<u8>,
     pkcs8_key_der: Vec<u8>,
@@ -98,11 +98,11 @@ pub fn cert_key_from_der(
     cert_key(vec![cert], key)
 }
 
-/// 读一对 PEM 文件（`tls <cert> <key>`）。
+/// 讀一對 PEM 檔案（`tls <cert> <key>`）。
 ///
-/// ★ ★ **这一步必须在装载时做，不能等到握手**：一份路径写错、权限不对、或者
-/// 私钥与证书对不上的配置，应当在 `fulcrum validate` 就红，
-/// 而不是在第一个客户端连上来的时候变成一次握手失败。
+/// ★ ★ **這一步必須在裝載時做，不能等到握手**：一份路徑寫錯、權限不對、或者
+/// 私鑰與證書對不上的設定，應當在 `fulcrum validate` 就紅，
+/// 而不是在第一個用戶端連上來的時候變成一次握手失敗。
 pub fn load_pem_pair(cert_path: &str, key_path: &str) -> Result<LoadedCert, String> {
     let cert_pem = std::fs::read(cert_path).map_err(|e| format!("读不动 `{cert_path}`：{e}"))?;
     let key_pem = std::fs::read(key_path).map_err(|e| format!("读不动 `{key_path}`：{e}"))?;
@@ -126,7 +126,7 @@ pub fn load_pem_pair(cert_path: &str, key_path: &str) -> Result<LoadedCert, Stri
     })
 }
 
-/// 把存储里读出来的一张证书变成可装载的形态。
+/// 把儲存裡讀出來的一張證書變成可裝載的形態。
 pub fn to_loaded(sc: StoredCert) -> Result<LoadedCert, String> {
     let StoredCert {
         chain,

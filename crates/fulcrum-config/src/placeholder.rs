@@ -1,23 +1,23 @@
-//! 占位符（G61）：**小而固定的一组，无表达式、无函数、无条件**。
+//! 佔位符（G61）：**小而固定的一組，無表達式、無函式、無條件**。
 //!
-//! ★ 避开的是 nginx 那个被点名的坑的近亲：DSL 一旦长出图灵完备的表达式层，
-//! 它就变成一门没人测试的编程语言，而错误提示会跟着彻底失控。
-//! 固定一组换来的好处很具体——候选集有限，才提得出「你是不是想写 X」。
+//! ★ 避開的是 nginx 那個被點名的坑的近親：DSL 一旦長出圖靈完備的表達式層，
+//! 它就變成一門沒人測試的程式設計語言，而錯誤提示會跟著徹底失控。
+//! 固定一組換來的好處很具體——候選集有限，才提得出「你是不是想寫 X」。
 //!
-//! ★ ★ **用在不可用的位置是编译错误，不是空串。**
-//! 空串会让误用 `{status}` 的配置**看起来能跑**，只是输出里少一段——
-//! 那正是本仓库反复抓的那种无声失败。
+//! ★ ★ **用在不可用的位置是編譯錯誤，不是空串。**
+//! 空串會讓誤用 `{status}` 的設定**看起來能跑**，只是輸出裡少一段——
+//! 那正是本儲存庫反覆抓的那種無聲失敗。
 
 use crate::diag::{DiagCode, Diagnostic, Span, suggest};
 
-/// 占位符能用在哪一侧。
+/// 佔位符能用在哪一側。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ctx {
-    /// 请求侧：绝大多数指令。
+    /// 請求側：絕大多數指令。
     Request,
-    /// 响应侧：`header`（改回给客户端的头）、`header_down` 之类。
+    /// 回應側：`header`（改回給用戶端的頭）、`header_down` 之類。
     Response,
-    /// `handle_errors { … }` 块内。
+    /// `handle_errors { … }` 塊內。
     ErrorHandler,
 }
 
@@ -31,19 +31,19 @@ impl Ctx {
     }
 }
 
-/// 一个占位符的规格。
+/// 一個佔位符的規格。
 struct Spec {
-    /// 名字。带 `.` 后缀的写成前缀形式，例如 `header.`。
+    /// 名字。帶 `.` 後綴的寫成前綴形式，例如 `header.`。
     key: &'static str,
-    /// 是不是「前缀 + 任意后缀」的形式（`{header.X-Foo}`）。
+    /// 是不是「前綴 + 任意後綴」的形式（`{header.X-Foo}`）。
     prefixed: bool,
-    /// 允许出现在哪些上下文。
+    /// 允許出現在哪些上下文。
     ctxs: &'static [Ctx],
 }
 
 const ALL_CTX: &[Ctx] = &[Ctx::Request, Ctx::Response, Ctx::ErrorHandler];
 
-/// 全表。★ **文档列全**（DSL 参考 §六），这里就是那张表。
+/// 全表。★ **文件列全**（DSL 參考 §六），這裡就是那張表。
 const TABLE: &[Spec] = &[
     Spec {
         key: "host",
@@ -95,8 +95,8 @@ const TABLE: &[Spec] = &[
         prefixed: true,
         ctxs: ALL_CTX,
     },
-    // ★ `{path.N}` 是 `path_regexp` 的第 N 个捕获组。它与 `{path}` 同名不同物，
-    //   靠「有没有后缀」区分——所以两条都要在表里，且前缀那条必须写在后面。
+    // ★ `{path.N}` 是 `path_regexp` 的第 N 個捕獲組。它與 `{path}` 同名不同物，
+    //   靠「有沒有後綴」區分——所以兩條都要在表裡，且前綴那條必須寫在後面。
     Spec {
         key: "path.",
         prefixed: true,
@@ -119,11 +119,11 @@ const TABLE: &[Spec] = &[
     },
 ];
 
-/// 每个占位符在文档里必然出现的那一小段。
+/// 每個佔位符在文件裡必然出現的那一小段。
 ///
-/// ★ 带后缀的只给到点号（`{header.`），**不比后缀怎么写**：
-/// 文档里是 `{header.<Name>}`，代码里是任意后缀，把这两者也拿去逐字比对
-/// 只会让契约测试红在排版上，而排版不是契约。
+/// ★ 帶後綴的只給到點號（`{header.`），**不比後綴怎麼寫**：
+/// 文件裡是 `{header.<Name>}`，程式碼裡是任意後綴，把這兩者也拿去逐字比對
+/// 只會讓契約測試紅在排版上，而排版不是契約。
 pub fn doc_tokens() -> Vec<String> {
     TABLE
         .iter()
@@ -137,19 +137,19 @@ pub fn doc_tokens() -> Vec<String> {
         .collect()
 }
 
-/// 候选名，供「你是不是想写 X」用。
+/// 候選名，供「你是不是想寫 X」用。
 fn candidates() -> Vec<&'static str> {
     TABLE.iter().map(|s| s.key).collect()
 }
 
-/// 扫一个字符串里的占位符，逐个校验。
+/// 掃一個字串裡的佔位符，逐個檢核。
 ///
-/// ★ 判据只认**占位符形状**的花括号：`{` 后面紧跟 `[a-z_]`，中间只有
-/// 字母数字 `_` `-` `.`，然后一个 `}`。理由是实打实的——
-/// `respond 403 {"error":"nope"}` 里那对花括号不是占位符，
-/// 若一律当占位符扫，用户写个 JSON 体就会收到一条莫名其妙的「未知占位符」。
+/// ★ 判據只認**佔位符形狀**的花括號：`{` 後面緊跟 `[a-z_]`，中間只有
+/// 字母數字 `_` `-` `.`，然後一個 `}`。理由是實打實的——
+/// `respond 403 {"error":"nope"}` 裡那對花括號不是佔位符，
+/// 若一律當佔位符掃，使用者寫個 JSON 體就會收到一條莫名其妙的「未知佔位符」。
 ///
-/// ★ 要写字面量的 `{`，用 `{{`。
+/// ★ 要寫字面值的 `{`，用 `{{`。
 pub fn check(value: &str, span: Span, ctx: Ctx, out: &mut Vec<Diagnostic>) {
     let bytes = value.as_bytes();
     let mut i = 0usize;
@@ -159,7 +159,7 @@ pub fn check(value: &str, span: Span, ctx: Ctx, out: &mut Vec<Diagnostic>) {
             continue;
         }
         if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            i += 2; // `{{` 是字面量的 `{`
+            i += 2; // `{{` 是字面值的 `{`
             continue;
         }
         let Some(rel_end) = value[i + 1..].find('}') else {
@@ -187,7 +187,7 @@ fn is_placeholder_shaped(inner: &str) -> bool {
 }
 
 fn check_one(inner: &str, span: Span, ctx: Ctx, out: &mut Vec<Diagnostic>) {
-    // 先按前缀匹配（长的优先），再按整名匹配。
+    // 先按前綴匹配（長的優先），再按整名匹配。
     let mut matched: Option<&Spec> = None;
     for spec in TABLE {
         if spec.prefixed {
@@ -284,8 +284,8 @@ mod tests {
 
     #[test]
     fn json_body_is_not_scanned_as_a_placeholder() {
-        // ★ 反向判据：不这样做的话，`respond 403 {"error":"nope"}` 会收到
-        //   一条完全莫名其妙的「未知占位符」。
+        // ★ 反向判據：不這樣做的話，`respond 403 {"error":"nope"}` 會收到
+        //   一條完全莫名其妙的「未知佔位符」。
         assert!(run("{\"error\":\"nope\"}", Ctx::Request).is_empty());
         assert!(run("{ }", Ctx::Request).is_empty());
         assert!(
@@ -301,16 +301,16 @@ mod tests {
 
     #[test]
     fn prefix_and_bare_name_do_not_collide() {
-        // `{path}` 与 `{path.1}` 同名不同物，两条都必须认。
+        // `{path}` 與 `{path.1}` 同名不同物，兩條都必須認。
         assert!(run("{path}", Ctx::Request).is_empty());
         assert!(run("{path.2}", Ctx::Request).is_empty());
-        // 只有前缀、没有后缀的 `{header.}` 不成立。
+        // 只有前綴、沒有後綴的 `{header.}` 不成立。
         assert_eq!(run("{header.}", Ctx::Request).len(), 1);
     }
 
     #[test]
     fn doc_tokens_cover_the_whole_table() {
-        // 这张表是文档 §六那张表的代码侧；数量对不上就说明有一侧漏了。
+        // 這張表是文件 §六那張表的程式碼側；數量對不上就說明有一側漏了。
         assert_eq!(doc_tokens().len(), TABLE.len());
         assert!(doc_tokens().contains(&"{host}".to_string()));
         assert!(doc_tokens().contains(&"{header.".to_string()));

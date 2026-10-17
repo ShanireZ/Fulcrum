@@ -1,9 +1,9 @@
 ---
-type: 技术基线
-title: 供应链现状
-description: fork 后只剩 1 条失维公告、0 个真漏洞；剩余陈旧包全部被「已是最新版」的第三方 crate 卡住。
+type: 技術基線
+title: 供應鏈現狀
+description: fork 後只剩 1 條失維公告、0 個真漏洞；剩餘陳舊包全部被「已是最新版」的第三方 crate 卡住。
 resource: ../../Cargo.lock
-tags: [依赖, 安全, 必读, 易错]
+tags: [依賴, 安全, 必讀, 易錯]
 status: stable
 generated:
   by: claude-code/opus-5
@@ -11,126 +11,126 @@ generated:
 sources:
   - id: plan-10
     resource: /references/plan.md
-    title: PLAN.md §10 G29（追新 + 24 小时怀疑期）、G30（fork pingora 放宽上界）
+    title: PLAN.md §10 G29（追新 + 24 小時懷疑期）、G30（fork pingora 放寬上界）
   - id: plan-9
     resource: /references/plan.md
-    title: PLAN.md §9 风险表（Pingora 上游演进与枢衡定制的合并成本）
+    title: PLAN.md §9 風險表（Pingora 上游演進與樞衡定製的合併成本）
   - id: crates-io
     resource: https://crates.io/api/v1/crates/pingora-core/0.8.1/dependencies
-    title: pingora-core 0.8.1 在 crates.io 上声明的依赖需求
+    title: pingora-core 0.8.1 在 crates.io 上宣告的依賴需求
   - id: osv
     resource: https://api.osv.dev/v1/querybatch
-    title: OSV.dev 对 Cargo.lock 全量 176 包的公告查询
+    title: OSV.dev 對 Cargo.lock 全量 176 包的公告查詢
 ---
 
-★ **本页记的是先前的实测快照。** 数据来自对 `Cargo.lock` 全部 176 个 registry 包逐个查 crates.io 与 OSV.dev。**重跑方式在末节。**
+★ **本頁記的是先前的實測快照。** 資料來自對 `Cargo.lock` 全部 176 個 registry 包逐個查 crates.io 與 OSV.dev。**重跑方式在末節。**
 
-# 结论先行
+# 結論先行
 
-★ **G30 的 fork 已执行完毕。** 下表是前后对照：
+★ **G30 的 fork 已執行完畢。** 下表是前後對照：
 
-| | fork 前 | fork 后 |
+| | fork 前 | fork 後 |
 |---|---|---|
-| 锁定包总数 | 176 | **162** |
-| 陈旧包 | **44** | **17**（排除非 Linux 目标后 **12**，其中 2 项还不参与编译）|
+| 鎖定包總數 | 176 | **162** |
+| 陳舊包 | **44** | **17**（排除非 Linux 目標後 **12**，其中 2 項還不參與編譯）|
 | 安全公告 | 4 | ★ **1** |
 | 其中**真漏洞** | 2（`lru` UAF、`protobuf` DoS）| ★ ★ **0** |
-| 5 个直接依赖 | 全是最新 | 全是最新 |
-| Docker 基镜像 | `rust:1-bookworm`（Debian 12 oldstable）| **`rust:1-trixie`**（Debian 13，Rust 1.97.1）|
+| 5 個直接依賴 | 全是最新 | 全是最新 |
+| Docker 基鏡像 | `rust:1-bookworm`（Debian 12 oldstable）| **`rust:1-trixie`**（Debian 13，Rust 1.97.1）|
 
-**只剩 `daemonize` 一条**（RUSTSEC-2025-0069，失维、无 CVE、无可升版本）。★ **它是被权衡后保留的，不是漏掉的**——换掉它意味着手写特权丢弃代码，理由与出路见 [`FORK.md`](../../vendor/pingora/FORK.md) 第 9 节（此处原写「第 7 节」，不准）。
-✅ **2026-09-24：这一条也没了** —— fork rebase 到 pingora 0.9.0，上游自己把 `daemonize` 换成了 `daemonix`（`ae96f7e`），两把锁里都不再有 `daemonize`，`tools/supply-audit.py` 的 `ACCEPTED` 随之清空。
-★ 同一次 rebase 新进依赖图的包：`flurry`（`ListenFds` 按地址的锁）、`seize`（flurry 的回收）、`dashmap` 5（连接池重写）、`daemonix`（unix 上无条件依赖；枢衡恒前台运行、不走它）。都过了 24 小时怀疑期；vendor 锁里另有一整棵 `dial9*` / `aws-sdk-s3` 可选依赖被 fork 主动裁掉（它会把 aws-lc-rs 带进锁，见 FORK.md 文首）。
-✅ **2026-09-24 紧接着的依赖追新**（`dep-check.py --apply`，一次 39 项；`thiserror` / `thiserror-impl` 2.0.21 按 **G153** 在怀疑期内破例采纳）：
-`rustls` 0.23.43 → 0.23.45 修掉 **RUSTSEC-2026-0285**（两把锁都有这条）⇒ 未登记的公告回到 0。
-⚠ **许可证变了一族**：`zstd` 0.14 / `zstd-safe` 8 / `zstd-sys` 2.1 从 MIT（或 MIT / Apache-2.0）改成 **BSD-3-Clause** ——
-宽松许可，FSF 把它（Modified BSD）列为与 GPL 兼容；发布时的第三方声明要收录它的版权与免责条款。
-★ 同一笔里 vendor 回归网 [2/5] 的判据收窄（**G154**）：根侧有、vendor 侧缺的版本，由 `cargo tree -i` 答「有没有 pingora crate 在用」，
-因为 rcgen 0.14.10 → pem 4 把 `base64` 0.23.1 只带进了根侧。
-✅ **2026-10-16 的依赖追新**（`dep-check.py --apply`，一次 37 项，全部过了 24 小时怀疑期，**没有破例**）：
-`rustls` 0.23.45 → 0.23.46 修掉 **RUSTSEC-2026-0346 / 0347 / 0348 / 0349**（两把锁都有；修复版 2026-10-14 09:54 UTC 发布，采纳时约 43 小时）。
-四条都不进产物：根锁那份是「锁里有、图里没有」（`cargo tree --workspace -i rustls@0.23.45 -e all --target all --all-features` 什么都打不出），
-vendor 锁那份只有回归网会编（`pingora-rustls` 成员、`pingora-core` 的 dev-dep `reqwest`）。owner 仍选采纳、不登记 `ACCEPTED` —— 出路已过怀疑期，`ACCEPTED` 留给没有出路的公告。
-同批的 `h2` 0.4.20 自己在 codec 层拒掉值不同的重复 `content-length`，回归网两条上游测试因此红 ⇒ fork 改动 20（[`FORK.md`](../../vendor/pingora/FORK.md)）。
-`--apply` 的退出码是 1，但那是良性的：9 项已被同族包先带到位，`name@旧版本` 不再匹配；两把锁逐包核过，37 项全在目标版本。
-此后根锁那一侧也改为按结果锁判成败（[依赖策略](/platform/dependency-policy.md)「脚本做了什么」第 4 条），同一形状退 `10`。
-⚠ 同一次扫出、**仍未登记**的：`unsafe-libyaml` 0.2.11（RUSTSEC-2024-0449，失维、无修复版，**`[编译]`**，`pingora-core` → `serde_yaml`，两把锁都有）
-与 `quinn-proto` 0.11.16 × 5（RUSTSEC-2026-0338…0342，只在 vendor 锁、`[仅 lock]`）⇒ `supply-audit.py` 根锁 1 条、vendor 锁 6 条，`dep-check.py` 仍亮 `160`，待 owner 另行处置。
-⚠ `dep-check.py` 的候选只来自**根清单**的 `cargo update --dry-run` ⇒ 只在 vendor 锁里的包（如 `quinn-proto`）`--apply` 永远够不到。
-✅ **2026-10-16 同日：`unsafe-libyaml` 离开了两把锁** —— fork 改动 21 把 `pingora-core` 的 `serde_yaml`（已弃用）换成公告推荐的纯安全 Rust 实现 `serde-saphyr` 2.0.0（[`FORK.md`](../../vendor/pingora/FORK.md)）。
-★ owner 选的这一条**推翻了 agent 推荐项**（推荐的是登记 `ACCEPTED`：产品从不解析 YAML —— 走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 里构、`opt.conf` 被忽略）。
-两把锁各新进 10 / 11 个包（`serde-saphyr` · `granit-parser` · `annotate-snippets` · `encoding_rs` 等），全部过 24 小时怀疑期、无 yank、许可宽松；根锁同时少了 `ryu`，编译图 202 → 210 个。
-⚠ `encoding_rs` 带 **BSD-3-Clause**（WHATWG 数据），发布时的第三方声明要收录。根锁 `supply-audit.py` 由此 exit 0；vendor 锁剩 `quinn-proto` × 5。
-✅ **2026-10-16 同日：`quinn-proto` × 5 也清了** —— 只改 vendor 锁：`quinn` 0.11.11 → 0.11.12、`quinn-proto` 0.11.16 → 0.11.19（owner 选连 `quinn` 一起升；发布于 09-14 / 09-30，远过怀疑期、无 yank），根锁逐字节不变。两个包谁都不编（`reqwest` 的弱依赖 `quinn?/ring` 只把它们记进锁；vendor workspace 全 feature、全 target 的 `cargo tree -i` 什么都打不出）；`errno` / `quinn-udp` / `winapi-util` 的 `windows-sys` 边随之回到 0.59.0（与根锁一致，只在 Windows 目标上）。两把锁 `supply-audit.py` 都 exit 0。
-⚠ ⚠ **此处原先链到 [待定清单](/governance/open-questions.md) 的 `D12`，那是过期的**（2026-09-08 更正）——
-`D12` 已结案（`G32`），而那份清单里**一个 D 号都没有**，链过去什么都看不到。
-★ 与本页下文那句「它已经不在待定清单里了」原本是**同一份文件里自相矛盾的两句**。★ 此后 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 迁走**，不再在名单上。
+**只剩 `daemonize` 一條**（RUSTSEC-2025-0069，失維、無 CVE、無可升版本）。★ **它是被權衡後保留的，不是漏掉的**——換掉它意味著手寫特權丟棄程式碼，理由與出路見 [`FORK.md`](../../vendor/pingora/FORK.md) 第 9 節（此處原寫「第 7 節」，不準）。
+✅ **2026-09-24：這一條也沒了** —— fork rebase 到 pingora 0.9.0，上游自己把 `daemonize` 換成了 `daemonix`（`ae96f7e`），兩把鎖裡都不再有 `daemonize`，`tools/supply-audit.py` 的 `ACCEPTED` 隨之清空。
+★ 同一次 rebase 新進依賴圖的包：`flurry`（`ListenFds` 按位址的鎖）、`seize`（flurry 的回收）、`dashmap` 5（連接池重寫）、`daemonix`（unix 上無條件依賴；樞衡恆前台執行、不走它）。都過了 24 小時懷疑期；vendor 鎖裡另有一整棵 `dial9*` / `aws-sdk-s3` 可選依賴被 fork 主動裁掉（它會把 aws-lc-rs 帶進鎖，見 FORK.md 文首）。
+✅ **2026-09-24 緊接著的依賴追新**（`dep-check.py --apply`，一次 39 項；`thiserror` / `thiserror-impl` 2.0.21 按 **G153** 在懷疑期內破例採納）：
+`rustls` 0.23.43 → 0.23.45 修掉 **RUSTSEC-2026-0285**（兩把鎖都有這條）⇒ 未登記的公告回到 0。
+⚠ **授權條款變了一族**：`zstd` 0.14 / `zstd-safe` 8 / `zstd-sys` 2.1 從 MIT（或 MIT / Apache-2.0）改成 **BSD-3-Clause** ——
+寬鬆授權，FSF 把它（Modified BSD）列為與 GPL 相容；發佈時的第三方宣告要收錄它的版權與免責條款。
+★ 同一筆裡 vendor 迴歸網 [2/5] 的判據收窄（**G154**）：根側有、vendor 側缺的版本，由 `cargo tree -i` 答「有沒有 pingora crate 在用」，
+因為 rcgen 0.14.10 → pem 4 把 `base64` 0.23.1 只帶進了根側。
+✅ **2026-10-16 的依賴追新**（`dep-check.py --apply`，一次 37 項，全部過了 24 小時懷疑期，**沒有破例**）：
+`rustls` 0.23.45 → 0.23.46 修掉 **RUSTSEC-2026-0346 / 0347 / 0348 / 0349**（兩把鎖都有；修復版 2026-10-14 09:54 UTC 發佈，採納時約 43 小時）。
+四條都不進產物：根鎖那份是「鎖裡有、圖裡沒有」（`cargo tree --workspace -i rustls@0.23.45 -e all --target all --all-features` 什麼都打不出），
+vendor 鎖那份只有迴歸網會編（`pingora-rustls` 成員、`pingora-core` 的 dev-dep `reqwest`）。owner 仍選採納、不登記 `ACCEPTED` —— 出路已過懷疑期，`ACCEPTED` 留給沒有出路的公告。
+同批的 `h2` 0.4.20 自己在 codec 層拒掉值不同的重複 `content-length`，迴歸網兩條上游測試因此紅 ⇒ fork 改動 20（[`FORK.md`](../../vendor/pingora/FORK.md)）。
+`--apply` 的結束代碼是 1，但那是良性的：9 項已被同族包先帶到位，`name@旧版本` 不再匹配；兩把鎖逐包核過，37 項全在目標版本。
+此後根鎖那一側也改為按結果鎖判成敗（[依賴策略](/platform/dependency-policy.md)「指令碼做了什麼」第 4 條），同一形狀退 `10`。
+⚠ 同一次掃出、**仍未登記**的：`unsafe-libyaml` 0.2.11（RUSTSEC-2024-0449，失維、無修復版，**`[编译]`**，`pingora-core` → `serde_yaml`，兩把鎖都有）
+與 `quinn-proto` 0.11.16 × 5（RUSTSEC-2026-0338…0342，只在 vendor 鎖、`[仅 lock]`）⇒ `supply-audit.py` 根鎖 1 條、vendor 鎖 6 條，`dep-check.py` 仍亮 `160`，待 owner 另行處置。
+⚠ `dep-check.py` 的候選只來自**根清單**的 `cargo update --dry-run` ⇒ 只在 vendor 鎖裡的包（如 `quinn-proto`）`--apply` 永遠夠不到。
+✅ **2026-10-16 同日：`unsafe-libyaml` 離開了兩把鎖** —— fork 改動 21 把 `pingora-core` 的 `serde_yaml`（已棄用）換成公告推薦的純安全 Rust 實作 `serde-saphyr` 2.0.0（[`FORK.md`](../../vendor/pingora/FORK.md)）。
+★ owner 選的這一條**推翻了 agent 推薦項**（推薦的是登記 `ACCEPTED`：產品從不解析 YAML —— 走 `Server::new_with_opt_and_conf`、`ServerConf` 在 Rust 裡構、`opt.conf` 被忽略）。
+兩把鎖各新進 10 / 11 個包（`serde-saphyr` · `granit-parser` · `annotate-snippets` · `encoding_rs` 等），全部過 24 小時懷疑期、無 yank、授權寬鬆；根鎖同時少了 `ryu`，編譯圖 202 → 210 個。
+⚠ `encoding_rs` 帶 **BSD-3-Clause**（WHATWG 資料），發佈時的第三方宣告要收錄。根鎖 `supply-audit.py` 由此 exit 0；vendor 鎖剩 `quinn-proto` × 5。
+✅ **2026-10-16 同日：`quinn-proto` × 5 也清了** —— 只改 vendor 鎖：`quinn` 0.11.11 → 0.11.12、`quinn-proto` 0.11.16 → 0.11.19（owner 選連 `quinn` 一起升；發佈於 09-14 / 09-30，遠過懷疑期、無 yank），根鎖逐位元組不變。兩個包誰都不編（`reqwest` 的弱依賴 `quinn?/ring` 只把它們記進鎖；vendor workspace 全 feature、全 target 的 `cargo tree -i` 什麼都打不出）；`errno` / `quinn-udp` / `winapi-util` 的 `windows-sys` 邊隨之回到 0.59.0（與根鎖一致，只在 Windows 目標上）。兩把鎖 `supply-audit.py` 都 exit 0。
+⚠ ⚠ **此處原先鏈到 [待定清單](/governance/open-questions.md) 的 `D12`，那是過期的**（2026-09-08 更正）——
+`D12` 已結案（`G32`），而那份清單裡**一個 D 號都沒有**，鏈過去什麼都看不到。
+★ 與本頁下文那句「它已經不在待定清單裡了」原本是**同一份檔案裡自相矛盾的兩句**。★ 此後 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 遷走**，不再在名單上。
 
-> ★ ★ ★ ** 重要更正：上面这句「只剩一条」的适用范围比它读起来窄。**
+> ★ ★ ★ ** 重要更正：上面這句「只剩一條」的適用範圍比它讀起來窄。**
 >
-> 本页所有数字都是**根 `Cargo.lock`** 的。而根锁**不含任何未启用的可选依赖**——实测
+> 本頁所有數字都是**根 `Cargo.lock`** 的。而根鎖**不含任何未啟用的可選依賴**——實測
 > `pingora-rustls`／`rustls`／`ring`／`rustls-native-certs`／`sentry`／`x509-parser`／`ouroboros`
-> **一个都不在里面**。G6 把 TLS 后端锁死在 rustls，所以 M1 打开 `features = ["rustls"]` 的那天，
-> 产品依赖图会 **133 → 175**，一次进来 **42 个本页从来没数过的 crate**。
+> **一個都不在裡面**。G6 把 TLS 後端鎖死在 rustls，所以 M1 打開 `features = ["rustls"]` 的那天，
+> 產品依賴圖會 **133 → 175**，一次進來 **42 個本頁從來沒數過的 crate**。
 >
-> **对 vendor 锁跑一次同一个脚本（`--lock vendor/pingora/Cargo.lock`），就多出一条未登记公告**：
+> **對 vendor 鎖跑一次同一個指令碼（`--lock vendor/pingora/Cargo.lock`），就多出一條未登記公告**：
 >
-> | | 公告 | 类型 | 现状 |
+> | | 公告 | 類型 | 現狀 |
 > |---|---|---|---|
-> | `rustls-pemfile` 2.2.0 | **RUSTSEC-2025-0134** | 失维（仓库 2025-08 起归档）| ~~⏳ 待 owner 处置~~ → ✅ **由 G45 迁到 `rustls-pki-types` 的 `PemObject`**（迁移前先补了 18 条特征化测试 + 三条反证）|
+> | `rustls-pemfile` 2.2.0 | **RUSTSEC-2025-0134** | 失維（儲存庫 2025-08 起歸檔）| ~~⏳ 待 owner 處置~~ → ✅ **由 G45 遷到 `rustls-pki-types` 的 `PemObject`**（遷移前先補了 18 條特徵化測試 + 三條反證）|
 >
-> ★ 它与 `daemonize` **不同**：`daemonize` 无路可走（换掉＝手写特权丢弃），
-> 而这条**有干净的迁移路径**——上游建议改用 `rustls-pki-types` 的 `PemObject` trait，
-> 而 **`rustls-pki-types 1.15.1` 早就在依赖图里**（`PemObject` 需要 ≥1.9.0）。
-> fork 里只有 4 处调用点，全在 `pingora-rustls/src/lib.rs`。
-> ⚠ 但它动的是**证书与私钥的解析路径**，属安全敏感，不是清单改一行的事。
+> ★ 它與 `daemonize` **不同**：`daemonize` 無路可走（換掉＝手寫特權丟棄），
+> 而這條**有乾淨的遷移路徑**——上游建議改用 `rustls-pki-types` 的 `PemObject` trait，
+> 而 **`rustls-pki-types 1.15.1` 早就在依賴圖裡**（`PemObject` 需要 ≥1.9.0）。
+> fork 裡只有 4 處呼叫點，全在 `pingora-rustls/src/lib.rs`。
+> ⚠ 但它動的是**證書與私鑰的解析路徑**，屬安全敏感，不是清單改一行的事。
 >
-> 完整经过见 [rustls 接缝验证](/verification/m1-rustls-seam.md)。
+> 完整經過見 [rustls 接縫驗證](/verification/m1-rustls-seam.md)。
 
-> ★ ★ ★ **还有一条方向相反、而且更难想到的：`Cargo.lock` 也可能比依赖图**多**。**
+> ★ ★ ★ **還有一條方向相反、而且更難想到的：`Cargo.lock` 也可能比依賴圖**多**。**
 >
-> 上面那条说的是「锁里**少**了未启用的可选依赖 ⇒ 审计看不见它们」。反过来的那一面是：
-> 关掉 `instant-acme` 的 `hyper-rustls` feature 之后，`hyper-rustls` / `rustls` / `tokio-rustls` /
-> `schannel` **仍然写在锁里，而已经没有任何人链接它们**。
+> 上面那條說的是「鎖裡**少**了未啟用的可選依賴 ⇒ 稽核看不見它們」。反過來的那一面是：
+> 關掉 `instant-acme` 的 `hyper-rustls` feature 之後，`hyper-rustls` / `rustls` / `tokio-rustls` /
+> `schannel` **仍然寫在鎖裡，而已經沒有任何人連結它們**。
 >
-> **成因**：`instant-acme` 的 `ring` feature 里有一句 `"hyper-rustls?/ring"`。那个 `?` 的语义是
-> 「只有当可选依赖 `hyper-rustls` 被别处打开时，才顺带开它的 `ring`」——
-> ⚠ **feature 解析确实没有打开它，而包级解析照样把它写进了锁。**
+> **成因**：`instant-acme` 的 `ring` feature 裡有一句 `"hyper-rustls?/ring"`。那個 `?` 的語義是
+> 「只有當可選依賴 `hyper-rustls` 被別處打開時，才順帶開它的 `ring`」——
+> ⚠ **feature 解析確實沒有打開它，而包級解析照樣把它寫進了鎖。**
 >
-> ✅ **隔离实验**：新建一个只依赖
+> ✅ **隔離實驗**：新建一個只依賴
 > `instant-acme = { default-features = false, features = ["ring", "x509-parser", "time"] }`
-> 的空 crate，`cargo generate-lockfile` 之后 —— **锁里 129 个包，`cargo tree` 只有 72 个**。
+> 的空 crate，`cargo generate-lockfile` 之後 —— **鎖裡 129 個包，`cargo tree` 只有 72 個**。
 >
-> ⇒ **一条可带走的口径**：
+> ⇒ **一條可帶走的口徑**：
 >
-> | 问 | 用什么答 |
+> | 問 | 用什麼答 |
 > |---|---|
-> | **锁里写着**哪些 | 读 `Cargo.lock`（`supply_gates.rs` 门 1 / 门 4）。⚠ 它既可能**少**（未启用的可选依赖）也可能**多**（本条）|
-> | **依赖图里真有**哪些 | `cargo tree -e all --workspace --target all --locked`（门 5）|
-> | **产物里真的链接了**哪些 | ✅ **判符号表**：`tests/ci/tls-linkage.sh` 取数 + `tests/musl/product.sh` 判定（**G138** 结案 **D23**）。⛔ 不判 `strings` —— `rustls` 那 4 次全来自纯类型 crate `rustls_pki_types` |
+> | **鎖裡寫著**哪些 | 讀 `Cargo.lock`（`supply_gates.rs` 門 1 / 門 4）。⚠ 它既可能**少**（未啟用的可選依賴）也可能**多**（本條）|
+> | **依賴圖裡真有**哪些 | `cargo tree -e all --workspace --target all --locked`（門 5）|
+> | **產物裡真的連結了**哪些 | ✅ **判符號表**：`tests/ci/tls-linkage.sh` 取數 + `tests/musl/product.sh` 判定（**G138** 結案 **D23**）。⛔ 不判 `strings` —— `rustls` 那 4 次全來自純類型 crate `rustls_pki_types` |
 >
-> ⚠ ⚠ **这三问此前被当成同一问**，而门 4 的注释里那句「换完时我会先红一次提醒你改」
-> 正是建立在那个混同上 —— **③ 换完了，它没红。**
+> ⚠ ⚠ **這三問此前被當成同一問**，而門 4 的註解裡那句「換完時我會先紅一次提醒你改」
+> 正是建立在那個混同上 —— **③ 換完了，它沒紅。**
 
-## ★  修正：还原了四条纯装饰的上界，安全态**实测未变**
+## ★  修正：還原了四條純裝飾的上界，安全態**實測未變**
 
-`strum` / `strum_macros` / `daggy` / `openssl-probe` / `windows-sys` 已还原为上游值（判据与理由见 [`FORK.md`](../../vendor/pingora/FORK.md)「还原了四条纯装饰的上界」）。**对全量 `Cargo.lock` 重查了一次 OSV**：
+`strum` / `strum_macros` / `daggy` / `openssl-probe` / `windows-sys` 已還原為上游值（判據與理由見 [`FORK.md`](../../vendor/pingora/FORK.md)「還原了四條純裝飾的上界」）。**對全量 `Cargo.lock` 重查了一次 OSV**：
 
-| | 还原前 | 还原后 |
+| | 還原前 | 還原後 |
 |---|---|---|
-| 锁定包总数 | 169 | 178 |
-| 安全公告 | 1（`daemonize`）| ★ **1（`daemonize`）——没变** |
-| 其中真漏洞 | 0 | ★ **0——没变** |
+| 鎖定包總數 | 169 | 178 |
+| 安全公告 | 1（`daemonize`）| ★ **1（`daemonize`）——沒變** |
+| 其中真漏洞 | 0 | ★ **0——沒變** |
 
-★ **「+9 个包」全是假象**：新增的 10 个 `windows_*` / `windows-targets` 是 `windows-sys 0.59` 的依赖展开方式与 `0.61` 不同造成的，**在 Linux 目标上一行都不编译**。这正是本页反复强调的 **报告陈旧依赖必须分桶**。
+★ **「+9 個包」全是假象**：新增的 10 個 `windows_*` / `windows-targets` 是 `windows-sys 0.59` 的依賴展開方式與 `0.61` 不同造成的，**在 Linux 目標上一行都不編譯**。這正是本頁反覆強調的 **報告陳舊依賴必須分桶**。
 
-★ ★ **反而少了两个真正在编译的陈旧包**：`hashbrown 0.15.5` 与 `foldhash 0.1.5` **从依赖图里消失了**——本页下文那张表说它们被 `petgraph 0.8.3` 卡住，而 `petgraph 0.8.3` 正是 `daggy 0.9` 拖进来的。还原 `daggy` 把这条成因一并带走了。**下文那张「10 项」的表因此要读作 8 项。**
+★ ★ **反而少了兩個真正在編譯的陳舊包**：`hashbrown 0.15.5` 與 `foldhash 0.1.5` **從依賴圖裡消失了**——本頁下文那張表說它們被 `petgraph 0.8.3` 卡住，而 `petgraph 0.8.3` 正是 `daggy 0.9` 拖進來的。還原 `daggy` 把這條成因一併帶走了。**下文那張「10 項」的表因此要讀作 8 項。**
 
-## ★ 剩下 10 个真正在编译的陈旧包，一个都升不动——已逐条查过绑定约束
+## ★ 剩下 10 個真正在編譯的陳舊包，一個都升不動——已逐條查過綁定約束
 
-**它们全部被「本身已经是最新版」的第三方 crate 卡住**，也就是说 **不是我们落后，是生态链上游还没采纳新大版本**：
+**它們全部被「本身已經是最新版」的第三方 crate 卡住**，也就是說 **不是我們落後，是生態鏈上游還沒采納新大版本**：
 
-| 陈旧包 | 卡它的 requirement | 卡它的包是最新版吗 |
+| 陳舊包 | 卡它的 requirement | 卡它的包是最新版嗎 |
 |---|---|---|
 | `allocator-api2` 0.2.21 | `hashbrown 0.17.1` → `^0.2.9` | ★ 是 |
 | `base64` 0.22.1 | `sfv 0.15.0` → `^0.22.1` | ★ 是 |
@@ -140,30 +140,30 @@ vendor 锁那份只有回归网会编（`pingora-rustls` 成员、`pingora-core`
 | `syn` 2.0.119 | `strum_macros 0.28.0` 等 → `^2.0` | ★ 是 |
 | `hashbrown` 0.15.5 · `foldhash` 0.1.5 | ★ **`petgraph 0.8.3` → `^0.15.0`**（`indexmap` / `lru` 都已要 `^0.17`）| ★ 是 |
 
-★ ★ **结论：要再往下追，就得同时 fork `brotli` / `sfv` / `hashbrown` / `protobuf` / `ahash` / `petgraph` 六七个包——而这一层已经没有任何安全公告，纯粹是版本号。性价比为负，明确不做。**
+★ ★ **結論：要再往下追，就得同時 fork `brotli` / `sfv` / `hashbrown` / `protobuf` / `ahash` / `petgraph` 六七個包——而這一層已經沒有任何安全公告，純粹是版本號。性價比為負，明確不做。**
 
-★ **另外 2 项（`bitflags 1.3.2`、`miniz_oxide 0.8.9`）根本不参与编译**：用 `cargo tree --target x86_64-unknown-linux-gnu -e normal` 核过，它们只存在于其他 target/feature 的解析结果里。
+★ **另外 2 項（`bitflags 1.3.2`、`miniz_oxide 0.8.9`）根本不參與編譯**：用 `cargo tree --target x86_64-unknown-linux-gnu -e normal` 核過，它們只存在於其他 target/feature 的解析結果裡。
 
-## ★ 先前的最新一次实测（`tools/supply-audit.py`，带分桶）
+## ★ 先前的最新一次實測（`tools/supply-audit.py`，帶分桶）
 
-| | 数值 |
+| | 數值 |
 |---|---|
-| 锁定包总数（registry） | **171** |
-| `x86_64-unknown-linux-gnu` 上真正参与编译 | **138** |
-| 陈旧包（参与编译） | **13** |
-| 陈旧包（仅在 lock 里，不进产物） | **17** |
-| 安全公告 | **1**（`daemonize`，已登记并接受）|
-| ★ 其中**未登记** | ★ **0** |
+| 鎖定包總數（registry） | **171** |
+| `x86_64-unknown-linux-gnu` 上真正參與編譯 | **138** |
+| 陳舊包（參與編譯） | **13** |
+| 陳舊包（僅在 lock 裡，不進產物） | **17** |
+| 安全公告 | **1**（`daemonize`，已登記並接受）|
+| ★ 其中**未登記** | ★ **0** |
 
-参与编译的那 13 个：`alloc-no-stdlib` · `alloc-stdlib` · `allocator-api2` · `base64` · `daggy` · `getrandom` · `openssl-probe` · `petgraph` · `strum` · `strum_macros` · `syn` · `thiserror` · `thiserror-impl`。
+參與編譯的那 13 個：`alloc-no-stdlib` · `alloc-stdlib` · `allocator-api2` · `base64` · `daggy` · `getrandom` · `openssl-probe` · `petgraph` · `strum` · `strum_macros` · `syn` · `thiserror` · `thiserror-impl`。
 
-★ 其中 `daggy` / `petgraph` / `strum` / `strum_macros` / `openssl-probe` 是 ** 主动还原为上游值的**（见上一节），不是升不动；其余仍被第三方 crate 的上界卡住。
+★ 其中 `daggy` / `petgraph` / `strum` / `strum_macros` / `openssl-probe` 是 ** 主動還原為上游值的**（見上一節），不是升不動；其餘仍被第三方 crate 的上界卡住。
 
-fork 本身见 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。**下面几节记的是 fork 之前的诊断**，保留是因为它解释了天花板的成因——那套机制没有因为 fork 而消失，下次遇到同类问题还要用。
+fork 本身見 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。**下面幾節記的是 fork 之前的診斷**，保留是因為它解釋了天花板的成因——那套機制沒有因為 fork 而消失，下次遇到同類問題還要用。
 
-# 直接依赖：已经是最新
+# 直接依賴：已經是最新
 
-| crate | `Cargo.toml` 下界 | 锁定版本 | crates.io 最新 |
+| crate | `Cargo.toml` 下界 | 鎖定版本 | crates.io 最新 |
 |---|---|---|---|
 | `pingora-core` | `>=0.8.1` | 0.8.1 | **0.8.1** ✅ |
 | `tokio` | `>=1.53.1` | 1.53.1 | **1.53.1** ✅ |
@@ -171,166 +171,166 @@ fork 本身见 [`vendor/pingora/FORK.md`](../../vendor/pingora/FORK.md)。**下�
 | `log` | `>=0.4.28` | 0.4.33 | **0.4.33** ✅ |
 | `env_logger` | `>=0.11.8` | 0.11.11 | **0.11.11** ✅ |
 
-G29 的 `>=` 无上界写法**是对的，而且已经在生效**——三个下界落后于锁定版本，正说明 Cargo 一直在往上跳。
+G29 的 `>=` 無上界寫法**是對的，而且已經在生效**——三個下界落後於鎖定版本，正說明 Cargo 一直在往上跳。
 
-# ★ 为什么另外 44 个升不动
+# ★ 為什麼另外 44 個升不動
 
-## 机制：脱字号需求自带上界
+## 機制：脫字號需求自帶上界
 
-`Cargo.toml` 里写 `brotli = "3"` **不是**「≥3」。它是**脱字号需求** `^3` = `>=3.0.0, <4.0.0`。
+`Cargo.toml` 裡寫 `brotli = "3"` **不是**「≥3」。它是**脫字號需求** `^3` = `>=3.0.0, <4.0.0`。
 
-★ **每一个不带符号的版本字符串都自带一个上界**，落在下一个 semver 破坏性边界上。所以一份从没写过 `<` 的清单，可以布满上界。
+★ **每一個不帶符號的版本字串都自帶一個上界**，落在下一個 semver 破壞性邊界上。所以一份從沒寫過 `<` 的清單，可以佈滿上界。
 
-Cargo 必须**同时满足依赖图里的每一条需求**。枢衡只点名了 5 个 crate，另外 171 个是 pingora 带进来的——**带着 pingora 的需求一起进来**。对一个自己没点名的包，枢衡没有投票权。
+Cargo 必須**同時滿足依賴圖裡的每一條需求**。樞衡只點名了 5 個 crate，另外 171 個是 pingora 帶進來的——**帶著 pingora 的需求一起進來**。對一個自己沒點名的包，樞衡沒有投票權。
 
-## pingora-core 0.8.1 实际声明的上界
+## pingora-core 0.8.1 實際宣告的上界
 
-| pingora 写的 | 真实含义 | crates.io 最新 | 连带卡住 |
+| pingora 寫的 | 真實含義 | crates.io 最新 | 連帶卡住 |
 |---|---|---|---|
-| `nix = "~0.24.3"` | `>=0.24.3, <0.25.0` ← ★ **波浪号，连小版本都钉死** | 0.31.3 | `bitflags` 1.x · `memoffset` 0.6 |
+| `nix = "~0.24.3"` | `>=0.24.3, <0.25.0` ← ★ **波浪號，連小版本都釘死** | 0.31.3 | `bitflags` 1.x · `memoffset` 0.6 |
 | `brotli = "3"` | `<4.0.0` | 8.0.4 | `brotli-decompressor` · `alloc-*` |
-| `prometheus = "0.13"` | `<0.14.0` | 0.14.0 | ★ **`protobuf` 锁在 2.x** |
-| `lru = "0.16.3"` | `<0.17.0` | 0.18.2 | ★ **UAF 那条** |
+| `prometheus = "0.13"` | `<0.14.0` | 0.14.0 | ★ **`protobuf` 鎖在 2.x** |
+| `lru = "0.16.3"` | `<0.17.0` | 0.18.2 | ★ **UAF 那條** |
 | `rand = "0.8"` | `<0.9.0` | 0.10.2 | `rand_chacha` · `rand_core` |
 | `sfv = "0.10.4"` | `<0.11.0` | 0.15.0 | `base64` 0.22 |
 | `daggy = "0.8"` | `<0.9.0` | 0.9.0 | `petgraph` 0.7 |
 | `strum` / `strum_macros = "0.26.2"` | `<0.27.0` | 0.28.0 | |
-| `openssl-probe = "0.1.6"` | `<0.2.0` | 0.2.1 | ★ 仅在 openssl/boringssl 后端，rustls 下**不编译** |
-| `derivative = "2.2.0"` | ★ **非可选**，且已失维 | 无新版 | `syn` 1.0.109 |
-| `daemonize = "0.5.0"` | ★ **非可选**，且已失维 | 无新版 | |
+| `openssl-probe = "0.1.6"` | `<0.2.0` | 0.2.1 | ★ 僅在 openssl/boringssl 後端，rustls 下**不編譯** |
+| `derivative = "2.2.0"` | ★ **非可選**，且已失維 | 無新版 | `syn` 1.0.109 |
+| `daemonize = "0.5.0"` | ★ **非可選**，且已失維 | 無新版 | |
 
-★ **上游 main 分支也一样。** 核过 `cloudflare/pingora` 的 main：`brotli 3` / `rand 0.8` / `strum 0.26` / `daggy 0.8` / `lru 0.16.3` / `derivative` 一个都没动（只有 `nix` 抬到了 `~0.31.1`，但尚未发版）。
+★ **上游 main 分支也一樣。** 核過 `cloudflare/pingora` 的 main：`brotli 3` / `rand 0.8` / `strum 0.26` / `daggy 0.8` / `lru 0.16.3` / `derivative` 一個都沒動（只有 `nix` 抬到了 `~0.31.1`，但尚未發版）。
 
 ## ★ `[patch.crates-io]` 打不破需求
 
-这一点极易误判：**被 patch 的 crate 仍然必须满足依赖方的版本需求**。把 `brotli` patch 成 8 再指望 `^3` 通过是不行的，Cargo 会直接报错。
+這一點極易誤判：**被 patch 的 crate 仍然必須滿足依賴方的版本需求**。把 `brotli` patch 成 8 再指望 `^3` 通過是不行的，Cargo 會直接回報錯誤。
 
-**唯一的杠杆是替换 `pingora-core` 本身**（fork 并改它的清单），不是 patch 那些叶子包。
+**唯一的槓桿是替換 `pingora-core` 本身**（fork 並改它的清單），不是 patch 那些葉子包。
 
-## 44 项的三类分桶
+## 44 項的三類分桶
 
-| 类 | 数量 | 说明 |
+| 類 | 數量 | 說明 |
 |---|---|---|
-| **pingora 卡住** | ~22 | 上表及其连带 |
-| **中层 crate 卡住** | ~5 | `hashbrown` / `allocator-api2`（via `indexmap`+`lru`）、`getrandom`（via `ahash`+`rand_core`）、`miniz_oxide`（via `flate2`）|
-| ★ **目标平台上根本不编译** | ~17 | `windows-*` 11 个 · `redox_syscall` · `wasi` · `wit-bindgen` · `r-efi` ×2 —— G13 的目标只有 Linux x86_64 / aarch64，**这些只是 Cargo 记录的完整图，不进二进制** |
+| **pingora 卡住** | ~22 | 上表及其連帶 |
+| **中層 crate 卡住** | ~5 | `hashbrown` / `allocator-api2`（via `indexmap`+`lru`）、`getrandom`（via `ahash`+`rand_core`）、`miniz_oxide`（via `flate2`）|
+| ★ **目標平台上根本不編譯** | ~17 | `windows-*` 11 個 · `redox_syscall` · `wasi` · `wit-bindgen` · `r-efi` ×2 —— G13 的目標只有 Linux x86_64 / aarch64，**這些只是 Cargo 記錄的完整圖，不進二進位** |
 
-★ **报告陈旧依赖数量时必须分桶。** 「44 个包过时」听起来吓人，但其中 17 个在目标平台上一行代码都不会被编译。
+★ **報告陳舊依賴數量時必須分桶。** 「44 個包過時」聽起來嚇人，但其中 17 個在目標平台上一行程式碼都不會被編譯。
 
-# 4 条公告与可达性
+# 4 條公告與可達性
 
-OSV.dev 对全部 176 包的查询结果：
+OSV.dev 對全部 176 包的查詢結果：
 
-| 公告 | 包 | 类型 | 可达性 |
+| 公告 | 包 | 類型 | 可達性 |
 |---|---|---|---|
-| **RUSTSEC-2026-0253** | `lru` 0.16.4 | memory-corruption（UAF）| ★ 当时**不可达**，见下；✅ **现已修掉** |
-| **RUSTSEC-2024-0437** | `protobuf` 2.28.0 | DoS（栈溢出）| ★ 当时**不可达**，见下；✅ **现已修掉** |
-| RUSTSEC-2025-0069 | `daemonize` 0.5.0 | 失维 | 无 CVE；★ 「追最新」不适用——**没有更新的版本**。✅ **2026-09-24 已离开依赖图**（pingora 0.9.0 换成 `daemonix`）|
-| RUSTSEC-2024-0388 | `derivative` 2.2.0 | 失维 | ✅ **已修**——换成 `educe`，见上 |
+| **RUSTSEC-2026-0253** | `lru` 0.16.4 | memory-corruption（UAF）| ★ 當時**不可達**，見下；✅ **現已修掉** |
+| **RUSTSEC-2024-0437** | `protobuf` 2.28.0 | DoS（棧溢出）| ★ 當時**不可達**，見下；✅ **現已修掉** |
+| RUSTSEC-2025-0069 | `daemonize` 0.5.0 | 失維 | 無 CVE；★ 「追最新」不適用——**沒有更新的版本**。✅ **2026-09-24 已離開依賴圖**（pingora 0.9.0 換成 `daemonix`）|
+| RUSTSEC-2024-0388 | `derivative` 2.2.0 | 失維 | ✅ **已修**——換成 `educe`，見上 |
 
-## ★ 两条真漏洞为什么按当前实例化不可达
+## ★ 兩條真漏洞為什麼按當前執行個體化不可達
 
-**`lru` 的 UAF** 触发条件是「**存储的键的 `Drop` 实现在 `pop()` 中 panic**」。pingora-pool 实例化的是 `Lru<ID, ConnectionMeta>`（`pingora-pool/src/connection.rs`），**键是整数类型——没有 `Drop` impl 可以 panic**。
+**`lru` 的 UAF** 觸發條件是「**儲存的鍵的 `Drop` 實作在 `pop()` 中 panic**」。pingora-pool 執行個體化的是 `Lru<ID, ConnectionMeta>`（`pingora-pool/src/connection.rs`），**鍵是整數類型——沒有 `Drop` impl 可以 panic**。
 
-**`protobuf` 的 DoS** 要求**解析**不可信输入。`prometheus` 只在 protobuf 曝露格式上走**编码**路径，枢衡不解析任何外部 protobuf。
+**`protobuf` 的 DoS** 要求**解析**不可信輸入。`prometheus` 只在 protobuf 曝露格式上走**編碼**路徑，樞衡不解析任何外部 protobuf。
 
-★ ★ **但这两条判断依赖 pingora 的内部实现，pingora 改了它们就可能失效。** 所以它们**照样登记、照样跟踪**，只是不构成「今天就危险」。**不要把「当前不可达」记成「已修复」。**
+★ ★ **但這兩條判斷依賴 pingora 的內部實作，pingora 改了它們就可能失效。** 所以它們**照樣登記、照樣跟蹤**，只是不構成「今天就危險」。**不要把「當前不可達」記成「已修復」。**
 
-# owner 的处置（G30）——已执行
+# owner 的處置（G30）——已執行
 
- 拍板并当日执行：**fork `pingora-core` 放宽依赖上界**，而不是接受天花板等上游。
+ 拍板並當日執行：**fork `pingora-core` 放寬依賴上界**，而不是接受天花板等上游。
 
-★ **代价已被明确告知并接受**：这直接把 `PLAN.md` §9 那条「Pingora 上游演进与枢衡定制的合并成本」**从一条已登记的风险变成一项进行中的成本**。
+★ **代價已被明確告知並接受**：這直接把 `PLAN.md` §9 那條「Pingora 上游演進與樞衡定製的合併成本」**從一條已登記的風險變成一項進行中的成本**。
 
-## 结果
+## 結果
 
-| 修掉的 | 怎么修的 |
+| 修掉的 | 怎麼修的 |
 |---|---|
 | ★ **RUSTSEC-2026-0253**（`lru` UAF）| `lru` 0.16.4 → **0.18.2** |
-| ★ **RUSTSEC-2024-0437**（`protobuf` DoS）| `prometheus` 0.13 → **0.14**，连带 `protobuf` 2.28 → **3.7.2** |
-| ★ **RUSTSEC-2024-0388**（`derivative` 失维）| 换成 **`educe` 0.7.6**（5 处，1 个文件）；★ **连带白赚 `syn 1.0.109` 一起消失**——`derivative` 是全图唯一还要 `syn ^1` 的包 |
+| ★ **RUSTSEC-2024-0437**（`protobuf` DoS）| `prometheus` 0.13 → **0.14**，連帶 `protobuf` 2.28 → **3.7.2** |
+| ★ **RUSTSEC-2024-0388**（`derivative` 失維）| 換成 **`educe` 0.7.6**（5 處，1 個檔案）；★ **連帶白賺 `syn 1.0.109` 一起消失**——`derivative` 是全圖唯一還要 `syn ^1` 的包 |
 
-同批抬起来的还有 `nix` 0.24.3 → **0.31.3**、`brotli` 3 → **8**、`rand` 0.8 → **0.10.2**、`sfv` 0.10 → **0.15**、`strum` 0.26 → **0.28**、`daggy` 0.8 → **0.9**（连带 `petgraph` 0.7 → 0.8）、`openssl-probe` 0.1 → **0.2**、`bitflags`（nix 侧）1 → **2**、`thiserror`（prometheus 侧）1 → **2**。
+同批抬起來的還有 `nix` 0.24.3 → **0.31.3**、`brotli` 3 → **8**、`rand` 0.8 → **0.10.2**、`sfv` 0.10 → **0.15**、`strum` 0.26 → **0.28**、`daggy` 0.8 → **0.9**（連帶 `petgraph` 0.7 → 0.8）、`openssl-probe` 0.1 → **0.2**、`bitflags`（nix 側）1 → **2**、`thiserror`（prometheus 側）1 → **2**。
 
-**实际改动量：版本上界 12 个调用点 / 3 个文件，加上 `derivative`→`educe` 的 5 处 / 1 个文件**——比预估的 76 个少得多，因为大部分调用点在破坏性升级后**签名没变**。
+**實際改動量：版本上界 12 個呼叫點 / 3 個檔案，加上 `derivative`→`educe` 的 5 處 / 1 個檔案**——比預估的 76 個少得多，因為大部分呼叫點在破壞性升級後**簽名沒變**。
 
-★ ★ **`nix` 那一轮恰好落在 `server/transfer_fd/mod.rs` 上，也就是 M0 要验的那个模块。** 改法照抄上游 main（它已自行抬到 `~0.31.1`），**但没有整文件覆盖**——上游 main 还带着与本次无关、且未被 M0 验证过的行为变更。
+★ ★ **`nix` 那一輪恰好落在 `server/transfer_fd/mod.rs` 上，也就是 M0 要驗的那個模組。** 改法照抄上游 main（它已自行抬到 `~0.31.1`），**但沒有整檔案覆蓋**——上游 main 還帶著與本次無關、且未被 M0 驗證過的行為變更。
 
-**改动后 M0 连跑三次全绿**，两个自建监听器都报告了 `INHERITED`。见 [M0 接缝验证](/verification/m0-seam.md)。
+**改動後 M0 連跑三次全綠**，兩個自建監聽器都報告了 `INHERITED`。見 [M0 接縫驗證](/verification/m0-seam.md)。
 
-## 破坏面实测
+## 破壞面實測
 
-在枢衡实际用到的 **6 个 crate 闭包**内统计（`pingora-core` / `-error` / `-http` / `-pool` / `-runtime` / `-timeout`，共 38,876 行，`src/` 下不含测试与示例）：
+在樞衡實際用到的 **6 個 crate 閉包**內統計（`pingora-core` / `-error` / `-http` / `-pool` / `-runtime` / `-timeout`，共 38,876 行，`src/` 下不含測試與示例）：
 
-| 依赖 | 调用点 | 文件 | 备注 |
+| 依賴 | 呼叫點 | 檔案 | 備註 |
 |---|---|---|---|
-| `nix` 0.24→0.31 | 17 | 5 | 最大的一块 |
-| `daemonize` | 18 | 4 | ★ 失维，需替换或 vendor |
+| `nix` 0.24→0.31 | 17 | 5 | 最大的一塊 |
+| `daemonize` | 18 | 4 | ★ 失維，需替換或 vendor |
 | `brotli` 3→8 | 10 | 2 | 集中在 `protocols/http/compression/` |
 | `rand` 0.8→0.10 | 10 | 3 | |
-| `lru` 0.16→0.18 | 9 | 3 | ★ 其中 1 个文件在 s2n 后端，**rustls 下不编译** |
+| `lru` 0.16→0.18 | 9 | 3 | ★ 其中 1 個檔案在 s2n 後端，**rustls 下不編譯** |
 | `daggy` 0.8→0.9 | 5 | 2 | |
-| `derivative` | 2 | 1 | ★ 失维，仅 `upstreams/peer.rs` |
+| `derivative` | 2 | 1 | ★ 失維，僅 `upstreams/peer.rs` |
 | `prometheus` 0.13→0.14 | 2 | 1 | |
 | `sfv` 0.10→0.15 | 2 | 1 | |
 | `strum` 0.26→0.28 | 1 | 1 | |
-| `openssl-probe` | 1 | 1 | ★ boringssl/openssl 后端，**rustls 下不编译** |
+| `openssl-probe` | 1 | 1 | ★ boringssl/openssl 後端，**rustls 下不編譯** |
 
-**合计 ~76 个调用点。** ★ 两个最初看起来最麻烦的（`openssl-probe` 与 `lru` 在 s2n 后端的用法）**在 rustls-only 构建下根本不参与编译**。
+**合計 ~76 個呼叫點。** ★ 兩個最初看起來最麻煩的（`openssl-probe` 與 `lru` 在 s2n 後端的用法）**在 rustls-only 建置下根本不參與編譯**。
 
-两个失维包的处置与 fork 的长期维护方式当初登记为 **D12**，⚠ **它已经不在**
-[待定清单](/governance/open-questions.md) **里了**：fork 的长期维护方式由 **G32** 定
-（有公告支撑的上界推 PR 给上游，其余常年 rebase），两个失维包各自的现状见本页上文
-（`derivative` 已换成 `educe`；`daemonize` 是权衡后保留的）。
+兩個失維包的處置與 fork 的長期維護方式當初登記為 **D12**，⚠ **它已經不在**
+[待定清單](/governance/open-questions.md) **裡了**：fork 的長期維護方式由 **G32** 定
+（有公告支撐的上界推 PR 給上游，其餘常年 rebase），兩個失維包各自的現狀見本頁上文
+（`derivative` 已換成 `educe`；`daemonize` 是權衡後保留的）。
 
-# 怎么重跑这份快照
+# 怎麼重跑這份快照
 
-依赖检查的日常入口是 [依赖策略](/platform/dependency-policy.md) 里的 `tools/dep-check.py`。★ **但它只报告 `cargo update` 能动的东西**——本页那 44 项它一个都不会报，因为 `cargo update` 对它们是**空操作**。
+依賴檢查的日常入口是 [依賴策略](/platform/dependency-policy.md) 裡的 `tools/dep-check.py`。★ **但它只報告 `cargo update` 能動的東西**——本頁那 44 項它一個都不會報，因為 `cargo update` 對它們是**空操作**。
 
-✅ **已经有脚本了**（补上，此前是手工做的）：
+✅ **已經有指令碼了**（補上，此前是手動做的）：
 
 ```bash
-python tools/supply-audit.py                       # 只查 lock 层面
-python tools/supply-audit.py --cargo "<cargo 命令>" # ★ 带分桶，见下
-python tools/supply-audit.py --cargo "..." --markdown  # 额外输出可直接贴回本页的表
+python tools/supply-audit.py                       # 只查 lock 層面
+python tools/supply-audit.py --cargo "<cargo 命令>" # ★ 帶分桶，見下
+python tools/supply-audit.py --cargo "..." --markdown  # 額外輸出可直接貼回本頁的表
 ```
 
-它做的正是 `dep-check.py` 结构上做不到的那件事：**逐包对比 crates.io 的 `max_stable_version`**（陈旧度）。
+它做的正是 `dep-check.py` 結構上做不到的那件事：**逐包對比 crates.io 的 `max_stable_version`**（陳舊度）。
 
-★ ★ **公告那一半已并进 `dep-check.py` 的第五项**（退出码 `160`），**每周自动扫两把锁**（`vendor/pingora/Cargo.lock` + 根锁），`ACCEPTED` 名单两边共用同一份。此前它只在有人记得手动跑的时候才发生，而**默认扫的还是次要的那把锁**——`h2` 的 RUSTSEC-2026-0258 就是这么撞见的。本页的手动深审现在主要用于**陈旧度**与分桶。
+★ ★ **公告那一半已並進 `dep-check.py` 的第五項**（結束代碼 `160`），**每週自動掃兩把鎖**（`vendor/pingora/Cargo.lock` + 根鎖），`ACCEPTED` 名單兩邊共用同一份。此前它只在有人記得手動跑的時候才發生，而**預設掃的還是次要的那把鎖**——`h2` 的 RUSTSEC-2026-0258 就是這麼撞見的。本頁的手動深審現在主要用於**陳舊度**與分桶。
 
-★ ★ **一定要传 `--cargo`**，否则拿不到编译图，数字会偏大一倍（30 vs 13）。在这台机器上：
+★ ★ **一定要傳 `--cargo`**，否則拿不到編譯圖，數字會偏大一倍（30 vs 13）。在這臺機器上：
 
 ```bash
 python tools/supply-audit.py --cargo "docker run --rm -v D:/Workspace/Fulcrum:/w -v fulcrum-cargo:/usr/local/cargo/registry -v fulcrum-target:/w/target -w /w fulcrum-build:local cargo"
 ```
 
-**退出码**（★ 会叠加，风格同 `dep-check.py`）：
+**結束代碼**（★ 會疊加，風格同 `dep-check.py`）：
 
-| 码 | 含义 |
+| 碼 | 含義 |
 |---|---|
-| `0` | 没有未登记的公告，且查证覆盖率达标 |
-| `20` | ★ 有未登记的公告 |
-| `40` | ★ **查证覆盖率不足**——未能查证的包超过 `--max-unresolved-pct`（默认 10%）|
-| `60` | 两者都有 |
-| `1` | 出错 |
+| `0` | 沒有未登記的公告，且查證覆蓋率達標 |
+| `20` | ★ 有未登記的公告 |
+| `40` | ★ **查證覆蓋率不足**——未能查證的包超過 `--max-unresolved-pct`（預設 10%）|
+| `60` | 兩者都有 |
+| `1` | 出錯 |
 
-**陈旧包不判红**——目标构建里长期有十来个升不动的陈旧包，把它算作失败会让这道门永远红，而永远亮着的告警等于没有告警。已登记并接受的公告写在脚本的 `ACCEPTED` 里，**每条都必须带「为什么接受」和「出路在哪」**。
+**陳舊包不判紅**——目標建置里長期有十來個升不動的陳舊包，把它算作失敗會讓這道門永遠紅，而永遠亮著的告警等於沒有告警。已登記並接受的公告寫在指令碼的 `ACCEPTED` 裡，**每條都必須帶「為什麼接受」和「出路在哪」**。
 
-★ ★ **`40` 这一档补的是一个 fail-open 的洞**：`unresolved`（未能查证）此前**只影响打印、不影响退出码**。于是 crates.io 整体不可达时（公司网络、DNS、限流），164 个包会全部落进 `unresolved`，脚本打一行警告后照常输出「没有未登记的安全公告」并 **exit 0**——而每周的 cron / CI 只看退出码，会把一次**什么都没查到**的运行记成一次通过。
+★ ★ **`40` 這一檔補的是一個 fail-open 的洞**：`unresolved`（未能查證）此前**隻影響列印、不影響結束代碼**。於是 crates.io 整體不可達時（公司網路、DNS、限流），164 個包會全部落進 `unresolved`，指令碼打一行警告後照常輸出「沒有未登記的安全公告」並 **exit 0**——而每週的 cron / CI 只看結束代碼，會把一次**什麼都沒查到**的執行記成一次通過。
 
-★ 阈值卡的是**比例**不是绝对值：被限流是常态，零星几个查不到不该拦人；**整体查不到**必须拦。这是「不能让门永远红」与「不能让门假装绿」之间的那条线。
+★ 閾值卡的是**比例**不是絕對值：被限流是常態，零星幾個查不到不該攔人；**整體查不到**必須攔。這是「不能讓門永遠紅」與「不能讓門假裝綠」之間的那條線。
 
-## ★ 它第一次跑就纠正了本页的一处措辞
+## ★ 它第一次跑就糾正了本頁的一處措辭
 
-`openssl-probe` 被分桶为 **「编译」**，而此前文档写的是「rustls 下不编译」。核实后：它是 `pingora-core` 的**非可选**依赖，**crate 本身照样被编译**；rustls-only 下不编译的是它的**唯一调用点**（`connectors/tls/boringssl_openssl/mod.rs`，被 `cfg` 挡掉）。
+`openssl-probe` 被分桶為 **「編譯」**，而此前文件寫的是「rustls 下不編譯」。核實後：它是 `pingora-core` 的**非可選**依賴，**crate 本身照樣被編譯**；rustls-only 下不編譯的是它的**唯一呼叫點**（`connectors/tls/boringssl_openssl/mod.rs`，被 `cfg` 擋掉）。
 
-★ **所以分桶其实有四层，不是三层**：
+★ **所以分桶其實有四層，不是三層**：
 
-> 「在 lock 里」→「在编译图里」→「**代码被用到**」→「能不能升」
+> 「在 lock 裡」→「在編譯圖裡」→「**程式碼被用到**」→「能不能升」
 
-前两层脚本能分，第三层要读 `cfg`。**混用这四层就会得出既吓人又无意义的数字。**
+前兩層指令碼能分，第三層要讀 `cfg`。**混用這四層就會得出既嚇人又無意義的數字。**
 
-# 相关
+# 相關
 
-[依赖策略](/platform/dependency-policy.md) · [技术栈](/platform/tech-stack.md) · [待定清单](/governance/open-questions.md) · [决策日志](/governance/decision-log.md)
+[依賴策略](/platform/dependency-policy.md) · [技術棧](/platform/tech-stack.md) · [待定清單](/governance/open-questions.md) · [決策紀錄](/governance/decision-log.md)

@@ -2,55 +2,55 @@
 Description=Fulcrum M1 spike —— systemd 下的零停机升级
 
 [Service]
-# G31 的形状：前台 + notify。没有 PIDFile=（那是给 systemd 跟踪用的，这里不需要）。
+# G31 的形狀：前台 + notify。沒有 PIDFile=（那是給 systemd 跟蹤用的，這裡不需要）。
 Type=notify
 
-# ★ ★ ★ **这一行才是让 unit 活过升级的东西，不是 MainPID 交接。**
+# ★ ★ ★ **這一行才是讓 unit 活過升級的東西，不是 MainPID 交接。**
 #
-#   G31 拍板时的推断是「新进程必须落在同一个 cgroup 内**并抢过 MainPID**」。
-#   前半句对，后半句实测**是错的，而且有害**：
+#   G31 拍板時的推斷是「新處理程序必須落在同一個 cgroup 內**並搶過 MainPID**」。
+#   前半句對，後半句實測**是錯的，而且有害**：
 #
-#   | 口径 | 老代退出后 unit | systemctl stop |
+#   | 口徑 | 老代退出後 unit | systemctl stop |
 #   |---|---|---|
-#   | 交接 MainPID（G31 推断的形状）| active | ★ 0 秒 SIGKILL，failed(signal) |
+#   | 交接 MainPID（G31 推斷的形狀）| active | ★ 0 秒 SIGKILL，failed(signal) |
 #   | **ExitType=cgroup，不交接** | active | ★ 10 秒走完排空，success |
-#   | 两者都用 | active | ★ 0 秒 SIGKILL，failed(signal) |
+#   | 兩者都用 | active | ★ 0 秒 SIGKILL，failed(signal) |
 #
-#   原因：交接过去的 pid 不是 systemd 亲生的（它是老进程 fork 的），systemd 会打
-#   "Supervising process N which is not our child" 并把它标成 alien，此后停机不再等它排空。
-#   `ExitType=cgroup`（systemd ≥ 250）换了个判据——**cgroup 里还有进程就算活着**，
-#   于是既不需要交接，停机也照常等排空。
+#   原因：交接過去的 pid 不是 systemd 親生的（它是老處理程序 fork 的），systemd 會打
+#   "Supervising process N which is not our child" 並把它標成 alien，此後停機不再等它排空。
+#   `ExitType=cgroup`（systemd ≥ 250）換了個判據——**cgroup 裡還有處理程序就算活著**，
+#   於是既不需要交接，停機也照常等排空。
 #
-#   ⚠ 代价：第一次升级之后 `MainPID` 变成 0（见下面 ExecReload）。
+#   ⚠ 代價：第一次升級之後 `MainPID` 變成 0（見下面 ExecReload）。
 ExitType=cgroup
 
 NotifyAccess=main
 
 ExecStart=/w/target/release/m1-systemd -c /w/conf/m1.yaml
 
-# ★ **不能写成 `/bin/kill -USR2 $MAINPID`。** `ExitType=cgroup` 下第一次升级之后
-#   `$MAINPID` 就是空的，那行会展开成 `kill -USR2`。**实测**（不是推的）：
-#   第一次 reload 正常，第二次 `systemctl reload` 退出码 **1**，journal 里是 `kill` 的 Usage
-#   与 `Reload failed`，而 unit 仍是 `active/success` —— ★ **报错了，但升级没发生**，
-#   服务照常跑着老一代。⚠ 本注释初稿写的是「静默地什么都不做」，实测推翻了「静默」二字。
-#   改从 pid 文件找当前这一代——它由每一代在**自己真的起来之后**原子写入。
+# ★ **不能寫成 `/bin/kill -USR2 $MAINPID`。** `ExitType=cgroup` 下第一次升級之後
+#   `$MAINPID` 就是空的，那行會展開成 `kill -USR2`。**實測**（不是推的）：
+#   第一次 reload 正常，第二次 `systemctl reload` 結束代碼 **1**，journal 裡是 `kill` 的 Usage
+#   與 `Reload failed`，而 unit 仍是 `active/success` —— ★ **回報錯誤了，但升級沒發生**，
+#   服務照常跑著老一代。⚠ 本註解初稿寫的是「靜默地什麼都不做」，實測推翻了「靜默」二字。
+#   改從 pid 檔案找當前這一代——它由每一代在**自己真的起來之後**原子寫入。
 ExecReload=/bin/sh -c 'kill -USR2 "$(cat /run/fulcrum-m1/fulcrum.pid)"'
 
-# G33：runtime 目录交给 systemd 建（upgrade sock 与 pid 文件都放这里）。
+# G33：runtime 目錄交給 systemd 建（upgrade sock 與 pid 檔案都放這裡）。
 RuntimeDirectory=fulcrum-m1
 RuntimeDirectoryPreserve=yes
 
 KillMode=control-group
 
-# ★ 这个数不是拍脑袋：= grace_period_seconds + graceful_shutdown_timeout_seconds + 余量。
-#   conf/m1.yaml 是 5 + 5，实测停机正好 10 秒，所以 10 是下限，给到 60。
-#   ⚠ 产品默认配置（M0 用的 30 + 30）对应的量级是 35–65 秒 —— 见 tests/m0/lifecycle.sh 里
-#     实测出的那张表：**一旦某一代开始排空，它就收不到任何可捕获的信号了**，
-#     `systemctl stop` 之后再补一刀是没用的，只能等它自己走完。
+# ★ 這個數不是拍腦袋：= grace_period_seconds + graceful_shutdown_timeout_seconds + 餘量。
+#   conf/m1.yaml 是 5 + 5，實測停機正好 10 秒，所以 10 是下限，給到 60。
+#   ⚠ 產品預設設定（M0 用的 30 + 30）對應的量級是 35–65 秒 —— 見 tests/m0/lifecycle.sh 裡
+#     實測出的那張表：**一旦某一代開始排空，它就收不到任何可捕獲的信號了**，
+#     `systemctl stop` 之後再補一刀是沒用的，只能等它自己走完。
 TimeoutStopSec=60
 
-# ★ 本 spike 显式关掉自动重启。理由是判据：反证场景要看的正是「unit 死了」，
-#   自动拉起会把它变成「unit 活着」，判据当场失效。
+# ★ 本 spike 顯式關掉自動重新啟動。理由是判據：反證場景要看的正是「unit 死了」，
+#   自動拉起會把它變成「unit 活著」，判據當場失效。
 Restart=no
 
 Environment=RUST_LOG=info

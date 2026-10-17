@@ -1,9 +1,9 @@
-//! `file_server` 那条路上几个纯函数的分配次数（2026-10-14 · 文件那条路剩下的分配）。
+//! `file_server` 那條路上幾個純函式的分配次數（2026-10-14 · 檔案那條路剩下的分配）。
 //!
-//! ★ 单独一个测试二进制：`#[global_allocator]` 是整个二进制一份（同 `metrics_alloc.rs`）。
-//! ★ 只数打开了开关的那个线程；`malloc` 与 `realloc` 分开数 —— 后者正是 `PathBuf` 一段段 `push` 长出来的那一类。
-//! ⚠ 这里钉的是**每请求都走的那几步**在普通请求上的次数；带 `%` / `..` 的路径、截一段的 `Range`
-//!   照旧要分配（那几条路语义复杂、不常走），只判它们的结果，不钉次数。
+//! ★ 單獨一個測試二進位：`#[global_allocator]` 是整個二進位一份（同 `metrics_alloc.rs`）。
+//! ★ 只數打開了開關的那個執行緒；`malloc` 與 `realloc` 分開數 —— 後者正是 `PathBuf` 一段段 `push` 長出來的那一類。
+//! ⚠ 這裡釘的是**每請求都走的那幾步**在普通請求上的次數；帶 `%` / `..` 的路徑、截一段的 `Range`
+//!   照舊要分配（那幾條路語義複雜、不常走），只判它們的結果，不釘次數。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -20,7 +20,7 @@ thread_local! {
     static REALLOCS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// 本线程开着开关时记一次。`try_with`：线程拆 TLS 的时候分配器照样会被调到。
+/// 本執行緒開著開關時記一次。`try_with`：執行緒拆 TLS 的時候分配器照樣會被調到。
 fn bump(c: &'static std::thread::LocalKey<Cell<u64>>) {
     let _ = ON.try_with(|on| {
         if on.get() {
@@ -53,7 +53,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
-/// 只数 `f` 执行期间本线程的（分配，重新分配）次数。
+/// 只數 `f` 執行期間本執行緒的（分配，重新分配）次數。
 fn counted<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
     ALLOCS.with(|n| n.set(0));
     REALLOCS.with(|n| n.set(0));
@@ -63,7 +63,7 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
     (out, ALLOCS.with(|n| n.get()), REALLOCS.with(|n| n.get()))
 }
 
-/// ★ 内置反证：两个计数器真的在数。少了它，下面那几条的 0 也可能只是「什么都没数」。
+/// ★ 內置反證：兩個計數器真的在數。少了它，下面那幾條的 0 也可能只是「什麼都沒數」。
 #[test]
 fn 计数分配器自己数得到分配与重新分配() {
     let (_, a, r) = counted(|| {
@@ -75,7 +75,7 @@ fn 计数分配器自己数得到分配与重新分配() {
     assert!(r >= 1, "重新分配一次都没数到");
 }
 
-/// 普通路径（没有 `%`、没有 `..`）解码归一：一次都不分配，段直接借 URL 里的。
+/// 普通路徑（沒有 `%`、沒有 `..`）解碼歸一：一次都不分配，段直接借 URL 裡的。
 #[test]
 fn 普通路径解码归一不分配() {
     for (raw, want) in [
@@ -91,7 +91,7 @@ fn 普通路径解码归一不分配() {
     }
 }
 
-/// 拼到站点根下：容量事先算够 ⇒ 恰好一次分配、⛔ 不再一段段地长。
+/// 拼到站台根下：容量事先算夠 ⇒ 恰好一次分配、⛔ 不再一段段地長。
 #[test]
 fn 拼到根下只分配一次_不再增长() {
     for (root, raw, want) in [
@@ -110,7 +110,7 @@ fn 拼到根下只分配一次_不再增长() {
     }
 }
 
-/// 按扩展名查 MIME：大小写不敏感，且一次都不分配。
+/// 按副檔名查 MIME：大小寫不敏感，且一次都不分配。
 #[test]
 fn 扩展名查表不分配() {
     let (got, a, r) = counted(|| {
@@ -135,7 +135,7 @@ fn 扩展名查表不分配() {
     assert_eq!((a, r), (0, 0), "分配 {a} 次、重新分配 {r} 次");
 }
 
-/// 整段正文原样交出：⛔ 不 `slice`（从 `Vec` 来的 `Bytes` 第一次被 `slice` 要升级成共享的那一块，那是一次分配）。
+/// 整段正文原樣交出：⛔ 不 `slice`（從 `Vec` 來的 `Bytes` 第一次被 `slice` 要升級成共享的那一塊，那是一次分配）。
 #[test]
 fn 整段正文原样交出不分配() {
     let b = Bytes::from(vec![7u8; 4096]);
@@ -150,7 +150,7 @@ fn 整段正文原样交出不分配() {
     assert_eq!((a, r), (0, 0), "分配 {a} 次、重新分配 {r} 次");
 }
 
-/// 截一段时仍指着同一块内存（只增引用计数，⛔ 不另拷一份）；越界照旧回 `None`。
+/// 截一段時仍指著同一塊記憶體（只增引用計數，⛔ 不另拷一份）；越界照舊回 `None`。
 #[test]
 fn 截一段仍指着同一块内存_越界回空() {
     let b = Bytes::from((0..4096u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>());

@@ -1,30 +1,30 @@
-//! L4 面：TCP 与 UDP 透传，都是自研。
+//! L4 面：TCP 與 UDP 透傳，都是自研。
 //!
-//! # 它与 HTTP 那一侧的分工
+//! # 它與 HTTP 那一側的分工
 //!
-//! | | HTTP 数据面 | 这里 |
+//! | | HTTP 資料面 | 這裡 |
 //! |---|---|---|
 //! | 入口 | Pingora 的 `ListeningService` | **自建 `Service`**，直接用 `tokio::net::TcpListener` |
-//! | 路由 | 站点索引（Host + 端口）| **没有路由**——一条 TCP 连接上没有 Host、没有路径 |
-//! | 挑上游 | [`ProxyTarget::pick`] | [`ProxyTarget::pick_by`]（**同一份实现**，见下） |
-//! | 改内容 | `rewrite` / `header_up` / … | **一个字节都不看也不改** |
+//! | 路由 | 站台索引（Host + 連接埠）| **沒有路由**——一條 TCP 連接上沒有 Host、沒有路徑 |
+//! | 挑上游 | [`ProxyTarget::pick`] | [`ProxyTarget::pick_by`]（**同一份實作**，見下） |
+//! | 改內容 | `rewrite` / `header_up` / … | **一個位元組都不看也不改** |
 //!
-//! ★ **挑上游那一格是共用的，不是抄的**：`pick` 拆成「取客户端 IP」+ `pick_by`，
-//! L4 走后者 ⇒ 筛子与四种 `lb_policy` 只有一份实现。⚠ 抄一份的代价不在今天，
-//! 两份在**下一次改动**时分家。
+//! ★ **挑上游那一格是共用的，不是抄的**：`pick` 拆成「取用戶端 IP」+ `pick_by`，
+//! L4 走後者 ⇒ 篩子與四種 `lb_policy` 只有一份實作。⚠ 抄一份的代價不在今天，
+//! 兩份在**下一次改動**時分家。
 //!
-//! # ★ ★ 自建监听器必须参与 socket 移交
+//! # ★ ★ 自建監聽器必須參與 socket 移交
 //!
-//! 表里有这个键就继承，没有就自己 bind **再放回表里**。⚠ 少了「放回去」那一步，
-//! 第一次升级时这个端口会重新 bind，那一刻所有 L4 长连接一起断 —— 而 HTTP 一切正常。
+//! 表裡有這個鍵就繼承，沒有就自己 bind **再放回表裡**。⚠ 少了「放回去」那一步，
+//! 第一次升級時這個連接埠會重新 bind，那一刻所有 L4 長連接一起斷 —— 而 HTTP 一切正常。
 //!
-//! # 有意没有的东西
+//! # 有意沒有的東西
 //!
-//! - **`lb_policy` 之外的旋钮**：UDP 空闲超时与并发上限、TCP 连上游超时都是常量。
-//!   ⏳ 让它们可配要先给 `l4` 块加选项位置。
-//! - **TCP 的空闲超时**：⚠ L4 的典型对象是数据库连接，空闲几小时是正常的；
-//!   给一个「看起来安全」的 30 秒，等于去杀一条上游认为健康的连接，
-//!   现场表现是「数据库偶尔断线」。⇒ 空闲由两端自己管。
+//! - **`lb_policy` 之外的旋鈕**：UDP 空閒超時與並行上限、TCP 連上游超時都是常數。
+//!   ⏳ 讓它們可配要先給 `l4` 塊加選項位置。
+//! - **TCP 的空閒超時**：⚠ L4 的典型物件是資料庫連接，空閒幾小時是正常的；
+//!   給一個「看起來安全」的 30 秒，等於去殺一條上游認為健康的連接，
+//!   現場表現是「資料庫偶爾斷線」。⇒ 空閒由兩端自己管。
 
 use fulcrum_runtime::SharedRuntime;
 use fulcrum_tls::alpn_list;
@@ -46,37 +46,37 @@ use async_trait::async_trait;
 use pingora_core::server::{ListenFds, ShutdownWatch};
 use pingora_core::services::Service;
 
-/// 连上游的超时。
+/// 連上游的超時。
 ///
-/// ★ 它与「空闲超时」是两件事：**建连接**卡住是上游出了问题（半死的机器、
-/// 被丢包的路径），而卡住期间客户端只会觉得「这个端口没反应」。
-/// ⚠ 没有这条时，一个 SYN 被静默丢弃的上游会让每条连接挂到系统默认的
-/// TCP 重传耗尽为止（Linux 上约 130 秒），而轮询会**继续往它身上送**。
+/// ★ 它與「空閒超時」是兩件事：**建連接**卡住是上游出了問題（半死的機器、
+/// 被丟包的路徑），而卡住期間用戶端只會覺得「這個連接埠沒反應」。
+/// ⚠ 沒有這條時，一個 SYN 被靜默丟棄的上游會讓每條連接掛到系統預設的
+/// TCP 重傳耗盡為止（Linux 上約 130 秒），而輪詢會**繼續往它身上送**。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 一个 `l4 tcp` 监听器对应的服务。
+/// 一個 `l4 tcp` 監聽器對應的服務。
 pub struct TcpProxyService {
-    /// 这个 service 用几个线程（**G35 / G140**）。`None` = 跟全局 `conf.threads`。
+    /// 這個 service 用幾個執行緒（**G35 / G140**）。`None` = 跟全域 `conf.threads`。
     ///
-    /// ★ 与 pingora `ListeningService.threads` 同名同义 —— 自建 service 也参与
-    /// 同一套角色分配，⛔ 不许在这里另立一套。由 `serve()` 在建好之后设。
+    /// ★ 與 pingora `ListeningService.threads` 同名同義 —— 自建 service 也參與
+    /// 同一套角色分配，⛔ 不許在這裡另立一套。由 `serve()` 在建好之後設。
     pub threads: Option<usize>,
-    /// ★ 拿的是**共享**运行时，不是启动时那一份：`POST /load` 换配置之后，
-    /// 下一条连接就该按新的上游走。⚠ 监听地址本身换不了（启动时绑定），
-    /// 管理面为此把 L4 端口纳入了「端口集变了就 409」的判据。
+    /// ★ 拿的是**共享**執行環境，不是啟動時那一份：`POST /load` 換設定之後，
+    /// 下一條連接就該按新的上游走。⚠ 監聽位址本身換不了（啟動時綁定），
+    /// 管理面為此把 L4 連接埠納入了「連接埠集變了就 409」的判據。
     shared: Arc<SharedRuntime>,
-    /// 配置里写的监听地址原样（`:3306`），**在当前配置里找回自己**用的键。
+    /// 設定裡寫的監聽位址原樣（`:3306`），**在當前設定裡找回自己**用的鍵。
     listen: String,
-    /// 真正 bind 的地址（`--bind-host` 补齐之后）。
+    /// 真正 bind 的位址（`--bind-host` 補齊之後）。
     bind: String,
-    /// fd 表里的键。★ 加前缀是为了与 Pingora 原生服务的裸 `addr:port` 分开 ——
-    /// 撞键的后果是两个服务抢同一个 fd，而症状会出现在**另一个**服务上。
+    /// fd 表裡的鍵。★ 加前綴是為了與 Pingora 原生服務的裸 `addr:port` 分開 ——
+    /// 撞鍵的後果是兩個服務搶同一個 fd，而症狀會出現在**另一個**服務上。
     fd_key: String,
-    /// 本进程是不是以 `-u` 起来的。★ 只有知道这一点，才能把「fd 表里没有」
-    /// 分成「首次启动，正常」与「升级时交接失败，必须报错」两种。
+    /// 本處理程序是不是以 `-u` 起來的。★ 只有知道這一點，才能把「fd 表裡沒有」
+    /// 分成「首次啟動，正常」與「升級時交接失敗，必須回報錯誤」兩種。
     upgrading: bool,
     name: String,
-    /// 这个监听器的连接计数格（**M2 批 O**）。★ 与 HTTP 那一侧**共用同一个** `ConnGuard`。
+    /// 這個監聽器的連接計數格（**M2 批 O**）。★ 與 HTTP 那一側**共用同一個** `ConnGuard`。
     conn: crate::conn_stats::BoundConn,
 }
 
@@ -88,11 +88,11 @@ impl TcpProxyService {
         upgrading: bool,
         conn_reg: Arc<crate::conn_stats::ConnRegistry>,
     ) -> Self {
-        // ★ `bind()` 顺手**声明**这一格 ⇒ 这个监听器从第一秒起就有一条 `0` 的样本，
-        //   而不是「有连接了才出现」。
+        // ★ `bind()` 順手**宣告**這一格 ⇒ 這個監聽器從第一秒起就有一條 `0` 的樣本，
+        //   而不是「有連接了才出現」。
         let conn = conn_reg.bind(crate::conn_stats::Entrypoint::L4Tcp, &bind);
         Self {
-            // ★ 缺省 `None` = 跟全局；由 `serve()` 按角色设（G140）。
+            // ★ 預設 `None` = 跟全域；由 `serve()` 按角色設（G140）。
             threads: None,
             shared,
             listen: listen.to_string(),
@@ -105,9 +105,9 @@ impl TcpProxyService {
     }
 }
 
-/// 取 fd（继承）或新建监听器，并把新建的那个放回表里供下一代继承。
+/// 取 fd（繼承）或新建監聽器，並把新建的那個放回表裡供下一代繼承。
 ///
-/// ⚠ ⚠ 这段的每一条注释都在描述一个**已经发生过**的失效，别删。
+/// ⚠ ⚠ 這段的每一條註解都在描述一個**已經發生過**的失效，別刪。
 async fn build_listener(
     bind: &str,
     key: &str,
@@ -115,8 +115,8 @@ async fn build_listener(
     upgrading: bool,
 ) -> std::io::Result<TcpListener> {
     let Some(table) = fds else {
-        // ★ 表缺失时**不能装作没事**：这条路径下 bind 出来的监听器不会被注册，
-        //   于是它不参与下一次 socket 移交 —— 升级时连接被重置，而且悄无声息。
+        // ★ 表缺失時**不能裝作沒事**：這條路徑下 bind 出來的監聽器不會被註冊，
+        //   於是它不參與下一次 socket 移交 —— 升級時連接被重置，而且悄無聲息。
         if upgrading {
             return Err(std::io::Error::other(format!(
                 "以 -u 升级启动却拿不到 fd 表，无法继承 {bind}：socket 移交已经失败了"
@@ -126,26 +126,26 @@ async fn build_listener(
         return TcpListener::bind(bind).await;
     };
 
-    // ★ 0.9.0（上游 1d93711）：ListenFds 换成 parking_lot 锁 ⇒ 守卫不 Send、⛔ 不许跨 `.await`。
-    //   只在两个同步的瞬间持锁（查表、登记）；bind 期间不持锁 —— 每个服务的键独占，不需要按地址串行。
+    // ★ 0.9.0（上游 1d93711）：ListenFds 換成 parking_lot 鎖 ⇒ 守衛不 Send、⛔ 不許跨 `.await`。
+    //   只在兩個同步的瞬間持鎖（查表、登記）；bind 期間不持鎖 —— 每個服務的鍵獨佔，不需要按位址串行。
     let inherited = table.lock().get(key).copied();
 
     if let Some(fd) = inherited {
         info!("[l4] 继承了监听 fd={fd}（{key}）—— 升级窗口内这个端口没有重新 bind 过");
-        // SAFETY: fd 由上一代经 SCM_RIGHTS 传来，此处接管其所有权，且同一个键只取用一次。
+        // SAFETY: fd 由上一代經 SCM_RIGHTS 傳來，此處接管其所有權，且同一個鍵只取用一次。
         //
-        // ★ ManuallyDrop：从这里到成功交出所有权之间，**任何提前析构都会 `close(fd)`**，
-        //   而 `Fds` 表里那条记录仍指着这个号码 —— 号码随后会被任意 `open()` 复用，
-        //   下一次升级就把一个无关的 fd 当成监听 socket 发给下一代。`Fds` 没有 `remove()`。
+        // ★ ManuallyDrop：從這裡到成功交出所有權之間，**任何提前析構都會 `close(fd)`**，
+        //   而 `Fds` 表裡那條記錄仍指著這個號碼 —— 號碼隨後會被任意 `open()` 重複使用，
+        //   下一次升級就把一個無關的 fd 當成監聽 socket 發給下一代。`Fds` 沒有 `remove()`。
         let std_listener = ManuallyDrop::new(unsafe { std::net::TcpListener::from_raw_fd(fd) });
-        std_listener.set_nonblocking(true)?; // 失败时不析构，fd 保持有效
+        std_listener.set_nonblocking(true)?; // 失敗時不析構，fd 保持有效
         let owned = ManuallyDrop::into_inner(std_listener);
         return match TcpListener::from_std(owned) {
             Ok(l) => Ok(l),
             Err(e) => {
-                // ⚠ 残余风险：`from_std` 消耗了 owned，失败时 fd 已被关闭，而表里那条
-                //   记录仍指向它。只在 tokio reactor 注册失败（资源耗尽）时出现，
-                //   在不改 `Fds` 公开接口的前提下修不掉 —— 所以至少让它**大声说出来**。
+                // ⚠ 殘餘風險：`from_std` 消耗了 owned，失敗時 fd 已被關閉，而表裡那條
+                //   記錄仍指向它。只在 tokio reactor 註冊失敗（資源耗盡）時出現，
+                //   在不改 `Fds` 公開介面的前提下修不掉 —— 所以至少讓它**大聲說出來**。
                 error!(
                     "[l4] from_std 失败：fd={fd} 已被关闭，而 fd 表里 key={key} 仍指向它。\
                      ★ 下一次升级会把这个已失效的号码传给下一代，必须重启进程而不是继续升级。"
@@ -162,74 +162,74 @@ async fn build_listener(
     Ok(listener)
 }
 
-/// accept 出错时该不该歇一下。
+/// accept 出錯時該不該歇一下。
 ///
-/// ★ ★ **fd 耗尽（EMFILE/ENFILE）时 `accept()` 会立刻返回错误且不阻塞**，
-/// 于是「记一条日志然后继续循环」就变成满速空转 + 日志洪水 ——
-/// 把「fd 快用完了」放大成「这台机器废了」，而且恰好在资源最紧张的时候。
-/// 实测过：无退避时 369,156 条日志/秒。Pingora 自己的 accept 循环带着同一道防护。
+/// ★ ★ **fd 耗盡（EMFILE/ENFILE）時 `accept()` 會立刻回傳錯誤且不阻塞**，
+/// 於是「記一條紀錄然後繼續循環」就變成滿速空轉 + 紀錄洪水 ——
+/// 把「fd 快用完了」放大成「這臺機器廢了」，而且恰好在資源最緊張的時候。
+/// 實測過：無退避時 369,156 條紀錄/秒。Pingora 自己的 accept 循環帶著同一道防護。
 async fn backoff_if_fd_exhausted(e: &std::io::Error, tag: &str) {
-    // 24 = EMFILE（本进程 fd 用尽），23 = ENFILE（系统级用尽）
+    // 24 = EMFILE（本處理程序 fd 用盡），23 = ENFILE（系統級用盡）
     if matches!(e.raw_os_error(), Some(24) | Some(23)) {
         error!("[{tag}] fd 耗尽（{e}），退避 1 秒——否则这个循环会满速空转");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
-/// 看一眼 ClientHello 的超时。
+/// 看一眼 ClientHello 的超時。
 ///
-/// ★ 它与 TCP 那条「有意不设空闲超时」**不冲突**，因为这一段的性质不同：
-/// 连接已经接受、而上游**还没被选出来** —— 一个连上来什么都不发的对端，
-/// 在这一段里占的是枢衡自己的任务，且没有任何对端资源与之对应。
-/// ⚠ 没有这条时，它就是 L4 面上的 slowloris：一条不发字节的连接可以永远挂着。
+/// ★ 它與 TCP 那條「有意不設空閒超時」**不衝突**，因為這一段的性質不同：
+/// 連接已經接受、而上游**還沒被選出來** —— 一個連上來什麼都不發的對端，
+/// 在這一段裡佔的是樞衡自己的任務，且沒有任何對端資源與之對應。
+/// ⚠ 沒有這條時，它就是 L4 面上的 slowloris：一條不發位元組的連接可以永遠掛著。
 const PEEK_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// 看 ClientHello 时最多缓存多少字节。
+/// 看 ClientHello 時最多快取多少位元組。
 ///
-/// ★ 16 KiB 是一个 TLS record 的上限量级，而 ClientHello 通常 < 2 KiB。
-/// ⚠ 超过就**不再等**，按「不是 TLS」处理走兜底 —— 缓存无上限的话，
-/// 一条慢慢吐字节的连接能把内存吃到天上，而它连一个上游都还没占用。
+/// ★ 16 KiB 是一個 TLS record 的上限量級，而 ClientHello 通常 < 2 KiB。
+/// ⚠ 超過就**不再等**，按「不是 TLS」處理走備援 —— 快取無上限的話，
+/// 一條慢慢吐位元組的連接能把記憶體吃到天上，而它連一個上游都還沒佔用。
 const PEEK_MAX: usize = 16 * 1024;
 
-/// 等一个 PROXY 头最多多久（**M2 批 D**）。
+/// 等一個 PROXY 頭最多多久（**M2 批 D**）。
 ///
-/// ⚠ ⚠ **它与 `PEEK_TIMEOUT` 是两段，不是一段**：一条既要收 PROXY 头、
-/// 又配了 `sni` 分流的连接，最坏要 **3 + 3 = 6 秒**才选得出上游。
-/// ★ 这个数字写在这里也写进 DSL 参考 —— 一个「加起来是多少」只能靠读代码得出的预算，
-/// 迟早会被当成 3 秒。
+/// ⚠ ⚠ **它與 `PEEK_TIMEOUT` 是兩段，不是一段**：一條既要收 PROXY 頭、
+/// 又配了 `sni` 分流的連接，最壞要 **3 + 3 = 6 秒**才選得出上游。
+/// ★ 這個數字寫在這裡也寫進 DSL 參考 —— 一個「加起來是多少」只能靠讀程式碼得出的預算，
+/// 遲早會被當成 3 秒。
 const PP_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// 收下来的 PROXY 头。
+/// 收下來的 PROXY 頭。
 struct Received {
-    /// 真实客户端地址。
+    /// 真實用戶端位址。
     ///
-    /// ⚠ **`None` 是正常结果**：`LOCAL` 与 `PROXY UNKNOWN` 表示「这条连接没有真实客户端」
-    /// （上游 LB 的健康检查就长这样）⇒ 调用方**继续用 socket 对端**。
+    /// ⚠ **`None` 是正常結果**：`LOCAL` 與 `PROXY UNKNOWN` 表示「這條連接沒有真實用戶端」
+    /// （上游 LB 的健康檢查就長這樣）⇒ 呼叫方**繼續用 socket 對端**。
     client: Option<SocketAddr>,
-    /// 读头时**多读到**的字节 —— 它们已经是应用数据了，一个都不能丢。
+    /// 讀頭時**多讀到**的位元組 —— 它們已經是應用資料了，一個都不能丟。
     ///
-    /// ★ ★ 这一格是本函数最容易漏的地方：TCP 是流，一次 `read` 很可能把
-    /// PROXY 头与它后面的 ClientHello **一起**读回来。少了这一格，
-    /// 上游收到的流就从 ClientHello 中间开始 —— 与批 C 那条「不重放」的缺陷同一个形状。
+    /// ★ ★ 這一格是本函式最容易漏的地方：TCP 是流，一次 `read` 很可能把
+    /// PROXY 頭與它後面的 ClientHello **一起**讀回來。少了這一格，
+    /// 上游收到的流就從 ClientHello 中間開始 —— 與批 C 那條「不重放」的缺陷同一個形狀。
     leftover: Vec<u8>,
 }
 
-/// 读一个 PROXY 头。**只在 peer 落在信任清单里时才会被调用。**
+/// 讀一個 PROXY 頭。**只在 peer 落在信任清單裡時才會被呼叫。**
 ///
-/// ★ ★ ★ **不在清单里的连接，这个函数一次都不会被调用 —— 一个字节都不读。**
-/// 那是 owner 拍板的口径（与安全基线里 XFF 那条同源），落法见 `dsl-reference.md`。
-/// ⚠ 「读掉丢弃」需要先解析**攻击者控制**的长度字段才知道丢多少；「不读」完全不碰。
+/// ★ ★ ★ **不在清單裡的連接，這個函式一次都不會被呼叫 —— 一個位元組都不讀。**
+/// 那是 owner 拍板的口徑（與安全基線裡 XFF 那條同源），落法見 `dsl-reference.md`。
+/// ⚠ 「讀掉丟棄」需要先解析**攻擊者控制**的長度欄位才知道丟多少；「不讀」完全不碰。
 ///
-/// 返回 `Err` = **关掉这条连接**。⚠ 这里与「不在清单里」有意相反：
-/// 一个**在信任清单里**的对端发来坏头，说明配置或对端出了问题，而此时我们
-/// **已经吃掉了一部分字节、还原不回去** —— 硬把残缺的流转给上游只会把问题推远。
+/// 回傳 `Err` = **關掉這條連接**。⚠ 這裡與「不在清單裡」有意相反：
+/// 一個**在信任清單裡**的對端發來壞頭，說明設定或對端出了問題，而此時我們
+/// **已經吃掉了一部分位元組、還原不回去** —— 硬把殘缺的流轉給上游只會把問題推遠。
 async fn read_proxy_header(client: &mut TcpStream) -> Result<Received, String> {
     use fulcrum_runtime::proxyproto::{self, Verdict};
     let mut buf: Vec<u8> = Vec::with_capacity(64);
     let mut chunk = [0u8; 256];
     let started = Instant::now();
     loop {
-        // 先拿已有的字节问一次 —— ★ `decode` 是纯函数，重复问不要钱。
+        // 先拿已有的位元組問一次 —— ★ `decode` 是純函式，重複問不要錢。
         match proxyproto::decode(&buf) {
             Verdict::Done { client, consumed } => {
                 return Ok(Received {
@@ -241,8 +241,8 @@ async fn read_proxy_header(client: &mut TcpStream) -> Result<Received, String> {
             Verdict::Need(_) => {}
         }
         if buf.len() >= proxyproto::MAX_HEADER {
-            // ★ 走不到（`decode` 自己的两条上界更早触发），但留着：
-            //   它是这个循环**一定会停**的最后一道保证。
+            // ★ 走不到（`decode` 自己的兩條上界更早觸發），但留著：
+            //   它是這個循環**一定會停**的最後一道保證。
             return Err("PROXY 头超过上限仍没读完".into());
         }
         let left = match PP_TIMEOUT.checked_sub(started.elapsed()) {
@@ -258,41 +258,41 @@ async fn read_proxy_header(client: &mut TcpStream) -> Result<Received, String> {
     }
 }
 
-/// ClientHello 里我们要的那两样。
+/// ClientHello 裡我們要的那兩樣。
 struct Peeked {
-    /// 已经从客户端读走的**原始字节**。★ 必须原样重放给上游 ——
-    /// 我们是透传，不是终止 TLS：少一个字节，上游的握手就废了。
+    /// 已經從用戶端讀走的**原始位元組**。★ 必須原樣重放給上游 ——
+    /// 我們是透傳，不是終止 TLS：少一個位元組，上游的握手就廢了。
     raw: Vec<u8>,
-    /// `server_name` 扩展。`None` = 没带 SNI（合法，比如按 IP 直连）。
+    /// `server_name` 擴充。`None` = 沒帶 SNI（合法，比如按 IP 直連）。
     sni: Option<String>,
-    /// ALPN 清单，**原样的字节**（`h2` / `http/1.1` / …）。
+    /// ALPN 清單，**原樣的位元組**（`h2` / `http/1.1` / …）。
     alpn: Vec<Vec<u8>>,
-    /// 这真的是一个 TLS ClientHello 吗。`false` = 不是 TLS、或超时/超限。
+    /// 這真的是一個 TLS ClientHello 嗎。`false` = 不是 TLS、或超時/超限。
     is_tls: bool,
 }
 
-/// 喂给 BoringSSL 的**内存传输**。
+/// 餵給 BoringSSL 的**記憶體傳輸**。
 ///
-/// ⚠ ⚠ **写那一半一律丢掉，这是安全属性不是省事**：我们不是这条 TLS 连接的对端，
-/// 往真客户端写一个字节（哪怕只是一个 alert）都等于冒充上游说话。
-/// ★ 于是「不回 alert」这条纪律从「记得别写」变成了**写不出去** ——
-/// 这个结构里根本没有通向客户端的那一头。
+/// ⚠ ⚠ **寫那一半一律丟掉，這是安全屬性不是省事**：我們不是這條 TLS 連接的對端，
+/// 往真用戶端寫一個位元組（哪怕只是一個 alert）都等於冒充上游說話。
+/// ★ 於是「不回 alert」這條紀律從「記得別寫」變成了**寫不出去** ——
+/// 這個結構里根本沒有通向用戶端的那一頭。
 #[derive(Default)]
 struct HelloFeed {
-    /// 已经从客户端读到、准备喂给 BoringSSL 的字节。★ 有 [`PEEK_MAX`] 封顶。
+    /// 已經從用戶端讀到、準備餵給 BoringSSL 的位元組。★ 有 [`PEEK_MAX`] 封頂。
     buf: Vec<u8>,
-    /// BoringSSL 已经消化到哪儿。
+    /// BoringSSL 已經消化到哪兒。
     pos: usize,
 }
 
 impl std::io::Read for HelloFeed {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         if self.pos >= self.buf.len() {
-            // ⚠ ⚠ **必须是 `WouldBlock`，不能是 `Ok(0)`**：后者是 EOF，
-            //   BoringSSL 会当成对端关了连接（不可重试）而把握手判死；
-            //   而我们的意思只是「还没读到更多」。
-            //   ★ boring 的 BIO 垫片认得这个 kind（`retriable_error`）并置重试位，
-            //     于是 `accept()` 干净地回 `WANT_READ`。
+            // ⚠ ⚠ **必須是 `WouldBlock`，不能是 `Ok(0)`**：後者是 EOF，
+            //   BoringSSL 會當成對端關了連接（不可重試）而把握手判死；
+            //   而我們的意思只是「還沒讀到更多」。
+            //   ★ boring 的 BIO 墊片認得這個 kind（`retriable_error`）並置重試位，
+            //     於是 `accept()` 乾淨地回 `WANT_READ`。
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "ClientHello 还没读全",
@@ -314,26 +314,26 @@ impl std::io::Write for HelloFeed {
     }
 }
 
-/// 早回调看到的那两样。
+/// 早回呼看到的那兩樣。
 struct SeenHello {
     sni: Option<String>,
     alpn: Vec<Vec<u8>>,
 }
 
 thread_local! {
-    /// 早回调把看到的东西丢在这里，由 [`drive`] 当场取走。
+    /// 早回呼把看到的東西丟在這裡，由 [`drive`] 當場取走。
     static SEEN: std::cell::RefCell<Option<SeenHello>> = const { std::cell::RefCell::new(None) };
 }
 
-/// 预读用的那个 `SSL_CTX`：**整个进程一个**，只挂一个早回调、不装任何证书。
+/// 預讀用的那個 `SSL_CTX`：**整個處理程序一個**，只掛一個早回呼、不裝任何證書。
 ///
-/// ★ 不需要证书：`SSL_CTX_set_select_certificate_cb` 是**早回调**，
-/// 在几乎所有 ClientHello 处理之前触发，而我们在它里面就把握手掐掉了。
+/// ★ 不需要證書：`SSL_CTX_set_select_certificate_cb` 是**早回呼**，
+/// 在幾乎所有 ClientHello 處理之前觸發，而我們在它裡面就把握手掐掉了。
 fn peek_ctx() -> Option<&'static SslContext> {
     static CTX: OnceLock<Option<SslContext>> = OnceLock::new();
     CTX.get_or_init(|| {
-        // ★ boring 5 删了 `SslMethod::tls_server()` ⇒ 用 `tls()`；这个 ctx 只经 `SslStream::accept()` 用，
-        //   而 accept 自己把 SSL 设成服务端模式 ⇒ 行为不变。
+        // ★ boring 5 刪了 `SslMethod::tls_server()` ⇒ 用 `tls()`；這個 ctx 只經 `SslStream::accept()` 用，
+        //   而 accept 自己把 SSL 設成伺服器端模式 ⇒ 行為不變。
         let mut b = match SslContextBuilder::new(SslMethod::tls()) {
             Ok(b) => b,
             Err(e) => {
@@ -345,17 +345,17 @@ fn peek_ctx() -> Option<&'static SslContext> {
             let sni = hello
                 .servername(NameType::HOST_NAME)
                 .map(|s| s.to_ascii_lowercase());
-            // ⚠ 这里拿到的是「**客户端提供了**哪些」，不是协商结果 ——
-            //   早回调发生在 ALPN 协商之前。分流规则要的正是前者。
-            // ★ 读法与 fulcrum-tls 挑证书那条路**共用同一份** RFC 7301 框架实现，
-            //   不是各写一份（D18/G66 同一条理由）。
+            // ⚠ 這裡拿到的是「**用戶端提供了**哪些」，不是協商結果 ——
+            //   早回呼發生在 ALPN 協商之前。分流規則要的正是前者。
+            // ★ 讀法與 fulcrum-tls 挑證書那條路**共用同一份** RFC 7301 框架實作，
+            //   不是各寫一份（D18/G66 同一條理由）。
             let alpn = hello
                 .get_extension(ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION)
                 .and_then(alpn_list)
                 .unwrap_or_default();
             SEEN.with(|s| *s.borrow_mut() = Some(SeenHello { sni, alpn }));
-            // ★ ★ ★ **永远中止**。我们只是看一眼：这条连接的 TLS 要由上游去终止，
-            //   继续下去就变成中间人了。
+            // ★ ★ ★ **永遠中止**。我們只是看一眼：這條連接的 TLS 要由上游去終止，
+            //   繼續下去就變成中間人了。
             Err(SelectCertError::ERROR)
         });
         Some(b.build())
@@ -363,34 +363,34 @@ fn peek_ctx() -> Option<&'static SslContext> {
     .as_ref()
 }
 
-/// 推进一次握手之后的结论。
+/// 推進一次握手之後的結論。
 enum Step {
-    /// 早回调开过火 ⇒ 这是一个 TLS ClientHello，而且我们看清了。
+    /// 早回呼開過火 ⇒ 這是一個 TLS ClientHello，而且我們看清了。
     Saw(SeenHello),
-    /// 还没读全，再喂。
+    /// 還沒讀全，再喂。
     NeedMore,
-    /// 这不像 TLS（或者读到一半坏了）。带上说得清的原因。
+    /// 這不像 TLS（或者讀到一半壞了）。帶上說得清的原因。
     NotTls(String),
 }
 
-/// 把已经喂进去的字节推一次握手，并把早回调看到的东西取回来。
+/// 把已經喂進去的位元組推一次握手，並把早回呼看到的東西取回來。
 ///
-/// ⚠ ⚠ **本函数不是 `async fn`，而这就是整段的安全论证**：早回调由 BoringSSL 在
-/// `accept()` 里直接调用（不换线程），而非 async 函数里写不出 `.await`
-/// ⇒「清槽 → 握手 → 取槽」三步之间 thread-local 槽不可能被别的连接插进来。
-/// **改成 `async fn` 会让论证失效，表现是串台**：一条连接读到另一条的 SNI，都不报错。
+/// ⚠ ⚠ **本函式不是 `async fn`，而這就是整段的安全論證**：早回呼由 BoringSSL 在
+/// `accept()` 裡直接呼叫（不換執行緒），而非 async 函式里寫不出 `.await`
+/// ⇒「清槽 → 握手 → 取槽」三步之間 thread-local 槽不可能被別的連接插進來。
+/// **改成 `async fn` 會讓論證失效，表現是串臺**：一條連接讀到另一條的 SNI，都不回報錯誤。
 ///
-/// ★ 先看槽、再看返回码：早回调开过火就说明东西到手了，而这时握手必然失败 ——
-/// 那不是错误，正是我们要的。
+/// ★ 先看槽、再看回傳碼：早回呼開過火就說明東西到手了，而這時握手必然失敗 ——
+/// 那不是錯誤，正是我們要的。
 fn drive(tls: &mut SslStream<HelloFeed>) -> Step {
-    // ⚠ 先清：同一个线程上一条连接可能留下过东西。
+    // ⚠ 先清：同一個執行緒上一條連接可能留下過東西。
     SEEN.with(|s| *s.borrow_mut() = None);
     let outcome = tls.accept();
     let seen = SEEN.with(|s| s.borrow_mut().take());
     match (seen, outcome) {
         (Some(h), _) => Step::Saw(h),
-        // ⚠ 走不到：早回调永远回 `Err`。真走到了说明回调没挂上，
-        //   那是**配置错**而不是「对端不是 TLS」，所以它有自己的措辞。
+        // ⚠ 走不到：早回呼永遠回 `Err`。真走到了說明回呼沒掛上，
+        //   那是**設定錯**而不是「對端不是 TLS」，所以它有自己的措辭。
         (None, Ok(())) => Step::NotTls("握手居然完成了 —— 早回调没有挂上".into()),
         (None, Err(e)) if e.code() == ErrorCode::WANT_READ => Step::NeedMore,
         (None, Err(e)) => Step::NotTls(format!("{e}")),
@@ -406,33 +406,33 @@ fn not_tls(raw: Vec<u8>) -> Peeked {
     }
 }
 
-/// 只读 ClientHello，**不完成握手**。
+/// 唯讀 ClientHello，**不完成握手**。
 ///
-/// 走的是 **BoringSSL 的早回调**（G104 第 ② 处）：一台真的握手状态机 + 一条内存传输，
-/// 字节喂进 [`HelloFeed`]，`SSL_CTX_set_select_certificate_cb` 在 ClientHello 解完时触发，
-/// 抄走 SNI 与 ALPN 之后**当场把握手掐掉**。
-/// ★ 不手写 ClientHello 解析（那是在解析攻击者控制的二进制）。
+/// 走的是 **BoringSSL 的早回呼**（G104 第 ② 處）：一臺真的握手狀態機 + 一條記憶體傳輸，
+/// 位元組喂進 [`HelloFeed`]，`SSL_CTX_set_select_certificate_cb` 在 ClientHello 解完時觸發，
+/// 抄走 SNI 與 ALPN 之後**當場把握手掐掉**。
+/// ★ 不手寫 ClientHello 解析（那是在解析攻擊者控制的二進位）。
 ///
-/// ★ **一处行为差异说在明处**：早回调发生在几乎所有 ClientHello 校验**之前**，
-/// 于是一个 rustls 会当场拒掉的 ClientHello 在这一侧照样能被读出 SNI 并分流。
-/// **这正是想要的语义** —— 枢衡不替上游拒绝一个它自己也许能处理的客户端。
+/// ★ **一處行為差異說在明處**：早回呼發生在幾乎所有 ClientHello 檢核**之前**，
+/// 於是一個 rustls 會當場拒掉的 ClientHello 在這一側照樣能被讀出 SNI 並分流。
+/// **這正是想要的語義** —— 樞衡不替上游拒絕一個它自己也許能處理的用戶端。
 ///
-/// ⚠ ⚠ **无论结果如何，读走的字节都在 `raw` 里**（走兜底时要重放），
-/// `already` 是收 PROXY 头时多读到的那一段 —— 它必须**先喂给状态机、也进 `raw`**，
-/// 否则「先 PROXY 头再 ClientHello」的连接会全部走兜底，
-/// **而日志上看起来只是「这个客户端没带 SNI」**。
+/// ⚠ ⚠ **無論結果如何，讀走的位元組都在 `raw` 裡**（走備援時要重放），
+/// `already` 是收 PROXY 頭時多讀到的那一段 —— 它必須**先餵給狀態機、也進 `raw`**，
+/// 否則「先 PROXY 頭再 ClientHello」的連接會全部走備援，
+/// **而紀錄上看起來只是「這個用戶端沒帶 SNI」**。
 async fn peek_client_hello(client: &mut TcpStream, already: Vec<u8>) -> Peeked {
     let mut raw: Vec<u8> = Vec::with_capacity(2048);
     let Some(tls) = new_peek_stream() else {
-        // ⚠ 建不出状态机时**照样把字节原样带走**：这条连接仍然要能走兜底，
-        //   而不是被丢掉开头几个字节。原因已经在 error! 里说清了。
+        // ⚠ 建不出狀態機時**照樣把位元組原樣帶走**：這條連接仍然要能走備援，
+        //   而不是被丟掉開頭幾個位元組。原因已經在 error! 裡說清了。
         return not_tls(raw);
     };
     let mut tls = tls;
     let mut chunk = [0u8; 4096];
     let started = Instant::now();
-    // ★ 把上一段多读到的字节当成「刚读到的一块」走同一条路 ——
-    //   有意不另写一份喂法：两份「差不多的」喂法会在下一次改动时分家。
+    // ★ 把上一段多讀到的位元組當成「剛讀到的一塊」走同一條路 ——
+    //   有意不另寫一份喂法：兩份「差不多的」喂法會在下一次改動時分家。
     let mut pending: Option<Vec<u8>> = if already.is_empty() {
         None
     } else {
@@ -446,7 +446,7 @@ async fn peek_client_hello(client: &mut TcpStream, already: Vec<u8>) -> Peeked {
                 return not_tls(raw);
             }
         };
-        // ★ 有 `pending` 就先消化它，一个字节都不去 socket 上读。
+        // ★ 有 `pending` 就先消化它，一個位元組都不去 socket 上讀。
         let fresh: Vec<u8> = match pending.take() {
             Some(b) => b,
             None => {
@@ -469,8 +469,8 @@ async fn peek_client_hello(client: &mut TcpStream, already: Vec<u8>) -> Peeked {
             debug!("[l4] ClientHello 超过 {PEEK_MAX} 字节还没读完 —— 按「不是 TLS」处理");
             return not_tls(raw);
         }
-        // ⚠ **只追加新读到的那一段**：`HelloFeed` 自己记着消化到哪儿了，
-        //   重喂整个缓冲区会让状态机把同样的字节吃两遍。
+        // ⚠ **只追加新讀到的那一段**：`HelloFeed` 自己記著消化到哪兒了，
+        //   重喂整個緩衝區會讓狀態機把同樣的位元組吃兩遍。
         tls.get_mut().buf.extend_from_slice(&fresh);
         match drive(&mut tls) {
             Step::Saw(h) => {
@@ -490,7 +490,7 @@ async fn peek_client_hello(client: &mut TcpStream, already: Vec<u8>) -> Peeked {
     }
 }
 
-/// 起一台只用来看一眼的握手状态机。`None` = 起不来（已 `error!`）。
+/// 起一臺只用來看一眼的握手狀態機。`None` = 起不來（已 `error!`）。
 fn new_peek_stream() -> Option<SslStream<HelloFeed>> {
     let ctx = peek_ctx()?;
     let ssl = Ssl::new(ctx)
@@ -501,28 +501,28 @@ fn new_peek_stream() -> Option<SslStream<HelloFeed>> {
         .ok()
 }
 
-/// 把一条已接受的连接接到某个上游去，然后双向搬字节。
+/// 把一條已接受的連接接到某個上游去，然後雙向搬位元組。
 ///
-/// ★ 「挑哪个上游」在**每条连接**上决定一次，取的是当时的运行时 ——
-/// 于是 `POST /load` 换掉上游之后，新连接立刻走新的，老连接不受影响。
+/// ★ 「挑哪個上游」在**每條連接**上決定一次，取的是當時的執行環境 ——
+/// 於是 `POST /load` 換掉上游之後，新連接立刻走新的，老連接不受影響。
 async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: TcpStream) {
     let peer_ip = client.peer_addr().ok().map(|a| a.ip());
     let rt = shared.current();
     let Some(l) = rt.l4_listeners.iter().find(|l| l.listen == listen) else {
-        // ⚠ 走到这里说明当前配置里已经没有这个监听器了。★ 管理面挡着端口集变化，
-        //   所以这**不该**发生；真发生了就把连接关掉并说清楚，而不是静默丢弃。
+        // ⚠ 走到這裡說明當前設定裡已經沒有這個監聽器了。★ 管理面擋著連接埠集變化，
+        //   所以這**不該**發生；真發生了就把連接關掉並說清楚，而不是靜默丟棄。
         error!(
             "[l4] 当前配置里找不到监听器 {listen} —— 关闭这条连接（这不该发生，管理面本该挡住端口集变化）"
         );
         return;
     };
-    // ── 收 PROXY 头（批 D）──────────────────────────────────────────────
+    // ── 收 PROXY 頭（批 D）──────────────────────────────────────────────
     //
-    // ★ ★ ★ **不在信任清单里 ⇒ 这一整段一步都不走，一个字节都不读。**
-    //   那 12/16 字节（如果真有的话）会原样当成应用数据流给上游 ——
-    //   owner 拍板的口径，理由见 `dsl-reference.md` §二那一节。
-    //   ⚠ 清单为空时 `trusts_proxy_protocol` 恒 false，所以「没配」与「配了但不匹配」
-    //     走的是同一条路 —— 这是有意的：**一份空清单不是「信任所有人」**。
+    // ★ ★ ★ **不在信任清單裡 ⇒ 這一整段一步都不走，一個位元組都不讀。**
+    //   那 12/16 位元組（如果真有的話）會原樣當成應用資料流給上游 ——
+    //   owner 拍板的口徑，理由見 `dsl-reference.md` §二那一節。
+    //   ⚠ 清單為空時 `trusts_proxy_protocol` 恆 false，所以「沒配」與「配了但不匹配」
+    //     走的是同一條路 —— 這是有意的：**一份空清單不是「信任所有人」**。
     let mut real_client: Option<SocketAddr> = None;
     let mut carried: Vec<u8> = Vec::new();
     if let Some(ip) = peer_ip
@@ -530,8 +530,8 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
     {
         match read_proxy_header(&mut client).await {
             Ok(r) => {
-                // ⚠ `client` 为 `None` 是 LOCAL / UNKNOWN —— **不是错误**，
-                //   此时继续用 socket 对端（健康检查就长这样）。
+                // ⚠ `client` 為 `None` 是 LOCAL / UNKNOWN —— **不是錯誤**，
+                //   此時繼續用 socket 對端（健康檢查就長這樣）。
                 real_client = r.client;
                 carried = r.leftover;
                 debug!(
@@ -543,26 +543,26 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
                 );
             }
             Err(why) => {
-                // ★ 在清单里却发来坏头 ⇒ 关连接。理由见 `read_proxy_header` 的文档：
-                //   我们已经吃掉了一部分字节，还原不回去。
+                // ★ 在清單裡卻發來壞頭 ⇒ 關連接。理由見 `read_proxy_header` 的文件：
+                //   我們已經吃掉了一部分位元組，還原不回去。
                 warn!("[l4] {listen}：信任的来源 {ip} 发来的 PROXY 头有问题（{why}），关闭连接");
                 return;
             }
         }
     }
-    // ★ ★ 从这里往下，「客户端是谁」一律用 `effective_ip` —— **不用 `peer_ip`**。
-    //   ⚠ 挑上游那一步尤其要紧：`lb_policy ip_hash` 拿 socket 对端去算，
-    //   会让**前面那台 LB 的所有连接哈希到同一个上游**，而现场表现只是「负载不均」。
+    // ★ ★ 從這裡往下，「用戶端是誰」一律用 `effective_ip` —— **不用 `peer_ip`**。
+    //   ⚠ 挑上游那一步尤其要緊：`lb_policy ip_hash` 拿 socket 對端去算，
+    //   會讓**前面那臺 LB 的所有連接雜湊到同一個上游**，而現場表現只是「負載不均」。
     let effective_ip = real_client.map(|a| a.ip()).or(peer_ip);
-    // ── 选目标（批 C：可能要先看一眼 ClientHello）────────────────────────
+    // ── 選目標（批 C：可能要先看一眼 ClientHello）────────────────────────
     //
-    // ★ **没有分流规则时一步都不多走**：不读、不等、不缓存 —— 批 A 的形状原样保留。
-    //   ⚠ 「顺手都 peek 一下反正也不贵」会给每一条 L4 连接加上一次读与一个超时预算，
-    //   而数据库连接那类对端**可能根本不先说话**（服务端先发 greeting），那样就死等到超时。
+    // ★ **沒有分流規則時一步都不多走**：不讀、不等、不快取 —— 批 A 的形狀原樣保留。
+    //   ⚠ 「順手都 peek 一下反正也不貴」會給每一條 L4 連接加上一次讀與一個超時預算，
+    //   而資料庫連接那類對端**可能根本不先說話**（伺服器端先發 greeting），那樣就死等到超時。
     let (target, prelude) = if l.rules.is_empty() {
-        // ⚠ 没有分流规则时，收 PROXY 头多读到的那一段**仍然要重放** ——
-        //   它已经是应用数据了。★ 少了这个 `carried`，一条「LB 发 PROXY 头 +
-        //   紧跟着第一批数据」的连接会丢掉开头那几个字节。
+        // ⚠ 沒有分流規則時，收 PROXY 頭多讀到的那一段**仍然要重放** ——
+        //   它已經是應用資料了。★ 少了這個 `carried`，一條「LB 發 PROXY 頭 +
+        //   緊跟著第一批資料」的連接會丟掉開頭那幾個位元組。
         match &l.target {
             Some(t) => (t, std::mem::take(&mut carried)),
             None => {
@@ -573,7 +573,7 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
     } else {
         let peeked = peek_client_hello(&mut client, std::mem::take(&mut carried)).await;
         let hit = if peeked.is_tls {
-            // ★ **按书写顺序，第一个命中即用**（DSL 参考 §4.5）。
+            // ★ **按書寫順序，第一個命中即用**（DSL 參考 §4.5）。
             l.rules
                 .iter()
                 .find(|r| r.matches(peeked.sni.as_deref(), &peeked.alpn))
@@ -604,8 +604,8 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
                     (t, peeked.raw)
                 }
                 None => {
-                    // ★ 「只服务我认得的那几个名字」是一种合法配置 ——
-                    //   但它必须**说出来**，否则现场只有「连上就断」。
+                    // ★ 「只服務我認得的那幾個名字」是一種合法設定 ——
+                    //   但它必須**說出來**，否則現場只有「連上就斷」。
                     warn!(
                         "[l4] {listen}：没有规则命中且没配兜底（is_tls={} sni={:?}），关闭连接",
                         peeked.is_tls, peeked.sni
@@ -616,21 +616,21 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
         }
     };
     let Some(start) = target.pick_index_by(effective_ip) else {
-        // ★ 与 HTTP 那边的 502 同一条语义：一个可用的上游都没有。
-        //   ⚠ L4 上没有状态码可回，能做的只有**干净地关掉** —— 而且要留一行日志，
-        //   否则现场是「连上就断」，看不出是上游全挂还是端口配错。
+        // ★ 與 HTTP 那邊的 502 同一條語義：一個可用的上游都沒有。
+        //   ⚠ L4 上沒有狀態碼可回，能做的只有**乾淨地關掉** —— 而且要留一行紀錄，
+        //   否則現場是「連上就斷」，看不出是上游全掛還是連接埠配錯。
         warn!("[l4] {listen}：一个可用的上游都没有（解析不出地址或被判死），关闭连接");
         return;
     };
-    // ★ ★ **建连阶段可以换上游，这一点与 HTTP 那边有意不同。**
+    // ★ ★ **建連階段可以換上游，這一點與 HTTP 那邊有意不同。**
     //
-    //   HTTP 那边一个上游的候选全失败就回 502，**不换上游** —— 理由是那条路上
-    //   「换一个再来一次」会滑向重试语义（请求体可能已经发出去了）。
-    //   而 L4 在建连之前**一个字节都还没走**：客户端还没发任何东西，上游也还没被打扰，
-    //   换一个是完全透明的。⇒ 从策略挑中的那个开始，按上游列表顺序往后试一圈。
+    //   HTTP 那邊一個上游的候選全失敗就回 502，**不換上游** —— 理由是那條路上
+    //   「換一個再來一次」會滑向重試語義（請求體可能已經發出去了）。
+    //   而 L4 在建連之前**一個位元組都還沒走**：用戶端還沒發任何東西，上游也還沒被打擾，
+    //   換一個是完全透明的。⇒ 從策略挑中的那個開始，按上游列表順序往後試一圈。
     //
-    //   ⚠ 不这么做的代价是具体的：两个上游、挂掉一个，客户端会**每两条连接坏一条**，
-    //   而枢衡自己一切正常 —— 这正是「L4 面能不能真用」的分界线。
+    //   ⚠ 不這麼做的代價是具體的：兩個上游、掛掉一個，用戶端會**每兩條連接壞一條**，
+    //   而樞衡自己一切正常 —— 這正是「L4 面能不能真用」的分界線。
     let n = target.upstreams.len();
     let mut chosen: Option<(&fulcrum_runtime::Upstream, TcpStream)> = None;
     let mut last_err: Option<String> = None;
@@ -638,11 +638,11 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
         let up = &target.upstreams[(start + k) % n];
         let candidates = up.dial_candidates();
         if candidates.is_empty() || !up.is_healthy() {
-            // 与 `pick_index_by` 同一把筛子：解析不出地址、或被健康检查判死的，跳过。
+            // 與 `pick_index_by` 同一把篩子：解析不出位址、或被健康檢查判死的，跳過。
             continue;
         }
-        // ★ 逐个候选试，不是只试第一个。理由与 HTTP 那边逐字相同：
-        //   `localhost` 解出来第一个可能是 `[::1]`，而上游只监听 `127.0.0.1`。
+        // ★ 逐個候選試，不是隻試第一個。理由與 HTTP 那邊逐字相同：
+        //   `localhost` 解出來第一個可能是 `[::1]`，而上游只監聽 `127.0.0.1`。
         for (i, dial) in candidates.iter().enumerate() {
             match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(dial)).await {
                 Ok(Ok(s)) => {
@@ -675,17 +675,17 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
         );
         return;
     };
-    // ── 发 PROXY 头（批 D）──────────────────────────────────────────────
+    // ── 發 PROXY 頭（批 D）──────────────────────────────────────────────
     //
-    // ★ ★ ★ **它必须是这条连接上的第一批字节 —— 在重放 prelude 之前。**
-    //   ⚠ 顺序反了，上游会把 ClientHello 的开头当成 PROXY 头去解析，
-    //   而现场表现是「上游握手失败」，与「我们没重放」长得一模一样。
+    // ★ ★ ★ **它必須是這條連接上的第一批位元組 —— 在重放 prelude 之前。**
+    //   ⚠ 順序反了，上游會把 ClientHello 的開頭當成 PROXY 頭去解析，
+    //   而現場表現是「上游握手失敗」，與「我們沒重放」長得一模一樣。
     //
-    // ★ 报给上游的是 `effective_ip` 那一侧的地址：我们自己也收了一个 PROXY 头时，
-    //   写出去的是**头里那个客户端**（链式传递）—— 隔了几层，上游看到的仍是最初那个人。
+    // ★ 報給上游的是 `effective_ip` 那一側的位址：我們自己也收了一個 PROXY 頭時，
+    //   寫出去的是**頭裡那個用戶端**（鏈式傳遞）—— 隔了幾層，上游看到的仍是最初那個人。
     if let Some(ver) = l.proxy_protocol {
-        // ⚠ ⚠ 造头要**两个**地址，且族必须一致；拿不到本地地址时不硬凑
-        //   （`encode` 会退成 LOCAL / UNKNOWN，让上游知道「没有可报的客户端」）。
+        // ⚠ ⚠ 造頭要**兩個**位址，且族必須一致；拿不到本機位址時不硬湊
+        //   （`encode` 會退成 LOCAL / UNKNOWN，讓上游知道「沒有可報的用戶端」）。
         let local = client
             .local_addr()
             .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
@@ -704,10 +704,10 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
             ver.as_str()
         );
     }
-    // ★ ★ ★ **先把 peek 时读走的字节原样送过去**，再进双向搬运。
-    //   ⚠ 少了这一步，上游收到的 TLS 流会**从 ClientHello 中间开始** ——
-    //   现场表现是「握手失败」，而枢衡这边一切正常：连接建立了、字节也在流动。
-    //   ★ 这是「透传」这两个字的全部重量：我们看了，但**不许吃掉**。
+    // ★ ★ ★ **先把 peek 時讀走的位元組原樣送過去**，再進雙向搬運。
+    //   ⚠ 少了這一步，上游收到的 TLS 流會**從 ClientHello 中間開始** ——
+    //   現場表現是「握手失敗」，而樞衡這邊一切正常：連接建立了、位元組也在流動。
+    //   ★ 這是「透傳」這兩個字的全部重量：我們看了，但**不許吃掉**。
     if !prelude.is_empty()
         && let Err(e) = upstream.write_all(&prelude).await
     {
@@ -716,19 +716,19 @@ async fn handle_conn(shared: Arc<SharedRuntime>, listen: String, mut client: Tcp
         return;
     }
     debug!("[l4] {listen} → {}（透传）", up.addr);
-    // ★ `copy_bidirectional` 一端读到 EOF 就把另一端 shutdown 写方向，
-    //   于是**半关闭**（一端说完了、另一端还在说）能透过去 —— 这不是细节：
-    //   不少协议（含某些数据库客户端）靠半关闭表示「我说完了」。
+    // ★ `copy_bidirectional` 一端讀到 EOF 就把另一端 shutdown 寫方向，
+    //   於是**半關閉**（一端說完了、另一端還在說）能透過去 —— 這不是細節：
+    //   不少協定（含某些資料庫用戶端）靠半關閉表示「我說完了」。
     match tokio::io::copy_bidirectional(&mut client, &mut upstream).await {
-        // ⚠ `c2u` **不含**上面重放的那一段：那是我们自己写过去的，不经过 `copy_bidirectional`。
-        //   ⇒ 把重放量单独报出来，否则日志会说「客户端→上游 0B」而上游明明收到了 ClientHello。
+        // ⚠ `c2u` **不含**上面重放的那一段：那是我們自己寫過去的，不經過 `copy_bidirectional`。
+        //   ⇒ 把重放量單獨報出來，否則紀錄會說「用戶端→上游 0B」而上游明明收到了 ClientHello。
         Ok((c2u, u2c)) => debug!(
             "[l4] {listen} 连接结束：客户端→上游 {c2u}B（另有重放 {}B），上游→客户端 {u2c}B",
             prelude.len()
         ),
-        // ⚠ 这里**只用 debug**：连接被任一端重置在 L4 上是家常便饭
-        //   （客户端 Ctrl-C、上游重启）。★ 把它记成 error 会让日志里全是噪音，
-        //   而噪音会把真正该看的那几行埋掉。
+        // ⚠ 這裡**只用 debug**：連接被任一端重置在 L4 上是家常便飯
+        //   （用戶端 Ctrl-C、上游重新啟動）。★ 把它記成 error 會讓紀錄裡全是噪音，
+        //   而噪音會把真正該看的那幾行埋掉。
         Err(e) => debug!("[l4] {listen} 连接结束于错误：{e}"),
     }
     up.release();
@@ -742,9 +742,9 @@ impl Service for TcpProxyService {
         mut shutdown: ShutdownWatch,
         listeners_per_fd: usize,
     ) {
-        // ★ 这个参数由 `listener_tasks_per_fd` 配置驱动，Pingora 原生服务会真的按它
-        //   开多个 accept 任务。本服务**没有实现**它 —— 与其一声不响地只开一个
-        //   （配置就成了谎话），不如直接拒绝启动。
+        // ★ 這個參數由 `listener_tasks_per_fd` 設定驅動，Pingora 原生服務會真的按它
+        //   開多個 accept 任務。本服務**沒有實作**它 —— 與其一聲不響地只開一個
+        //   （設定就成了謊話），不如直接拒絕啟動。
         if listeners_per_fd > 1 {
             error!(
                 "[l4] listener_tasks_per_fd={listeners_per_fd} 不被 L4 服务支持（它只会开 1 个 accept 任务）。\
@@ -756,8 +756,8 @@ impl Service for TcpProxyService {
         let listener = match build_listener(&self.bind, &self.fd_key, fds, self.upgrading).await {
             Ok(l) => l,
             Err(e) => {
-                // ⚠ 起不来就是起不来，**不许降级成一条警告**：一个「HTTP 好好的、
-                //   而那个数据库端口没人在听」的进程，查起来会先怀疑防火墙。
+                // ⚠ 起不來就是起不來，**不許降級成一條警告**：一個「HTTP 好好的、
+                //   而那個資料庫連接埠沒人在聽」的處理程序，查起來會先懷疑防火牆。
                 error!("[l4] 在 {} 上建不出监听器：{e}", self.bind);
                 return;
             }
@@ -766,27 +766,27 @@ impl Service for TcpProxyService {
         loop {
             tokio::select! {
                 _ = shutdown.changed() => {
-                    // 停止 accept，**已建立的连接留在本代继续跑完**
-                    //（排空由 Pingora 的 grace period 管，与 HTTP 那边同一个预算）。
+                    // 停止 accept，**已建立的連接留在本代繼續跑完**
+                    //（排空由 Pingora 的 grace period 管，與 HTTP 那邊同一個預算）。
                     info!("[l4] {} 收到停机信号，停止 accept（已建立的连接继续）", self.bind);
                     break;
                 }
                 accepted = listener.accept() => {
                     match accepted {
                         Ok((sock, _peer)) => {
-                            // ★ Nagle 关掉：L4 透传里典型的是小包一来一回（数据库协议、
-                            //   游戏心跳），而 Nagle 会为了凑满一个段**故意等** ——
-                            //   代价是延迟，收益在这里几乎为零。
+                            // ★ Nagle 關掉：L4 透傳裡典型的是小包一來一回（資料庫協定、
+                            //   遊戲心跳），而 Nagle 會為了湊滿一個段**故意等** ——
+                            //   代價是延遲，收益在這裡幾乎為零。
                             if let Err(e) = sock.set_nodelay(true) {
                                 debug!("[l4] set_nodelay 失败（{e}）—— 继续，它只影响延迟");
                             }
                             let shared = self.shared.clone();
                             let listen = self.listen.clone();
-                            // ★ 连接计数（**M2 批 O**）：包一层而不改 `handle_conn` 的签名。
+                            // ★ 連接計數（**M2 批 O**）：包一層而不改 `handle_conn` 的簽名。
                             let g = self.conn.guard();
                             tokio::spawn(async move {
-                                // ⚠ ⚠ **必须绑名字**：写成 `let _ = g;` 会当场 drop，
-                                //   于是 active 恒为 0 而 total 照涨，且不会有东西红。
+                                // ⚠ ⚠ **必須綁名字**：寫成 `let _ = g;` 會當場 drop，
+                                //   於是 active 恆為 0 而 total 照漲，且不會有東西紅。
                                 let _g = g;
                                 handle_conn(shared, listen, sock).await
                             });
@@ -801,8 +801,8 @@ impl Service for TcpProxyService {
         }
     }
 
-    /// 这个 service 用几个线程（**G35 / G140**）。⚠ 返回 `Some` 时 pingora
-    /// **不再看**全局 `conf.threads` —— 见 `server/mod.rs` 的
+    /// 這個 service 用幾個執行緒（**G35 / G140**）。⚠ 回傳 `Some` 時 pingora
+    /// **不再看**全域 `conf.threads` —— 見 `server/mod.rs` 的
     /// `service.threads().unwrap_or(conf.threads)`。
     fn threads(&self) -> Option<usize> {
         self.threads
@@ -812,76 +812,76 @@ impl Service for TcpProxyService {
         &self.name
     }
 
-    /// pingora 0.9.0（上游 `f82478a`）：新一代据此关掉「没有任何服务认领」的继承 fd。
-    /// ⚠ 必须是 fd 表的**键**（带前缀），⛔ 不是 bind 地址 —— 写成地址，新一代会先关掉自己要继承的
-    ///   那个 fd；不实现（缺省 `None`）会让**整个进程**的清理静默关闭。钉在单测 `*_服务声明的正是它的_fd_表键`。
+    /// pingora 0.9.0（上游 `f82478a`）：新一代據此關掉「沒有任何服務認領」的繼承 fd。
+    /// ⚠ 必須是 fd 表的**鍵**（帶前綴），⛔ 不是 bind 位址 —— 寫成位址，新一代會先關掉自己要繼承的
+    ///   那個 fd；不實作（預設 `None`）會讓**整個處理程序**的清理靜默關閉。釘在單測 `*_服务声明的正是它的_fd_表键`。
     fn listen_addresses(&self) -> Option<Vec<String>> {
         Some(vec![self.fd_key.clone()])
     }
 }
 // ══════════════════════════════════════════════════════════════════════════
-// UDP 透传（M2 批 B）
+// UDP 透傳（M2 批 B）
 // ══════════════════════════════════════════════════════════════════════════
 //
-// ★ ★ **UDP 与 TCP 不是「同一件事换个协议」**，三处差别都会咬人：
+// ★ ★ **UDP 與 TCP 不是「同一件事換個協定」**，三處差別都會咬人：
 //
 // | | TCP | UDP |
 // |---|---|---|
-// | 会话边界 | 内核给的（accept / FIN）| **没有** —— 自己按客户端地址维护会话表 |
-// | 空闲超时 | 有意不设 | **必须有**，否则每个出现过的地址都永久占一个 socket |
-// | 停机 | 停止 `accept` | ★ **停止 `recv_from`** —— 不停的话老一代会偷走新一代的数据报 |
+// | 工作階段邊界 | 核心給的（accept / FIN）| **沒有** —— 自己按用戶端位址維護工作階段表 |
+// | 空閒超時 | 有意不設 | **必須有**，否則每個出現過的位址都永久佔一個 socket |
+// | 停機 | 停止 `accept` | ★ **停止 `recv_from`** —— 不停的話老一代會偷走新一代的資料報 |
 //
-// ⚠ 最后一行：换代时两代在 `recv_from` **同一个** socket，谁先醒谁拿走。
-// 老一代吃掉本该属于新一代的会话首包，而客户端只看到「换代那几秒有些请求没回应」，
-// 两边日志都正常。
+// ⚠ 最後一行：換代時兩代在 `recv_from` **同一個** socket，誰先醒誰拿走。
+// 老一代吃掉本該屬於新一代的工作階段首包，而用戶端只看到「換代那幾秒有些請求沒回應」，
+// 兩邊紀錄都正常。
 
-/// 会话空闲多久回收。
+/// 工作階段空閒多久回收。
 ///
-/// ★ TCP 那边**有意不设**空闲超时，UDP 这边**必须有**：UDP 没有 FIN，
-/// 不回收的话，每一个出现过的客户端地址都会永远占着一个上游 socket 与一个任务。
-/// ⚠ ⚠ 而 **UDP 源地址是可伪造的** ⇒ 那是一条**远程可触发**的 fd 耗尽路径，
-/// 不是理论风险。
-/// ⚠ 60 秒是折中：DNS 查询在毫秒级、游戏心跳通常远短于它；
-/// ⏳ 让它可配是后续批的事（`l4` 块目前没有放选项的位置，见 dsl-reference §4.5）。
+/// ★ TCP 那邊**有意不設**空閒超時，UDP 這邊**必須有**：UDP 沒有 FIN，
+/// 不回收的話，每一個出現過的用戶端位址都會永遠佔著一個上游 socket 與一個任務。
+/// ⚠ ⚠ 而 **UDP 源位址是可偽造的** ⇒ 那是一條**遠程可觸發**的 fd 耗盡路徑，
+/// 不是理論風險。
+/// ⚠ 60 秒是折中：DNS 查詢在毫秒級、遊戲心跳通常遠短於它；
+/// ⏳ 讓它可配是後續批的事（`l4` 塊目前沒有放選項的位置，見 dsl-reference §4.5）。
 const UDP_SESSION_IDLE: Duration = Duration::from_secs(60);
 
-/// 每个监听器的并发会话上限。
+/// 每個監聽器的並行工作階段上限。
 ///
-/// ★ 与上面那条是同一件事的两半：超时管「什么时候放」，上限管「最多同时占多少」。
-/// ⚠ 没有上限时，一次伪造源地址的洪水能在超时到期**之前**就把 fd 吃光。
+/// ★ 與上面那條是同一件事的兩半：超時管「什麼時候放」，上限管「最多同時佔多少」。
+/// ⚠ 沒有上限時，一次偽造源位址的洪水能在超時到期**之前**就把 fd 吃光。
 const UDP_MAX_SESSIONS: usize = 1024;
 
-/// 单个数据报缓冲区。
+/// 單個資料報緩衝區。
 ///
-/// ★ 取 65535（UDP 载荷上限）而不是「够用就好」的 2 KiB：`recv` 读不下的部分
-/// 会被**静默丢弃**（不带 `MSG_TRUNC` 就看不出来），现场表现是「大包偶尔损坏」——
-/// 那种缺陷会被归咎于网络。
-/// ⚠ 代价写在明处：每条会话一份 ⇒ 上限 1024 × 64 KiB ≈ **64 MiB** 的最坏占用。
+/// ★ 取 65535（UDP 載荷上限）而不是「夠用就好」的 2 KiB：`recv` 讀不下的部分
+/// 會被**靜默丟棄**（不帶 `MSG_TRUNC` 就看不出來），現場表現是「大包偶爾損壞」——
+/// 那種缺陷會被歸咎於網路。
+/// ⚠ 代價寫在明處：每條工作階段一份 ⇒ 上限 1024 × 64 KiB ≈ **64 MiB** 的最壞佔用。
 const UDP_DATAGRAM_MAX: usize = 65535;
 
-/// 会话清扫的打点间隔。★ 与空闲超时分开：超时是**判据**，这个是**检查频率**。
+/// 工作階段清掃的打點間隔。★ 與空閒超時分開：超時是**判據**，這個是**檢查頻率**。
 const UDP_SWEEP_INTERVAL: Duration = Duration::from_secs(10);
 
-/// 会话表里的一格。
+/// 工作階段表裡的一格。
 struct Session<T> {
     payload: T,
     last_seen: Instant,
 }
 
-/// 插入的结果。
+/// 插入的結果。
 #[derive(Debug, PartialEq, Eq)]
 pub enum UdpAdmit {
     Ok,
-    /// 到达并发上限，**没有插入**。
+    /// 到達並行上限，**沒有插入**。
     AtCapacity,
 }
 
-/// UDP 会话表。
+/// UDP 工作階段表。
 ///
-/// ★ ★ 它被**故意做成不碰网络、不看时钟**的结构：`now` 从参数进来、载荷是泛型，
-/// 于是「到点回收」「到顶拒绝」这两条可以**确定性地单测**，
-/// 不必在门禁里真等 60 秒。⚠ 这是 G56 那一块（续期判定模块里没有一个
-/// `SystemTime::now()`）的同一招 —— **时间是参数，不是环境**。
+/// ★ ★ 它被**故意做成不碰網路、不看時鐘**的結構：`now` 從參數進來、載荷是泛型，
+/// 於是「到點回收」「到頂拒絕」這兩條可以**確定性地單測**，
+/// 不必在門禁裡真等 60 秒。⚠ 這是 G56 那一塊（續期判定模組裡沒有一個
+/// `SystemTime::now()`）的同一招 —— **時間是參數，不是環境**。
 pub struct UdpSessionTable<T> {
     map: HashMap<SocketAddr, Session<T>>,
     cap: usize,
@@ -905,18 +905,18 @@ impl<T> UdpSessionTable<T> {
         self.map.is_empty()
     }
 
-    /// 已有会话就**续期**并把载荷给出去；没有就 `None`。
+    /// 已有工作階段就**續期**並把載荷給出去；沒有就 `None`。
     pub fn touch(&mut self, peer: &SocketAddr, now: Instant) -> Option<&T> {
         let s = self.map.get_mut(peer)?;
         s.last_seen = now;
         Some(&s.payload)
     }
 
-    /// 收一条新会话。
+    /// 收一條新工作階段。
     ///
-    /// ★ 到顶时**拒绝新的**，而不是踢掉一条老的 —— 后者会让一次洪水把正常客户端
-    /// 全部挤出去（LRU 在这里是攻击者的朋友）。
-    /// ⚠ 拒绝时**不接管载荷**：谁创建谁负责收尾，比「谁拒绝谁负责」少一条隐式约定。
+    /// ★ 到頂時**拒絕新的**，而不是踢掉一條老的 —— 後者會讓一次洪水把正常用戶端
+    /// 全部擠出去（LRU 在這裡是攻擊者的朋友）。
+    /// ⚠ 拒絕時**不接管載荷**：誰建立誰負責收尾，比「誰拒絕誰負責」少一條隱式約定。
     pub fn admit(&mut self, peer: SocketAddr, payload: T, now: Instant) -> UdpAdmit {
         if self.map.len() >= self.cap {
             return UdpAdmit::AtCapacity;
@@ -931,7 +931,7 @@ impl<T> UdpSessionTable<T> {
         UdpAdmit::Ok
     }
 
-    /// 回收空闲超过 `idle` 的会话，把载荷交还给调用方处理（比如 `abort` 任务）。
+    /// 回收空閒超過 `idle` 的工作階段，把載荷交還給呼叫方處理（比如 `abort` 任務）。
     pub fn sweep(&mut self, now: Instant) -> Vec<(SocketAddr, T)> {
         let idle = self.idle;
         let dead: Vec<SocketAddr> = self
@@ -946,23 +946,23 @@ impl<T> UdpSessionTable<T> {
     }
 }
 
-/// 生产环境里一条会话真正带着的东西。
+/// 生產環境裡一條工作階段真正帶著的東西。
 pub struct LiveSession {
-    /// 连到上游的那个 socket。转发用它。
+    /// 連到上游的那個 socket。轉發用它。
     up: Arc<UdpSocket>,
-    /// 回包任务。★ 回收会话时必须 `abort()` —— 否则任务继续持有那个 socket，
-    /// 而表里已经没有它了：**表看起来在回收，fd 却没还回来**。
+    /// 回包任務。★ 回收工作階段時必須 `abort()` —— 否則任務繼續持有那個 socket，
+    /// 而表裡已經沒有它了：**表看起來在回收，fd 卻沒還回來**。
     task: tokio::task::JoinHandle<()>,
-    /// 上游地址，只用于日志。
+    /// 上游位址，只用於紀錄。
     upstream: String,
 }
 
-/// 一个 `l4 udp` 监听器对应的服务。
+/// 一個 `l4 udp` 監聽器對應的服務。
 pub struct UdpProxyService {
-    /// 这个 service 用几个线程（**G35 / G140**）。`None` = 跟全局 `conf.threads`。
+    /// 這個 service 用幾個執行緒（**G35 / G140**）。`None` = 跟全域 `conf.threads`。
     ///
-    /// ★ 与 pingora `ListeningService.threads` 同名同义 —— 自建 service 也参与
-    /// 同一套角色分配，⛔ 不许在这里另立一套。由 `serve()` 在建好之后设。
+    /// ★ 與 pingora `ListeningService.threads` 同名同義 —— 自建 service 也參與
+    /// 同一套角色分配，⛔ 不許在這裡另立一套。由 `serve()` 在建好之後設。
     pub threads: Option<usize>,
     shared: Arc<SharedRuntime>,
     listen: String,
@@ -970,8 +970,8 @@ pub struct UdpProxyService {
     fd_key: String,
     upgrading: bool,
     name: String,
-    /// 这个监听器的连接计数格（**M2 批 O**）。⚠ UDP 那一格数的是**会话**，且是从
-    /// `sessions.len()` **派生**的 —— 见 `run()` 里循环开头那一行。
+    /// 這個監聽器的連接計數格（**M2 批 O**）。⚠ UDP 那一格數的是**工作階段**，且是從
+    /// `sessions.len()` **派生**的 —— 見 `run()` 裡循環開頭那一行。
     conn: crate::conn_stats::BoundConn,
 }
 
@@ -985,7 +985,7 @@ impl UdpProxyService {
     ) -> Self {
         let conn = conn_reg.bind(crate::conn_stats::Entrypoint::L4Udp, &bind);
         Self {
-            // ★ 缺省 `None` = 跟全局；由 `serve()` 按角色设（G140）。
+            // ★ 預設 `None` = 跟全域；由 `serve()` 按角色設（G140）。
             threads: None,
             shared,
             listen: listen.to_string(),
@@ -998,11 +998,11 @@ impl UdpProxyService {
     }
 }
 
-/// 取 fd（继承）或新建 UDP 监听 socket，并把新建的放回表里供下一代继承。
+/// 取 fd（繼承）或新建 UDP 監聽 socket，並把新建的放回表裡供下一代繼承。
 ///
-/// ⚠ 与 TCP 那一份**逐字同构**，只是类型不同。两份都留着而不是抽成泛型：
-/// `TcpListener` 与 `UdpSocket` 的接管路径（`from_std`）不共享 trait，
-/// 硬抽出来的那一层只会把 SAFETY 注释挤走 —— 而那几段注释是这里最值钱的东西。
+/// ⚠ 與 TCP 那一份**逐字同構**，只是類型不同。兩份都留著而不是抽成泛型：
+/// `TcpListener` 與 `UdpSocket` 的接管路徑（`from_std`）不共享 trait，
+/// 硬抽出來的那一層只會把 SAFETY 註解擠走 —— 而那幾段註解是這裡最值錢的東西。
 async fn build_udp_listener(
     bind: &str,
     key: &str,
@@ -1019,15 +1019,15 @@ async fn build_udp_listener(
         return UdpSocket::bind(bind).await;
     };
 
-    // ★ 0.9.0（上游 1d93711）：ListenFds 换成 parking_lot 锁 ⇒ 守卫不 Send、⛔ 不许跨 `.await`。
-    //   只在两个同步的瞬间持锁（查表、登记）；bind 期间不持锁 —— 每个服务的键独占，不需要按地址串行。
+    // ★ 0.9.0（上游 1d93711）：ListenFds 換成 parking_lot 鎖 ⇒ 守衛不 Send、⛔ 不許跨 `.await`。
+    //   只在兩個同步的瞬間持鎖（查表、登記）；bind 期間不持鎖 —— 每個服務的鍵獨佔，不需要按位址串行。
     let inherited = table.lock().get(key).copied();
 
     if let Some(fd) = inherited {
         info!("[l4] 继承了 UDP 监听 fd={fd}（{key}）—— 升级窗口内这个端口没有重新 bind 过");
-        // SAFETY: fd 由上一代经 SCM_RIGHTS 传来，此处接管其所有权，且同一个键只取用一次。
-        // ★ ManuallyDrop 的理由与 TCP 那一份完全相同：提前析构会 `close(fd)`，
-        //   而表里那条记录仍指着这个号码，下一次升级就会把一个无关的 fd 传下去。
+        // SAFETY: fd 由上一代經 SCM_RIGHTS 傳來，此處接管其所有權，且同一個鍵只取用一次。
+        // ★ ManuallyDrop 的理由與 TCP 那一份完全相同：提前析構會 `close(fd)`，
+        //   而表裡那條記錄仍指著這個號碼，下一次升級就會把一個無關的 fd 傳下去。
         let std_sock = ManuallyDrop::new(unsafe { std::net::UdpSocket::from_raw_fd(fd) });
         std_sock.set_nonblocking(true)?;
         let owned = ManuallyDrop::into_inner(std_sock);
@@ -1050,7 +1050,7 @@ async fn build_udp_listener(
     Ok(sock)
 }
 
-/// 给一条新客户端地址建会话：连上游 + 起回包任务。
+/// 給一條新用戶端位址建工作階段：連上游 + 起回包任務。
 async fn open_udp_session(
     listener: Arc<UdpSocket>,
     listen: &str,
@@ -1058,17 +1058,17 @@ async fn open_udp_session(
     upstream_addr: &str,
     dial: SocketAddr,
 ) -> std::io::Result<LiveSession> {
-    // ★ 按上游地址族选本地绑定地址：给 IPv6 上游 bind 一个 `0.0.0.0` 会直接失败。
+    // ★ 按上游位址族選本機綁定位址：給 IPv6 上游 bind 一個 `0.0.0.0` 會直接失敗。
     let local: SocketAddr = if dial.is_ipv4() {
         "0.0.0.0:0".parse().expect("常量地址")
     } else {
         "[::]:0".parse().expect("常量地址")
     };
     let up = UdpSocket::bind(local).await?;
-    // ⚠ UDP 的 `connect` **不是握手**，它只是记下默认对端（顺带让内核过滤掉别人发来的包）。
-    //   ★ 所以它几乎不会失败，也**证明不了上游活着** —— 这正是为什么 TCP 那边的
-    //   「建连阶段换上游」在这里**没有对应物**：UDP 上没有任何东西能在发包之前
-    //   告诉我们这个上游是死的。⇒ 挑一次就用它，换上游要等被动熔断（`passive_fail`，还没做）。
+    // ⚠ UDP 的 `connect` **不是握手**，它只是記下預設對端（順帶讓核心過濾掉別人發來的包）。
+    //   ★ 所以它幾乎不會失敗，也**證明不了上游活著** —— 這正是為什麼 TCP 那邊的
+    //   「建連階段換上游」在這裡**沒有對應物**：UDP 上沒有任何東西能在發包之前
+    //   告訴我們這個上游是死的。⇒ 挑一次就用它，換上游要等被動熔斷（`passive_fail`，還沒做）。
     up.connect(dial).await?;
     let up = Arc::new(up);
     let up_for_task = up.clone();
@@ -1129,31 +1129,31 @@ impl Service for UdpProxyService {
             UdpSessionTable::new(UDP_MAX_SESSIONS, UDP_SESSION_IDLE);
         let mut buf = vec![0u8; UDP_DATAGRAM_MAX];
         let mut sweep = tokio::time::interval(UDP_SWEEP_INTERVAL);
-        // ⚠ tokio 的第一次 `tick()` 立即返回，跳掉它 —— 否则服务一起来就先扫一遍空表。
+        // ⚠ tokio 的第一次 `tick()` 立即回傳，跳掉它 —— 否則服務一起來就先掃一遍空表。
         sweep.tick().await;
-        // ★ 到顶时**限流地说**：不限流的话，一次洪水会让日志本身变成第二次攻击。
+        // ★ 到頂時**限流地說**：不限流的話，一次洪水會讓紀錄本身變成第二次攻擊。
         let mut last_cap_warn: Option<Instant> = None;
 
         loop {
-            // ── 连接计数：`active` 从会话表**派生**（**M2 批 O**）──────────────
+            // ── 連接計數：`active` 從工作階段表**派生**（**M2 批 O**）──────────────
             //
-            // ★ ★ ⛔ **不在旁边再记一份 `+1/-1`**：`sessions.len()` 本身就是权威，
-            //   而另记一份会让清扫 `abort()`、到上限被拒、停机不再收包这三条路
-            //   各需要记得减一 —— 那正是 D18/G66 那个分家形状。
-            // ⚠ ⚠ **写在循环体开头而不是末尾**：下面 recv 那一支有七八处 `continue`，
-            //   而 `continue` **跳过循环体末尾** ⇒ 写在末尾的话，「到上限被拒」
-            //   「找不到上游」「建 socket 失败」这些路径上它根本不执行。
-            // ★ 开头则**每一轮迭代必经**；而阻塞在 `select!` 期间 `sessions` 不可能变
-            //   （这个循环是它唯一的改写者）⇒ 这个读数是**精确**的，不是陈旧的。
+            // ★ ★ ⛔ **不在旁邊再記一份 `+1/-1`**：`sessions.len()` 本身就是權威，
+            //   而另記一份會讓清掃 `abort()`、到上限被拒、停機不再收包這三條路
+            //   各需要記得減一 —— 那正是 D18/G66 那個分家形狀。
+            // ⚠ ⚠ **寫在循環體開頭而不是末尾**：下面 recv 那一支有七八處 `continue`，
+            //   而 `continue` **跳過循環體末尾** ⇒ 寫在末尾的話，「到上限被拒」
+            //   「找不到上游」「建 socket 失敗」這些路徑上它根本不執行。
+            // ★ 開頭則**每一輪迭代必經**；而阻塞在 `select!` 期間 `sessions` 不可能變
+            //   （這個循環是它唯一的改寫者）⇒ 這個讀數是**精確**的，不是陳舊的。
             self.conn.set_active(sessions.len());
             tokio::select! {
                 _ = shutdown.changed() => {
-                    // ★ ★ ★ **这一支是 UDP 与 TCP 最重要的差别**：停机信号一到就
-                    //   **不再 `recv_from`**。⚠ 继续收的话，老一代会与新一代抢同一个
-                    //   socket 上的数据报（两代持有的是同一个 fd），把本该属于新一代的
-                    //   首包吃掉 —— 客户端只会看到「换代那几秒有些请求没回应」。
-                    //   ⇒ 已建立会话的**回包任务不动**（它们只 `send_to`，不抢 `recv`），
-                    //     在飞的请求还能拿到应答，与 TCP 那边「老连接继续跑完」一致。
+                    // ★ ★ ★ **這一支是 UDP 與 TCP 最重要的差別**：停機信號一到就
+                    //   **不再 `recv_from`**。⚠ 繼續收的話，老一代會與新一代搶同一個
+                    //   socket 上的資料報（兩代持有的是同一個 fd），把本該屬於新一代的
+                    //   首包吃掉 —— 用戶端只會看到「換代那幾秒有些請求沒回應」。
+                    //   ⇒ 已建立工作階段的**回包任務不動**（它們只 `send_to`，不搶 `recv`），
+                    //     在飛的請求還能拿到應答，與 TCP 那邊「老連接繼續跑完」一致。
                     info!(
                         "[l4] {} 收到停机信号，停止收包（{} 条会话的回包任务继续）",
                         self.bind,
@@ -1164,8 +1164,8 @@ impl Service for UdpProxyService {
                 _ = sweep.tick() => {
                     let now = Instant::now();
                     for (peer, s) in sessions.sweep(now) {
-                        // ★ 必须 abort：任务持有那个上游 socket，光从表里删掉
-                        //   只是把 fd 从「看得见」变成「看不见」。
+                        // ★ 必須 abort：任務持有那個上游 socket，光從表裡刪掉
+                        //   只是把 fd 從「看得見」變成「看不見」。
                         s.task.abort();
                         debug!("[l4] {}：会话 {peer} → {} 空闲超时，已回收", self.bind, s.upstream);
                     }
@@ -1180,7 +1180,7 @@ impl Service for UdpProxyService {
                         }
                     };
                     let now = Instant::now();
-                    // ① 老会话：续期后直接转发。
+                    // ① 老工作階段：續期後直接轉發。
                     if let Some(s) = sessions.touch(&peer, now) {
                         let up = s.up.clone();
                         if let Err(e) = up.send(&buf[..n]).await {
@@ -1188,7 +1188,7 @@ impl Service for UdpProxyService {
                         }
                         continue;
                     }
-                    // ② 新会话：先看上限，再挑上游。
+                    // ② 新工作階段：先看上限，再挑上游。
                     if sessions.len() >= UDP_MAX_SESSIONS {
                         let say = last_cap_warn
                             .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
@@ -1210,8 +1210,8 @@ impl Service for UdpProxyService {
                         );
                         continue;
                     };
-                    // ★ UDP **没有分流**：ClientHello 是 TLS 的东西，而 QUIC 的 Initial 是加密的。
-                    //   ⇒ 这里只有兜底那一组上游；配置层与装载期都拦过 `udp` 上写 `sni`/`alpn`。
+                    // ★ UDP **沒有分流**：ClientHello 是 TLS 的東西，而 QUIC 的 Initial 是加密的。
+                    //   ⇒ 這裡只有備援那一組上游；設定層與裝載期都攔過 `udp` 上寫 `sni`/`alpn`。
                     let Some(t) = &l.target else {
                         warn!("[l4] {}：没有兜底上游，丢弃来自 {peer} 的数据报", self.bind);
                         continue;
@@ -1243,12 +1243,12 @@ impl Service for UdpProxyService {
                     let sock = session.up.clone();
                     let task = session.task.abort_handle();
                     debug!("[l4] {}：新会话 {peer} → {}（UDP）", self.bind, up.addr);
-                    // ★ `total` 是**事件点**（这一处），而 `active` 是派生的 ——
-                    //   两者有意走不同的路：前者要累计、后者要与会话表恒等。
+                    // ★ `total` 是**事件點**（這一處），而 `active` 是派生的 ——
+                    //   兩者有意走不同的路：前者要累計、後者要與工作階段表恆等。
                     self.conn.bump_total();
                     if sessions.admit(peer, session, now) == UdpAdmit::AtCapacity {
-                        // ⚠ 走不到（上面已经查过上限），但**不假设**：真到了这里
-                        //   就把刚起的任务收掉，否则它会成为一个没人认领的 fd。
+                        // ⚠ 走不到（上面已經查過上限），但**不假設**：真到了這裡
+                        //   就把剛起的任務收掉，否則它會成為一個沒人認領的 fd。
                         task.abort();
                         continue;
                     }
@@ -1260,8 +1260,8 @@ impl Service for UdpProxyService {
         }
     }
 
-    /// 这个 service 用几个线程（**G35 / G140**）。⚠ 返回 `Some` 时 pingora
-    /// **不再看**全局 `conf.threads` —— 见 `server/mod.rs` 的
+    /// 這個 service 用幾個執行緒（**G35 / G140**）。⚠ 回傳 `Some` 時 pingora
+    /// **不再看**全域 `conf.threads` —— 見 `server/mod.rs` 的
     /// `service.threads().unwrap_or(conf.threads)`。
     fn threads(&self) -> Option<usize> {
         self.threads
@@ -1271,27 +1271,27 @@ impl Service for UdpProxyService {
         &self.name
     }
 
-    /// pingora 0.9.0（上游 `f82478a`）：新一代据此关掉「没有任何服务认领」的继承 fd。
-    /// ⚠ 必须是 fd 表的**键**（带前缀），⛔ 不是 bind 地址 —— 写成地址，新一代会先关掉自己要继承的
-    ///   那个 fd；不实现（缺省 `None`）会让**整个进程**的清理静默关闭。钉在单测 `*_服务声明的正是它的_fd_表键`。
+    /// pingora 0.9.0（上游 `f82478a`）：新一代據此關掉「沒有任何服務認領」的繼承 fd。
+    /// ⚠ 必須是 fd 表的**鍵**（帶前綴），⛔ 不是 bind 位址 —— 寫成位址，新一代會先關掉自己要繼承的
+    ///   那個 fd；不實作（預設 `None`）會讓**整個處理程序**的清理靜默關閉。釘在單測 `*_服务声明的正是它的_fd_表键`。
     fn listen_addresses(&self) -> Option<Vec<String>> {
         Some(vec![self.fd_key.clone()])
     }
 }
 
-/// ClientHello 预读的单测。**全部脱网**：客户端那一半也走内存传输。
+/// ClientHello 預讀的單測。**全部脫網**：用戶端那一半也走記憶體傳輸。
 ///
-/// ⚠ ⚠ 在这一批之前，预读这一整块**只有端到端判据**（`tests/l4/run.sh` 那七条），
-/// 而端到端判据的夹具是一份**手工拼出来的** ClientHello ——
-/// ★ 那份字节是「我以为的 ClientHello」，它与「真客户端发来的那一份」
-/// 恰好一致过，不等于永远一致。这里让 **BoringSSL 自己**去造那一份。
+/// ⚠ ⚠ 在這一批之前，預讀這一整塊**只有端到端判據**（`tests/l4/run.sh` 那七條），
+/// 而端到端判據的夾具是一份**手動拼出來的** ClientHello ——
+/// ★ 那份位元組是「我以為的 ClientHello」，它與「真用戶端發來的那一份」
+/// 恰好一致過，不等於永遠一致。這裡讓 **BoringSSL 自己**去造那一份。
 #[cfg(test)]
 mod peek_tests {
     use super::*;
     use pingora_boringssl::ssl::SslVerifyMode;
     use std::io::{Read, Write};
 
-    /// 客户端那一半的内存传输：写下来的攒着，读永远说「还没有」。
+    /// 用戶端那一半的記憶體傳輸：寫下來的攢著，讀永遠說「還沒有」。
     #[derive(Default)]
     struct ClientSink {
         out: Vec<u8>,
@@ -1316,10 +1316,10 @@ mod peek_tests {
         }
     }
 
-    /// 用 **BoringSSL 自己**造一个真的 ClientHello 出来。
+    /// 用 **BoringSSL 自己**造一個真的 ClientHello 出來。
     fn real_client_hello(sni: Option<&str>, alpn: &[&[u8]]) -> Vec<u8> {
         let mut b = SslContextBuilder::new(SslMethod::tls()).expect("建不出客户端 ctx");
-        // ★ 我们永远不回一个字节，所以校验根本走不到；关掉只是别让它去找信任库。
+        // ★ 我們永遠不回一個位元組，所以檢核根本走不到；關掉只是別讓它去找信任庫。
         b.set_verify(SslVerifyMode::NONE);
         let ctx = b.build();
         let mut ssl = Ssl::new(&ctx).expect("建不出客户端 SSL");
@@ -1335,7 +1335,7 @@ mod peek_tests {
             ssl.set_alpn_protos(&wire).expect("设不上 ALPN");
         }
         let mut s = SslStream::new(ssl, ClientSink::default()).expect("建不出客户端流");
-        // 必然回 WANT_READ：ClientHello 写出去了，而我们不给它任何回应。
+        // 必然回 WANT_READ：ClientHello 寫出去了，而我們不給它任何回應。
         let _ = s.connect();
         let out = s.into_inner().out;
         assert!(!out.is_empty(), "客户端应当已经把 ClientHello 写出来了");
@@ -1369,14 +1369,14 @@ mod peek_tests {
 
     #[test]
     fn 大小写不同的_sni_读回来是小写() {
-        // ★ 分流规则那边也会小写化，两边都做才是幂等的；这里钉的是本侧。
+        // ★ 分流規則那邊也會小寫化，兩邊都做才是冪等的；這裡釘的是本側。
         let h = saw(peek(&real_client_hello(Some("API.Example.COM"), &[])));
         assert_eq!(h.sni.as_deref(), Some("api.example.com"));
     }
 
     #[test]
     fn 没有_sni_只有_alpn() {
-        // 对应 tests/l4/run.sh ④：无 SNI + ALPN=h2 也要能分流。
+        // 對應 tests/l4/run.sh ④：無 SNI + ALPN=h2 也要能分流。
         let h = saw(peek(&real_client_hello(None, &[b"h2"])));
         assert_eq!(h.sni, None);
         assert_eq!(h.alpn, vec![b"h2".to_vec()]);
@@ -1384,8 +1384,8 @@ mod peek_tests {
 
     #[test]
     fn 两样都没有也是一个合法的_clienthello() {
-        // ⚠ 「看清了但两样都没有」与「没看清」是两件事：前者应当走兜底规则，
-        //   后者才是「不是 TLS」。判据把它们分开。
+        // ⚠ 「看清了但兩樣都沒有」與「沒看清」是兩件事：前者應當走備援規則，
+        //   後者才是「不是 TLS」。判據把它們分開。
         let h = saw(peek(&real_client_hello(None, &[])));
         assert_eq!(h.sni, None);
         assert!(h.alpn.is_empty());
@@ -1402,9 +1402,9 @@ mod peek_tests {
 
     #[test]
     fn 半截_clienthello_是还要更多_而不是不是tls() {
-        // ★ ★ 这一条挡的是最贵的一种失效：把「还没读全」判成「不是 TLS」，
-        //   于是**每一条**分片到达的真连接都走兜底 —— 而现场表现只是
-        //   「SNI 分流偶尔不生效」，日志里一个错都没有。
+        // ★ ★ 這一條擋的是最貴的一種失效：把「還沒讀全」判成「不是 TLS」，
+        //   於是**每一條**分片到達的真連接都走備援 —— 而現場表現只是
+        //   「SNI 分流偶爾不生效」，紀錄裡一個錯都沒有。
         let full = real_client_hello(Some("api.example.com"), &[b"h2"]);
         assert!(full.len() > 20, "样本太短，这条判据会退化");
         match peek(&full[..20]) {
@@ -1419,7 +1419,7 @@ mod peek_tests {
         let full = real_client_hello(Some("b.internal.example.com"), &[b"h2", b"http/1.1"]);
         let mut tls = new_peek_stream().expect("起不来");
         let mut got = None;
-        // 每次只喂 7 个字节，逼它走完整条「还要更多」的路。
+        // 每次只喂 7 個位元組，逼它走完整條「還要更多」的路。
         for piece in full.chunks(7) {
             tls.get_mut().buf.extend_from_slice(piece);
             match drive(&mut tls) {
@@ -1438,13 +1438,13 @@ mod peek_tests {
 
     #[test]
     fn 槽里有残留时下一条也不会捡到它() {
-        // ★ ★ 这是 `drive()` 开头那句「先清槽」的**唯一**判据。
-        //   `drive()` 结尾的 `take()` 在每一条非 panic 路径上都已清空槽 ⇒ 正常预读
-        //   永远留不下残留，「连着预读两条」那种判据**够不着**这一句。
-        //   真正能留下残留的只有一条路：上一次 `drive()` 在 `accept()` 与 `take()` 之间
-        //   恐慌展开 ⇒ 这里**直接把残留摆进槽里**。
-        // > ★ ★ ★ **一道门的注释写「本门守 X」，不等于它判得动 X** ——
-        // > 唯一的验法是把 X 撤掉看它红不红。
+        // ★ ★ 這是 `drive()` 開頭那句「先清槽」的**唯一**判據。
+        //   `drive()` 結尾的 `take()` 在每一條非 panic 路徑上都已清空槽 ⇒ 正常預讀
+        //   永遠留不下殘留，「連著預讀兩條」那種判據**夠不著**這一句。
+        //   真正能留下殘留的只有一條路：上一次 `drive()` 在 `accept()` 與 `take()` 之間
+        //   恐慌展開 ⇒ 這裡**直接把殘留擺進槽裡**。
+        // > ★ ★ ★ **一道門的註解寫「本門守 X」，不等於它判得動 X** ——
+        // > 唯一的驗法是把 X 撤掉看它紅不紅。
         SEEN.with(|s| {
             *s.borrow_mut() = Some(SeenHello {
                 sni: Some("stale.example.com".into()),
@@ -1460,10 +1460,10 @@ mod peek_tests {
 
     #[test]
     fn 同一个线程上连着预读三条_各读各的() {
-        // ★ 这一条钉的是 `drive()` 那条「非 async ⇒ 不换线程」论证的**另一半**：
-        //   同一个线程上前后几条连接，各自读到自己的东西。
-        // ⚠ ⚠ **它够不到「先清槽」那一句**（撤掉那一句本条照样绿，实测）——
-        //   守那一句的是上面那条。两条判据各守各的，别把功劳记混。
+        // ★ 這一條釘的是 `drive()` 那條「非 async ⇒ 不換執行緒」論證的**另一半**：
+        //   同一個執行緒上前後幾條連接，各自讀到自己的東西。
+        // ⚠ ⚠ **它夠不到「先清槽」那一句**（撤掉那一句本條照樣綠，實測）——
+        //   守那一句的是上面那條。兩條判據各守各的，別把功勞記混。
         let a = saw(peek(&real_client_hello(
             Some("first.example.com"),
             &[b"h2"],
@@ -1472,7 +1472,7 @@ mod peek_tests {
         let b = saw(peek(&real_client_hello(Some("second.example.com"), &[])));
         assert_eq!(b.sni.as_deref(), Some("second.example.com"));
         assert!(b.alpn.is_empty(), "第二条没带 ALPN，不该拿到第一条的");
-        // 再来一条根本不是 TLS 的：它必须判「不是 TLS」，而不是捡到上一条的 SNI。
+        // 再來一條根本不是 TLS 的：它必須判「不是 TLS」，而不是撿到上一條的 SNI。
         match peek(b"NOT-TLS-AT-ALL\r\n") {
             Step::NotTls(_) => {}
             other => panic!(
@@ -1491,8 +1491,8 @@ mod peek_tests {
 mod udp_session_tests {
     use super::*;
 
-    /// ★ 载荷用 `&str` 而不是真会话：这张表的判据与网络无关，
-    /// 而一个需要起 socket 才能测的「表」会逼着判据去测别的东西。
+    /// ★ 載荷用 `&str` 而不是真工作階段：這張表的判據與網路無關，
+    /// 而一個需要起 socket 才能測的「表」會逼著判據去測別的東西。
     fn table(cap: usize, idle_secs: u64) -> UdpSessionTable<&'static str> {
         UdpSessionTable::new(cap, Duration::from_secs(idle_secs))
     }
@@ -1507,9 +1507,9 @@ mod udp_session_tests {
         let mut t = table(10, 60);
         assert_eq!(t.admit(peer(1), "a", t0), UdpAdmit::Ok);
         assert_eq!(t.admit(peer(2), "b", t0), UdpAdmit::Ok);
-        // 59 秒：一条都不该走。
+        // 59 秒：一條都不該走。
         assert!(t.sweep(t0 + Duration::from_secs(59)).is_empty());
-        // 给 peer(1) 续一次期，然后跨过 60 秒：只有 peer(2) 该被回收。
+        // 給 peer(1) 續一次期，然後跨過 60 秒：只有 peer(2) 該被回收。
         assert_eq!(t.touch(&peer(1), t0 + Duration::from_secs(59)), Some(&"a"));
         let dead = t.sweep(t0 + Duration::from_secs(61));
         assert_eq!(dead.len(), 1, "该回收的只有没续期的那条");
@@ -1517,8 +1517,8 @@ mod udp_session_tests {
         assert_eq!(t.len(), 1);
     }
 
-    /// ⚠ **到顶要拒绝新的，不许踢老的**：LRU 在这里是攻击者的朋友 ——
-    /// 一次伪造源地址的洪水会把正常客户端全部挤出去。
+    /// ⚠ **到頂要拒絕新的，不許踢老的**：LRU 在這裡是攻擊者的朋友 ——
+    /// 一次偽造源位址的洪水會把正常用戶端全部擠出去。
     #[test]
     fn 到顶拒绝新会话而老会话不受影响() {
         let t0 = Instant::now();
@@ -1527,13 +1527,13 @@ mod udp_session_tests {
         assert_eq!(t.admit(peer(2), "b", t0), UdpAdmit::Ok);
         assert_eq!(t.admit(peer(3), "c", t0), UdpAdmit::AtCapacity);
         assert_eq!(t.len(), 2, "被拒的那条不许留在表里");
-        // 老的两条照常可用 —— 这一半才是「拒绝而不是踢掉」的判据。
+        // 老的兩條照常可用 —— 這一半才是「拒絕而不是踢掉」的判據。
         assert_eq!(t.touch(&peer(1), t0), Some(&"a"));
         assert_eq!(t.touch(&peer(2), t0), Some(&"b"));
         assert_eq!(t.touch(&peer(3), t0), None);
     }
 
-    /// 回收之后腾出来的位置要能再被用上（否则上限会变成「一辈子只能接 N 条」）。
+    /// 回收之後騰出來的位置要能再被用上（否則上限會變成「一輩子只能接 N 條」）。
     #[test]
     fn 回收之后位置能重新用() {
         let t0 = Instant::now();
@@ -1550,10 +1550,10 @@ mod udp_session_tests {
     }
 }
 
-/// ★ ★ pingora 0.9.0（上游 `f82478a`）：新一代据 `Service::listen_addresses()` 关掉
-/// 「没有任何服务认领」的继承 fd。**任何一个**服务返回 `None`（pingora 的缺省实现）⇒
-/// **整个进程**的清理静默关闭；返回的若是 bind 地址而不是 fd 表的键 ⇒ 新一代会先把
-/// 自己要继承的那个 fd 关掉。⇒ 两种错都**编译器不报、日志不提**，只能在这里钉住。
+/// ★ ★ pingora 0.9.0（上游 `f82478a`）：新一代據 `Service::listen_addresses()` 關掉
+/// 「沒有任何服務認領」的繼承 fd。**任何一個**服務回傳 `None`（pingora 的預設實作）⇒
+/// **整個處理程序**的清理靜默關閉；回傳的若是 bind 位址而不是 fd 表的鍵 ⇒ 新一代會先把
+/// 自己要繼承的那個 fd 關掉。⇒ 兩種錯都**編譯器不報、紀錄不提**，只能在這裡釘住。
 #[cfg(test)]
 mod listen_addresses_tests {
     use super::*;

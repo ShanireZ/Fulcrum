@@ -1,29 +1,29 @@
-//! 原生 DNSPod（G57 两家之一 —— `example.com` 就在这家）。
+//! 原生 DNSPod（G57 兩家之一 —— `example.com` 就在這家）。
 //!
-//! 用的是 dnsapi.cn 那套：**表单 POST**、`login_token=ID,Token`、`format=json`。
+//! 用的是 dnsapi.cn 那套：**表單 POST**、`login_token=ID,Token`、`format=json`。
 //!
-//! | 干什么 | 请求 |
+//! | 幹什麼 | 請求 |
 //! |---|---|
-//! | 校验凭据（G59 第 2 条，**只能验「能用」，验不了范围**）| `POST /Info.Version` |
-//! | 挂 TXT | `POST /Record.Create` |
-//! | 查记录 | `POST /Record.List` |
+//! | 檢核憑證（G59 第 2 條，**只能驗「能用」，驗不了範圍**）| `POST /Info.Version` |
+//! | 掛 TXT | `POST /Record.Create` |
+//! | 查記錄 | `POST /Record.List` |
 //! | 摘 TXT | `POST /Record.Remove` |
 //!
-//! # ⚠ ⚠ 与 Cloudflare 的关键差别：**这份凭据是账号级的**
+//! # ⚠ ⚠ 與 Cloudflare 的關鍵差別：**這份憑證是帳號級的**
 //!
-//! DNSPod 的 token 覆盖账号下**全部**域名，没有「只给这个 zone」的形态，
-//! 也没有能问出「它覆盖哪些 zone」的端点。⇒ **G59 第 3 条对它是硬要求**：
-//! 配置里必须显式声明这份凭据对应哪些 zone，超出范围一律拒绝。
-//! ★ 这不是把安全性做出来了，是把它**写下来了** —— 真正的权限仍然是账号级的，
-//! 声明的价值在于越权那一刻是我们自己拒绝的，理由在配置里看得见。
+//! DNSPod 的 token 覆蓋帳號下**全部**網域，沒有「只給這個 zone」的形態，
+//! 也沒有能問出「它覆蓋哪些 zone」的端點。⇒ **G59 第 3 條對它是硬要求**：
+//! 設定裡必須顯式宣告這份憑證對應哪些 zone，超出範圍一律拒絕。
+//! ★ 這不是把安全性做出來了，是把它**寫下來了** —— 真正的權限仍然是帳號級的，
+//! 宣告的價值在於越權那一刻是我們自己拒絕的，理由在設定裡看得見。
 //!
-//! # ⚠ 凭据在 **body** 里，不在头里
+//! # ⚠ 憑證在 **body** 裡，不在頭裡
 //!
-//! 一个「只挡 `Authorization` 头」的脱敏实现在这家上**完全失效**，
-//! 而失效的表现是凭据出现在日志里、没有任何报错。
-//! ⇒ [`crate::http::HttpRequest::redacted`] 连 body 都不打，只打长度。
+//! 一個「只擋 `Authorization` 頭」的脫敏實作在這家上**完全失效**，
+//! 而失效的表現是憑證出現在紀錄裡、沒有任何回報錯誤。
+//! ⇒ [`crate::http::HttpRequest::redacted`] 連 body 都不打，只打長度。
 //!
-//! ⚠ 单测证明的是**内部自洽**；「我们对 dnsapi.cn 的理解是对的」只能靠真域名上的真签发。
+//! ⚠ 單測證明的是**內部自洽**；「我們對 dnsapi.cn 的理解是對的」只能靠真網域上的真簽發。
 
 use crate::credential::CredentialSource;
 use crate::http::{HttpRequest, HttpTransport};
@@ -33,23 +33,23 @@ use std::sync::Arc;
 
 const API: &str = "https://dnsapi.cn";
 
-/// 挑战记录的 TTL。
+/// 挑戰記錄的 TTL。
 ///
-/// ⚠ ⚠ **这个值不能按「越小越好」拍，DNSPod 按套餐给 TTL 下限。**
-/// 免费版的下限是 **600 秒**，写 60 会被直接拒：
+/// ⚠ ⚠ **這個值不能按「越小越好」拍，DNSPod 按套餐給 TTL 下限。**
+/// 免費版的下限是 **600 秒**，寫 60 會被直接拒：
 /// `Record.Create` 回 `code 32 / Record TTL value exceeded limit`，
-/// 于是**原生 DNSPod 在免费账号上一张证书都签不下来**。
+/// 於是**原生 DNSPod 在免費帳號上一張證書都籤不下來**。
 ///
-/// ★ 在 `example.com` 上实测撞到的 —— 而门禁里**撞不到**：
-/// 那里的对端是 pebble + challtestsrv，没有套餐这个概念。
-/// 这正是 G57 把「我们对 dnsapi.cn 的理解是对的」押在真域名上的原因，
-/// 而这一条恰恰是那句话里**理解错了的那一小块**。
+/// ★ 在 `example.com` 上實測撞到的 —— 而門禁裡**撞不到**：
+/// 那裡的對端是 pebble + challtestsrv，沒有套餐這個概念。
+/// 這正是 G57 把「我們對 dnsapi.cn 的理解是對的」押在真網域上的原因，
+/// 而這一條恰恰是那句話裡**理解錯了的那一小塊**。
 ///
-/// ★ 取 600 而不是「按套餐探测」：TTL 只影响**递归解析器的缓存**，
-/// 而 G58 的可见性判据是**直接问权威 NS**，CA 也一样 ⇒ 抬到 600 对签发几乎零成本，
-/// 而它在所有套餐上都合法。**一个在所有账号上都能用的常量，胜过一次需要猜的探测。**
+/// ★ 取 600 而不是「按套餐探測」：TTL 隻影響**遞歸解析器的快取**，
+/// 而 G58 的可見性判據是**直接問權威 NS**，CA 也一樣 ⇒ 抬到 600 對簽發幾乎零成本，
+/// 而它在所有套餐上都合法。**一個在所有帳號上都能用的常數，勝過一次需要猜的探測。**
 const TTL: &str = "600";
-/// 表单里那个「线路」。DNSPod 必填，默认线路的名字就是这两个汉字。
+/// 表單裡那個「線路」。DNSPod 必填，預設線路的名字就是這兩個漢字。
 const LINE: &str = "默认";
 
 #[derive(Debug, Clone)]
@@ -80,11 +80,11 @@ impl Dnspod {
         self
     }
 
-    /// 与 Cloudflare 那份**共用同一份语义**（G59 第 3 条）。
+    /// 與 Cloudflare 那份**共用同一份語義**（G59 第 3 條）。
     ///
-    /// ★ 共用的是 [`crate::zone_scope::zone_for`] 一份实现，不是各写一遍 ——
-    /// 理由与 G66 同族：两份「按标签边界判归属」的实现迟早会分叉，
-    /// 而分叉之后**两边都还是绿的**。
+    /// ★ 共用的是 [`crate::zone_scope::zone_for`] 一份實作，不是各寫一遍 ——
+    /// 理由與 G66 同族：兩份「按標籤邊界判歸屬」的實作遲早會分叉，
+    /// 而分叉之後**兩邊都還是綠的**。
     pub fn zone_for(&self, record: &str) -> Option<&str> {
         crate::zone_scope::zone_for(&self.zones, record)
     }
@@ -99,10 +99,10 @@ impl Dnspod {
         for (k, v) in extra {
             pairs.push(((*k).to_string(), (*v).to_string()));
         }
-        // ⚠ 必须 percent-encode：记录值是 base64url（含 `-` `_`，安全），
-        //   但**域名与线路名不是** —— `默认` 是多字节，直接拼进去 body 就坏了。
-        //   ★ 这里自己写编码而不是拉一个 crate：规则是 RFC 3986 的
-        //   unreserved 集合，短、固定、没有歧义（与手写 DNS 客户端同一条判据）。
+        // ⚠ 必須 percent-encode：記錄值是 base64url（含 `-` `_`，安全），
+        //   但**網域與線路名不是** —— `默认` 是多位元組，直接拼進去 body 就壞了。
+        //   ★ 這裡自己寫編碼而不是拉一個 crate：規則是 RFC 3986 的
+        //   unreserved 集合，短、固定、沒有歧義（與手寫 DNS 用戶端同一條判據）。
         let mut out = String::new();
         for (i, (k, v)) in pairs.iter().enumerate() {
             if i > 0 {
@@ -121,7 +121,7 @@ impl Dnspod {
             "application/x-www-form-urlencoded",
             self.form(extra)?,
         )
-        // dnsapi.cn 要求带 User-Agent，否则会直接拒。
+        // dnsapi.cn 要求帶 User-Agent，否則會直接拒。
         .header(
             "user-agent",
             "Fulcrum/0.0 (+https://github.com/ShanireZ/Fulcrum)",
@@ -135,9 +135,9 @@ impl Dnspod {
                 brief(&text)
             ));
         }
-        // ⚠ ⚠ **dnsapi.cn 永远回 HTTP 200**，真正的结果在 body 的 `status.code` 里
-        //   （`"1"` 才是成功）。一个只看状态码的实现会把每一次失败都当成功 ——
-        //   而症状是「TXT 一直没出现」，与这一步已经隔了很远。
+        // ⚠ ⚠ **dnsapi.cn 永遠回 HTTP 200**，真正的結果在 body 的 `status.code` 裡
+        //   （`"1"` 才是成功）。一個只看狀態碼的實作會把每一次失敗都當成功 ——
+        //   而症狀是「TXT 一直沒出現」，與這一步已經隔了很遠。
         let code = status_code(&text).unwrap_or_default();
         if code != "1" {
             return Err(format!(
@@ -148,13 +148,13 @@ impl Dnspod {
         Ok(text)
     }
 
-    /// **G59 第 2 条**能做到的那一半：验凭据**能用**。
+    /// **G59 第 2 條**能做到的那一半：驗憑證**能用**。
     ///
-    /// ⚠ 验不了**范围** —— DNSPod 的 token 是账号级的，没有可问的端点。
-    /// 那一半由 G59 第 3 条的显式 zone 声明顶上（`zones` 在编译期就是必填）。
+    /// ⚠ 驗不了**範圍** —— DNSPod 的 token 是帳號級的，沒有可問的端點。
+    /// 那一半由 G59 第 3 條的顯式 zone 宣告頂上（`zones` 在編譯期就是必填）。
     pub async fn verify(&self) -> Result<(), VerifyError> {
-        // ⚠ 凭据读不出来是本机的、确定的问题 ⇒ Fatal。先单独读一次，
-        //   否则它会被下面那层裹成「调用失败」，与网络不通混成一类。
+        // ⚠ 憑證讀不出來是本機的、確定的問題 ⇒ Fatal。先單獨讀一次，
+        //   否則它會被下面那層裹成「呼叫失敗」，與網路不通混成一類。
         self.source.load().map_err(VerifyError::Fatal)?;
         match self.call("Info.Version", &[]).await {
             Ok(_) => {
@@ -166,9 +166,9 @@ impl Dnspod {
                     "DNSPod 拒绝了这份凭据（来自 {}）：{e}",
                     self.source.describe()
                 );
-                // ★ `call` 里 HTTP 层失败与「对端回话说不行」都走同一个 Err，
-                //   这里按前缀分开。⚠ 这是本文件里唯一一处按串分类，
-                //   而它有一条**自证**（下面 `网络不通判成_inconclusive_而不是_fatal`）。
+                // ★ `call` 裡 HTTP 層失敗與「對端回話說不行」都走同一個 Err，
+                //   這裡按前綴分開。⚠ 這是本檔案裡唯一一處按串分類，
+                //   而它有一條**自證**（下面 `网络不通判成_inconclusive_而不是_fatal`）。
                 if e.starts_with("DNSPod Info.Version 被拒") || e.contains("HTTP ") {
                     Err(VerifyError::Fatal(msg))
                 } else {
@@ -180,9 +180,9 @@ impl Dnspod {
 
     /// 把 `_acme-challenge.a.example.com` 拆成 `(example.com, _acme-challenge.a)`。
     ///
-    /// ★ DNSPod 的 API 要 `domain` + `sub_domain` 两段，而拆点**必须是声明过的 zone**，
-    /// 不能靠「取最后两段」猜 —— `a.com.cn` 那种会拆错，而拆错的表现是
-    /// 「记录挂到了另一个域上」。
+    /// ★ DNSPod 的 API 要 `domain` + `sub_domain` 兩段，而拆點**必須是宣告過的 zone**，
+    /// 不能靠「取最後兩段」猜 —— `a.com.cn` 那種會拆錯，而拆錯的表現是
+    /// 「記錄掛到了另一個域上」。
     fn split(&self, record: &str) -> Result<(String, String), String> {
         let r = record.trim_end_matches('.').to_ascii_lowercase();
         let zone = self
@@ -216,9 +216,9 @@ impl Dnspod {
 
     pub async fn clear_txt(&self, name: &str, value: &str) -> Result<(), String> {
         let (domain, sub) = self.split(name)?;
-        // 先按「名字 + 类型」列出来，再在本地按**值**挑中那一条。
-        // ⚠ 同一个记录名下可能同时挂着多条 TXT（两张证书并行签发时就会），
-        //   删错一条会让另一条签发失败。
+        // 先按「名字 + 類型」列出來，再在本機按**值**挑中那一條。
+        // ⚠ 同一個記錄名下可能同時掛著多條 TXT（兩張證書並行簽發時就會），
+        //   刪錯一條會讓另一條簽發失敗。
         let listed = match self
             .call(
                 "Record.List",
@@ -232,7 +232,7 @@ impl Dnspod {
         {
             Ok(t) => t,
             Err(e) => {
-                // 列不出来就当已经没了 —— 这是清理，不是可用性。
+                // 列不出來就當已經沒了 —— 這是清理，不是可用性。
                 debug!("DNSPod 列不出 {name} 的 TXT（{e}），当作已经摘掉");
                 return Ok(());
             }
@@ -247,7 +247,7 @@ impl Dnspod {
     }
 }
 
-/// RFC 3986 的 `application/x-www-form-urlencoded`：unreserved 直出，空格是 `+`，其余百分号编码。
+/// RFC 3986 的 `application/x-www-form-urlencoded`：unreserved 直出，空格是 `+`，其餘百分號編碼。
 fn form_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.as_bytes() {
@@ -278,7 +278,7 @@ fn status_message(text: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 在 `Record.List` 的结果里找**值等于** `value` 的那条，返回它的 id。
+/// 在 `Record.List` 的結果裡找**值等於** `value` 的那條，回傳它的 id。
 fn record_id_with_value(text: &str, value: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     let records = v.get("records")?.as_array()?;
@@ -364,14 +364,14 @@ mod tests {
         assert_eq!(form_encode("abc-_.~123"), "abc-_.~123");
         assert_eq!(form_encode("a b"), "a+b");
         assert_eq!(form_encode("12345,abcdef"), "12345%2Cabcdef");
-        // ★ 「默认」是三字节 × 2。⚠ 直接拼进 body 的话 DNSPod 收到的是乱码，
-        //   而它回的错误只说「线路不存在」。
+        // ★ 「預設」是三位元組 × 2。⚠ 直接拼進 body 的話 DNSPod 收到的是亂碼，
+        //   而它回的錯誤只說「線路不存在」。
         assert_eq!(form_encode(LINE), "%E9%BB%98%E8%AE%A4");
     }
 
     #[test]
     fn 拆域名按声明的_zone_拆而不是取最后两段() {
-        // ⚠ 「取最后两段」在 `a.com.cn` 上会拆成 `com.cn` —— 记录会挂到别人的域上。
+        // ⚠ 「取最後兩段」在 `a.com.cn` 上會拆成 `com.cn` —— 記錄會掛到別人的域上。
         let d = dp(Fake::with(vec![]), &["a.com.cn"]);
         assert_eq!(
             d.split("_acme-challenge.x.a.com.cn").unwrap(),
@@ -397,8 +397,8 @@ mod tests {
 
     #[test]
     fn 永远回_200_的对端要看_body_里的_status_code() {
-        // ★ ★ dnsapi.cn 永远回 HTTP 200。一个只看状态码的实现会把每一次失败
-        //   都当成功，而症状是「TXT 一直没出现」，与这一步已经隔了很远。
+        // ★ ★ dnsapi.cn 永遠回 HTTP 200。一個只看狀態碼的實作會把每一次失敗
+        //   都當成功，而症狀是「TXT 一直沒出現」，與這一步已經隔了很遠。
         let fake = Fake::with(vec![(
             200,
             r#"{"status":{"code":"-1","message":"login token format error"}}"#,
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn 摘_txt_按值挑那一条() {
-        // ⚠ 同名多条 TXT 时删错一条会让另一条签发失败。
+        // ⚠ 同名多條 TXT 時刪錯一條會讓另一條簽發失敗。
         let fake = Fake::with(vec![
             (
                 200,
@@ -469,8 +469,8 @@ mod tests {
             .expect("找不到不该是错误");
     }
 
-    /// 一个「压根连不上」的 transport。★ 错误串刻意长得像 `HyperTransport`
-    /// 真正发不出去时的那一条，否则这条自证测的就不是同一件事。
+    /// 一個「壓根連不上」的 transport。★ 錯誤串刻意長得像 `HyperTransport`
+    /// 真正發不出去時的那一條，否則這條自證測的就不是同一件事。
     #[derive(Debug)]
     struct Unreachable;
 
@@ -486,9 +486,9 @@ mod tests {
 
     #[test]
     fn 网络不通判成_inconclusive_而不是_fatal() {
-        // ★ ★ ★ 这条是 `verify()` 里那处**按错误串分类**的自证。
-        //   ⚠ 两个方向都要测：只测 Fatal 那一半的话，一个「永远 Fatal」的实现
-        //   照样绿——而它会让一次网络抖动把整台机器上所有站点都挡在启动之外。
+        // ★ ★ ★ 這條是 `verify()` 裡那處**按錯誤串分類**的自證。
+        //   ⚠ 兩個方向都要測：只測 Fatal 那一半的話，一個「永遠 Fatal」的實作
+        //   照樣綠——而它會讓一次網路抖動把整臺機器上所有站台都擋在啟動之外。
         unsafe { std::env::set_var("FULCRUM_TEST_DP_TOKEN", "12345,abcdef") };
         let d = Dnspod::new(
             Arc::new(Unreachable),
@@ -504,9 +504,9 @@ mod tests {
 
     #[test]
     fn 凭据读不出来是_fatal_而不是_inconclusive() {
-        // ⚠ 反面：这是**本机的、确定的**问题，网络再好也不会变对。
-        //   一个把它归成 Inconclusive 的实现会让「凭据文件没挂上」这种事
-        //   变成一条 error 日志然后继续跑——而那台机器一张证书都签不出来。
+        // ⚠ 反面：這是**本機的、確定的**問題，網路再好也不會變對。
+        //   一個把它歸成 Inconclusive 的實作會讓「憑證檔案沒掛上」這種事
+        //   變成一條 error 紀錄然後繼續跑——而那臺機器一張證書都籤不出來。
         unsafe { std::env::remove_var("FULCRUM_TEST_DP_MISSING") };
         let d = Dnspod::new(
             Arc::new(Unreachable),
