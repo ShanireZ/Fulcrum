@@ -552,6 +552,8 @@ bash tests/m0/docker-run.sh          # 鏡像會因內容雜湊變化自動重�
 [`Dockerfile.musl-product`](../../docker/Dockerfile.musl-product)。
 musl 那兩份的結論裡寫著「rustc 與 `Dockerfile.build` 是同一個版本」——
 只換一邊那句話就變成假的，**而沒有任何東西會說出來**（`dep-check.py` 只看 `Dockerfile.build`）。
+目前三張都是 **rustc 1.98.0 (88d9e12ae 2026-08-18)**：建置鏡像 `rust:1.98.0-trixie`，musl 兩張 `rust:1.98.0-alpine`（Alpine 3.24.1 / gcc 15.2.0，2026-10-18 拉取）。
+⚠ 這條真的漏過一次：`Dockerfile.build` 2026-08-27 已換到 1.98.0，musl 兩張停在 1.97.1 直到 2026-10-18，期間沒有任何門判紅。
 > ⚠ 這一行曾經寫著「兩個地方」，而那時已經是三個 ——
 > **一句用數字說事的話，會在數字變了的那一刻悄悄變假。**
 實測（x86_64）：產品編成 musl 靜態產物 **16,191,800 位元組**、`INTERP=0 / NEEDED=0`、

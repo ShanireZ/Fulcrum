@@ -23,8 +23,10 @@
 # ⚠ ⚠ **rustc 版本必须与 `docker/Dockerfile.build`、`docker/Dockerfile.musl-probe` 三者一致。**
 #   ★ 这已经是**第三个**钉同一个 rustc 的地方了 —— `Dockerfile.build` 的「怎么升」那一节
 #     写的是「把 musl-probe 的一起换掉」，**那句话现在少了一个**。已就地补上。
-#   本次钉定：rust 1.97.1 / Alpine，2026-08-25 拉取（与 musl-probe 同一个 digest）。
-FROM rust:1.97.1-alpine@sha256:3c38f3f82c2f3d73da3b38e18d279393a04cb43ddded0e35088a8c3324d40900 AS build
+#   本次钉定：rust 1.98.0 (88d9e12ae 2026-08-18) / Alpine 3.24.1，2026-10-18 拉取（与 musl-probe 同一个 digest）。
+#   ⚠ 上一次是 1.97.1 / 2026-08-25 拉取，而 `Dockerfile.build` 2026-08-27 已是 1.98.0 ——
+#     上面那句「三者一致」在两者之间整整 52 天不成立。底层 Alpine 3.24.1 / gcc 15.2.0 两次相同，变的只有 rustc。
+FROM rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce AS build
 
 RUN apk add --no-cache build-base cmake perl linux-headers openssl git clang-dev
 
