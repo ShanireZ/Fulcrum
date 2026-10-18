@@ -36,7 +36,7 @@ sources:
 | 安全公告 | 4 | ★ **1** |
 | 其中**真漏洞** | 2（`lru` UAF、`protobuf` DoS）| ★ ★ **0** |
 | 5 個直接相依 | 全是最新 | 全是最新 |
-| Docker 基鏡像 | `rust:1-bookworm`（Debian 12 oldstable）| **`rust:1-trixie`**（Debian 13，Rust 1.97.1）|
+| Docker 基鏡像 | `rust:1-bookworm`（Debian 12 oldstable）| **`rust:1-trixie`**（Debian 13，Rust 1.98.0）|
 
 **只剩 `daemonize` 一條**（RUSTSEC-2025-0069，失維、無 CVE、無可升版本）。★ **它是被權衡後保留的，不是漏掉的**——換掉它意味著手寫特權丟棄程式碼，理由與出路見 [`FORK.md`](../../vendor/pingora/FORK.md) 第 9 節（此處原寫「第 7 節」，不準）。
 ✅ **2026-09-24：這一條也沒了** —— fork rebase 到 pingora 0.9.0，上游自己把 `daemonize` 換成了 `daemonix`（`ae96f7e`），兩把鎖裡都不再有 `daemonize`，`tools/supply-audit.py` 的 `ACCEPTED` 隨之清空。

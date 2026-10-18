@@ -50,7 +50,7 @@ members = ["spikes/m0-seam"]
 | Rust edition | **2024** |
 | 相依 resolver | **3** |
 | 直接相依 | `pingora-core` · `tokio` · `async-trait` · `log` · `env_logger` —— ★ **全是最新**，見 [供應鏈現狀](/platform/supply-chain.md) |
-| 建置鏡像 | `rust:1-trixie`（Debian 13，Rust 1.97.1）+ cmake + clang，見 [建置與驗證](/platform/build-and-test.md) |
+| 建置鏡像 | `rust:1-trixie`（Debian 13，Rust 1.98.0）+ cmake + clang，見 [建置與驗證](/platform/build-and-test.md) |
 | ★ **pingora 來源** | **不是 crates.io**，而是 [`vendor/pingora/`](../../vendor/pingora/FORK.md) 的 fork，經 `[patch.crates-io]` 接入 |
 
 ## ★ pingora 走的是本儲存庫的 fork
