@@ -553,7 +553,7 @@ bash tests/m0/docker-run.sh          # 鏡像會因內容雜湊變化自動重�
 [`Dockerfile.musl-probe`](../../docker/Dockerfile.musl-probe) ·
 [`Dockerfile.musl-product`](../../docker/Dockerfile.musl-product)。
 musl 那兩份的結論裡寫著「rustc 與 `Dockerfile.build` 是同一個版本」——只換一邊那句話就變成假的。
-`python tools/dep-check.py --check-pins`（離線，**門禁 lint 那一格每趟都跑**）點名版本不一致的檔案；
+`python tools/dep-check.py --check-pins`（G167；離線，**門禁 lint 那一格每趟都跑**）點名版本不一致的檔案；
 集合是推導的（`docker/Dockerfile.*` 裡含 `^FROM rust:` 的），第四張釘 rustc 的 Dockerfile 自動算進來。
 它能不能紅由 `dep-check.py --self-check` 的合成案例（含 2026-08-27 ～ 10-18 那次的原樣）每趟自證；
 ⚠ 它只比 rustc 版本，不比 digest 與 Alpine/Debian 版本，也不認 `FROM` 小寫或帶 `--platform` 旗標的寫法。
