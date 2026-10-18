@@ -1,6 +1,6 @@
 """站台根落在哪種文件系統上，以及**那裡認不認 `RWF_NOWAIT`**。
 
-    python3 bench/site-root-probe.py <目录>
+    python3 bench/site-root-probe.py <目錄>
     → 兩行 `键=值`，⛔ 自己不判紅（判紅是呼叫方的事，同 `env-snapshot.sh` 的其餘讀數）
 
 ## ★ 它為什麼是口徑的一部分，⛔ 不是一條可有可無的中繼資料

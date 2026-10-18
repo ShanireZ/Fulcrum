@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # CI 建置快取：把門禁用的兩個 docker 命名卷匯出成一個壓縮流 / 再灌回去。
 #
-#   bash tests/ci/cache.sh save    <缓存目录>
-#   bash tests/ci/cache.sh restore <缓存目录>
+#   bash tests/ci/cache.sh save    <快取目錄>
+#   bash tests/ci/cache.sh restore <快取目錄>
 #
 # ★ ★ ★ **為什麼值得做，以及它的危險在哪**
 #

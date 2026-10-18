@@ -159,7 +159,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 > ★ [`tests/musl/probe.sh`](../../tests/musl/probe.sh)（musl + BoringSSL 靜態連結探針）
 > **故意不是**一個常設場景 —— 它編的是 spike，答不了「產物是不是單靜態二進位」（G108）。
 > ⚠ 但它照樣被 lint 那一格的 `shellcheck` 掃到 —— 「不在門禁裡跑」與「不被 lint 看」是
-> 兩件事。★ 現在這是**推導的結果**（掃的是 `tests/` 整棵樹），不再需要誰記得往清單里加一項。
+> 兩件事。★ 現在這是**推導的結果**（掃的是 `tests/` 整棵樹），不再需要誰記得往清單裡加一項。
 
 
 
@@ -366,7 +366,7 @@ cache mount ⇒ **CI 每次都付冷價**。這一條寫在明處。
 | 還在 `main_loop` 裡等信號 | **0 秒退出**（`ShutdownType::Quick`，兩個超時都是 0）|
 | 已收過 `SIGQUIT`、正在排空 | ★ **被吞掉**，40 秒後照樣活著 |
 
-後一條的原因：處理程序已離開 `main_loop`、沒人再從信號管道里讀，而 tokio 的處理器仍然裝著、頂掉了 `SIGINT` 預設的 terminate 行為。**排空中的那一代收不到任何可捕獲的信號**——它只能自己走完 `CLOSE_TIMEOUT`(5) + `grace_period_seconds`(30) + `graceful_shutdown_timeout_seconds`(≤30)，最快 35 秒、最慢 65 秒。所以對更早那些用 `SIGKILL` 是**有意的選擇，不是等待失敗後的備援**：判據此刻已全部做完，它們的 fd 也早已交接出去，只剩「把連接埠空出來」。
+後一條的原因：處理程序已離開 `main_loop`、沒人再從信號管道裡讀，而 tokio 的處理器仍然裝著、頂掉了 `SIGINT` 預設的 terminate 行為。**排空中的那一代收不到任何可捕獲的信號**——它只能自己走完 `CLOSE_TIMEOUT`(5) + `grace_period_seconds`(30) + `graceful_shutdown_timeout_seconds`(≤30)，最快 35 秒、最慢 65 秒。所以對更早那些用 `SIGKILL` 是**有意的選擇，不是等待失敗後的備援**：判據此刻已全部做完，它們的 fd 也早已交接出去，只剩「把連接埠空出來」。
 
 ★ 這條同樣適用於 M1 的 systemd 設計：**一旦一代開始排空，就叫不動了**，`TimeoutStopSec` 必須按 35–65 秒這個量級來配。
 ⚠ 35–65 秒是按原始碼公式推的，**在 pingora 0.8.1 下它其實偏小**：等完各 runtime 之後還有一次重複的

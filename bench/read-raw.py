@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """從 oha 的原始 JSON 裡讀出一類案例的讀數，**並先證明那份讀數算數**。
 
-    python3 bench/read-raw.py <raw/某一类的目录>
+    python3 bench/read-raw.py <raw/某一類的目錄>
 
 每個被測打一行：
 

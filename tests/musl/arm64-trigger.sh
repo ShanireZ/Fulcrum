@@ -80,7 +80,7 @@ fulcrum_arm64_state() {
 
 # ── 這臺機器跑得了 aarch64 嗎（binfmt，**機器本機狀態**）────────────────────
 #
-#   fulcrum_arm64_platform_ok "<docker buildx inspect --bootstrap 的输出>"
+#   fulcrum_arm64_platform_ok "<docker buildx inspect --bootstrap 的輸出>"
 #
 # ★ 寫成**純函式**（讀數由呼叫方喂進來），理由與 `bench/lib.sh` 那幾條逐字相同：
 #   直接去問 docker 的判據，只能在**它恰好跑著的那臺機器上**被觀察到一種結果。
@@ -149,7 +149,7 @@ fulcrum_arm64_selfcheck() {
   local REPO
   REPO=${FULCRUM_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 
-  # —— 真實儲存庫上：★★★ 先證明樣本里真有東西 ——
+  # —— 真實儲存庫上：★★★ 先證明樣本裡真有東西 ——
   #   ⚠ 一個靜靜回傳空集的枚舉器，會讓雜湊恆為「空輸入的 sha256」⇒ 狀態永遠 verified，
   #     而那與「一切正常」長得一模一樣。
   out=$(fulcrum_arm64_trigger_files "$REPO" | tr '\n' ' ')

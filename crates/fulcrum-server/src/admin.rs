@@ -1,7 +1,7 @@
 //! 管理面（**G8 的全量原子 load** + **G74 的強制續期**），走 **Unix domain socket**（G14）。
 //!
 //! ```text
-//! admin unix//run/fulcrum/admin.sock      ← DSL 里这一行开启它
+//! admin unix//run/fulcrum/admin.sock      ← DSL 裡這一行開啟它
 //! ```
 //!
 //! ★ **只綁 Unix domain socket，權限交給檔案系統 ACL**（G14）—— 堵掉 Caddy 那個短處

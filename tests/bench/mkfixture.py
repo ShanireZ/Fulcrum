@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """造一份**合成的**對拍輸出目錄，給 `bench/verdict.sh` 的反證用。
 
-    python3 tests/bench/mkfixture.py <目录> <qualified: true|false> <名字=rps> ...
+    python3 tests/bench/mkfixture.py <目錄> <qualified: true|false> <名字=rps> ...
 
 ★ ★ ★ 它存在的全部理由是一句話：**一個永遠拒絕出結論的判定器，與一個壞掉的
   判定器給出完全相同的輸出。** 本輪唯一跑得到的宿主是不合格的那一臺 ⇒

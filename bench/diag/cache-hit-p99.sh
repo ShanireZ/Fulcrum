@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 診斷讀數：**磁碟命中**與**記憶體命中**的 p99 差（`G150` ②）。
 #
-#   bash bench/diag/cache-hit-p99.sh <输出目录>
+#   bash bench/diag/cache-hit-p99.sh <輸出目錄>
 #
 # ★ ★ ★ **這不是 §8 七類裡的一類，本步也不判定、不比較、不列印任何「誰更快」。**
 #   §8 那七類是「與 Caddy / HAProxy / Nginx 三家對拍」；這一步只有樞衡自己，

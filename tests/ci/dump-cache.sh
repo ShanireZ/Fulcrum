@@ -8,7 +8,7 @@
 #   `cache-hit != 'true'` 才執行的步驟裡）⇒ 本檔案底部的 `--self-check` 就是替它補的那道。
 #
 # 用法：
-#   bash tests/ci/dump-cache.sh <缓存目录> [診斷檔案]
+#   bash tests/ci/dump-cache.sh <快取目錄> [診斷檔案]
 #   bash tests/ci/dump-cache.sh --self-check       # 不碰 docker，只驗結束代碼取法
 #
 # 結束代碼：0 = 跑完了（**不代表匯出成功**）。匯出成功與否看 stdout 的 `archived=`。

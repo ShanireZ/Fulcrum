@@ -28,7 +28,7 @@
 #   | 還在 `main_loop` 裡等信號     | **0 秒退出**（Quick，兩個超時都是 0）          |
 #   | 已收過 SIGQUIT、正在排空      | ★ **被吞掉**，40 秒後照樣活著                  |
 #
-# 後一條的原因：處理程序已離開 `main_loop`，沒人再從信號管道里讀；而 tokio 的處理器仍然裝著，
+# 後一條的原因：處理程序已離開 `main_loop`，沒人再從信號管道裡讀；而 tokio 的處理器仍然裝著，
 # 頂掉了 SIGINT 預設的 terminate 行為。**排空中的那一代收不到任何可捕獲的信號**——
 # 它只能自己走完 `CLOSE_TIMEOUT`(5) + `grace_period_seconds` + `graceful_shutdown_timeout_seconds`
 # （`vendor/pingora/pingora-core/src/server/mod.rs`），在 m0.yaml 的設定下是 35–65 秒。

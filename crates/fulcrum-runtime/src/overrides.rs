@@ -5,10 +5,10 @@
 //! # ★ ★ ★ 它是一張「格子登記處」，不是一份「待應用的清單」
 //!
 //! ```text
-//! OverrideLayer:  (站点名, reverse_proxy 的 id, 归一化后的上游地址) → Arc<UpstreamOverride>
+//! OverrideLayer:  (站點名, reverse_proxy 的 id, 歸一化後的上游地址) → Arc<UpstreamOverride>
 //!                                                                        ▲
 //!                 Upstream ─────────────────────────────────────────────┘
-//!                 （每个 HTTP 上游**直接拿着**登记处里的那一格）
+//!                 （每個 HTTP 上游**直接拿著**登記處裡的那一格）
 //! ```
 //!
 //! ⇒ 「覆蓋層」與「上游身上那兩個量」在結構上**是同一份**：

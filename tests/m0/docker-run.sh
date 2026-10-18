@@ -75,10 +75,10 @@ host_selftest_fp() {   # host_selftest_fp <文件>...：算不出（讀不到檔
     done
   } | sha256sum | cut -d' ' -f1
 }
-host_selftest_stamp_ok() {   # <记录文件> <指纹>：記錄裡的指紋與之逐字相同才答 0
+host_selftest_stamp_ok() {   # <記錄檔案> <指紋>：記錄裡的指紋與之逐字相同才答 0
   [ -n "$2" ] && [ -f "$1" ] && [ "$(sed -n 's/^fp=//p' "$1")" = "$2" ]
 }
-host_selftest_stamp_write() {   # <记录文件> <指纹>：先寫暫存檔再 mv，讀的一方看不到半份
+host_selftest_stamp_write() {   # <記錄檔案> <指紋>：先寫暫存檔再 mv，讀的一方看不到半份
   local tmp="$1.tmp.$$"
   printf 'fp=%s\nat=%s\n' "$2" "$(date '+%Y-%m-%d %H:%M:%S')" > "$tmp" && mv -f "$tmp" "$1"
 }
@@ -1084,12 +1084,12 @@ elif [ "${COMPILE_ONLY:-0}" = "1" ]; then
   # ⚠ **只掛 `shellcheck`，⛔ 不掛 `fmt` / `clippy`**，這是權衡不是遺漏：
   #   `clippy` 要先把相依編出來（含 BoringSSL），那會把這道門從秒級拖成分鐘級，
   #   而**門變慢正是它被 `--no-verify` 繞過的起點**。`shellcheck` 唯讀原始碼、
-  #   在本已起著的同一個容器裡跑，⇒ 邊際成本是這一格里最便宜的那一檔。
+  #   在本已起著的同一個容器裡跑，⇒ 邊際成本是這一格裡最便宜的那一檔。
   #   ⚠ 代價寫在明處：**這一格仍然不攔 `fmt` 差異與 clippy 告警**，那兩格歸完整門禁。
   #
   # ★ **有意不跑測試**：本機常年 20+ 工作階段並行，按空載餘量設的超時會週期性假紅，
   #   而一道假紅過幾次的 pre-push 門會被 `--no-verify` 永久繞過。
-  #   ⇒ 這一格里兩件事**都不會因機器負載而紅**（編譯不會，`shellcheck` 也不會）。
+  #   ⇒ 這一格裡兩件事**都不會因機器負載而紅**（編譯不會，`shellcheck` 也不會）。
   #   ⚠ 代價寫在明處：**它不攔「編得過但測試紅」** —— 那一格歸完整門禁。
   #
   # ⚠ `spikes/musl-boringssl` 在根 workspace 之外（同 `cargo fmt` 那條的理由），本格夠不到它。

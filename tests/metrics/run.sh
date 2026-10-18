@@ -717,7 +717,7 @@ fi
 
 # 反向：站台 C 把 `metrics` 圈在 10.0.0.0/8 裡，而我們從 127.0.0.1 打過去 ——
 # ⇒ `@outsider` 不命中，落到備援那條 `respond 403`。
-# ★ 這是本格里**在容器裡真的造得出來**的那個反向形狀：不需要第二塊網卡，
+# ★ 這是本格裡**在容器裡真的造得出來**的那個反向形狀：不需要第二塊網卡，
 #   只需要一個我們不可能來自的網段。
 C_OUT="$WORK/c.txt"
 CODE=$(get "$BC_PORT" c.example "$MPATH" "$C_OUT")
@@ -1055,7 +1055,7 @@ eq "★★★ h3：涨的正好是 {version=TLSv1.3, cipher=<unknown>} 那一条
 #   而 `cipher=""` 恰好是 PromQL 裡「該標籤不存在」的慣用寫法。
 # ★ ★ 這一條**不看是不是 h3**：它問的是「有沒有哪條 series 的哪一格是空的」——
 #   與 G127 把判據落在「值為空」上、⛔ 不落在「是不是 h3」上逐字同一個形狀。
-# ⚠ 取樣前先自證樣本里真有東西：一個恆答空集的讀法會讓下面那條恆綠。
+# ⚠ 取樣前先自證樣本裡真有東西：一個恆答空集的讀法會讓下面那條恆綠。
 TLS_SERIES=$(expo series "$ST3" fulcrum_tls_requests_total)
 if [ "$TLS_SERIES" -ge 2 ]; then
   ok "★ 取样自证：这个族此刻有 $TLS_SERIES 条 series（h1/h2 那对 + h3 的 <unknown> 那条）"

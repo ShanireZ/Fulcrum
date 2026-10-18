@@ -459,7 +459,7 @@ def check_fork_upstream(cutoff: datetime) -> bool:
 
 
 def hub_tag_digests(repo: str, name_filter: str) -> dict[str, str]:
-    """Docker Hub 上某儲存庫里名字含 `name_filter` 的 tag → digest。不需要 Docker，也不拉鏡像。
+    """Docker Hub 上某儲存庫裡名字含 `name_filter` 的 tag → digest。不需要 Docker，也不拉鏡像。
 
     ★ 兩處檢查（建置鏡像 / systemd 測試宿主）共用這一份翻頁邏輯，不各寫一份——
       本儲存庫已經在「兩份收尾指令碼分頭長歪」上吃過一次虧。
@@ -1276,7 +1276,7 @@ def _align_vendor_lock(cargo: list[str], eligible: list[tuple[str, str | None, s
     · 它已被同族的另一條更新順帶帶過去了（實測：`ref-cast-impl` 跟著 `ref-cast` 走）。
 
     ⇒ 判據取的是**結果**不是**過程**：兩把鎖對這個名字解出來的版本集合一不一致。
-    ★ 而「vendor 鎖里根本沒有這個名字」算一致 —— 它沒有可對不上的東西。
+    ★ 而「vendor 鎖裡根本沒有這個名字」算一致 —— 它沒有可對不上的東西。
     """
     print(f"\n对齐第二把锁（{VENDOR_LOCK}）：")
     update = blaming(

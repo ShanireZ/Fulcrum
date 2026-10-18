@@ -284,7 +284,7 @@ EOF
   return 1
 }
 
-#   bench_kparam_mismatches <声明 key=value 多行> <实测 key=value 多行>
+#   bench_kparam_mismatches <宣告 key=value 多行> <實測 key=value 多行>
 #
 # 每行打一條問題；**一行都不打 = 逐條相符**。
 #
@@ -319,7 +319,7 @@ EOF
 
 # ── 判據 ②：逐類取「該類最強者」 ───────────────────────────────────────────
 #
-#   bench_best_of <三家竞品的读数，每行 `<名字> <数值>`>
+#   bench_best_of <三家競品的讀數，每行 `<名字> <数值>`>
 #
 # 打一行 `<名字> <数值>`。
 #
@@ -337,7 +337,7 @@ bench_best_of() {
 
 # ── 判據 ③：一類案例的判定 ─────────────────────────────────────────────────
 #
-#   bench_verdict_one <枢衡的读数> <三家竞品的读数，每行 `<名字> <数值>`>
+#   bench_verdict_one <樞衡的讀數> <三家競品的讀數，每行 `<名字> <数值>`>
 #
 # 打一行 `PASS|FAIL <最强者名> <最强者数值> <门槛值> <枢衡数值>`。
 #
@@ -366,7 +366,7 @@ bench_verdict_one() {
 
 # ── 判據 ④：壓測端自己先飽和 ───────────────────────────────────────────────
 #
-#   bench_saturation <生成器上限读数或空> <全场读数，每行 `<名字> <数值>`>
+#   bench_saturation <生成器上限讀數或空> <全場讀數，每行 `<名字> <数值>`>
 #
 # 每行打一條「這一類不可信的理由」；**一行都不打 = 沒測到飽和**。
 # ★ 契約與判據 ① 逐字相同（打理由 / 空 = 通過）⇒ 兩個呼叫點可以同一個形狀處理。
@@ -440,7 +440,7 @@ bench_saturation() {
 
 # ── 判據 ④C：最強者附近的收斂（`G146`，結案 `D34`）──────────────────────────
 #
-#   bench_top_convergence <全场读数，每行 `<名字> <数值>`>
+#   bench_top_convergence <全場讀數，每行 `<名字> <数值>`>
 #
 # 每行打一條理由；**一行都不打 = 最強者與第二強分得開**。
 #
@@ -506,7 +506,7 @@ bench_top_convergence() {
 
 # ── 判據 ⑤：上游連接重複使用口徑對齊 ───────────────────────────────────────────
 #
-#   bench_upstream_reuse_violations <阈值> <每行 `<名字> <每千请求新建连接数>`>
+#   bench_upstream_reuse_violations <閾值> <每行 `<名字> <每千请求新建连接数>`>
 #
 # 每行打一條「這一家沒在重複使用上游連接」的理由；**一行都不打 = 對齊了**。
 # ★ 契約與判據 ① / ④ 逐字相同（打理由 / 空 = 通過）⇒ 呼叫點可以同一個形狀處理。
@@ -541,7 +541,7 @@ bench_upstream_reuse_violations() {
 
 # ── 上游空閒連接上限：跟著並行數走（2026-09-10）──────────────────────────────
 #
-#   bench_upstream_idle_cap <并发连接数>   ⇒ 列印 max(64, 並行連接數)
+#   bench_upstream_idle_cap <併發連線數>   ⇒ 列印 max(64, 並行連接數)
 #
 # ★ ★ ★ caddy 的 `keepalive_idle_conns_per_host` 與 nginx upstream 的 `keepalive`
 #   都是「**每個 host / 每個 worker** 最多留幾條**空閒**上游連接」—— 超出的在用完之後
@@ -573,7 +573,7 @@ bench_upstream_idle_cap() {
 
 # ── 建置身分：從產物位元組裡取 `FULCRUM_BUILD_VERSION`（`G141`）─────────────────
 #
-#   bench_build_id_from_bytes < <产物>   ⇒ 列印建置身分；取不到就什麼都不打（恆回傳 0）
+#   bench_build_id_from_bytes < <產物>   ⇒ 列印建置身分；取不到就什麼都不打（恆回傳 0）
 #
 # ★ 只認 `crates/fulcrum-server/build.rs` 真會產出的兩種形狀：
 #   `<x.y.z>+g<12 位小写十六进制>`（讀 `.git` 那一檔）與 `<x.y.z>+unknown`（第三檔）。
@@ -591,7 +591,7 @@ bench_build_id_from_bytes() {
 
 # ── 「高並行短連接」那一類的診斷列：TIME_WAIT 落在哪一側（⛔ 不是判據）──────────
 #
-#   bench_tw_split <被测端口> <`/proc/net/tcp` 与 `/proc/net/tcp6` 的原文>
+#   bench_tw_split <被測埠> <`/proc/net/tcp` 與 `/proc/net/tcp6` 的原文>
 #     ⇒ 列印一行 `<服务端条数> <客户端条数>`
 #
 # ★ 只數 state `06`（TIME_WAIT）。**本機**連接埠 = 被測連接埠 ⇒ 那一條是伺服器端先關留下的；
@@ -672,7 +672,7 @@ bench_short_conn_violations() {
   '
 }
 
-#   bench_request_close_violations <抓到的请求原文>
+#   bench_request_close_violations <抓到的請求原文>
 #
 # 打一條違規理由；**什麼都不打 = 請求裡帶著 `Connection: close`**。
 # ★ 只看**請求頭**（請求行之後、第一個空行之前），頭名**行首錨定、整名相等、大小寫不敏感**，

@@ -36,8 +36,8 @@
 #   ★ 於是「加了新目錄忘了改這裡」從**靜默漏掃**變成**當場紅**。
 #
 # 用法：
-#   bash tests/ci/shellcheck-all.sh          # 掃 <仓库根>/tests 與 <仓库根>/bench，並跑普查
-#   bash tests/ci/shellcheck-all.sh <目录>   # 只掃指定的那棵樹（做反證時用），⛔ 不跑普查
+#   bash tests/ci/shellcheck-all.sh          # 掃 <倉庫根>/tests 與 <倉庫根>/bench，並跑普查
+#   bash tests/ci/shellcheck-all.sh <目錄>   # 只掃指定的那棵樹（做反證時用），⛔ 不跑普查
 #
 # 結束代碼：0 = 全過；非 0 = 靜態檢查有話說，或枚舉器自測 / 普查沒過。
 set -euo pipefail

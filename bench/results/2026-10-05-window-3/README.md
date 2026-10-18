@@ -157,7 +157,7 @@ VERDICT: FAIL
 被測二進位 `0.1.0+g0d7911335ccd`，sha256
 `63cbaf5624fc2593e4e53dec15fbeb8c28dea9a6591972e83d6e56dbc518e193`，在開發機上按 G107 於容器內建置、
 投遞到宿主；原始碼還原後重編一次 sha256 逐字相同（視窗清單 5d′ ④）。`env.json` 的 `fulcrum_build_id`
-這一次是乾淨的版本串（`b043126` 修了視窗二里那段粘連）。
+這一次是乾淨的版本串（`b043126` 修了視窗二裡那段粘連）。
 
 對拍鏡像 `fulcrum-bench:local` 沒有重建（`docker/Dockerfile.bench` 自 2026-09-05 起沒改過，`G36` / `G152`）。
 

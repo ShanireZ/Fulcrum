@@ -23,17 +23,17 @@
 //!        ▼
 //!   gen1（MainPID）── SIGUSR2 ──▶ fork+exec  gen2 = 自己 + `-u`
 //!        │                                      │
-//!        │  ★ 只有 spawn 成功了才给自己发 SIGQUIT   │ 绑 upgrade sock、等 fd
+//!        │  ★ 只有 spawn 成功了才給自己發 SIGQUIT   │ 綁 upgrade sock、等 fd
 //!        ▼                                      │
-//!   pingora 的 SIGQUIT 路径：把监听 fd 经         │
-//!   SCM_RIGHTS 送过去，然后开始排空 ─────────────▶│
+//!   pingora 的 SIGQUIT 路徑：把監聽 fd 經         │
+//!   SCM_RIGHTS 送過去，然後開始排空 ─────────────▶│
 //!                                                ▼
-//!                                       服务起来 → ExecutionPhase::Running
+//!                                       服務起來 → ExecutionPhase::Running
 //!                                                ▼
 //!                                       sd_notify(MAINPID=self, READY=1)
 //!                                                ▼
-//!                                       systemd 把 MainPID 换成 gen2
-//!   gen1 排空完退出 ──▶ systemd 看到的只是「一个普通子进程退了」，unit 照常 active
+//!                                       systemd 把 MainPID 換成 gen2
+//!   gen1 排空完退出 ──▶ systemd 看到的只是「一個普通子進程退了」，unit 照常 active
 //! ```
 //!
 //! # 三個可切換的口徑（判據靠它們才能反證）

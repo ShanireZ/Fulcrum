@@ -138,7 +138,7 @@ selftest_shellcheck_trigger() (
 
   n=0
   rc=0
-  # expect <yes|no> <说明> <远端> <本地> [理由裡必須整行出現的路徑]
+  # expect <yes|no> <說明> <遠端> <本地> [理由裡必須整行出現的路徑]
   expect() {
     local want=$1 label=$2 out got
     n=$((n + 1))

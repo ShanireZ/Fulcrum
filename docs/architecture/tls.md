@@ -68,7 +68,7 @@ sources:
 > 已立 **D21**，✅ **已由 G131 結案**（口徑 = Alpine 原生 + qemu 跑 aarch64）。
 > ★ 這一條當初就不擋本頁描述的遷移開工。
 
-> ✅ **TLS 那條脊樑已經完成實作並跑通**（`crates/fulcrum-tls` + `crates/fulcrum-server/tls.rs`）：
+> ✅ **TLS 那條脊梁已經完成實作並跑通**（`crates/fulcrum-tls` + `crates/fulcrum-server/tls.rs`）：
 > 按 SNI 動態挑證書、每域一目錄的 PEM 儲存（原子寫 + `flock`）、續期判定（ARI → 1/3 → 退避）、
 > `tls <cert> <key>`。端到端由 `tests/serve/run.sh` 驗過：`--cacert` 驗簽通過、
 > ALPN 協商到 h2、未知 SNI 被拒絕握手。

@@ -502,7 +502,7 @@ endpoint 上，`add_endpoint` / `add_listener` 也是 clone 那一個 ⇒ 一個
 3. **標題跟著改**：`…has no end-of-connection hook, and cannot tell listeners apart` ——
    「cannot tell listeners apart」正是 #941 會修掉的那句話，措辭與事實對齊。
 
-⚠ 順帶補一條給「唯讀問題小節的人」的指針（那一條里加了「#941, open, would give this by
+⚠ 順帶補一條給「唯讀問題小節的人」的指針（那一條裡加了「#941, open, would give this by
 construction」），免得他停在那裡被誤導。
 
 **同一條思路推到第 1 點：結束鉤子會不會也已經有現成的？** —— 查了，**沒有**：

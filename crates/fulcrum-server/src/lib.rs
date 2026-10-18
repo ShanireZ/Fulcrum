@@ -1,10 +1,10 @@
 //! 資料面：把[執行環境物件圖](fulcrum_runtime::Runtime)掛到 Pingora 上。
 //!
 //! ```text
-//! 结构化配置 ──▶ Runtime（纯逻辑，决定「该做什么」）
+//! 結構化配置 ──▶ Runtime（純邏輯，決定「該做什麼」）
 //!                   │
 //!                   ▼
-//!            本 crate（用 Pingora 把它做出来）
+//!            本 crate（用 Pingora 把它做出來）
 //! ```
 //!
 //! # 模組地圖
@@ -593,7 +593,7 @@ impl FulcrumApp {
         let headers = ReqHeaders(hdr);
         let ctx = facts.ctx(&headers);
 
-        // ── 訪問紀錄：請求那一半里每請求都要的兩格（**M2 批 L 第 ② 步**）──────
+        // ── 訪問紀錄：請求那一半裡每請求都要的兩格（**M2 批 L 第 ② 步**）──────
         //
         // ★ method / host / uri / site 四格**路由之後、站台配了 `log` 才填**（見下面「站台那一半」）。
         session.record.remote_ip = remote_ip;

@@ -279,7 +279,7 @@ mod tests {
         let reg = ConnRegistry::new();
         let v = reg.view(Entrypoint::Http, "0.0.0.0:80");
         // ★ 「建成就出樣本」：宣告完立刻就該有一條 0/0，而不是等第一條連接。
-        //   ⇒ 「監聽器在、只是沒人連」與「設定里根本沒有它」因此分得開。
+        //   ⇒ 「監聽器在、只是沒人連」與「設定裡根本沒有它」因此分得開。
         assert_eq!(
             reg.snapshot(),
             vec![(Entrypoint::Http, "0.0.0.0:80".into(), 0, 0)]

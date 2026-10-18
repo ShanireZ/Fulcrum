@@ -222,7 +222,7 @@ const DSL_DOC: &str = include_str!("../../../docs/architecture/dsl-reference.md"
 /// `dsl-reference.md` 裡一張**子指令表**的一行。
 #[derive(Debug, PartialEq, Eq)]
 struct SubRow {
-    /// 第一格里的那些反引號名字。⚠ 一格里**可以有多個**
+    /// 第一格裡的那些反引號名字。⚠ 一格里**可以有多個**
     /// （`` `passive_fail` / `passive_window` `` 就是一行）。
     names: Vec<String>,
     /// 這一行的行文裡提到 `UNWIRED` 了嗎。
@@ -286,7 +286,7 @@ fn sub_directive_rows(md: &str) -> Vec<SubRow> {
 /// # 判據
 ///
 /// - ① **文件 → 清單**：子指令表裡凡是行文提到 `UNWIRED` 的那一行，
-///   它第一格里的名字**必須**還在 [`UNWIRED`] 裡 ⇒ 擋「串接了忘了改文件」。
+///   它第一格裡的名字**必須**還在 [`UNWIRED`] 裡 ⇒ 擋「串接了忘了改文件」。
 /// - ② **清單 → 文件**：[`UNWIRED`] 裡凡是在子指令表裡有行的那個名字，
 ///   那一行**必須**提到 `UNWIRED` ⇒ 擋「文件說得像已經能用了、其實執行環境不做」。
 ///
@@ -391,7 +391,7 @@ fn 子指令表扫查器能命中也能落空() {
         rows.iter().map(|r| r.mentions_unwired).collect::<Vec<_>>(),
         vec![false, true, false]
     );
-    // ③ 一格里有多個名字時**每一個**都算數（`passive_fail` / `passive_window` 就是這形狀）。
+    // ③ 一格裡有多個名字時**每一個**都算數（`passive_fail` / `passive_window` 就是這形狀）。
     assert!(rows[1].names.iter().any(|n| n == "b2"));
     // ④ 表頭與分隔行不當成資料行（否則「子指令」會被當成一條子指令）。
     assert!(

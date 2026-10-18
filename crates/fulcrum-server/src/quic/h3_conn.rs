@@ -1,7 +1,7 @@
 //! **`quiche::h3` 事件循環**（M2 批 J 第五步）——一條 QUIC 連接的任務本體。
 //!
 //! ```text
-//!   UDP 数据报 ──▶ 连接任务（独占 quiche::Connection + quiche::h3::Connection）
+//!   UDP 資料包 ──▶ 連線任務（獨佔 quiche::Connection + quiche::h3::Connection）
 //!                    │                                   ▲
 //!                    │ Headers/Data/Finished             │ (stream_id, FromSession)
 //!                    ▼                                   │

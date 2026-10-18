@@ -7,13 +7,13 @@
 //! # 形狀：一條 unix datagram socket，路徑由 `gen_id` 推導
 //!
 //! ```text
-//!   新一代收到一个 DCID 前缀不是自己的数据报
+//!   新一代收到一個 DCID 字首不是自己的資料包
 //!        │
-//!        ├─ 从前缀里读出对方的 gen_id（8 字节）
-//!        ├─ 路径 = <run_dir>/quic-relay-<hex>.sock     ← ★ 不需要任何握手或协商
-//!        └─ send([from][to][原始数据报])
+//!        ├─ 從字首裡讀出對方的 gen_id（8 位元組）
+//!        ├─ 路徑 = <run_dir>/quic-relay-<hex>.sock     ← ★ 不需要任何握手或協商
+//!        └─ send([from][to][原始資料包])
 //!                              │
-//!                    老一代的 RelayInbox 收下 ──▶ 按 DCID 查自己的连接表
+//!                    老一代的 RelayInbox 收下 ──▶ 按 DCID 查自己的連接表
 //! ```
 //!
 //! ★ ★ **通道是單向的**：回包不轉交 —— 兩代持有同一個 UDP socket，老一代直接 `send_to`

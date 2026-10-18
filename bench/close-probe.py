@@ -2,7 +2,7 @@
 """行為核對：發一個帶 `Connection: close` 的請求之後，伺服器端**真的先關了**嗎？
 
     python3 bench/close-probe.py <host> <port> <path>
-    python3 bench/close-probe.py --capture-request <port> <输出文件>
+    python3 bench/close-probe.py --capture-request <port> <輸出檔案>
     python3 bench/close-probe.py --self-check
 
 探針的結束代碼：
@@ -13,7 +13,7 @@
     2  用法錯
 
 `--capture-request`：在 127.0.0.1:<port> 上只接一條帶完整請求頭的連接，把**請求頭**原文落進
-<输出文件>，回 200 + `Connection: close`；0 = 抓到了，1 = 20 秒內沒等到。案例指令碼拿它抓
+<輸出檔案>，回 200 + `Connection: close`；0 = 抓到了，1 = 20 秒內沒等到。案例指令碼拿它抓
 **oha 真正發出的那個請求**（用負載那一組參數發一次），判據 ⑥ ② 判裡面有沒有 `Connection: close`
 （owner 2026-09-23 改判：原先用 TIME_WAIT 佔比判「伺服器端先關」，實測是競態、且會被截斷）。
 

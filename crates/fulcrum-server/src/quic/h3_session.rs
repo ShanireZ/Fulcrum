@@ -16,10 +16,10 @@
 //! 只有兩條 mpsc：請求體進來、回應出去。
 //!
 //! ```text
-//!   连接任务（独占 quiche::Connection + quiche::h3::Connection）
+//!   連線任務（獨佔 quiche::Connection + quiche::h3::Connection）
 //!        │  ToSession::Body/End/Reset          ▲  FromSession::Header/Body/Trailers/Finish
 //!        ▼                                     │
-//!   H3Session  ──包进 ServerSession::new_custom──▶  FulcrumApp::serve_one（**一行没改**）
+//!   H3Session  ──包進 ServerSession::new_custom──▶  FulcrumApp::serve_one（**一行沒改**）
 //! ```
 //!
 //! # ⚠ 有幾個方法**不兌現它名字的承諾**，而這一條有門看著

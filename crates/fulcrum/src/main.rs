@@ -1,10 +1,10 @@
 //! 樞衡 Fulcrum 的產品二進位。
 //!
 //! ```text
-//! fulcrum validate <file>          # 只检查，出错走退出码 1
-//! fulcrum compile  <file> [-o f]   # DSL → 结构化配置（JSON，G48）
-//! fulcrum plan     <file>          # 人读的执行计划：每条指令实际跑在第几步 + 回落
-//! fulcrum serve    <file>          # 起数据面（HTTP/HTTPS、ACME、反代、管理面）
+//! fulcrum validate <file>          # 只檢查，出錯走退出碼 1
+//! fulcrum compile  <file> [-o f]   # DSL → 結構化配置（JSON，G48）
+//! fulcrum plan     <file>          # 人讀的執行計劃：每條指令實際跑在第幾步 + 回落
+//! fulcrum serve    <file>          # 起資料面（HTTP/HTTPS、ACME、反代、管理面）
 //! ```
 //!
 //! ⚠ **不要在這裡寫現狀描述** —— 一句過期的現狀描述比沒有描述更糟，
@@ -19,7 +19,7 @@
 //! 而機器寫進來的一份根本不經過詞法與語法。正則編不過、CIDR 不合法、上游位址寫錯，
 //! 都只有建置執行環境圖時才看得見。
 //!
-//! ★ 沒有用任何命令行解析庫。三條子命令、兩個選項，手寫二十行比拖一棵相依樹划算，
+//! ★ 沒有用任何命令行解析庫。三條子命令、兩個選項，手寫二十行比拖一棵相依樹劃算，
 //! 而 G29 那套「追新 + 24 小時隔離期 + 每週檢查」是按相依條數收費的。
 
 use fulcrum_config::model::{MatcherRef, Step, StepBody, StructuredConfig};

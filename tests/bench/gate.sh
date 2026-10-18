@@ -555,7 +555,7 @@ else
   #   這條判據下**完全相同** —— 而本條要守的正是那個數本身。
   # ⚠ p99 的鍵路徑是 `latencyPercentiles.p99`（2026-09-09 對著
   #   `bench/results/2026-09-06-static-throughput/` 那組真實讀數實測）。
-  #   ⛔ **不是** `summary.p99`（summary 里根本沒有 p99），
+  #   ⛔ **不是** `summary.p99`（summary 裡根本沒有 p99），
   #   ⛔ 也不是 `metrics.latency_ms.p99`（那份單位是**毫秒**，取錯差 1000 倍
   #      而看著像個正常的數）。
   if C18_SUMMARY=$(python3 - "$C18_DIR" <<'PY'

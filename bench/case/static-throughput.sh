@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 案例類「靜態吞吐」——四家各服務**同一個固定資源**，同一個負載生成器打。
 #
-#   bash bench/case/static-throughput.sh <输出目录>
+#   bash bench/case/static-throughput.sh <輸出目錄>
 #
 # ⛔ **本指令碼不判定、不比較、不列印任何「誰更快」。** 它只產出原始資料。
 #   判定在 `bench/verdict.sh`，而那一步會先問宿主合不合格。
@@ -93,7 +93,7 @@ trap cleanup EXIT
 # ── 原語 ───────────────────────────────────────────────────────────────────
 #
 # ★ 「起來了沒有」判在**行為**上（真連一次），⛔ 不判某個工具在不在 ——
-#   `tests/stress/run.sh` 在這條上栽過：寫 `ss -lnt …` 而鏡像里根本沒有 `ss`，
+#   `tests/stress/run.sh` 在這條上栽過：寫 `ss -lnt …` 而鏡像裡根本沒有 `ss`，
 #   於是那個原語**恆回傳 false**，一個方向永遠成立、另一個方向永遠超時。
 port_listening() {
   timeout 1 bash -c "exec 3<>/dev/tcp/$HOST/$1" 2>/dev/null
@@ -209,7 +209,7 @@ run_subject() {
     return 0
   fi
 
-  # ★ ★ ★ **開跑前先證明樣本里真有東西。** 一個穩定回 404 的被測會給出一個
+  # ★ ★ ★ **開跑前先證明樣本裡真有東西。** 一個穩定回 404 的被測會給出一個
   #   非常漂亮的 RPS，而那個數與「服務靜態資源」毫無關係 —— 它量的是回 404 有多快。
   #   ⇒ 狀態碼與**位元組數**都要對上，⛔ 只判狀態碼不夠（回 200 空 body 同樣很快）。
   local probe code size
