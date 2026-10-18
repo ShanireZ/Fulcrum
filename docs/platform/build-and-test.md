@@ -542,6 +542,8 @@ python tools/dep-check.py     # 第三項就是建置鏡像檢查
 docker pull rust:1-trixie
 docker image inspect rust:1-trixie --format '{{range .RepoDigests}}{{.}}{{end}}'
 # 把 Dockerfile.build 的 tag 與 digest 一起換成新值（tag 寫精確小版本，別寫 1-trixie）
+# ★ musl-probe 與 musl-product 的 rust:X-alpine 也要換成同一個 X（見下一段）
+python tools/dep-check.py --check-pins   # 三張的 rustc 版本一致才過；門禁 lint 那一格也跑它
 bash tests/m0/docker-run.sh          # 鏡像會因內容雜湊變化自動重建，三場景必須全綠
 # 然後把新的 rustc 版本更新到本頁
 ```
@@ -550,10 +552,13 @@ bash tests/m0/docker-run.sh          # 鏡像會因內容雜湊變化自動重�
 [`Dockerfile.build`](../../docker/Dockerfile.build) ·
 [`Dockerfile.musl-probe`](../../docker/Dockerfile.musl-probe) ·
 [`Dockerfile.musl-product`](../../docker/Dockerfile.musl-product)。
-musl 那兩份的結論裡寫著「rustc 與 `Dockerfile.build` 是同一個版本」——
-只換一邊那句話就變成假的，**而沒有任何東西會說出來**（`dep-check.py` 只看 `Dockerfile.build`）。
+musl 那兩份的結論裡寫著「rustc 與 `Dockerfile.build` 是同一個版本」——只換一邊那句話就變成假的。
+`python tools/dep-check.py --check-pins`（離線，**門禁 lint 那一格每趟都跑**）點名版本不一致的檔案；
+集合是推導的（`docker/Dockerfile.*` 裡含 `^FROM rust:` 的），第四張釘 rustc 的 Dockerfile 自動算進來。
+它能不能紅由 `dep-check.py --self-check` 的合成案例（含 2026-08-27 ～ 10-18 那次的原樣）每趟自證；
+⚠ 它只比 rustc 版本，不比 digest 與 Alpine/Debian 版本，也不認 `FROM` 小寫或帶 `--platform` 旗標的寫法。
 目前三張都是 **rustc 1.98.0 (88d9e12ae 2026-08-18)**：建置鏡像 `rust:1.98.0-trixie`，musl 兩張 `rust:1.98.0-alpine`（Alpine 3.24.1 / gcc 15.2.0，2026-10-18 拉取）。
-⚠ 這條真的漏過一次：`Dockerfile.build` 2026-08-27 已換到 1.98.0，musl 兩張停在 1.97.1 直到 2026-10-18，期間沒有任何門判紅。
+⚠ 這條真的漏過一次：`Dockerfile.build` 2026-08-27 已換到 1.98.0，musl 兩張停在 1.97.1 直到 2026-10-18，期間沒有任何門判紅（上面那道檢查就是為這次補的）。
 > ⚠ 這一行曾經寫著「兩個地方」，而那時已經是三個 ——
 > **一句用數字說事的話，會在數字變了的那一刻悄悄變假。**
 實測（x86_64）：產品編成 musl 靜態產物 **16,191,800 位元組**、`INTERP=0 / NEEDED=0`、

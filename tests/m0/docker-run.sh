@@ -1048,6 +1048,12 @@ LINT_CMD="$LINT_CMD && bash tests/acme/self-check.sh"
 #   分家，只會在那一次才露出來 —— 2026-09-24 就是：它比 [2/5] 更嚴，把三個合法的包誤報成對不上。
 #   ⚠ 不出網、不跑 cargo，只喂合成輸入；python3 用的是建置鏡像裡那一份。
 LINT_CMD="$LINT_CMD && python3 tools/dep-check.py --self-check"
+# ★ 同一個 rustc 版本釘在 Dockerfile.build / musl-probe / musl-product 三張裡，必須一起換。
+#   2026-08-27 ～ 10-18 它們漂了 52 天，期間每一趟門禁都綠 —— 沒有任何東西比過它們。
+#   掛在 lint 這一格（預設門禁最前面、不碰 docker、不出網、毫秒級）⇒ 換 rustc 漏一張，
+#   紅在第一步而不是在五十分鐘之後。判據是 `--check-pins` 對真樹的那一半；它會不會紅
+#   由上面那條 `--self-check` 的合成案例釘著（含本次事故原樣），兩條缺一不可。
+LINT_CMD="$LINT_CMD && python3 tools/dep-check.py --check-pins"
 # ★ pre-push 門「被推的提交碰沒碰 `.sh`」那條判據（G158）。掛在 lint 這一格，理由同上：
 #   pre-push 路徑為了快**有意不跑**它，而判據一旦壞成「恆答不必跑」，那道門就安靜地
 #   不再看 shell —— 只能由完整門禁替它守著。⚠ 只建一棵合成 git 儲存庫，不碰 docker、不出網。

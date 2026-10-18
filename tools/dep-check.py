@@ -44,6 +44,8 @@ Debian 側的 digest 漂移只打一行提示。
     python tools/dep-check.py --hours 48      # 換一個懷疑期長度
     python tools/dep-check.py --skip-fork     # 跳過 fork 上游檢查
     python tools/dep-check.py --skip-image    # 跳過建置鏡像檢查
+    python tools/dep-check.py --check-pins    # 離線：釘 rustc 的三張 Dockerfile 版本是否一致（出 0 / 1；門禁 lint 那一格調它）
+    python tools/dep-check.py --self-check    # 離線：內置自測（含上一條的反證案例；門禁 lint 那一格調它）
 
 結束代碼（可疊加）：
     0   沒有任何要處理的
@@ -124,6 +126,26 @@ FROM_LINE = re.compile(
 )
 # 從 `1.97.1-trixie` 裡取出 `1.97.1`
 TAG_VERSION = re.compile(r"^(\d+(?:\.\d+)*)-")
+
+# ── 釘 rustc 的 Dockerfile 必須同一個版本（`--check-pins`）────────────────────────
+# `Dockerfile.build`（rust:X-trixie）與 `Dockerfile.musl-probe` / `Dockerfile.musl-product`
+# （rust:X-alpine）的 X 必須一起換（build-and-test.md「怎麼升」）。2026-08-27 ～ 10-18 它們漂了
+# 52 天，期間沒有任何門判紅 —— 上面的 `check_build_image` 只讀 `Dockerfile.build`。
+# ★ 集合是**推導**的（`docker/Dockerfile.*` 裡含 `^FROM rust:` 的），⛔ 不寫死清單；判據與
+#   `tests/musl/arm64-trigger.sh` 的觸發集相同（`grep -l '^FROM rust:'`）：寫死的清單在出現
+#   第四張釘 rustc 的 Dockerfile 時會靜靜漏掉它。
+# ⚠ 不能複用 `FROM_LINE`：它要求 FROM 行以 digest 收尾，認不得 musl 兩張的 `… AS build`。
+RUST_FROM = re.compile(r"^FROM\s+rust:(?P<tag>[^\s@]+)", re.M)
+# ⚠ 也不複用 `TAG_VERSION`：它把 `1-alpine` 這種浮動 tag 的 `1` 當成版本。這裡要求 X.Y.Z 三段，
+#   `1-alpine` / `1.98-alpine` 都算「讀不出精確版本」。
+RUST_TAG_VERSION = re.compile(r"^(\d+\.\d+\.\d+)(?:-|$)")
+# 樣本健全性：這三張必須在推導出的集合裡。集合縮水（檔案改名、`FROM` 寫法變了）是**症狀**，
+# 不是一個可以靜靜通過的答案；與 arm64-trigger.sh 自測的同款斷言。
+RUSTC_PIN_REQUIRED = (
+    "docker/Dockerfile.build",
+    "docker/Dockerfile.musl-probe",
+    "docker/Dockerfile.musl-product",
+)
 
 # ── pebble（G64）：門禁裡那個本機 ACME CA ─────────────────────────────────────
 # ★ 它與 rustc 釘在**同一個檔案**裡，處置也一樣（改檔案 → 重建鏡像 → 重跑門禁），
@@ -476,6 +498,55 @@ def debian_suite_systemd(suite: str) -> str | None:
     return None
 
 
+def rustc_pin_problems(files: dict[str, str]) -> list[str]:
+    """釘 rustc 的 Dockerfile 是不是同一個版本。`files` = {相對路徑: 文字}；回傳問題清單，空 = 一致。
+
+    純函式 —— `--check-pins` 餵真樹、`--self-check` 餵合成輸入。
+    只看 digest 以外的部分：trixie 與 alpine 的 digest 本來就不同，這裡比的只有 rustc 版本。
+    """
+    pins: dict[str, list[tuple[str, str | None]]] = {}
+    for path, text in sorted(files.items()):
+        for m in RUST_FROM.finditer(text):
+            tag = m.group("tag")
+            ver = RUST_TAG_VERSION.match(tag)
+            pins.setdefault(path, []).append((tag, ver.group(1) if ver else None))
+
+    problems = [
+        f"{need} 不在「釘 rustc 的 Dockerfile」集合裡（沒有 `FROM rust:` 行，或檔案不見了）—— 樣本不全不算通過"
+        for need in RUSTC_PIN_REQUIRED
+        if need not in pins
+    ]
+    for path, items in pins.items():
+        for tag, ver in items:
+            if ver is None:
+                problems.append(f"{path}：`rust:{tag}` 讀不出精確版本號（應形如 `1.98.0-trixie`）—— 浮動 tag 無從比對")
+    versions = {ver for items in pins.values() for _tag, ver in items if ver}
+    if len(versions) > 1:
+        shown = "；".join(
+            f"{path}={'/'.join(ver or tag for tag, ver in items)}" for path, items in pins.items()
+        )
+        problems.append(f"rustc 版本不一致（必須三張一起換）：{shown}")
+    return problems
+
+
+def check_rustc_pins(root: Path = REPO) -> int:
+    """`--check-pins`：離線讀 `root/docker/Dockerfile.*`，釘的 rustc 不一致就退 1。不出網。"""
+    files = {
+        f"docker/{p.name}": p.read_text(encoding="utf-8") for p in sorted((root / "docker").glob("Dockerfile.*"))
+    }
+    problems = rustc_pin_problems(files)
+    if problems:
+        print("RUSTC PIN CHECK FAILED：")
+        for line in problems:
+            print(f"  ✗ {line}")
+        print("  ★ 修法：三張一起換成同一個精確小版本，步驟見 docs/platform/build-and-test.md「怎麼升」。")
+        return 1
+    pinned = {path: RUST_FROM.search(text).group("tag") for path, text in files.items() if RUST_FROM.search(text)}
+    print(f"RUSTC PIN CHECK PASSED —— {len(pinned)} 張釘 rustc 的 Dockerfile 版本一致："
+          + "；".join(f"{path}=rust:{tag}" for path, tag in pinned.items()))
+    return 0
+
+
 def check_build_image() -> bool:
     """★ 建置鏡像的編譯器有沒有落後（G36 / D13）。回傳 True = 需要人管。
 
@@ -548,6 +619,9 @@ def check_build_image() -> bool:
     ⚠ 这一条 **不能自动采纳**（G36）—— 换编译器必须重跑三场景，不该无人值守。
       步骤（{BUILD_DOC} 的「怎么升」一节）：
         1. 把 FROM 换成 rust:{live_ver}-trixie@{live_digest}
+           ★ 同一个 rustc 还钉在 docker/Dockerfile.musl-probe 与 docker/Dockerfile.musl-product
+             （rust:{live_ver}-alpine@…），三张必须一起换；不一致时门禁 lint 那一格会红
+             （python tools/dep-check.py --check-pins）
         2. bash tests/m0/docker-run.sh    # 镜像会因内容哈希变化自动重建，三场景必须全绿
         3. 把新的 rustc 版本更新到 {BUILD_DOC}
       ★ M3 对拍期间**冻结**，不要在采集数据的中途换编译器（§8 要求环境可复现）。""")
@@ -857,9 +931,18 @@ def main() -> int:
     ap.add_argument(
         "--self-check", action="store_true", help="只跑内置自测（不出网、不跑 cargo），门禁 lint 那一格调它"
     )
+    ap.add_argument(
+        "--check-pins",
+        nargs="?",
+        const=str(REPO),
+        metavar="ROOT",
+        help="只查釘 rustc 的 Dockerfile 版本是否一致（離線；ROOT 默認本儲存庫，給反證在副本上跑用），門禁 lint 那一格調它",
+    )
     args = ap.parse_args()
     if args.self_check:
         return self_check()
+    if args.check_pins is not None:
+        return check_rustc_pins(Path(args.check_pins))
 
     cargo = args.cargo.split()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
@@ -1585,6 +1668,66 @@ note: pass `--verbose` to see 3 unchanged dependencies behind latest
     return bad, len(cases) + 1
 
 
+def _self_check_rustc_pins() -> tuple[list[str], int]:
+    """釘住 [`rustc_pin_problems`]：三張釘 rustc 的 Dockerfile 版本不一致必須紅，一致必須綠。兩個方向都要有。
+
+    每條：(說明, {路徑: 文字}, 問題裡該出現的子串, 問題裡不該出現的子串)；該出現的為空 = 必須零問題。
+    ★ 內容仿真實 Dockerfile：build 帶 digest 無 `AS`，musl 兩張帶 `AS build` —— 這正是 `FROM_LINE` 認不得的形狀。
+    """
+    digest = "@sha256:" + "0" * 64
+
+    def df(tag: str, *, stage: bool = False, digest_: str = digest) -> str:
+        return f"# 注釋\nFROM rust:{tag}{digest_}{' AS build' if stage else ''}\nRUN true\n"
+
+    def trio(build: str, probe: str, product: str) -> dict[str, str]:
+        return {
+            "docker/Dockerfile.build": df(f"{build}-trixie"),
+            "docker/Dockerfile.musl-probe": df(f"{probe}-alpine", stage=True),
+            "docker/Dockerfile.musl-product": df(f"{product}-alpine", stage=True),
+        }
+
+    others = {  # 其他 Dockerfile 的 FROM 不是 rust:，版本號長得再像也不該算進來
+        "docker/Dockerfile.bench": "FROM nginx:1.97-bookworm AS nginx_src\nFROM debian:trixie-slim\n",
+        "docker/Dockerfile.systemd": "FROM debian:1.50-slim\n",
+    }
+    extra_lagging = {**trio("1.98.0", "1.98.0", "1.98.0"), "docker/Dockerfile.extra": df("1.97.1-alpine", stage=True)}
+    two_stage = trio("1.98.0", "1.98.0", "1.98.0")
+    two_stage["docker/Dockerfile.musl-product"] += "FROM rust:1.97.1-alpine AS second\n"
+    lost_from = trio("1.98.0", "1.98.0", "1.98.0")
+    lost_from["docker/Dockerfile.musl-probe"] = "FROM alpine:3.24\n"
+    cases = [
+        ("三張相等", trio("1.98.0", "1.98.0", "1.98.0"), [], []),
+        ("三張相等 · 旁邊有非 rust 的 Dockerfile（版本號不同也不誤報）", {**trio("1.98.0", "1.98.0", "1.98.0"), **others}, [], []),
+        ("★ 本次事故原樣：build 1.98.0、musl 兩張 1.97.1（`AS build` 行）",
+         trio("1.98.0", "1.97.1", "1.97.1"),
+         ["docker/Dockerfile.build=1.98.0", "docker/Dockerfile.musl-probe=1.97.1", "docker/Dockerfile.musl-product=1.97.1"], []),
+        ("只落後 musl-product 一張", trio("1.98.0", "1.98.0", "1.97.1"),
+         ["docker/Dockerfile.musl-product=1.97.1"], ["docker/Dockerfile.musl-probe=1.97.1"]),
+        ("build 落後（方向反過來也要紅）", trio("1.97.1", "1.98.0", "1.98.0"),
+         ["docker/Dockerfile.build=1.97.1"], ["docker/Dockerfile.musl-probe=1.97.1"]),
+        ("推導而非清單：第四張釘 rustc 的 Dockerfile 落後", extra_lagging, ["docker/Dockerfile.extra=1.97.1"], []),
+        ("同一張兩個 `FROM rust:` 階段版本不同", two_stage, ["docker/Dockerfile.musl-product=1.98.0/1.97.1"], []),
+        ("浮動 tag 讀不出版本", {**trio("1.98.0", "1.98.0", "1.98.0"), "docker/Dockerfile.musl-probe": df("1-alpine", stage=True)},
+         ["docker/Dockerfile.musl-probe：`rust:1-alpine`", "精確版本號"], []),
+        ("樣本縮水：musl-probe 不再有 `FROM rust:`", lost_from, ["docker/Dockerfile.musl-probe 不在"], []),
+        ("樣本為空（沒有任何 Dockerfile）", {}, ["docker/Dockerfile.build 不在", "docker/Dockerfile.musl-probe 不在",
+                                            "docker/Dockerfile.musl-product 不在"], []),
+    ]
+    bad = []
+    for label, files, want_in, want_out in cases:
+        problems = rustc_pin_problems(files)
+        text = "\n".join(problems)
+        if not want_in and problems:
+            bad.append(f"rustc 釘子「{label}」：應零問題，實際 {problems}")
+        for sub in want_in:
+            if sub not in text:
+                bad.append(f"rustc 釘子「{label}」：問題裡沒有 `{sub}`（實際 {problems or '零問題'}）")
+        for sub in want_out:
+            if sub in text:
+                bad.append(f"rustc 釘子「{label}」：問題裡竟然有 `{sub}`（{problems}）")
+    return bad, len(cases)
+
+
 def self_check() -> int:
     """`--self-check`：用合成輸入釘住 `--apply` 的五處判定 —— 不出網、不跑 cargo。
 
@@ -1603,6 +1746,9 @@ def self_check() -> int:
     五、互相 `=` 釘死的一族逐項升不動時一起升、照舊按結果鎖判，見 [`_self_check_lockstep`]。
 
     另：[`parse_dry_run`] 認不認得 cargo 的 dry-run 行（含行尾括號註記）不屬上面幾處 `--apply` 判定，見 [`_self_check_dry_run`]。
+
+    再另：[`rustc_pin_problems`] 判「釘 rustc 的三張 Dockerfile 是不是同一個版本」也不屬 `--apply`，
+    見 [`_self_check_rustc_pins`]；它對真樹的那一半是 `--check-pins`，這裡只餵合成輸入。
     """
     users = {
         ("base64", "0.23.1"): [],  # 只經 rcgen → pem 4 進產物（2026-09-24 的真實形狀）
@@ -1645,6 +1791,8 @@ def self_check() -> int:
     bad += vendor_bad
     lockstep_bad, lockstep_cases = _self_check_lockstep()
     bad += lockstep_bad
+    pins_bad, pins_cases = _self_check_rustc_pins()
+    bad += pins_bad
     if bad:
         print("DEP-CHECK SELF-CHECK FAILED：")
         for line in bad:
@@ -1655,7 +1803,8 @@ def self_check() -> int:
           f"cargo dry-run 行解析 {dry_run_cases} 组（含行尾注记；`Downgrading` 等非候选行不收）；"
           f"顺带带进来的版本过怀疑期 {intruder_cases} 组（判红、放行、不该查的不查）；"
           f"vendor 独有的候选筛选 {vendor_cases} 组；"
-          f"互相钉死的一族一起升 {lockstep_cases} 组（两个方向都有）")
+          f"互相钉死的一族一起升 {lockstep_cases} 组（两个方向都有）；"
+          f"釘 rustc 的 Dockerfile 版本一致性 {pins_cases} 组（含本次事故原样、第四张、浮动 tag、样本缩水）")
     return 0
 
 
