@@ -54,7 +54,9 @@ fn parse_row(line: &str) -> Option<Row> {
     Some(Row {
         order: cells[0].parse::<u16>().ok()?,
         name: cells[1].trim_matches('`').to_string(),
-        kind: cells[2].replace("中介軟體", "中间件").replace("終結", "终结"),
+        kind: cells[2]
+            .replace("中介軟體", "中间件")
+            .replace("終結", "终结"),
         owner: cells[3].replace("預留", "预留"),
     })
 }

@@ -2514,7 +2514,8 @@ mod tests {
                 ));
             }
             let 期望来处 = 来处写法(f.source);
-            if 格[2].replace("事件點", "事件点").replace("活體", "活体") != 期望来处 {
+            if 格[2].replace("事件點", "事件点").replace("活體", "活体") != 期望来处
+            {
                 差.push(format!("数从哪来：文档写 `{}`，代码是 `{期望来处}`", 格[2]));
             }
             match 解析标签格(格[3]) {
@@ -2529,9 +2530,7 @@ mod tests {
                 Some(_) => {}
             }
             // ★ 上界那一格的第一條：**無標籤 ⇒ 恆為 1**（單向蘊含，反向不成立）。
-            if f.labels.is_empty()
-                && !格[4].starts_with("恒为 1")
-                && !格[4].starts_with("恆為 1")
+            if f.labels.is_empty() && !格[4].starts_with("恒为 1") && !格[4].starts_with("恆為 1")
             {
                 差.push(format!(
                     "上界：这个族无标签 ⇒ 只可能有一条 series，那一格却写着 `{}`",
