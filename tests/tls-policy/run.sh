@@ -3,7 +3,7 @@
 #
 #   bash tests/tls-policy/run.sh      # 在建置鏡像裡，`target/release/fulcrum` 已建好
 #
-# ★ 用戶端是建置鏡像裡的 `openssl s_client`（OpenSSL 3.5.x）與 curl 8.14.1（h3 走 OpenSSL 的 QUIC 棧）
+# ★ 用戶端是建置鏡像裡的 `openssl s_client`（OpenSSL 3.5.x；h3 的 ticket 與恢復用它的 `-quic`）與 curl 8.14.1（h3 走 OpenSSL 的 QUIC 棧）
 #   —— 與被測的 BoringSSL / quiche 沒有一行共同程式碼，判的是互操作，不是自己對自己的理解。
 #
 # 連接埠（表在 docs/platform/host-and-gate-traps.md）：
@@ -122,7 +122,17 @@ probe() {
     | timeout 10 openssl s_client -connect "$HOST:$port" -servername "$NAME" -msg "$@" \
       > "$WORK/$out.txt" 2>&1 || true
 }
-handshook() { grep -Eq '^(New|Reused), TLSv1\.[23]' "$WORK/$1.txt"; }
+# h3 那一半（G168，2026-10-23 過目後補）：同一把 s_client，走 OpenSSL 3.5 的 QUIC 用戶端。
+# ⚠ curl 8.14.1 的 libcurl 沒編進 `--ssl-sessions`，數不了 h3 的 ticket、也帶不回 session ⇒ 恢復這一半只能用它。
+# ⚠ QUIC 的 `-msg` 原文混著非 TLS 的訊框位元組 ⇒ 下面幾個 grep 都帶 `-a`：不帶的話 GNU grep 把檔案當二進位，
+#   `New, TLSv1.3` 那一行讀不出來，ticket 照樣數得到 —— 「0 張、新握手」裡後一半會變成空轉（10-23 實測）。
+qprobe() {
+  local out=$1 port=$2
+  shift 2
+  { sleep 1; } | timeout 10 openssl s_client -quic -alpn h3 -connect "$HOST:$port" -servername "$NAME" -msg "$@" \
+    > "$WORK/$out.txt" 2>&1 || true
+}
+handshook() { grep -aEq '^(New|Reused), TLSv1\.[23]' "$WORK/$1.txt"; }
 # ⚠ OpenSSL 3.5 的 s_client 只對 KEM 組（`X25519MLKEM768`）印 `Negotiated TLS1.3 group:`；
 #   ECDH 組印的是 `Peer Temp Key: X25519, 253 bits` / `Peer Temp Key: ECDH, prime256v1, 256 bits`（10-23 實測）
 #   ⇒ 兩種都要認，只認前一種的話「協商出 X25519」會被讀成「沒協商出組」。
@@ -135,10 +145,10 @@ group_of() {
   fi
   printf '%s\n' "$g"
 }
-tickets_of() { grep -c 'NewSessionTicket' "$WORK/$1.txt" || true; }
+tickets_of() { grep -ac 'NewSessionTicket' "$WORK/$1.txt" || true; }
 # ⚠ `|| true`：`pipefail` 下沒匹配時 grep 退 1，而它多半在 `$(…)` 裡 —— `set -e` 會讓整個場景當場退出，
 #   紅的理由變成「指令碼死了」而不是「沒握上」。
-reuse_of() { grep -Eo '^(New|Reused), TLSv1\.[23]' "$WORK/$1.txt" | head -1 || true; }
+reuse_of() { grep -aEo '^(New|Reused), TLSv1\.[23]' "$WORK/$1.txt" | head -1 || true; }
 
 # 兩次連接：第一次存 session，第二次帶上它。結果（`New, TLSv1.3` / `Reused, TLSv1.3`）印出來。
 # ⚠ 第一次沒拿到可存的 session（0 張 ticket 的 TLS 1.3）時 s_client 不寫檔案 ⇒ 第二次照常連、必然是新握手。
@@ -153,6 +163,23 @@ second_of() {
     probe "$tag-2" "$port" "$@"
   fi
   reuse_of "$tag-2"
+}
+# 同上，走 h3（`qprobe`）。另核兩次的 ALPN 都是 `h3` —— 否則量的可能根本不是 QUIC 那條路。
+h3_second_of() {
+  local tag=$1 port=$2
+  shift 2
+  rm -f "$WORK/$tag.sess"
+  qprobe "$tag-1" "$port" -sess_out "$WORK/$tag.sess" "$@"
+  if [ -s "$WORK/$tag.sess" ]; then
+    qprobe "$tag-2" "$port" -sess_in "$WORK/$tag.sess" "$@"
+  else
+    qprobe "$tag-2" "$port" "$@"
+  fi
+  if grep -aq '^ALPN protocol: h3' "$WORK/$tag-1.txt" && grep -aq '^ALPN protocol: h3' "$WORK/$tag-2.txt"; then
+    reuse_of "$tag-2"
+  else
+    echo "not-h3"
+  fi
 }
 
 h3_status() {
@@ -239,6 +266,13 @@ if [ "$(h3_status "$P_DEFAULT" --curves X25519)" = 200 ]; then
 else
   fail "对照组 h3 上只给 X25519 就不通了 —— 下面 h3 那一条会变成空转"
 fi
+R=$(h3_second_of d-h3 "$P_DEFAULT" -groups X25519MLKEM768:X25519)
+T=$(tickets_of d-h3-1)
+if [ "$T" -gt 0 ] 2>/dev/null && [ "$R" = "Reused, TLSv1.3" ]; then
+  ok "对照组：h3 上数到 $T 张 ticket、带 session 的第二次是恢复的（⇒ s_client -quic 这把尺子量得到 h3 的恢复）"
+else
+  fail "对照组 h3 上数到 '${T:-?}' 张 ticket、第二次 '$R' —— 下面 h3「0 张、新握手」那一条会变成假绿"
+fi
 
 # ── [2/5] 政策組：組釘死、一張 ticket 都不發、不恢復 ─────────────────────────────
 echo "=== [2/5] 政策组：tls_groups X25519MLKEM768 + tls_session_resumption false ==="
@@ -256,6 +290,13 @@ R=$(second_of p-r13 "$P_POLICY" -groups X25519MLKEM768:X25519)
 if [ "$R" = "New, TLSv1.3" ]; then ok "带 session 的第二次是新握手"; else fail "关了恢复，第二次却是 '$R'"; fi
 if [ "$(h3_status "$P_POLICY" --curves X25519)" = 000 ]; then ok "h3：只给 X25519 握不上"; else fail "h3 上组没钉住"; fi
 if [ "$(h3_status "$P_POLICY" --curves X25519MLKEM768)" = 200 ]; then ok "h3：给 X25519MLKEM768 就 200"; else fail "h3 上给了钉的那个组也不通"; fi
+R=$(h3_second_of p-h3 "$P_POLICY" -groups X25519MLKEM768:X25519)
+T=$(tickets_of p-h3-1)
+if [ "$T" = 0 ] && [ "$R" = "New, TLSv1.3" ]; then
+  ok "h3：一张 NewSessionTicket 都没发、带 session 的第二次是新握手"
+else
+  fail "h3 上关了恢复却发了 '${T:-?}' 张 ticket、第二次 '$R'"
+fi
 
 # 只關恢復的那一個：TLS 1.2 的 session ID / 1.2 ticket 那一半（cache OFF）。
 R=$(second_of o-r12 "$P_OFF" -tls1_2)
@@ -338,7 +379,7 @@ fi
 # ── [5/5] 結論 ──────────────────────────────────────────────────────────────
 echo
 if [ "$FAILS" = 0 ]; then
-  echo "TLS-POLICY TESTS PASSED —— 全局 TLS 设置真的在跑（尺子自证 · 组钉死两向 · 0 张 ticket · 不恢复（1.3 与 1.2）· h3 同一份政策 · /load 两个值变了就 409 · 换代之后新值生效 · 启动日志）。"
+  echo "TLS-POLICY TESTS PASSED —— 全局 TLS 设置真的在跑（尺子自证 · 组钉死两向 · 0 张 ticket · 不恢复（1.3 与 1.2）· h3 同一份政策（组钉死、0 张 ticket、不恢复）· /load 两个值变了就 409 · 换代之后新值生效 · 启动日志）。"
 else
   echo "TLS-POLICY TESTS FAILED: $FAILS 处失败" >&2
   exit 1

@@ -66,7 +66,7 @@ fn 两个入口都在挂证书回调的那个_builder_上套了_tls_政策() {
     );
 }
 
-/// ★ 這道門自己判得動：同一份 `lib.rs` 拿掉那一行 ⇒ 數到 0。少了它，`count` 寫錯成恆回 1 也是綠的。
+/// ★ 這道門自己判得動：同一份 `lib.rs` / `quic/listener.rs` 各拿掉那一行 ⇒ 各數到 0。少了它，`count` 寫錯成恆回 1 也是綠的。
 #[test]
 fn 这道门判得动_拿掉那一行就数到零() {
     let src = read(LIB_RS);
@@ -78,6 +78,16 @@ fn 这道门判得动_拿掉那一行就数到零() {
     );
     assert_eq!(count(&src, apply), 1);
     assert_eq!(count(&doctored, apply), 0, "拿掉之后还数得到 —— 判据失效");
+    // h3 那一處同樣判得動（2026-10-23 措辭過目後補：原先反證只做了 h1/h2）。
+    let quic = read(QUIC_RS);
+    let (_, _, _, apply_h3) = ENTRIES[1];
+    let doctored_h3 = quic.replacen(".apply_to(&mut builder)", ".describe()", 1);
+    assert_eq!(count(&quic, apply_h3), 1);
+    assert_eq!(
+        count(&doctored_h3, apply_h3),
+        0,
+        "h3：拿掉之后还数得到 —— 判据失效"
+    );
     // 拆成幾行也數得到（rustfmt 的形狀）。
     assert_eq!(
         count(
