@@ -26,7 +26,7 @@ Run from the Fulcrum repository root in Git Bash on this Windows host. Rust runs
 |---|---|---|
 | Full development validation | `bash tests/m0/docker-run.sh` | Docker Desktop with Linux containers available; no concurrent gate on this checkout. Exit 0 with all applicable scenarios completed; reduced/skipped runs do not prove the full gate |
 | Documentation changes | `python tools/docs-check.py` and `python tools/plan-refs.py` | Python available; use the current docs/PLAN tree. Exit 0 checks document structure/reachability and supported plan-reference consistency, not prose truth or product correctness |
-| Dependency report | `python tools/dep-check.py` | Read supply-chain policy first; report uses upstream metadata/network and never authorizes adoption |
+| Dependency report | `python tools/dep-check.py` | Read supply-chain policy first; cargo runs in the `fulcrum-build:local` container by default (G107; any gate run builds it), `--cargo` overrides. Report uses upstream metadata/network and never authorizes adoption |
 | Approved dependency adoption | `python tools/dep-check.py --apply` | Separate intentional dependency work under G29; adopts only updates clearing the 24-hour quarantine, including breaking majors. Inspect all result bits; a report alone is not acceptance |
 
 Never run bare `cargo update`: it bypasses G29. Dependency changes require supply-chain checks and the applicable full gate.

@@ -79,11 +79,13 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -207,12 +209,47 @@ def run(cmd: list[str], *, cwd: Path = REPO) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
+# ★ G107：Rust 只在容器裡跑。`--cargo` 不給時用門禁的建置鏡像（任何一趟門禁都會建它）與它的 registry 卷。
+BUILD_IMAGE = "fulcrum-build:local"
+CARGO_REGISTRY_VOLUME = "fulcrum-cargo"
+
+
+def container_cargo(repo: Path = REPO, env: Mapping[str, str] = os.environ) -> list[str]:
+    """`--cargo` 的預設：在建置鏡像裡跑 cargo，掛載與 `tests/m0/docker-run.sh` 同一套。
+
+    ★ 2026-10-23 之前預設是宿主機的 `cargo`（違反 G107）：它會在工作樹寫下 `target/.rustc_info.json`，
+      下一趟完整門禁開頭就因「target/ 非空」退 1（`docs/platform/host-and-gate-traps.md` 第 11 條；09-24、10-23 各踩一次）。
+    ★ `/w/target` 掛匿名卷（`--rm` 時一起刪）：`cargo update` 不編譯也會往目標目錄寫 `.rustc_info.json`，⛔ 不能落到工作樹上。
+    ★ 回傳列表、不拼字串：儲存庫路徑帶空格時 `str.split()` 會把它切開。
+    ★ `-w /w` ⇒ 呼叫點傳的相對 `--manifest-path`（`VENDOR_MANIFEST`）在容器裡照舊成立。
+    `DOCKER_USER` 與 `docker-run.sh` 是同一個開關。
+    """
+    user = env.get("DOCKER_USER")
+    return [
+        "docker", "run", "--rm",
+        *(["--user", user] if user else []),
+        "-v", f"{repo.as_posix()}:/w",
+        "-v", f"{CARGO_REGISTRY_VOLUME}:/usr/local/cargo/registry",
+        "-v", "/w/target",
+        "-w", "/w",
+        BUILD_IMAGE, "cargo",
+    ]
+
+
+def resolve_cargo(arg: str | None, env: Mapping[str, str] = os.environ) -> list[str]:
+    """`--cargo` 給了就照給的前綴（用空格分隔；例如已經在建置鏡像裡時 `--cargo cargo`），沒給就用 [`container_cargo`]。"""
+    return arg.split() if arg else container_cargo(env=env)
+
+
 def cargo_candidates(cargo: list[str], manifest: str | None = None) -> list[tuple[str, str | None, str]]:
     """回傳 [(crate, 當前版本 or None, 候選版本)]；`manifest` 給了就問那份清單（vendor），否則問根。"""
     proc = run([*cargo, "update", "--dry-run", *(["--manifest-path", manifest] if manifest else [])])
     out = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
         print(out, file=sys.stderr)
+        if cargo[:2] == ["docker", "run"]:
+            print(f"  ★ cargo 是在容器里跑的：先确认 `{BUILD_IMAGE}` 镜像在（`docker images fulcrum-build`；"
+                  "跑一趟门禁就会建它），或者用 --cargo 指定别的前缀。", file=sys.stderr)
         raise SystemExit(f"cargo update --dry-run 失败（退出码 {proc.returncode}）")
 
     return parse_dry_run(out)
@@ -917,8 +954,9 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="采纳通过怀疑期的更新")
     ap.add_argument(
         "--cargo",
-        default="cargo",
-        help="cargo 命令；在容器里跑时可传 'docker run ... cargo' 之类的完整前缀（用空格分隔）",
+        default=None,
+        help=f"cargo 命令前缀（用空格分隔）；默认在建置镜像 {BUILD_IMAGE} 的容器里跑（G107，见 container_cargo）。"
+        "已经在那个镜像里时可传 'cargo'",
     )
     ap.add_argument("--skip-fork", action="store_true", help="跳过 fork 上游检查")
     ap.add_argument("--skip-image", action="store_true", help="跳过构建镜像检查（G36）")
@@ -944,7 +982,7 @@ def main() -> int:
     if args.check_pins is not None:
         return check_rustc_pins(Path(args.check_pins))
 
-    cargo = args.cargo.split()
+    cargo = resolve_cargo(args.cargo)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
 
     # ── fork 的上游先查。它與 cargo 那條路完全獨立：patch 過去的 crate
@@ -1668,6 +1706,27 @@ note: pass `--verbose` to see 3 unchanged dependencies behind latest
     return bad, len(cases) + 1
 
 
+def _self_check_container_cargo() -> tuple[list[str], int]:
+    """釘住 [`container_cargo`] / [`resolve_cargo`]：不給 `--cargo` 時 cargo 在建置鏡像裡跑，目標目錄不落在工作樹上。"""
+    repo = Path("C:/Users/A B/Fulcrum")  # 帶空格：拼成字串再 `split()` 就會被切開
+    got = container_cargo(repo, env={})
+    with_user = container_cargo(repo, env={"DOCKER_USER": "1000:1000"})
+    cases = [
+        ("不给 --cargo 时不是宿主机的 cargo（G107；2026-10-23 之前的默认）", resolve_cargo(None, env={})[0] == "docker"),
+        ("在建置镜像里跑、最后两项是镜像与 cargo", got[:3] == ["docker", "run", "--rm"] and got[-2:] == [BUILD_IMAGE, "cargo"]),
+        ("仓库路径带空格也是一个参数", f"{repo.as_posix()}:/w" in got),
+        ("/w/target 挂匿名卷、不落到工作树上", "/w/target" in got and not any(a.endswith(":/w/target") for a in got)),
+        ("工作目录是 /w（相对的 --manifest-path 照旧成立）", "-w" in got and got[got.index("-w") + 1] == "/w"),
+        ("cargo registry 用门禁那个命名卷", f"{CARGO_REGISTRY_VOLUME}:/usr/local/cargo/registry" in got),
+        ("DOCKER_USER 没设就不带 --user", "--user" not in got),
+        ("DOCKER_USER 设了就带上（与 docker-run.sh 同一个开关）",
+         "--user" in with_user and with_user[with_user.index("--user") + 1] == "1000:1000"),
+        ("显式给了 --cargo 就照原样用", resolve_cargo("cargo", env={}) == ["cargo"]),
+    ]
+    bad = [f"容器 cargo「{label}」：{got}" for label, ok in cases if not ok]
+    return bad, len(cases)
+
+
 def _self_check_rustc_pins() -> tuple[list[str], int]:
     """釘住 [`rustc_pin_problems`]：三張釘 rustc 的 Dockerfile 版本不一致必須紅，一致必須綠。兩個方向都要有。
 
@@ -1749,6 +1808,8 @@ def self_check() -> int:
 
     再另：[`rustc_pin_problems`] 判「釘 rustc 的三張 Dockerfile 是不是同一個版本」也不屬 `--apply`，
     見 [`_self_check_rustc_pins`]；它對真樹的那一半是 `--check-pins`，這裡只餵合成輸入。
+
+    還有：不給 `--cargo` 時 cargo 在建置鏡像裡跑、目標目錄不落在工作樹上（G107），見 [`_self_check_container_cargo`]。
     """
     users = {
         ("base64", "0.23.1"): [],  # 只經 rcgen → pem 4 進產物（2026-09-24 的真實形狀）
@@ -1793,6 +1854,8 @@ def self_check() -> int:
     bad += lockstep_bad
     pins_bad, pins_cases = _self_check_rustc_pins()
     bad += pins_bad
+    container_bad, container_cases = _self_check_container_cargo()
+    bad += container_bad
     if bad:
         print("DEP-CHECK SELF-CHECK FAILED：")
         for line in bad:
@@ -1804,7 +1867,8 @@ def self_check() -> int:
           f"顺带带进来的版本过怀疑期 {intruder_cases} 组（判红、放行、不该查的不查）；"
           f"vendor 独有的候选筛选 {vendor_cases} 组；"
           f"互相钉死的一族一起升 {lockstep_cases} 组（两个方向都有）；"
-          f"釘 rustc 的 Dockerfile 版本一致性 {pins_cases} 组（含本次事故原样、第四张、浮动 tag、样本缩水）")
+          f"釘 rustc 的 Dockerfile 版本一致性 {pins_cases} 组（含本次事故原样、第四张、浮动 tag、样本缩水）；"
+          f"不给 --cargo 时在建置镜像里跑 {container_cases} 条（G107）")
     return 0
 
 

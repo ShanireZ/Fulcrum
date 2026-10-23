@@ -44,6 +44,9 @@ python tools/dep-check.py --apply    # 採納通過懷疑期的
 python tools/dep-check.py --hours 48 # 換一個懷疑期長度
 ```
 
+★ cargo 預設在建置鏡像 `fulcrum-build:local` 的容器裡跑（G107；掛門禁那個 registry 卷，`/w/target` 是匿名卷 ⇒ 工作樹上不留 `target/.rustc_info.json`）；
+鏡像不在時先跑一趟門禁。`--cargo` 給了就照給的前綴跑 —— ⛔ 在宿主機上給 `--cargo cargo` 就回到了 [宿主機陷阱](/platform/host-and-gate-traps.md) 第 11 條。
+
 ★ ★ **絕不要裸跑 `cargo update`。** 它會跳過懷疑期——而懷疑期正是 G29 存在的理由。
 
 結束代碼即結論（★ **每項檢查各佔一位，可疊加**）：

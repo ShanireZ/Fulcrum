@@ -310,22 +310,25 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       fi
 
       {
-        echo "# aarch64 已验证记录（\`D24\` = 候选 ②）"
+        # ★ 寫進記錄檔的文字用臺灣繁體（與儲存庫文件一致）；只往終端打的訊息照舊。
+        #   ⚠ 記錄檔是生成的 ⇒ 要改它的措辭只能改這裡，⛔ 別去手改 `arm64-verified.txt`
+        #   （2026-10-17 的在地化手改過它，下一次門禁刷新就變回了簡體）。
+        echo "# aarch64 已驗證記錄（\`D24\` = 候選 ②）"
         echo "#"
-        echo "# ⛔ ⛔ **别手写这个文件。** 它由 \`tests/m0/docker-run.sh\` 在一次**真的成功的**"
-        echo "#   aarch64 验证之后、经 \`arm64-trigger.sh --record\` 写入。手写等于伪造一份验证"
-        echo "#   记录 —— 而本仓判据的全部意义就在那句「判据不是有没有人说做过了」。"
+        echo "# ⛔ ⛔ **別手寫這個檔案。** 它由 \`tests/m0/docker-run.sh\` 在一次**真的成功的**"
+        echo "#   aarch64 驗證之後、經 \`arm64-trigger.sh --record\` 寫入。手寫等於偽造一份驗證"
+        echo "#   記錄 —— 而本倉判據的全部意義就在那句「判據不是有沒有人說做過了」。"
         echo "#"
-        echo "# 它回答的问题只有一个：**当前这个依赖状态，有没有被 aarch64 真的验证过。**"
-        echo "# \`hash=\` 是 \`bash tests/musl/arm64-trigger.sh --hash\` 对**触发集**算出来的值；"
-        echo "# 触发集 = \`Cargo.lock\` + 那三张钉 rustc 的 Dockerfile（**推导**得出，⛔ 不是手写"
-        echo "# 清单，见 \`tests/musl/arm64-trigger.sh\` 的文件头）。"
+        echo "# 它回答的問題只有一個：**當前這個依賴狀態，有沒有被 aarch64 真的驗證過。**"
+        echo "# \`hash=\` 是 \`bash tests/musl/arm64-trigger.sh --hash\` 對**觸發集**算出來的值；"
+        echo "# 觸發集 = \`Cargo.lock\` + 那三張釘 rustc 的 Dockerfile（**推導**得出，⛔ 不是手寫"
+        echo "# 清單，見 \`tests/musl/arm64-trigger.sh\` 的檔案頭）。"
         echo "#"
-        echo "# ⇒ 这个值变了 = 依赖 / 工具链 / 基础镜像变了 = aarch64 那一格要重跑。"
-        echo "#   ⚠ 它**不**随源码提交变：我们自己那几个 crate 是架构中立的，而 amd64 那一格每趟都编。"
+        echo "# ⇒ 這個值變了 = 依賴 / 工具鏈 / 基礎映象變了 = aarch64 那一格要重跑。"
+        echo "#   ⚠ 它**不**隨原始碼提交變：我們自己那幾個 crate 是架構中立的，而 amd64 那一格每趟都編。"
         echo "#"
-        echo "# ⚠ ⚠ 墙钟是**机器本地**的：2026-09-06 \`ShanirePCX\` 冷建 34m05s，而 \`ShanireHomePC\`"
-        echo "#   2026-09-05 同样一趟 18m07s —— 近两倍差距，⛔ 别互相照抄、也别当成「这道门要多久」。"
+        echo "# ⚠ ⚠ 牆鐘是**機器本地**的：2026-09-06 \`ShanirePCX\` 冷建 34m05s，而 \`ShanireHomePC\`"
+        echo "#   2026-09-05 同樣一趟 18m07s —— 近兩倍差距，⛔ 別互相照抄、也別當成「這道門要多久」。"
         echo
         echo "hash=$(fulcrum_arm64_trigger_hash "$_root")"
         echo "verified_at=$(date '+%Y-%m-%dT%H:%M:%S%z')"
@@ -337,7 +340,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         #   「hash= 不在首行時也取得到」正是釘這件事的）。
         if [ -n "$_commit_err" ]; then
           echo "#"
-          echo "# ⚠ verified_commit 问不出来（git 退 $_commit_rc），它自己的原话："
+          echo "# ⚠ verified_commit 問不出來（git 退 $_commit_rc），它自己的原話："
           printf '%s\n' "$_commit_err" | sed 's/^/#     /'
         fi
       } > "$_out"

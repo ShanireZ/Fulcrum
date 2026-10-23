@@ -245,11 +245,14 @@ Two corollaries:
     reconciling the pingora 0.9.0 rebase. Extract with `git -c core.autocrlf=false archive …`, and
     check the result with `tr -dc '\r' < file | wc -c` (MSYS `grep` normalizes line endings and
     will not see the CRs).
-11. **`tools/dep-check.py` defaults to the host `cargo`, and that breaks G107 on the next gate.**
+11. **Host `cargo` against the checkout breaks G107 on the next gate.**
     Host cargo writes `target/.rustc_info.json` into the checkout even when nothing is built, so the gate's
     host-side G107 check (every `target/` in the tree must be empty) exits `RC=1` on a tree nobody
-    meant to build. Measured 2026-09-24. Pass `--cargo` a container command instead — the
-    `docker run … fulcrum-build:local cargo` form in [supply chain](supply-chain.md) — and if the
+    meant to build. Measured 2026-09-24, hit again 2026-10-23 through `tools/dep-check.py`, whose
+    default was the host `cargo`. Since 2026-10-23 its default is the build-image container
+    (`container_cargo`: the gate's registry volume, an anonymous `/w/target`, `--self-check` pins it);
+    passing `--cargo cargo` on the host brings the trap back. For other ad-hoc cargo use the
+    `docker run … fulcrum-build:local cargo` form in [supply chain](supply-chain.md), and if the
     file already exists, delete it: it is a host artifact, not a cache worth keeping.
     ⚠ **The same file can also arrive with no host cargo at all.** cargo writes `.rustc_info.json`
     only if the target directory *already exists* — and mounting a named volume at a sub-path
