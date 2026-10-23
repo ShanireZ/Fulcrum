@@ -13,11 +13,11 @@ members = [
 # vendor/pingora 是自帶 [workspace] 的 fork，不能當成本 workspace 的成員
 exclude = ["vendor/pingora"]
 
-# G30：pingora-core 0.8.1 的清單裡有十條版本上界（`brotli = "3"` 這類脫字號需求
+# G30：fork 立起時，pingora-core 0.8.1 的清單裡有十條版本上界（`brotli = "3"` 這類脫字號需求
 # 自帶 `<4.0.0`），把 44 個傳遞相依釘在舊版上，其中兩個帶安全公告。
 # ★ [patch] 打不破版本需求——被 patch 的 crate 仍須滿足相依方的需求，
-#   所以唯一的槓桿是替換 pingora-core 本身。fork 在 vendor/pingora，
-#   改動只在各 Cargo.toml 的版本上界與隨之而來的呼叫點適配。
+#   所以唯一的槓桿是替換 pingora-core 本身。fork 在 vendor/pingora；
+#   基線與每一處改動（不只版本上界）以 vendor/pingora/FORK.md 為準。
 # 現狀、實測破壞面與重跑方式見 docs/platform/supply-chain.md。
 [patch.crates-io]
 pingora-core = { path = "vendor/pingora/pingora-core" }
