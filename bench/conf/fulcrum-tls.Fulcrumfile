@@ -1,0 +1,17 @@
+# TLS 握手那一類（G168，bench/case/tls-handshake.sh）—— 與 `fulcrum-respond.Fulcrumfile` 同一個形態，加上 TLS。
+#
+# ★ 兩個全域 TLS 設定就是 G168 新加的那兩個**一般使用者設定**，⛔ 不是對拍專用的旋鈕：
+#   `tls_groups` 釘死組（四家同一個，口徑見 bench/README.md「§8 的類」）、`tls_session_resumption false`
+#   = 一張 ticket 都不發、不留 session ⇒ 每條連接都完整握手。
+# ★ `auto_http_redirect false`：TLS 站台預設會合成一個 `:80` 重定向站台，而另外三家沒有 —— 關掉它，
+#   四家監聽的就只有這一個連接埠。
+{
+    threads_l7 __WORKERS__
+    auto_http_redirect false
+    tls_groups __TLS_GROUP__
+    tls_session_resumption false
+}
+__NAME__:__PORT__ {
+    tls __CERT__ __KEY__
+    respond 200 "__BODY__"
+}

@@ -769,6 +769,187 @@ for neg in /tmp/bench-c22-neg-none.json /tmp/bench-c22-neg-cores.json; do
   fi
 done
 
+# ── C23：§8 第四類「TLS 握手」（G168）—— 產出了、握手口徑對、判據判得動、作廢只作廢這一類 ──────────
+#
+# ★ ★ 四家逐個點名、名單寫死（理由與 A 組、C20、C21 逐字同源）。⛔ 訊息裡不打任何讀數（G132）。
+# ★ 本條五半，缺一半都不夠：
+#   ① 四家的原始資料都在、都算數（與 C21 同一個寫法）；
+#   ② 四家開跑前的握手探針都過（TLSv1.3 · `BENCH_TLS_GROUP` · 無 HRR · 0 張 ticket · 不恢復），判據 ⑥ 兩半照 C21 那套；
+#   ③ 判據本身判得動：合成摘要逐條翻一個值，各紅一次；
+#   ④ `verdict.sh` 真的把「探針不過」接上了，而且**只作廢這一類**（owner 2026-10-23）——
+#      合成的合格宿主 + 一類齊全讀數 + 一份不過的 tls 探針 ⇒ tls 類 VOID、另一類照常 PASS；反方向探針全過 ⇒ tls 類也 PASS；
+#   ⑤ ★ ★ **探針真的看得見它要攔的東西**（真伺服器）：不寫鍵的樞衡 ⇒ 必須數到 ticket、第二次是恢復的；
+#      少了 `ssl_conf_command NumTickets 0` 的 nginx ⇒ 必須數到 2 張（OpenSSL 那個坑）。
+#      ⚠ 少了這一半，「0 張 ticket」「新握手」兩條在一個「等得不夠久」或「根本沒帶 session」的探針下恆綠。
+echo "── C23 TLS 握手：四家的原始数据都落盘了，而且都算数 ──"
+C23_DIR="$OUT/raw/tls-handshake"
+C23_MISSING=
+for subject in fulcrum caddy haproxy nginx; do
+  if [ ! -s "$C23_DIR/$subject.json" ]; then
+    C23_MISSING="$C23_MISSING $subject"
+  fi
+done
+if [ -n "$C23_MISSING" ]; then
+  bad "C23 这几家的原始数据没落盘：$C23_MISSING（看的是 $C23_DIR/<家>.json；探针不过的那家只有 probe-*.txt）"
+else
+  C23_READ=$(python3 "$REPO/bench/read-raw.py" "$C23_DIR" || true)
+  C23_N=$(printf '%s\n' "$C23_READ" | grep -c . || true)
+  if printf '%s\n' "$C23_READ" | grep -q 'INVALID'; then
+    bad "C23 有被测的读数无效：$(printf '%s\n' "$C23_READ" | grep 'INVALID' | tr '\n' ' ')"
+  elif [ "$C23_N" != 4 ]; then
+    bad "C23 校验器读到 $C23_N 行，该是 4 —— probe-*.trace 之类被当成了一家？或者一行都没读到"
+  else
+    ok "C23 四家的原始数据都落盘了，且都通过了有效性校验"
+  fi
+fi
+
+echo "── C23 握手口径（探针：TLSv1.3 · $BENCH_TLS_GROUP · 无 HRR · 0 张 ticket · 不恢复）· 判据 ⑥ ──"
+C23_PROBE_BAD=
+for subject in fulcrum caddy haproxy nginx; do
+  pv=$(bench_tls_probe_violations "$BENCH_TLS_GROUP" "$(cat "$C23_DIR/probe-$subject.txt" 2>/dev/null || true)")
+  [ -z "$pv" ] || C23_PROBE_BAD="$C23_PROBE_BAD $subject（$(printf '%s' "$pv" | tr '\n' ';')）"
+done
+if [ -n "$C23_PROBE_BAD" ]; then
+  bad "C23 这几家的握手口径不对：$C23_PROBE_BAD"
+else
+  # ★ 密碼套件是**診斷**（四家拉不齊），打進訊息裡讓它看得見，⛔ 不判。
+  ok "C23 四家的握手探针都过；协商出的密码套件（诊断）：$(for s in fulcrum caddy haproxy nginx; do printf '%s=%s ' "$s" "$(sed -n 's/^cipher=//p' "$C23_DIR/probe-$s.txt")"; done)"
+fi
+C23_LINES=$(grep -c . "$C23_DIR/new-conns.txt" 2>/dev/null || true)
+C23_VIOL=$(bench_short_conn_violations "$BENCH_SHORT_NEW_CONNS_MIN" "$(cat "$C23_DIR/new-conns.txt" 2>/dev/null || true)")
+if [ "$C23_LINES" != 4 ]; then
+  bad "C23 new-conns.txt 有 ${C23_LINES:-0} 行，该是 4"
+elif [ -n "$C23_VIOL" ]; then
+  bad "C23 判据 ⑥ ① 有违规：$(printf '%s' "$C23_VIOL" | tr '\n' ';')"
+else
+  ok "C23 四家都是每请求一条新连接（= 每次请求一次完整握手；实得 $(tr '\n' ' ' < "$C23_DIR/new-conns.txt")）"
+fi
+C23_REQ_VIOL=$(bench_request_close_violations "$(cat "$C23_DIR/oha-request.txt" 2>/dev/null || true)")
+if [ -n "$C23_REQ_VIOL" ]; then
+  bad "C23 判据 ⑥ ② 有违规：$C23_REQ_VIOL"
+else
+  ok "C23 oha 发出的请求里带着 Connection: close"
+fi
+
+echo "── C23 判据判得动：合成摘要逐条翻一个值 ──"
+C23_GOOD=$(printf 'version=TLSv1.3\ngroup=%s\nhrr=0\ntickets=0\ncipher=x\nsecond=New' "$BENCH_TLS_GROUP")
+if [ -n "$(bench_tls_probe_violations "$BENCH_TLS_GROUP" "$C23_GOOD")" ]; then
+  bad "C23 全对的那份合成摘要被判红了"
+fi
+for flip in second=Reused tickets=1 group=X25519 hrr=1 version=TLSv1.2; do
+  if [ -z "$(bench_tls_probe_violations "$BENCH_TLS_GROUP" "$(printf '%s\n' "$C23_GOOD" | sed "s/^${flip%%=*}=.*/$flip/")")" ]; then
+    bad "C23 判断判不动：$flip 那份合成摘要被判绿了"
+  else
+    ok "C23 反向：$flip ⇒ 如期判红"
+  fi
+done
+
+echo "── C23 verdict.sh：探针不过只作废这一类 ──"
+# 合成一個合格宿主 + 一類齊全讀數（C7 / C10 那組 PASS 的數），再拷一份當 tls-handshake 那一類。
+c23_fixture() {
+  rm -rf "$FIX"
+  python3 "$REPO/tests/bench/mkfixture.py" "$FIX" true \
+    fulcrum=280 nginx=300 caddy=100 haproxy=200 > /dev/null
+  cp -r "$FIX/raw/synthetic" "$FIX/raw/tls-handshake"
+  for s in fulcrum caddy haproxy nginx; do
+    printf '%s\n' "$C23_GOOD" > "$FIX/raw/tls-handshake/probe-$s.txt"
+  done
+}
+c23_verdict_of() {
+  awk -v c="## $1" '$0 == c { hit = 1; next } hit && /^VERDICT:/ { print; exit }' "$FIX/verdict.txt"
+}
+c23_fixture
+printf '%s\n' "$C23_GOOD" | sed 's/^second=.*/second=Reused/' > "$FIX/raw/tls-handshake/probe-haproxy.txt"
+bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c23v.log 2>&1 || true
+C23_TLS=$(c23_verdict_of tls-handshake)
+C23_OTHER=$(c23_verdict_of synthetic)
+if [ "${C23_TLS#VERDICT: VOID}" != "$C23_TLS" ] && grep -q 'haproxy：带 session 的第二次是 Reused' "$FIX/verdict.txt" \
+  && [ "$C23_OTHER" = "VERDICT: PASS" ]; then
+  ok "C23 haproxy 的探针第二次是 Reused ⇒ tls-handshake VOID 且点了名，另一类照常 PASS"
+else
+  bad "C23 探针不过时 verdict 不对：tls-handshake「$C23_TLS」/ 另一类「$C23_OTHER」：$(tr '\n' ' ' < "$FIX/verdict.txt")"
+fi
+c23_fixture
+bash "$REPO/bench/verdict.sh" "$FIX" > /tmp/bench-c23v2.log 2>&1 || true
+if [ "$(c23_verdict_of tls-handshake)" = "VERDICT: PASS" ]; then
+  ok "C23 反向：四份探针都过 ⇒ tls-handshake 照常出结论（⛔ 不是「有探针文件就作废」）"
+else
+  bad "C23 四份探针都过却没出结论：$(c23_verdict_of tls-handshake)"
+fi
+
+echo "── C23 ★ 真服务端反证：探针真的数得到 ticket、真的会恢复 ──"
+C23_WORK=$(mktemp -d)
+C23_PID=
+c23_wait_port() {
+  local tries=0
+  while [ "$tries" -lt 150 ]; do
+    timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null && return 0
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  return 1
+}
+c23_stop() {
+  [ -n "$C23_PID" ] || return 0
+  kill -INT "$C23_PID" 2>/dev/null || true
+  local waited=0
+  while kill -0 "$C23_PID" 2>/dev/null && [ "$waited" -lt 80 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  kill -KILL "$C23_PID" 2>/dev/null || true
+  wait "$C23_PID" 2>/dev/null || true
+  C23_PID=
+}
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -sha256 -days 2 -nodes \
+  -keyout "$C23_WORK/tls.key" -out "$C23_WORK/tls.crt" \
+  -subj "/CN=bench-tls.test" -addext "subjectAltName=DNS:bench-tls.test" >/dev/null 2>&1
+# ① 不寫兩個 TLS 鍵的樞衡（9966）：BoringSSL 預設照舊發 ticket、照舊恢復。
+printf '{\n    auto_http_redirect false\n}\nbench-tls.test:9966 {\n    tls %s %s\n    respond 200 "x"\n}\n' \
+  "$C23_WORK/tls.crt" "$C23_WORK/tls.key" > "$C23_WORK/fulcrum.Fulcrumfile"
+"$REPO/target/release/fulcrum" serve "$C23_WORK/fulcrum.Fulcrumfile" --bind-host 127.0.0.1 \
+  --pid-file "$C23_WORK/f.pid" --upgrade-sock "$C23_WORK/f.sock" --state-dir "$C23_WORK/state" \
+  > "$C23_WORK/fulcrum.log" 2>&1 &
+C23_PID=$!
+if c23_wait_port 9966; then
+  C23_SUM=$(bench_tls_probe 127.0.0.1 9966 bench-tls.test / "$C23_WORK/f")
+  C23_T=$(printf '%s\n' "$C23_SUM" | sed -n 's/^tickets=//p')
+  C23_S=$(printf '%s\n' "$C23_SUM" | sed -n 's/^second=//p')
+  if [ "${C23_T:-0}" -gt 0 ] 2>/dev/null && [ "$C23_S" = Reused ]; then
+    ok "C23 不写键的枢衡：探针数到 $C23_T 张 ticket、第二次 Reused ⇒ 探针真的看得见恢复"
+  else
+    bad "C23 不写键的枢衡上探针数到 '${C23_T:-?}' 张、第二次 '${C23_S:-?}' —— 探针看不见恢复，「0 张」「新握手」两条是假绿"
+  fi
+else
+  bad "C23 反证用的枢衡没在 9966 上起来：$(tail -5 "$C23_WORK/fulcrum.log" | tr '\n' ' ')"
+fi
+c23_stop
+# ② 少了 `ssl_conf_command NumTickets 0` 的 nginx（9967）：OpenSSL 3.5 的 TLS 1.3 照樣發 2 張有狀態 ticket。
+sed -e 's|__PORT__|9967|g' -e 's|__WORKERS__|1|g' -e "s|__RUN_DIR__|$C23_WORK|g" \
+  -e 's|__NAME__|bench-tls.test|g' -e "s|__CERT__|$C23_WORK/tls.crt|g" -e "s|__KEY__|$C23_WORK/tls.key|g" \
+  -e "s|__TLS_GROUP__|$BENCH_TLS_GROUP|g" -e 's|__BODY_1__|x|g' -e 's|__BODY_2__|y|g' \
+  -e '/ssl_conf_command NumTickets 0;/d' \
+  "$REPO/bench/conf/nginx-tls.conf" > "$C23_WORK/nginx.conf"
+mkdir -p "$C23_WORK/nginx-body"
+# ⚠ 判**指令那一行**，⛔ 不判字樣：範本頭部的註解裡也寫著 `NumTickets`（2026-10-23 第一趟就假紅在這裡）。
+if grep -Eq '^[[:space:]]*ssl_conf_command[[:space:]]+NumTickets' "$C23_WORK/nginx.conf"; then
+  bad "C23 反证用的 nginx 配置里 NumTickets 那一行没删掉 —— 这一半量不到东西"
+fi
+nginx -c "$C23_WORK/nginx.conf" > "$C23_WORK/nginx.log" 2>&1 &
+C23_PID=$!
+if c23_wait_port 9967; then
+  C23_T=$(bench_tls_probe 127.0.0.1 9967 bench-tls.test / "$C23_WORK/n" | sed -n 's/^tickets=//p')
+  if [ "${C23_T:-0}" -gt 0 ] 2>/dev/null; then
+    ok "C23 少了 NumTickets 0 的 nginx：探针数到 $C23_T 张 ticket ⇒ OpenSSL 那个坑会被拦住"
+  else
+    bad "C23 少了 NumTickets 0 的 nginx 上探针数到 '${C23_T:-?}' 张 —— 要么坑已经不在了（换了 OpenSSL？），要么探针数不到"
+  fi
+else
+  bad "C23 反证用的 nginx 没在 9967 上起来：$(tail -5 "$C23_WORK/nginx.log" "$C23_WORK/nginx.err" 2>/dev/null | tr '\n' ' ')"
+fi
+c23_stop
+rm -rf "$C23_WORK"
+
 echo
 if [ "$FAILS" = 0 ]; then
   echo "BENCH GATE PASSED"

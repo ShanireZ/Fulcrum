@@ -88,6 +88,37 @@ for raw_case in "$OUT_DIR"/raw/*/; do
   [ -d "$raw_case" ] || continue
   CASES=$((CASES + 1))
   case_name=$(basename "$raw_case")
+
+  # ── 開跑前的握手探針（TLS 握手那一類，G168）──────────────────────────────────
+  #
+  # ★ owner 2026-10-23 拍：**探針有一家不過 ⇒ 只作廢這一類**，其他類照常判 —— 壓測視窗要停服，
+  #   ⛔ 不因一類的設定問題白開一次。案例指令碼為此在探針不過時照樣落下 `probe-<名字>.txt`、不跑那一家的負載、
+  #   不退非零（⇒ `bench/run.sh` 的 `set -e` 不會把後面的類一起停掉）。
+  # ★ ★ **位置是承重的：排在讀數判定之前。** 探針不過的那一家沒有讀數 ⇒ 排在後面的話，這一類會落進
+  #   「有讀數無效」或「一家競品都沒有」，原因寫的是讀數，而真正的原因是握手口徑對不上。
+  probe_bad=
+  for pf in "$raw_case"/probe-*.txt; do
+    [ -f "$pf" ] || continue
+    pv=$(bench_tls_probe_violations "$BENCH_TLS_GROUP" "$(cat "$pf")")
+    if [ -n "$pv" ]; then
+      who=$(basename "$pf" .txt)
+      probe_bad="$probe_bad$(printf '%s\n' "$pv" | sed "s/^/${who#probe-}：/")
+"
+    fi
+  done
+  if [ -n "$probe_bad" ]; then
+    {
+      echo "## $case_name"
+      echo "VERDICT: VOID（开跑前的握手探针不过 ⇒ 这一类不出结论）"
+      printf '%s' "$probe_bad" | sed 's/^/  · /'
+      echo
+    } >> "$VERDICT_TXT"
+    echo "[bench/verdict] $case_name：**VOID** —— 开跑前的握手探针不过 ⇒ 不判定"
+    printf '%s' "$probe_bad" | sed 's/^/               · /'
+    RC=1
+    continue
+  fi
+
   readings=$(python3 "$BENCH_DIR/read-raw.py" "$raw_case")
 
   ours=$(printf '%s\n' "$readings" | awk '$1 == "fulcrum" { print $2 }')

@@ -171,6 +171,10 @@ BENCH_FULCRUM_BIN=/path/to/fulcrum \
 ★ 案例指令碼在**開跑前**還核過一次（狀態碼 + 位元組數逐位元組對）。兩次核的不是同一段
 時間：一次防「一開始就沒在服務那個資源」，一次防「負載期間中途變壞」。
 
+★ **TLS 握手那一類多一道開跑前的握手探針**（G168）：有一家不過 ⇒ **只作廢這一類**（`VERDICT: VOID`，
+逐條寫明哪一家哪一條），其他類照常判（owner 2026-10-23 拍：壓測視窗要停服，⛔ 不因一類的設定問題白開一次）。
+探針的口徑與判法見下面「§8 的類」那一節。
+
 ### ★★★ 壓測端自己先飽和 ⇒ 這一類作廢（判據 ④）
 
 上面那幾條守的都是**單份讀數**壞掉。還有一種壞法，每一份讀數都完美合格：
@@ -371,21 +375,31 @@ SONAME 同名而 **Debian 包名不同**（bookworm 的 `libssl3` 在 trixie 叫
 | [`case/static-throughput.sh`](case/static-throughput.sh) | 四家各服務同一個固定資源 | ✅ 已在合格宿主出過數（`FAIL`）|
 | [`case/reverse-proxy-throughput.sh`](case/reverse-proxy-throughput.sh) | 四家各作反代，轉發到**同一個常駐源站** | ✅ 已在合格宿主出過數（`FAIL`；視窗二那組上游重複使用沒對齊，視窗三那組對齊了）|
 | [`case/short-connection-throughput.sh`](case/short-connection-throughput.sh) | 四家各從**記憶體**回同一份正文，**每個請求一條新連接、伺服器端先關** | ✅ 已在合格宿主出過數（`FAIL`，視窗三）|
+| [`case/tls-handshake.sh`](case/tls-handshake.sh) | 「HTTPS 版的高並行短連接」：同上，**每條連接一次完整 TLS 1.3 握手** | ⏳ 指令碼與判據就緒（G168，2026-10-23），還沒在合格宿主上出過數 |
 
-⏳ 還沒有指令碼的類：TLS 握手 · L4 轉發 · 快取命中 · 長連接。
+⏳ 還沒有指令碼的類：L4 轉發 · 快取命中 · 長連接。
 
-★ **TLS 握手的口徑 owner 2026-09-24 拍了**（指令碼還沒寫）：
+★ **TLS 握手的口徑**（owner 2026-09-24 拍，2026-10-23 補拍組；落在 [`case/tls-handshake.sh`](case/tls-handshake.sh) 頭部）：
 
 | | 口徑 |
 |---|---|
 | 握手形態 | 每條連接都做**完整握手**，⛔ 不復用工作階段 |
-| 證書 | ECDSA P-256 |
-| 協定版本 | TLS 1.3 |
-| 判法 | 按**每秒握手數**判 —— 沿用現有「越高越好」的判定，⛔ 不給 `verdict.sh` 加方向參數 |
-| 不復用工作階段怎麼保證 | 由**四家伺服器端統一關掉**工作階段重複使用（ticket 與 session cache），⛔ 不相依 oha 用戶端的預設行為；再加一道判據核對握手裡確實沒有重複使用 |
-| 金鑰交換組 | ⏳ 定指令碼時四家**顯式寫成同一組**，⛔ 不相依各家預設 —— 樞衡 2026-09-24 起隨 boring 5 的預設開了後量子混合組（owner 拍了沿用），而後量子組的 key share 大得多，預設不同的兩家握手的不是同一件事 |
+| 證書 | ECDSA P-256，每趟現造一張自簽葉證書（無中間證書），四家同一對檔案 |
+| 協定版本 | TLS 1.3 —— ⛔ 不在伺服器端限版本（樞衡沒有那個旋鈕，只限另外三家就不對等），由探針核協商出來的是 1.3 |
+| 判法 | 按**每秒握手數**判 —— 判據 ⑥ ① 證了一請求一條新連接 ⇒ 每秒請求數就是每秒握手數；沿用「越高越好」，⛔ 不給 `verdict.sh` 加方向參數 |
+| 不復用工作階段怎麼保證 | **四家伺服器端統一關掉**，而「關掉」= **一張 session ticket 都不發**（只做到「發了也用不上」的那一家每次握手照樣多簽發 ticket）。⛔ 不相依 oha 的預設行為（1.15.0 實測從不帶 `pre_shared_key`，但那不是口徑）。樞衡靠 G168 的 `tls_session_resumption false`；nginx 要 `ssl_conf_command NumTickets 0`、HAProxy 要只給它的 `OPENSSL_CONF`（`NumTickets = 0`）—— OpenSSL 3.5 在 TLS 1.3 下光關 ticket 與 cache 仍發 2 張有狀態 ticket（2026-10-23 實測）；Caddy 走 JSON 的 `session_tickets.disabled` |
+| 金鑰交換組 | 四家**顯式寫成同一個**：**`X25519MLKEM768`**（`BENCH_TLS_GROUP`；owner 2026-10-23 拍）。理由：現行瀏覽器的預設、五個 TLS 棧的首選，量的是真實用戶端的握手。⚠ 它必須是 oha 發 key share 的組之一（10-23 抓包：只發 `X25519MLKEM768` 與 `X25519`），換成 `P-256` 每次握手都會多一次 HelloRetryRequest |
+| 開跑前的握手探針 | `bench_tls_probe`（`openssl s_client -trace` 連兩次、第二次帶 session，摘要落 `raw/tls-handshake/probe-<名字>.txt`）判 TLSv1.3 · 組 · 無 HRR · **0 張 ticket** · 第二次是新握手。**不過 ⇒ 只作廢這一類**（見「讀數什麼時候不算數」）。探針真的看得見恢復與 ticket，由門禁 C23 對**不寫鍵的樞衡**與**少了 `NumTickets 0` 的 nginx** 各證一次 |
+| SNI | URL 走主機名 `bench-tls.test`（oha `--connect-to` 連到 127.0.0.1）⇒ 四家都走按 SNI 挑證書那條路 |
 
-形狀上它就是「HTTPS 版的高並行短連接」，判據 ⑥ 那套機器大部分可以重複使用。
+形狀上它就是「HTTPS 版的高並行短連接」：同一份 payload、訪問紀錄全關、worker 數一致、判據 ⑥ 全套（伺服器端先關的行為探針走 `close-probe.py --tls`）。
+
+#### ⚠ ⚠ ★ 引用這一類的數字時，兩條不對等一條都別丟
+
+- **TLS 1.3 密碼套件四家拉不齊**：oha 的 rustls 把 AES-256-GCM 排第一，樞衡（BoringSSL）、nginx 照用戶端順序、HAProxy 照 OpenSSL 預設 ⇒ `TLS_AES_256_GCM_SHA384`；
+  Caddy（Go）在有 AES 指令的硬體上照自己的順序選 `TLS_AES_128_GCM_SHA256`（2026-10-23 開發機門禁實錄）。Go 沒有 TLS 1.3 套件的設定、樞衡也不加這個旋鈕 ⇒ **伺服器端拉不齊**。
+  探針把協商出的套件記在 `probe-<名字>.txt` 的 `cipher=`（診斷，⛔ 不判）—— 每次引用前按實錄寫明方向。
+- **nginx 的正文是兩個變數拼起來的**（與高並行短連接那一類同一條，見下）。
 
 ⚠ 其餘三類**難度不均勻**：L4 轉發撞「Caddy 官方二進位不含 L4 支援」（要 caddy-l4
 外掛重新建置）；快取命中撞的**也是 Caddy** —— 它的官方二進位沒有 HTTP 快取，

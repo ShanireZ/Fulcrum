@@ -1,0 +1,21 @@
+# TLS 握手那一類（G168，bench/case/tls-handshake.sh）—— 與 `Caddyfile-respond` 同一個形態，加上 TLS。
+#
+# ⚠ ⚠ 這份**不直接跑**：Caddyfile 認 `curves`，但**關 session ticket 只有 JSON**
+#   （`apps.tls.session_tickets.disabled`；Caddyfile 的 `servers` 不認，2026-10-23 實測）。
+#   ⇒ 案例指令碼 `caddy adapt` 成 JSON，再用 jq 補兩處：關 ticket，以及 `caddy adapt` 自己多生的那條
+#   兜底連接政策 `{}` 也帶上 `curves`（不帶 SNI 或 SNI 對不上的連接會落到它）。跑的是那份 JSON。
+# ★ `auto_https off`：手寫的 `tls <cert> <key>` 照樣生效，關掉的只是自動簽發與 :80 重定向（與另外三家對齊）。
+# ⚠ Caddy 的組名是小寫（`x25519mlkem768`），與 BoringSSL / OpenSSL 的寫法不同 —— 指的是同一個組。
+{
+    admin off
+    auto_https off
+    log {
+        output discard
+    }
+}
+https://__NAME__:__PORT__ {
+    tls __CERT__ __KEY__ {
+        curves __TLS_GROUP_LOWER__
+    }
+    respond "__BODY__" 200
+}

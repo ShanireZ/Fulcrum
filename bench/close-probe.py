@@ -2,8 +2,12 @@
 """行為核對：發一個帶 `Connection: close` 的請求之後，伺服器端**真的先關了**嗎？
 
     python3 bench/close-probe.py <host> <port> <path>
+    python3 bench/close-probe.py --tls <SNI> <host> <port> <path>
     python3 bench/close-probe.py --capture-request <port> <輸出檔案>
     python3 bench/close-probe.py --self-check
+
+`--tls <SNI>`（G168，TLS 握手那一類）：同一個核對走 TLS（帶這個 SNI、⛔ 不驗證書 —— 被測用的是自簽證書，
+這裡判的是「回完關不關」，不是 PKI）。握不上算「連不上」（1）。
 
 探針的結束代碼：
     0  限時內讀到了 EOF，且狀態行是 200 ⇒ 伺服器端關了
@@ -28,7 +32,10 @@
 
 import pathlib
 import re
+import shutil
 import socket
+import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -38,13 +45,31 @@ TIMEOUT = 3.0
 STATUS_200 = re.compile(rb"^HTTP/1\.[01] 200 ")
 
 
-def probe(host, port, path, timeout=TIMEOUT):
+def _client_tls():
+    """不驗證書的用戶端 context：被測是自簽證書，這裡判的是行為，不是 PKI。"""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def probe(host, port, path, timeout=TIMEOUT, sni=None):
     try:
         s = socket.create_connection((host, port), timeout=timeout)
     except OSError:
         return 1
+    if sni is not None:
+        # ★ `suppress_ragged_eofs` 預設為真：對端不發 close_notify 直接斷時讀到的也是 b""（= EOF），
+        #   與明文那條路同一個判法。
+        try:
+            s = _client_tls().wrap_socket(s, server_hostname=sni)
+        except (OSError, ssl.SSLError):
+            s.close()
+            return 1
     with s:
-        req = "GET %s HTTP/1.1\r\nHost: bench\r\nConnection: close\r\n\r\n" % path
+        # ★ TLS 那條路的 Host 與 SNI 是同一個名字：樞衡按 Host 挑站台（TLS 站台寫的是主機名），
+        #   明文那幾類的站台是 `:連接埠`、什麼 Host 都接，所以那邊寫死 `bench` 不礙事（2026-10-23 撞見）。
+        req = "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (path, sni or "bench")
         s.sendall(req.encode("ascii"))
         data = b""
         try:
@@ -97,12 +122,18 @@ def capture_once(listener, outfile, deadline):
             return 0
 
 
-def _serve_once(listener, status, close_after):
-    """合成被測：只接一條連接、回一份固定回應；`close_after` 決定回完關不關。"""
+def _serve_once(listener, status, close_after, tls=None):
+    """合成被測：只接一條連接、回一份固定回應；`close_after` 決定回完關不關；`tls` 給了就先握 TLS。"""
     try:
         conn, _ = listener.accept()
     except OSError:
         return  # 探針根本沒連上來（監聽端已被關掉）：由那一條斷言去說，⛔ 不在這裡再拋一次
+    if tls is not None:
+        try:
+            conn = tls.wrap_socket(conn, server_side=True)
+        except (OSError, ssl.SSLError):
+            conn.close()
+            return
     with conn:
         conn.settimeout(5)
         buf = b""
@@ -121,13 +152,30 @@ def _serve_once(listener, status, close_after):
                 pass
 
 
-def _synthetic(status, close_after):
+def _synthetic(status, close_after, tls=None):
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
-    t = threading.Thread(target=_serve_once, args=(listener, status, close_after), daemon=True)
+    t = threading.Thread(target=_serve_once, args=(listener, status, close_after, tls), daemon=True)
     t.start()
     return listener, t
+
+
+def _server_tls(tmp):
+    """自測用的伺服器端 context：現造一張 P-256 自簽證書（用鏡像裡的 openssl CLI）。拿不到 ⇒ None。"""
+    if shutil.which("openssl") is None:
+        return None
+    key, crt = pathlib.Path(tmp) / "k.pem", pathlib.Path(tmp) / "c.pem"
+    rc = subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+         "-keyout", str(key), "-out", str(crt), "-days", "1", "-subj", "/CN=probe.test"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode
+    if rc != 0:
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(crt), str(key))
+    return ctx
 
 
 def self_check():
@@ -152,6 +200,28 @@ def self_check():
             port = listener.getsockname()[1]
             want(label, expected, probe("127.0.0.1", port, "/p", timeout=0.5))
         t.join(timeout=5)
+
+    # ★ `--tls` 那條路（G168）同樣兩個方向都要有 —— TLS 層把 EOF 讀成例外、或把超時讀成 EOF 的實作，
+    #   在明文那三條上一條都露不出來。拿不到證書（沒有 openssl）⇒ 這一半判不動，算失敗、⛔ 不算跳過。
+    with tempfile.TemporaryDirectory() as tmp:
+        tls = _server_tls(tmp)
+        want("TLS 自测造不出证书（openssl 不在？）—— 这一半判不动", True, tls is not None)
+        if tls is not None:
+            for label, close_after, expected in (
+                ("TLS：回完就关的合成被测没被判成「关了」", True, 0),
+                ("TLS：回完不关的合成被测被判成了「关了」", False, 3),
+            ):
+                listener, t = _synthetic(200, close_after, tls)
+                with listener:
+                    port = listener.getsockname()[1]
+                    want(label, expected, probe("127.0.0.1", port, "/p", timeout=0.5, sni="probe.test"))
+                t.join(timeout=5)
+            # 對著一個明文伺服器走 TLS ⇒ 握不上 ⇒ 1（不是「關了」）。
+            listener, t = _synthetic(200, True)
+            with listener:
+                port = listener.getsockname()[1]
+                want("TLS：握不上没被判成 1", 1, probe("127.0.0.1", port, "/p", timeout=0.5, sni="probe.test"))
+            t.join(timeout=5)
 
     # 連不上 ⇒ 1。⚠ 先綁一個連接埠拿到號再關掉，⛔ 不猜一個「應該沒人用」的連接埠。
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -213,10 +283,12 @@ def main(argv):
             listener.bind(("127.0.0.1", int(argv[2])))
             listener.listen(16)
             return capture_once(listener, argv[3], time.monotonic() + 20)
+    if len(argv) == 6 and argv[1] == "--tls":
+        return probe(argv[3], int(argv[4]), argv[5], sni=argv[2])
     if len(argv) != 4:
         print(
             "用法：python3 bench/close-probe.py <host> <port> <path>"
-            " | --capture-request <port> <输出文件> | --self-check",
+            " | --tls <SNI> <host> <port> <path> | --capture-request <port> <输出文件> | --self-check",
             file=sys.stderr,
         )
         return 2

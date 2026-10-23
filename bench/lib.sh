@@ -79,6 +79,20 @@ BENCH_UPSTREAM_REUSE_MAX=${BENCH_UPSTREAM_REUSE_MAX:-50}
 #   而且門禁參數下會被 netns 的 TIME_WAIT 上限截斷，見那個函式的註解。
 BENCH_SHORT_NEW_CONNS_MIN=${BENCH_SHORT_NEW_CONNS_MIN:-990}
 
+# ── TLS 握手那一類的口徑（G168；owner 2026-09-24 拍口徑、2026-10-23 拍組）─────────────
+#
+# ★ **四家都釘這一個組**，探針核協商出來的是它（`bench_tls_probe_violations`）。
+#   ⚠ 它必須是 oha 1.15.0 **發 key share** 的那幾個之一（10-23 抓包：`X25519MLKEM768` 與 `X25519`），
+#   換成 `P-256` 之類的組每次握手都會多一次 HelloRetryRequest —— 量的就不是同一件事了。
+BENCH_TLS_GROUP=${BENCH_TLS_GROUP:-X25519MLKEM768}
+# ★ 探針連上之後**等多久**才斷：TLS 1.3 的 NewSessionTicket 在握手**之後**才到，斷得太快會數成 0 張
+#   ⇒ 「0 張 ticket」那條判據就成了假綠。⚠ 校準由門禁 C23 的真伺服器反證做（不寫鍵的樞衡必須數得到 ticket）。
+BENCH_TLS_TICKET_WAIT=${BENCH_TLS_TICKET_WAIT:-1}
+# 探針那一側的用戶端組：照 oha 1.15.0 的形狀（2026-10-23 抓包：supported_groups 四個、key share 只發前兩個）。
+#   `*` = OpenSSL 3.5 的「這個組發 key share」記號。⚠ 少了它 OpenSSL 只給第一個組發 key share，
+#   與 oha 的形狀不同 —— 一家釘了 `X25519` 的伺服器在探針這裡就會多一次 HRR，而在負載裡不會。
+BENCH_TLS_PROBE_GROUPS=${BENCH_TLS_PROBE_GROUPS:-*X25519MLKEM768:*X25519:P-256:P-384}
+
 # ── 負載參數：**預設只在這裡定義一次**（2026-09-06）───────────────────────────
 #
 # ⚠ ⚠ ★ ★ ★ **這四行為什麼必須在這個檔案裡，而不是在案例指令碼裡。**
@@ -707,6 +721,113 @@ bench_request_close_violations() {
   '
 }
 
+#   bench_tls_probe_summary <第一次 `openssl s_client -trace` 的原文> <第二次（帶上第一次的 session）的原文>
+#
+# 把兩次握手的原文歸成探針那份 `鍵=值`（每行一項，判據在 `bench_tls_probe_violations`）：
+#   version= 第一次協商出的版本（`New, TLSv1.3, Cipher is …` 那一行的第二欄；握不上 ⇒ 空）
+#   group=   第一次協商出的組 —— ⚠ OpenSSL 3.5 只對 KEM 組印 `Negotiated TLS1.3 group:`，
+#            ECDH 組印 `Peer Temp Key: X25519, 253 bits` / `Peer Temp Key: ECDH, prime256v1, 256 bits`（10-23 實測），兩種都認
+#   hrr=     第一次裡 HelloRetryRequest 的次數 —— trace 裡 HRR **也印成 `ServerHello`**（10-23 實測，沒有 HRR 字樣）
+#            ⇒ ServerHello 出現幾次減一
+#   tickets= 第一次收到幾張 `NewSessionTicket`
+#   second=  第二次是 `New` 還是 `Reused`（握不上 ⇒ 空）
+#   cipher=  第一次的密碼套件 —— **診斷**，⛔ 不判（四家拉不齊，見 bench/README.md）
+bench_tls_probe_summary() {
+  local first=$1 second=$2
+  printf '%s\n' "$first" | awk '
+    /^(New|Reused), TLSv1\.[0-9]/ && ver == "" {
+      split($2, a, ","); ver = a[1]
+      c = $0; sub(/.*Cipher is /, "", c); cipher = c
+    }
+    /^Negotiated TLS1\.3 group: / {
+      g = $0; sub(/^Negotiated TLS1\.3 group: */, "", g)
+      if (g != "<NULL>" && kem == "") kem = g
+    }
+    /^Peer Temp Key: / && ecdh == "" {
+      t = $0; sub(/^Peer Temp Key: */, "", t); split(t, f, /, */)
+      ecdh = (f[1] == "ECDH") ? f[2] : f[1]
+    }
+    /ServerHello, Length=/ { sh++ }
+    /NewSessionTicket, Length=/ { nt++ }
+    END {
+      printf "version=%s\n", ver
+      printf "group=%s\n", (kem != "" ? kem : ecdh)
+      printf "hrr=%d\n", (sh > 1 ? sh - 1 : 0)
+      printf "tickets=%d\n", nt + 0
+      printf "cipher=%s\n", cipher
+    }'
+  printf 'second=%s\n' "$(printf '%s\n' "$second" | awk '/^(New|Reused), TLSv1\.[0-9]/ { sub(/,.*/, "", $1); print $1; exit }')"
+}
+
+#   bench_tls_probe <host> <port> <SNI> <路徑> <原文前綴> [給 s_client 的額外參數…]
+#
+# 真的連兩次（第二次帶上第一次的 session），把**摘要**打到標準輸出、兩份原文落 `<原文前綴>-1.trace` / `-2.trace`。
+# ★ 案例指令碼與門禁 C23 的真伺服器反證用的是**這一個**函式 ⇒ 反證證的就是負載前那個探針本身。
+# ★ 第一次連上後等 `BENCH_TLS_TICKET_WAIT` 秒再斷（TLS 1.3 的 ticket 在握手之後才到）。第一次沒拿到可存的 session
+#   （0 張 ticket）時 s_client 不寫檔案 ⇒ 第二次照常連、必然是新握手。
+# ⚠ 原文有意**不叫 `.json`**：`read-raw.py` 對 raw 目錄做 `glob("*.json")`，會把它當成第五家被測。
+bench_tls_probe() {
+  local host=$1 port=$2 sni=$3 path=$4 prefix=$5
+  shift 5
+  local sess="$prefix.sess" first second
+  # ⚠ ⚠ 請求**直接印進管道**，⛔ 不先 `req=$(printf …)` 存起來：命令替換會吃掉結尾的換行，`\r\n\r\n` 變成
+  #   `\r\n\r`，請求頭永遠不完整 ⇒ 伺服器端不回 ⇒ BoringSSL **不發 ticket**（它的 TLS 1.3 ticket 跟著第一次寫才發）
+  #   ⇒ 探針對一個照舊恢復的樞衡報「0 張、新握手」—— 2026-10-23 門禁 C23 的真伺服器反證當場逮到（nginx 那邊
+  #   握手完就發 ticket，所以照樣數得到，⇒ 只有對 BoringSSL 的那一半露頭）。
+  req_line() { printf 'GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' "$path" "$sni"; }
+  rm -f "$sess"
+  first=$({ req_line; sleep "$BENCH_TLS_TICKET_WAIT"; } \
+    | timeout 15 openssl s_client -connect "$host:$port" -servername "$sni" -groups "$BENCH_TLS_PROBE_GROUPS" \
+      -trace -sess_out "$sess" "$@" 2>&1 || true)
+  local resume=()
+  if [ -s "$sess" ]; then resume=(-sess_in "$sess"); fi
+  second=$({ req_line; sleep 1; } \
+    | timeout 15 openssl s_client -connect "$host:$port" -servername "$sni" -groups "$BENCH_TLS_PROBE_GROUPS" \
+      "${resume[@]}" "$@" 2>&1 || true)
+  rm -f "$sess"
+  printf '%s\n' "$first" > "$prefix-1.trace"
+  printf '%s\n' "$second" > "$prefix-2.trace"
+  bench_tls_probe_summary "$first" "$second"
+}
+
+#   bench_tls_probe_violations <期望的組> <探針摘要（`bench_tls_probe_summary` 的輸出）>
+#
+# 每行打一條違規理由；**一行都不打 = 通過**。口徑（owner 2026-09-24 / 2026-10-23）：TLSv1.3 · 協商出期望的組 ·
+# 沒有 HelloRetryRequest · **0 張 ticket**（「關掉 ticket 與 session cache」⇒ 只做到「發了也用不上」的那一家，
+# 每次握手照樣多簽發 ticket 的工作，門檻就被拉低了）· 帶 session 的第二次是新握手。
+# ⚠ ⚠ **「判不了」一律算違規**：空摘要、少鍵、張數不是數字。
+bench_tls_probe_violations() {
+  local want=$1 summary=$2
+  if [ -z "$summary" ]; then
+    echo "探针什么都没记下 —— 「判不了」不算「判过了」"
+    return 0
+  fi
+  printf '%s\n' "$summary" | awk -v want="$want" '
+    index($0, "=") > 0 {
+      k = substr($0, 1, index($0, "=") - 1)
+      v[k] = substr($0, index($0, "=") + 1); seen[k] = 1
+    }
+    END {
+      n = split("version group hrr tickets second", keys, " ")
+      for (i = 1; i <= n; i++) {
+        if (!(keys[i] in seen)) {
+          printf "探针少了 `%s=` 这一项 —— 「判不了」不算「判过了」\n", keys[i]; missing = 1
+        }
+      }
+      if (missing) exit
+      if (v["version"] != "TLSv1.3")
+        printf "协商出的不是 TLSv1.3（%s）\n", (v["version"] == "" ? "根本没握上" : v["version"])
+      if (v["group"] != want)
+        printf "协商出的组是 %s，不是 %s\n", (v["group"] == "" ? "（没有）" : v["group"]), want
+      if (v["hrr"] !~ /^[0-9]+$/) printf "HelloRetryRequest 次数不是数字（%s）—— 「判不了」不算「判过了」\n", v["hrr"]
+      else if (v["hrr"] + 0 > 0) printf "握手里有 %s 次 HelloRetryRequest ⇒ 多了一个往返，量的不是同一件事\n", v["hrr"]
+      if (v["tickets"] !~ /^[0-9]+$/) printf "ticket 张数不是数字（%s）—— 「判不了」不算「判过了」\n", v["tickets"]
+      else if (v["tickets"] + 0 > 0) printf "发了 %s 张 session ticket ⇒ 会话恢复没关干净（这一类要求 0 张）\n", v["tickets"]
+      if (v["second"] != "New")
+        printf "带 session 的第二次是 %s，不是新握手\n", (v["second"] == "" ? "（没握上）" : v["second"])
+    }'
+}
+
 # ── 自測：全部用**合成輸入** ───────────────────────────────────────────────
 #
 # ★ ★ ★ 不相依宿主上此刻恰好是什麼樣（同 G133 的九條自測）。這一點是承重的：
@@ -1055,6 +1176,40 @@ bench_self_check() {
     "$(bench_request_close_violations "$(printf 'GET / HTTP/1.1\r\nhost: x\r\n\r\nConnection: close\r\n')")"
   want_match "什么都没抓到被当成了通过" '*没抓到*' \
     "$(bench_request_close_violations '')"
+
+  # —— TLS 握手那一類的探針（G168）：摘要的解析 + 判據，兩個方向 ——
+  # ★ 原文片段照 2026-10-23 對拍鏡像（OpenSSL 3.5.7）裡 `s_client -trace` 的實際形狀寫：
+  #   KEM 組印 `Negotiated TLS1.3 group:`，ECDH 組印 `Peer Temp Key:`；HRR 也印成 `ServerHello`。
+  local t_ok t_bad s_new s_reused summary good
+  t_ok=$(printf '    ServerHello, Length=151\nNegotiated TLS1.3 group: X25519MLKEM768\nNew, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\n')
+  t_bad=$(printf '    ServerHello, Length=84\n    ServerHello, Length=151\nPeer Temp Key: ECDH, prime256v1, 256 bits\nNew, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384\n    NewSessionTicket, Length=229\n    NewSessionTicket, Length=229\n')
+  s_new='New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384'
+  s_reused='Reused, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384'
+  good=$(printf 'version=TLSv1.3\ngroup=X25519MLKEM768\nhrr=0\ntickets=0\ncipher=TLS_AES_256_GCM_SHA384\nsecond=New')
+  want_eq "探针摘要：KEM 组、无 HRR、0 张、第二次 New" "$good" "$(bench_tls_probe_summary "$t_ok" "$s_new")"
+  summary=$(bench_tls_probe_summary "$t_bad" "$s_reused")
+  want_match "探针摘要：ECDH 组要从 Peer Temp Key 里读" '*group=prime256v1*' "$summary"
+  want_match "探针摘要：两个 ServerHello = 一次 HRR" '*hrr=1*' "$summary"
+  want_match "探针摘要：数到 2 张 ticket" '*tickets=2*' "$summary"
+  want_match "探针摘要：第二次 Reused" '*second=Reused*' "$summary"
+  want_match "探针摘要：X25519 那种 Peer Temp Key 也认" '*group=X25519*' \
+    "$(bench_tls_probe_summary 'Peer Temp Key: X25519, 253 bits' "$s_new")"
+  want_match "探针摘要：握不上时版本与组都是空的" '*version=*group=*' \
+    "$(bench_tls_probe_summary "$(printf 'Negotiated TLS1.3 group: <NULL>\nNew, (NONE), Cipher is (NONE)\n')" '')"
+  want_empty "探针判据：全对的那一份不该判红" "$(bench_tls_probe_violations X25519MLKEM768 "$good")"
+  # 每一處只翻一個值 ⇒ **恰好一條**違規（紅的來源說得清）。
+  local flip lines
+  for flip in 'second=Reused:*不是新握手*' 'tickets=2:*2 张 session ticket*' 'group=X25519:*组是 X25519*' \
+    'hrr=1:*HelloRetryRequest*' 'version=TLSv1.2:*不是 TLSv1.3*' 'tickets=two:*不是数字*'; do
+    local kv=${flip%%:*} pat=${flip#*:}
+    out=$(bench_tls_probe_violations X25519MLKEM768 "$(printf '%s\n' "$good" | sed "s/^${kv%%=*}=.*/$kv/")")
+    want_match "探针判据：$kv 该判红" "$pat" "$out"
+    lines=$(printf '%s\n' "$out" | grep -c . || true)
+    want_eq "探针判据：$kv 恰好一条违规" 1 "$lines"
+  done
+  want_match "探针判据：少了 tickets= 该判红" '*少了*tickets=*' \
+    "$(bench_tls_probe_violations X25519MLKEM768 "$(printf '%s\n' "$good" | grep -v '^tickets=')")"
+  want_match "探针判据：空摘要被当成了通过" '*什么都没记下*' "$(bench_tls_probe_violations X25519MLKEM768 '')"
 
   if [ "$rc" = 0 ]; then
     echo "[bench/lib] 判据自测通过（合成输入，${n} 条）"
