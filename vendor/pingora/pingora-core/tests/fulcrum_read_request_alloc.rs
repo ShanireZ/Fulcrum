@@ -1,6 +1,6 @@
-//! ★ 樞衡 fork 自己加的測試（`vendor/pingora/FORK.md` 改動 16 ③ G157 · 改動 18 G163 · 改動 19 G165）：
+//! ★ 樞衡 fork 自己加的測試（`vendor/pingora/FORK.md` 改動 16 ③ G157 · 改動 18 G163 · 改動 19 G165 · 改動 22）：
 //! `HttpSession::read_request` 解析一條普通請求時，一共分配幾次；關掉保留大小寫時少幾次；
-//! `write_response_header` 寫一條 h1 回應頭時分配幾次、寫出去的位元組是什麼。
+//! `write_response_header` 寫一條 h1 回應頭時分配幾次、寫出去的位元組是什麼；`Stream::from(TcpStream)` 建流時分配幾次。
 //!
 //! 改動 16 ③ 把頭偏移從每條請求一個 `Vec<KVRef>` 挪到了棧上 ⇒ 上游原樣的程式碼在這裡多一次。
 //! 改動 19 讓寫回應頭不再拷 `Connection` 的值、不再 `freeze` ⇒ 上游原樣的程式碼在那一條多兩次。
@@ -19,6 +19,7 @@ use std::io::Cursor;
 
 use http::HeaderValue;
 use pingora_core::protocols::http::v1::server::HttpSession;
+use pingora_core::protocols::l4::stream::Stream;
 use pingora_http::ResponseHeader;
 use tokio_test::io::Builder;
 
@@ -225,4 +226,36 @@ fn 枢衡改动19_写响应头的字节照旧() {
             out
         );
     }
+}
+
+/// 連上一條迴環 TCP，只數 `Stream::from(TcpStream)` 那一下的分配次數。
+fn l4_stream_from_tcp_allocs() -> u64 {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    rt.block_on(async {
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, n) = counted(async { Stream::from(tcp) }).await;
+        drop(stream);
+        n
+    })
+}
+
+/// ★ 樞衡改動 22：tokio 1.54（#8494）起 `BufReader` 容量 0 就 panic，而 pingora 建流一律用 `(0, 0)` ——
+/// 為的是 accept 熱路徑上不分配（讀寫緩衝等 `set_buffer` 時才建；連出去的上游連接從不 `set_buffer`）。
+/// 改動 22 換掉了那個 `BufStream`；這條釘「建流照舊不為緩衝分配」。
+/// 1 = 2026-10-23 在 tokio 1.53.3 + 改前程式碼上實測（臨時 worktree）；那一次不是緩衝（tokio 容量 0 的緩衝不分配），⚠ 組成沒有逐項拆。
+/// 反證：建流的讀容量改成 1 ⇒ 這條紅。
+#[test]
+fn 枢衡改动22_建流不分配() {
+    const EXPECTED: u64 = 1;
+    let _ = l4_stream_from_tcp_allocs();
+    let n = l4_stream_from_tcp_allocs();
+    assert_eq!(
+        EXPECTED, n,
+        "Stream::from(TcpStream) 分配了 {n} 次（期望 {EXPECTED}）—— 多出来的多半是建流时就建了读缓冲（改动 22 被 rebase 合掉了？）"
+    );
 }

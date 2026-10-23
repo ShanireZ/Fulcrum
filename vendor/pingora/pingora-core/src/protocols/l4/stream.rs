@@ -31,7 +31,8 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 #[cfg(target_os = "linux")]
 use tokio::io::Interest;
-use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
+// ★ 樞衡改動 22：`BufStream` 換成本檔案的 `L4BufStream`（tokio 1.54 起容量 0 的 `BufReader` 會 panic）。
+use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadBuf};
 use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -369,7 +370,7 @@ pub const DEFAULT_L4_READ_BUFFER_SIZE: usize = 64 * 1024;
 /// similar to Nagle's algorithm, but user space can control when to flush.
 pub const DEFAULT_L4_WRITE_BUFFER_SIZE: usize = 1460;
 
-/// L4 [`BufStream`] buffer sizing.
+/// L4 [`BufStream`](tokio::io::BufStream) buffer sizing.
 ///
 /// Leaving either side as `None` preserves Pingora's default for that side.
 /// Setting either side to `Some(0)` disables `BufStream` buffering for that
@@ -419,6 +420,110 @@ impl L4BufferSettings {
     }
 }
 
+/// ★ 樞衡改動 22（`vendor/pingora/FORK.md`）：取代上游的 `BufStream<RawStreamWrapper>`。
+/// tokio 1.54（#8494）起 `BufReader` / `BufStream` 容量 0 直接 panic，而上游建流一律 `(0, 0)`
+/// （accept 熱路徑上不分配、`set_buffer` 時才建緩衝；連出去的上游連接從不 `set_buffer`）。
+/// 讀容量 0 ⇒ 不要 `BufReader`、讀直接打到 raw —— 與 tokio 1.53 下容量 0 的 `BufReader` 相同（它每次讀都繞過內部緩衝）；
+/// 讀容量 > 0 ⇒ 就是 `BufStream` 的內部構造。寫那一側兩態都是 `BufWriter`（容量 0 在 1.54 仍合法、不分配、每次寫都寫穿）。
+/// 判據：本檔案 `mod tests` 的 `枢衡改动22_*` 與 `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动22_建流不分配`。
+#[derive(Debug)]
+enum L4BufStream {
+    NoReadBuf(BufWriter<RawStreamWrapper>),
+    ReadBuf(BufReader<BufWriter<RawStreamWrapper>>),
+}
+
+impl L4BufStream {
+    fn new(read_capacity: usize, write_capacity: usize, raw: RawStreamWrapper) -> Self {
+        let writer = BufWriter::with_capacity(write_capacity, raw);
+        if read_capacity == 0 {
+            L4BufStream::NoReadBuf(writer)
+        } else {
+            L4BufStream::ReadBuf(BufReader::with_capacity(read_capacity, writer))
+        }
+    }
+
+    fn get_ref(&self) -> &RawStreamWrapper {
+        match self {
+            L4BufStream::NoReadBuf(w) => w.get_ref(),
+            L4BufStream::ReadBuf(r) => r.get_ref().get_ref(),
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut RawStreamWrapper {
+        match self {
+            L4BufStream::NoReadBuf(w) => w.get_mut(),
+            L4BufStream::ReadBuf(r) => r.get_mut().get_mut(),
+        }
+    }
+
+    /// 與 `BufStream::into_inner` 相同：緩衝裡還沒讀走、還沒寫出的位元組都丟掉。
+    fn into_inner(self) -> RawStreamWrapper {
+        match self {
+            L4BufStream::NoReadBuf(w) => w.into_inner(),
+            L4BufStream::ReadBuf(r) => r.into_inner().into_inner(),
+        }
+    }
+}
+
+impl AsyncRead for L4BufStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match &mut *self {
+            // `BufWriter` 的讀原樣交給它包著的 raw。
+            L4BufStream::NoReadBuf(w) => Pin::new(w).poll_read(cx, buf),
+            L4BufStream::ReadBuf(r) => Pin::new(r).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for L4BufStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            L4BufStream::NoReadBuf(w) => Pin::new(w).poll_write(cx, buf),
+            L4BufStream::ReadBuf(r) => Pin::new(r).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            L4BufStream::NoReadBuf(w) => Pin::new(w).poll_flush(cx),
+            L4BufStream::ReadBuf(r) => Pin::new(r).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            L4BufStream::NoReadBuf(w) => Pin::new(w).poll_shutdown(cx),
+            L4BufStream::ReadBuf(r) => Pin::new(r).poll_shutdown(cx),
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            L4BufStream::NoReadBuf(w) => Pin::new(w).poll_write_vectored(cx, bufs),
+            L4BufStream::ReadBuf(r) => Pin::new(r).poll_write_vectored(cx, bufs),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            L4BufStream::NoReadBuf(w) => w.is_write_vectored(),
+            L4BufStream::ReadBuf(r) => r.is_write_vectored(),
+        }
+    }
+}
+
 // NOTE: with writer buffering, users need to call flush() to make sure the data is actually
 // sent. Otherwise data could be stuck in the buffer forever or get lost when stream is closed.
 
@@ -426,7 +531,8 @@ impl L4BufferSettings {
 #[derive(Debug)]
 pub struct Stream {
     // Use `Option` to be able to swap to adjust the buffer size. Always safe to unwrap
-    stream: Option<BufStream<RawStreamWrapper>>,
+    // ★ 樞衡改動 22：上游是 `Option<BufStream<RawStreamWrapper>>`。
+    stream: Option<L4BufStream>,
     // the data put back at the front of the read buffer, in order to replay the read
     rewind_read_buf: Vec<Vec<u8>>,
     buffer_write: bool,
@@ -445,11 +551,11 @@ pub struct Stream {
 }
 
 impl Stream {
-    fn stream(&self) -> &BufStream<RawStreamWrapper> {
+    fn stream(&self) -> &L4BufStream {
         self.stream.as_ref().expect("stream should always be set")
     }
 
-    fn stream_mut(&mut self) -> &mut BufStream<RawStreamWrapper> {
+    fn stream_mut(&mut self) -> &mut L4BufStream {
         self.stream.as_mut().expect("stream should always be set")
     }
 
@@ -532,8 +638,9 @@ impl Stream {
         // Since BufStream doesn't provide an API to adjust the buf directly,
         // we take the raw stream out of it and put it in a new BufStream with the size we want
         let stream = mem::take(&mut self.stream);
+        // ★ 樞衡改動 22：讀容量 0 時建「沒有讀緩衝」那一態（上游這裡是 `BufStream::with_capacity`，tokio 1.54 下讀容量 0 會 panic）。
         let stream = stream.map(|s| {
-            BufStream::with_capacity(
+            L4BufStream::new(
                 buffer.read_capacity(),
                 buffer.write_capacity(),
                 s.into_inner(),
@@ -546,7 +653,8 @@ impl Stream {
 impl From<TcpStream> for Stream {
     fn from(s: TcpStream) -> Self {
         Stream {
-            stream: Some(BufStream::with_capacity(
+            // ★ 樞衡改動 22：上游是 `BufStream::with_capacity(0, 0, …)`（下面兩個 `From` 同）。
+            stream: Some(L4BufStream::new(
                 0,
                 0,
                 RawStreamWrapper::new(RawStream::Tcp(s)),
@@ -569,7 +677,7 @@ impl From<TcpStream> for Stream {
 impl From<virt::VirtualSocketStream> for Stream {
     fn from(s: virt::VirtualSocketStream) -> Self {
         Stream {
-            stream: Some(BufStream::with_capacity(
+            stream: Some(L4BufStream::new(
                 0,
                 0,
                 RawStreamWrapper::new(RawStream::Virtual(s)),
@@ -593,7 +701,7 @@ impl From<virt::VirtualSocketStream> for Stream {
 impl From<UnixStream> for Stream {
     fn from(s: UnixStream) -> Self {
         Stream {
-            stream: Some(BufStream::with_capacity(
+            stream: Some(L4BufStream::new(
                 0,
                 0,
                 RawStreamWrapper::new(RawStream::Unix(s)),
@@ -1071,5 +1179,106 @@ mod tests {
             Duration::ZERO,
             "读等待又在计时了：枢衡改动 16 ① 被合掉了？见 FORK.md 改动 16"
         );
+    }
+
+    /// 改動 22 那幾條共用：一對 Unix socket，對端先寫好 `data`，等本端可讀了才建 `Stream`
+    /// ⇒ 第一次讀之前資料已經全數到了本端 socket。
+    async fn unix_stream_with_pending(data: &[u8]) -> (Stream, UnixStream) {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        theirs.write_all(data).await.unwrap();
+        ours.readable().await.unwrap();
+        (ours.into(), theirs)
+    }
+
+    /// 繞過 `Stream`、直接從底下的 socket 讀（不等）：讀緩衝裡的位元組它看不見。
+    fn raw_try_read(stream: &mut Stream, buf: &mut [u8]) -> io::Result<usize> {
+        match &stream.stream_mut().get_mut().stream {
+            RawStream::Unix(s) => s.try_read(buf),
+            _ => unreachable!("改动 22 这几条测试只用 UnixStream"),
+        }
+    }
+
+    /// ★ 樞衡改動 22：沒有讀緩衝（建流時如此、連出去的上游連接一直如此、`unbuffered()` 也是）⇒ 讀直接打到 socket，
+    /// 讀走 1 位元組之後剩下的還在 socket 上。tokio 1.53 下容量 0 的 `BufReader` 正是這樣（每次讀都繞過內部緩衝）。
+    #[tokio::test]
+    async fn 枢衡改动22_没有读缓冲时读直接打到socket() {
+        for settings in [None, Some(L4BufferSettings::unbuffered())] {
+            let (mut stream, _theirs) = unix_stream_with_pending(b"0123456789").await;
+            if let Some(settings) = settings {
+                stream.set_buffer(settings);
+            }
+            let mut one = [0u8; 1];
+            stream.read_exact(&mut one).await.unwrap();
+            assert_eq!(&one, b"0");
+            let mut rest = [0u8; 16];
+            let n = raw_try_read(&mut stream, &mut rest).unwrap();
+            assert_eq!(
+                &rest[..n],
+                b"123456789",
+                "{settings:?}：剩下的不在 socket 上 —— 读被缓冲了"
+            );
+        }
+    }
+
+    /// ★ 樞衡改動 22 的另一個方向：`set_buffer` 給了讀容量（pingora 預設 64 KiB）⇒ 第一次讀就把 socket 上的全收進緩衝。
+    #[tokio::test]
+    async fn 枢衡改动22_有读缓冲时数据进了缓冲() {
+        let (mut stream, _theirs) = unix_stream_with_pending(b"0123456789").await;
+        stream.set_buffer(L4BufferSettings::default());
+        let mut one = [0u8; 1];
+        stream.read_exact(&mut one).await.unwrap();
+        assert_eq!(&one, b"0");
+        let mut rest = [0u8; 16];
+        let err = raw_try_read(&mut stream, &mut rest).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::WouldBlock,
+            "socket 上还有数据 —— 读没有经过缓冲"
+        );
+        let n = stream.read(&mut rest).await.unwrap();
+        assert_eq!(&rest[..n], b"123456789");
+    }
+
+    /// ★ 樞衡改動 22：讀 0、寫 > 0（改動 22 之前由同一個 `BufStream` 承擔，之後是「沒有讀緩衝」那一態裡的 `BufWriter`）
+    /// ⇒ 寫（含分段寫）在 `flush` 之前留在緩衝裡、之後才發出去；讀照舊直接打到 socket。
+    #[tokio::test]
+    async fn 枢衡改动22_只缓冲写() {
+        let (mut stream, mut theirs) = unix_stream_with_pending(b"0123456789").await;
+        stream.set_buffer(L4BufferSettings::new(0, 16 * 1024));
+        let n = stream
+            .write_vectored(&[std::io::IoSlice::new(b"ab"), std::io::IoSlice::new(b"c")])
+            .await
+            .unwrap();
+        assert_eq!(n, 3);
+        let mut got = [0u8; 8];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), theirs.read(&mut got))
+                .await
+                .is_err(),
+            "没 flush 对端就收到了 —— 写没有经过缓冲"
+        );
+        stream.flush().await.unwrap();
+        let n = theirs.read(&mut got).await.unwrap();
+        assert_eq!(&got[..n], b"abc");
+
+        let mut one = [0u8; 1];
+        stream.read_exact(&mut one).await.unwrap();
+        let mut rest = [0u8; 16];
+        let n = raw_try_read(&mut stream, &mut rest).unwrap();
+        assert_eq!(&rest[..n], b"123456789", "这一态的读被缓冲了");
+    }
+
+    /// ★ 樞衡改動 22：建流時寫容量是 0（連出去的上游連接一直如此）⇒ 不 `flush` 也立刻寫穿。
+    #[tokio::test]
+    async fn 枢衡改动22_写容量0不flush也发出去() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let mut stream: Stream = ours.into();
+        stream.write_all(b"abc").await.unwrap();
+        let mut got = [0u8; 8];
+        let n = tokio::time::timeout(Duration::from_secs(1), theirs.read(&mut got))
+            .await
+            .expect("没 flush 对端就收不到 —— 写被缓冲了")
+            .unwrap();
+        assert_eq!(&got[..n], b"abc");
     }
 }

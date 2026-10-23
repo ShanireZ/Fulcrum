@@ -1142,6 +1142,41 @@ owner 2026-10-16 拍（彈出視窗），★ **推翻了 agent 推薦項**：推
 上游 issue #779（「Make serde_yaml optional or configurable」，2025-12 起 open）完成實作，或上游自己換掉 `serde_yaml` ⇒ rebase 時照上游、刪掉本節。
 ⛔ 原樣投給上游不合適：`serde-saphyr` 2 要 Rust 1.89，上游 MSRV 是 1.85。在那之前是**要跟著 rebase 的常年成本**：一行清單、兩處呼叫、一條測試。
 
+### ★ 22. L4 `Stream` 的讀緩衝可以不存在（2026-10-23，tokio 1.54）
+
+**類別**：隨相依新版本而來的呼叫點適配（本節開頭那句口徑本來的那一類）；線上位元組、分配次數、哪條連接帶不帶緩衝，一個都不變。
+**起因**：2026-10-23 的相依追新（`dep-check.py --apply`，37 項，為修 webpki 三條公告）把 `tokio` 1.53.3 → 1.54.1。
+tokio 1.54.0（#8494）起 `BufReader::with_capacity(0, …)` / `BufStream::with_capacity(0, …)` 直接 panic（`capacity must be greater than zero`）；
+上游 `protocols/l4/stream.rs` 的三個 `From`（`TcpStream` · `VirtualSocketStream` · `UnixStream`）一律 `BufStream::with_capacity(0, 0, …)` —— 為的是 accept 熱路徑上不分配，讀寫緩衝等 `set_buffer` 時才建，
+而連出去的上游連接**從不** `set_buffer` ⇒ 換上 1.54 之後每一條接進來、連出去的連接都在建流那一刻 panic。完整門禁在 UNIT 格就紅了（`fulcrum-server` 的 6 條 `proxyproto` 單測，panic 在 `stream.rs:549`）。
+上游已知：cloudflare/pingora#1059（2026-10-20 開，WIP，維護者回「會同步內部的修法」）；2026-10-23 上游 `main` 仍是 `(0, 0)`。
+owner 2026-10-23 拍（彈出視窗）：fork 現在修（另兩個選項：tokio 暫留 1.53.3；整批撤回、只升三個 webpki 包）；判準「線上位元組不變、分配次數不變、上游連接照舊不緩衝」；做法選兩態型別（另一個選項是把 tokio 1.53 的 `BufReader` 抄進 fork）。
+
+#### 改了什麼：**一個檔案**（`pingora-core/src/protocols/l4/stream.rs`，改動 16 已計入）+ 已計入的 `tests/fulcrum_read_request_alloc.rs` 一條判據 ⇒ fork 仍是 22 個檔案
+
+`BufStream<RawStreamWrapper>` 換成私有的 `L4BufStream`：讀容量 0 ⇒ 只有 `BufWriter`，讀直接打到 raw；讀容量 > 0 ⇒ `BufReader<BufWriter<…>>`（就是 `BufStream` 的內部構造）。
+寫那一側兩態都是 `BufWriter`（容量 0 在 1.54 仍合法、不分配、每次寫都寫穿）。三個 `From` 一律建「沒有讀緩衝、寫容量 0」那一態；`set_buffer` 按 `read_capacity()` 選態。
+⇒ 與 tokio 1.53 下的 `(0, 0)` 等價：那時容量 0 的 `BufReader::poll_read` 在 `pos == cap && remaining >= 0` 時恆走繞過分支，每次讀都直接打到 socket。
+pingora 只經 `poll_read` 讀這條流 ⇒ `poll_fill_buf` 那個「零長讀被當成 EOF」的坑（tokio 加 panic 的理由）新寫法裡不存在。
+另把 `L4BufferSettings` 文件註解裡指向 `BufStream` 的連結寫成 `tokio::io::BufStream` 全路徑（`use` 裡不再有它）。看得到的差別只有 debug / error 日誌裡 `{:?}` 印出來的型別名。
+
+#### 判據
+
+| 判據 | 釘的是 | 反證（臨時 worktree，每次都有新鮮的 `Compiling pingora-core`）|
+|---|---|---|
+| `l4/stream.rs` 的 `枢衡改动22_没有读缓冲时读直接打到socket` | 建流後、`set_buffer(unbuffered())` 後，讀走 1 位元組，剩下的還在 socket 上 | 建流就給 64 KiB 讀緩衝 ⇒ 紅（socket 上已空、`WouldBlock`）|
+| `枢衡改动22_有读缓冲时数据进了缓冲` | `set_buffer(default())` 後第一次讀就把 socket 上的全收進緩衝 | `set_buffer` 永遠不建讀緩衝 ⇒ **只紅它** |
+| `枢衡改动22_只缓冲写` | 讀 0、寫 16 KiB：分段寫在 `flush` 前不出去、之後才出去；讀照舊不緩衝 | —（由「永遠建 `BufReader`」那條一併紅）|
+| `枢衡改动22_写容量0不flush也发出去` | 建流時寫容量 0 ⇒ 不 `flush` 也立刻寫穿 | 同上 |
+| `tests/fulcrum_read_request_alloc.rs` 的 `枢衡改动22_建流不分配` | `Stream::from(TcpStream)` 分配 1 次 = 2026-10-23 在 tokio 1.53.3 + 改前程式碼上實測的值 | 建流讀容量改成 1 ⇒ **只紅它**（2 次）—— 1 位元組的讀會繞過 1 位元組的緩衝，讀那幾條看不見，所以要這一條 |
+
+改前（tokio 1.54.1 + 上游原樣）`l4::stream` 的 10 條測試（上游 6 條 + 上面 4 條）與分配那條全紅，panic 都在 `stream.rs:549` / `:596`；改後全綠，`fulcrum-server` 那 6 條 `proxyproto` 也綠。
+`L4BufStream::new` 讀容量 0 也建 `BufReader` ⇒ 10 + 1 條全紅（panic 在新型別裡）。
+
+#### 歸零條件
+
+上游同步它的修法（#1059 關掉、`main` 上不再有 `with_capacity(0, …)`）⇒ rebase 時取上游的、刪掉本節，**留著**上面那五條判據去驗上游的寫法；哪一條紅（例如上游改成建流就分配讀緩衝）就停下來找 owner，⛔ 別改期望值。
+
 ### 9. 沒有動的一個：`daemonize`
 
 > ✅ 2026-09-24：上游 0.9.0 自己把 `daemonize` 換成了 `daemonix`（`ae96f7e`）⇒ RUSTSEC-2025-0069 隨 daemonize
@@ -1222,6 +1257,8 @@ git -C /tmp/stock show FETCH_HEAD:pingora-core/src/protocols/l4/stream.rs
 
 ### 結論
 
+> ★ **2026-10-23（改動 22）：仍是 22 個檔案** —— 改動 22 落在已計入的 `protocols/l4/stream.rs`，判據在已計入的 `tests/fulcrum_read_request_alloc.rs`（⚠ 沒有重跑上面那整條命令）。
+>
 > ★ **2026-10-16（改動 21）：22 個檔案** —— 改動 20 那 21 個，加 `pingora-core` 的 `src/server/configuration/mod.rs`
 > （改前它與 `0.9.0` 逐字相同；`pingora-core/Cargo.toml` 早已計入）。同日對 vendor 跑 `cargo fmt` 只重排了改動 19 與改動 6 自己寫的三處（已計入的檔案），檔案數不變。
 >

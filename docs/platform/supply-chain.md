@@ -62,6 +62,16 @@ vendor 鎖那份只有迴歸網會編（`pingora-rustls` 成員、`pingora-core`
 兩把鎖各新進 10 / 11 個包（`serde-saphyr` · `granit-parser` · `annotate-snippets` · `encoding_rs` 等），全部過 24 小時懷疑期、無 yank、授權寬鬆；根鎖同時少了 `ryu`，編譯圖 202 → 210 個。
 ⚠ `encoding_rs` 帶 **BSD-3-Clause**（WHATWG 資料），發佈時的第三方宣告要收錄。根鎖 `supply-audit.py` 由此 exit 0；vendor 鎖剩 `quinn-proto` × 5。
 ✅ **2026-10-16 同日：`quinn-proto` × 5 也清了** —— 只改 vendor 鎖：`quinn` 0.11.11 → 0.11.12、`quinn-proto` 0.11.16 → 0.11.19（owner 選連 `quinn` 一起升；發佈於 09-14 / 09-30，遠過懷疑期、無 yank），根鎖逐位元組不變。兩個包誰都不編（`reqwest` 的弱相依 `quinn?/ring` 只把它們記進鎖；vendor workspace 全 feature、全 target 的 `cargo tree -i` 什麼都打不出）；`errno` / `quinn-udp` / `winapi-util` 的 `windows-sys` 邊隨之回到 0.59.0（與根鎖一致，只在 Windows 目標上）。兩把鎖 `supply-audit.py` 都 exit 0。
+✅ **2026-10-23 的相依追新**（`dep-check.py --apply`，根 16 項 + vendor 獨有 21 項，全部過了 24 小時懷疑期，**沒有破例**）：
+`rustls-webpki` 0.103.15 → 0.103.16（RUSTSEC-2026-0382，兩把鎖）、`webpki-root-certs` 1.0.9 → 1.0.10（RUSTSEC-2026-0383，根鎖）、`webpki-roots` 1.0.9 → 1.0.10（RUSTSEC-2026-0381，vendor 鎖）修的是同一件事
+（CVE-2026-111943：emSign 那幾張不受信任的中間 CA，私鑰已經公開）。三個包兩把鎖分桶都是 `[僅 lock]`，產物不鏈它們；owner 照舊選採納、不登記 `ACCEPTED`。
+同批進產物編譯圖的有 `tokio` 1.53.3 → 1.54.1、`libc` 0.2.191、`zstd` 族（0.14.3 / 8.2.0 / 2.1.2）、`crc32fast` 1.5.3、`cc` 1.9.0 等；
+vendor 獨有那批正是 2026-10-16 預告的那一類（`wasm-bindgen` 族 7 項靠一起升到位，另有 `uuid` 1.28.0、`toml_*`、`quinn-udp` 0.5.16 等），`tinyvec_macros` 隨 `tinyvec` 1.13.3 離開 vendor 鎖、`synstructure` 0.14.0 新進。
+37 個版本逐個對過 crates.io 的授權欄位，沒有一個變。`--apply` 退 `210` = `10`（採納）+ `40`（rustc 1.99.1 已出，`G36` 凍結到 M3 結束）+ `160`（採納前那次掃描）；
+採納後重掃兩把鎖，未登記的公告回到 0。被擋下的 `icu_*` 2.4.0 一族 11 項（採納時才發佈約 16 小時）留給下一次。
+⚠ **`tokio` 1.54 撞上了 fork**：1.54.0（#8494）起容量 0 的 `BufReader` / `BufStream` 直接 panic，而 pingora 0.9.0 建每條 L4 流都用 `(0, 0)`
+⇒ 換上之後每一條接進來、連出去的連接都會在建流時 panic（完整門禁 UNIT 格當場紅；上游 cloudflare/pingora#1059，2026-10-23 仍未修）。
+owner 選在 fork 裡修、不把 tokio 留在 1.53.3 ⇒ fork 改動 22（[`FORK.md`](../../vendor/pingora/FORK.md)），線上位元組、分配次數與哪條連接帶緩衝都不變。
 ⚠ ⚠ **此處原先鏈到 [待定清單](/governance/open-questions.md) 的 `D12`，那是過期的**（2026-09-08 更正）——
 `D12` 已結案（`G32`），而那份清單裡**一個 D 號都沒有**，鏈過去什麼都看不到。
 ★ 與本頁下文那句「它已經不在待定清單裡了」原本是**同一份檔案裡自相矛盾的兩句**。★ 此後 `rustls-pemfile`（RUSTSEC-2025-0134）**已由 G45 遷走**，不再在名單上。
