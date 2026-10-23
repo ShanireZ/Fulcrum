@@ -119,6 +119,64 @@ pub struct Global {
     /// 也這麼幹，更 ≠ 信任 A 寫的 XFF（那是請求級的，這是連接級的）。
     #[serde(default)]
     pub proxy_protocol_from: Vec<String>,
+    /// ★ ★ **TLS 工作階段恢復**（G168）。`false` ⇒ 一張 session ticket 都不發、伺服器端 session cache 關
+    /// ⇒ TLS 1.2 / 1.3 用戶端每條連接都完整握手。
+    ///
+    /// ★ 管**每一個** HTTPS 監聽與 h3（全域，owner 2026-10-23）；TLS context 在監聽器起來時就建好了
+    /// ⇒ 改了它 `POST /load` 回 409、要 `systemctl reload`（換代）。
+    /// ⚠ `#[serde(default = "yes")]` 的理由與 `auto_http_redirect` 相同：一份沒有這個欄位的舊 JSON
+    /// 灌進來時必須是「照舊恢復」，否則升級一次樞衡，握手行為就變了而設定一個字沒改。
+    #[serde(default = "yes")]
+    pub tls_session_resumption: bool,
+    /// ★ ★ **允許的 TLS 金鑰交換組**（G168）。空 = BoringSSL 預設（不對它做任何呼叫）。
+    ///
+    /// ⚠ ⚠ 它是**集合**、⛔ 不是偏好序：握手照**用戶端**的順序在其中挑（owner 2026-10-23，
+    /// 不開伺服器端偏好 —— 那個旗標會連帶改 TLS 1.2 的密碼套件選法）。
+    /// 名字只認 [`TLS_GROUP_NAMES`]，與 `tls_session_resumption` 同樣改了要換代。
+    #[serde(default)]
+    pub tls_groups: Vec<String>,
+}
+
+/// `tls_groups` 認得的組名（**G168**）—— BoringSSL（boring-sys 5.3.0，`ssl/ssl_key_share.cc` 的
+/// `kNamedGroups`）的正式名，⚠ 區分大小寫。
+///
+/// ★ ★ 它有**兩個**使用者：DSL 編譯（`FUL-DSL-0047`）與執行環境裝載（結構化設定是公開入口，
+/// 機器直接寫的 JSON 繞過了 DSL）。⛔ 別讓兩處各寫一份 —— 與 [`PROXY_PROTOCOL_VERSIONS`] 同一條理由。
+/// ⚠ 換 boring 大版本時要對著那張表重核：這裡多一個 BoringSSL 不認的名字，
+/// 症狀是**啟動時** `set_curves_list` 失敗，而不是裝載期的那條診斷。
+pub const TLS_GROUP_NAMES: &[&str] = &[
+    "P-256",
+    "P-384",
+    "P-521",
+    "X25519",
+    "X25519MLKEM768",
+    "MLKEM1024",
+];
+
+/// 一個 `tls_groups` 名字對不對（**G168**）。`Ok` = 它就是正式名；`Err(Some(正式名))` = 認出了別名或
+/// 大小寫寫法（`x25519mlkem768`、`prime256v1`）；`Err(None)` = 認不出。
+///
+/// ★ 別名與大小寫**有意不放行**、只給建議：放行的話 `tls_groups` 就有兩種寫法存進結構化設定，
+/// 而 `POST /load` 逐項比的時候，同一個組會因為寫法不同被判成「改了」。
+pub fn canonical_tls_group(name: &str) -> Result<&'static str, Option<&'static str>> {
+    if let Some(n) = TLS_GROUP_NAMES.iter().find(|n| **n == name) {
+        return Ok(n);
+    }
+    // BoringSSL 自己認的別名（`kNamedGroups` 第四欄）。
+    const ALIASES: &[(&str, &str)] = &[
+        ("prime256v1", "P-256"),
+        ("secp256r1", "P-256"),
+        ("secp384r1", "P-384"),
+        ("secp521r1", "P-521"),
+    ];
+    if let Some((_, n)) = ALIASES.iter().find(|(a, _)| a.eq_ignore_ascii_case(name)) {
+        return Err(Some(n));
+    }
+    Err(TLS_GROUP_NAMES
+        .iter()
+        .find(|n| n.eq_ignore_ascii_case(name) || n.replace('-', "").eq_ignore_ascii_case(name))
+        .copied()
+        .or_else(|| crate::diag::suggest(name, TLS_GROUP_NAMES.iter().copied())))
 }
 
 /// `serde(default)` 用的 `true`。★ 單獨一個函式是因為 serde 的 default 只能給函式名。
@@ -165,6 +223,9 @@ impl Default for Global {
             threads_l4: None,
             threads_admin: None,
             auto_http_redirect: true,
+            // ★ 與 `auto_http_redirect` 同一條：預設是 `true`，⛔ 不是 derive 給的 `false`。
+            tls_session_resumption: true,
+            tls_groups: Vec::new(),
             // ★ 預設**空**：不信任任何人發來的 PROXY 頭。
             //   ⚠ 這與 `auto_http_redirect` 那條相反 —— 那條的預設是 `true`
             //   （關掉它是「設定一個字沒改，站台的跳轉沒了」）；

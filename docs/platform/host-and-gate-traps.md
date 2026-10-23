@@ -69,6 +69,7 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | `tests/cache/run.sh` · `tests/cache/disk.sh` | 9500–9501 · 9502–9503 |
 | `tests/encode/` | 9600–9601 |
 | `tests/h3/` | 9700–9702 |
+| `tests/tls-policy/` | 9450–9453 (TCP and h3; every config sets `auto_http_redirect false`, so it does **not** bind `:80`) |
 | `tests/proxyproto/` | 9800–9803 |
 | `tests/log/` | 9900–9906 |
 | `tests/quic-relay/` | 9910–9911 |

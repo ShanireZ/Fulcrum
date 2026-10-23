@@ -205,6 +205,7 @@ selftest_only_mode() {
   printf 'STATS_ONLY=1\n'     | only_mode_in || { echo "★ only_mode_in 认不出 STATS_ONLY=1" >&2; rc=1; }
   printf 'COMPILE_ONLY=1\n'   | only_mode_in || { echo "★ only_mode_in 认不出 COMPILE_ONLY=1" >&2; rc=1; }
   printf 'BENCH_ONLY=1\n'     | only_mode_in || { echo "★ only_mode_in 认不出 BENCH_ONLY=1" >&2; rc=1; }
+  printf 'TLSPOL_ONLY=1\n'    | only_mode_in || { echo "★ only_mode_in 认不出 TLSPOL_ONLY=1" >&2; rc=1; }
   [ "$rc" -eq 0 ] || {
     echo "  *_ONLY 判据自测未通过——**本次跑不跑 M1 场景的结论一律不可信**。" >&2
     exit 1
@@ -1121,6 +1122,8 @@ elif [ "${ENCODE_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/encode/run.sh"
 elif [ "${H3_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/h3/run.sh"
+elif [ "${TLSPOL_ONLY:-0}" = "1" ]; then
+  CMD="$CMD && bash tests/tls-policy/run.sh"
 elif [ "${PP_ONLY:-0}" = "1" ]; then
   CMD="$CMD && bash tests/proxyproto/run.sh"
 elif [ "${LOG_ONLY:-0}" = "1" ]; then
@@ -1179,6 +1182,10 @@ elif [ "${BUILD_ONLY:-0}" != "1" ]; then
   # ★ 用戶端是 curl 的 OpenSSL-QUIC 棧，與被測的 quiche 沒有一行共同程式碼
   #   ⇒ 這是本儲存庫對 h3 唯一的**互操作**判據。
   [ "${H3_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/h3/run.sh"
+  # 全域 TLS 設定（G168）：`tls_groups` / `tls_session_resumption` 在 h1/h2 與 h3 上真的照做。★ 獨有判據：
+  #   0 張 ticket 且帶 session 的第二次是新握手（1.3 與 1.2）· 組釘死時只給 X25519 的用戶端握不上（h3 也是）·
+  #   `/load` 兩個值變了就 409 · 換代之後新值生效 —— 用戶端是 openssl s_client 與 curl，尺子先在不寫鍵的實例上自證。
+  [ "${TLSPOL_TESTS:-1}" = "0" ] || CMD="$CMD && bash tests/tls-policy/run.sh"
   # PROXY protocol（HTTP 面）：連接開頭那幾十個位元組，在 TLS 之前、在 HTTP 之前。★ 獨有判據：
   #   ① PROXY 頭與請求在同一個 TCP 段裡到達（丟掉回還那一步的實作只在合並行送時才壞）；
   #   ② 沒配 `proxy_protocol_from` 的執行個體一個位元組都不讀 —— 少了它，任何用戶端都能自稱任意 IP。

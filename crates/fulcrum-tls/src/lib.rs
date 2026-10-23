@@ -5,6 +5,7 @@
 //! | [`store`] | 證書儲存：每域一目錄的 PEM、原子寫、檔案鎖 | G55 |
 //! | [`resolver`] | 按 SNI 挑證書（BoringSSL 的 `select_certificate_callback`）| **G104** / G12 |
 //! | [`renewal`] | 續期判定：ARI 優先，退回剩餘壽命 1/3，退避 + 抖動 | G56 |
+//! | [`policy`] | 全域的兩個 TLS 設定（金鑰交換組、工作階段恢復）的唯一套用點 | **G168** |
 //!
 //! # ⚠ ⚠ 後端是 BoringSSL（G104）
 //!
@@ -29,10 +30,12 @@
 //! **多一處版本宣告就多一個把它們劈成兩份的機會**，而劈開之後
 //! `SslContextBuilder` 同名卻是兩個類型。
 
+pub mod policy;
 pub mod renewal;
 pub mod resolver;
 pub mod store;
 
+pub use policy::TlsPolicy;
 pub use resolver::{ACME_TLS_ALPN, CertKey, ChallengeCert, SniResolver, alpn_list, offers_alpn};
 pub use store::{CertStore, Meta, StoredCert};
 

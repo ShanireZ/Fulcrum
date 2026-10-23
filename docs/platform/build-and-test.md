@@ -41,6 +41,8 @@ ENCODE_ONLY=1    bash tests/m0/docker-run.sh # 只跑回應壓縮端到端（M2 
 ENCODE_TESTS=0   bash tests/m0/docker-run.sh # 跳過它
 H3_ONLY=1        bash tests/m0/docker-run.sh # 只跑 HTTP/3 端到端（M2 批 J）
 H3_TESTS=0       bash tests/m0/docker-run.sh # 跳過它
+TLSPOL_ONLY=1    bash tests/m0/docker-run.sh # 只跑全域 TLS 設定端到端（G168）
+TLSPOL_TESTS=0   bash tests/m0/docker-run.sh # 跳過它
 PP_ONLY=1        bash tests/m0/docker-run.sh # 只跑 HTTP 面的 PROXY protocol（M2 批 L ①）
 PP_TESTS=0       bash tests/m0/docker-run.sh # 跳過它
 LOG_ONLY=1       bash tests/m0/docker-run.sh # 只跑結構化訪問紀錄（M2 批 L ②③）
@@ -174,6 +176,7 @@ printf '#!/usr/bin/env bash\nexec bash "$(git rev-parse --show-toplevel)/tests/c
 | ★ **HTTP 快取端到端** | [`tests/cache/run.sh`](../../tests/cache/run.sh) | RFC 9111 語義：命中/回源、`no-store`/`private`/`Set-Cookie` 不存、備援 `ttl`、`Vary` 兩分支共存、請求側 CC、`purge`、防驚群。★ 最貴的一條：**帶 `Authorization` 的回應不許發給別人** |
 | ★ ★ **快取磁碟後端端到端** | [`tests/cache/disk.sh`](../../tests/cache/disk.sh) | ★ ★ ★ 決定性的那條是**把處理程序殺掉再起來東西還在**（同一次跑裡用去掉 `disk` 的同一份設定反證：記憶體後端必然回源）。另有：啟動不掃盤 / 優雅停機存索引 / **重驗證只改 meta 不動 body** / 索引冷時 `purge` 照樣清得掉 / 壞條目即丟即刪 / 目錄用不了則關快取但照常轉發 |
 | ★ ★ **回應壓縮端到端** | [`tests/encode/run.sh`](../../tests/encode/run.sh) | 反代與靜態檔案兩條路真的壓了（★ **解出來逐字等於原文**，不是「有那個頭」）/ 不該壓的三種都沒壓 / ★ 預壓縮旁檔案逐字發出且**強 ETag 與 Range 都在** / ★ 陳舊旁檔案被當成不存在 / ★★★ **壓縮 × 快取**：寫法不同但首選相同的命中同一條、不認壓縮的拿不到壓縮位元組、兩種表示共存 |
+| ★ ★ **全域 TLS 設定（G168）** | [`tests/tls-policy/run.sh`](../../tests/tls-policy/run.sh) | `tls_groups` / `tls_session_resumption` 在真握手上照做，h1/h2 與 h3 是同一份政策。用戶端是 `openssl s_client` 與 curl（`--http3-only`）。★ **尺子先自證**：不寫鍵的實例上 X25519 握得上、數得到 ticket、帶 session 的第二次是恢復的（1.3 與 1.2），否則下面的「握不上 / 0 張 / 新握手」在壞尺子下也綠。政策實例：只給 X25519 握不上（h3 也是）· 0 張 ticket · 第二次是新握手 · 只關恢復的實例上 TLS 1.2 也不恢復 · `/load` 改了任一個 ⇒ 409 且握手照舊、都沒改 ⇒ 200 · 換代之後新值生效 · 啟動紀錄說出政策。⚠ 每份設定都寫 `auto_http_redirect false`：同時起好幾個處理程序，合成的 `:80` 站台會互搶 |
 | ★ ★ ★ **HTTP/3 端到端** | [`tests/h3/run.sh`](../../tests/h3/run.sh) | ★ 它把批 J 從「零件通了」變成「入口在跑」：在它之前**沒有任何設定能打開那個監聽器**。★ ★ **用戶端是 curl 的 OpenSSL-QUIC 棧**，與被測的 quiche 沒有一行共同程式碼 ⇒ 這是本儲存庫對 h3 唯一的**互操作**判據（`quic` 模組裡那兩條走真 UDP 的端到端用的是 quiche 自己的用戶端，兩邊一起理解錯時會一起綠）。⚠ 全場 `--http3-only`，**不是** `--http3`（後者會回落到 h1/h2）；開跑前拿一個空 UDP 連接埠自證這把尺子真的在走 QUIC。五件事：h3 真的通 / **h3 與 h1 跑同一條執行鏈**（三種 outcome 逐字相同）/ ★★★ **逐跳頭在 h3 那側消失而 h1 上仍在**（RFC 9114 §4.2，自帶對照）/ ★★★ **`Alt-Svc` 出現在六條互不相同的回應路徑上** / **兩條反向**（明文連接埠不發、h3 自己不發）|
 | ★ ★ **PROXY protocol（HTTP 面）** | [`tests/proxyproto/run.sh`](../../tests/proxyproto/run.sh) | **M2 批 L ①**。它是唯一一格量**連接開頭那幾個位元組**的 —— 在 TLS 握手**之前**。v1/v2 兩種頭 · 與首包合並行送 · `LOCAL` 不覆蓋對端 · ★ **兩條反向**（不在信任清單裡就一個位元組都不讀；另一個執行個體有意不配它當對照物）· 換設定立刻生效 |
 | ★ ★ **結構化訪問紀錄** | [`tests/log/run.sh`](../../tests/log/run.sh) | **M2 批 L ②③**。★ ★ ★ **判據掛在那一行的內容上，不是「檔案非空」** —— 契約定的是欄位清單，而「有輸出」與「輸出對」之間隔著整張表。欄位用 `python3` 讀，**絕不 `grep '"status":200'`**（欄位順序/空格/轉義一變就靜默漏判）。一條請求正好一行 · `uri` 是 `rewrite` **之前**那個 · 打不開的紀錄路徑是**裝載期硬錯誤** · `outcome` 閉集逐個走一遍 · 白名單頭（★ 一條帶 `Authorization`/`Cookie` 的請求，整行**原始位元組**裡一個都找不到）· TLS 四格（★ **`--no-alpn` 那條反向是唯一分得出「量出來的」與「猜出來的」的判據**）· 敏感頭**兩條路各攔一次** |

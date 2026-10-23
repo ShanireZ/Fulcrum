@@ -284,6 +284,14 @@ impl Cx<'_> {
                 "proxy_protocol_from" => {
                     g.proxy_protocol_from = node.args.iter().map(|a| a.value.clone()).collect()
                 }
+                // ★ G168。`check_sub_args` 已經保證值是 true / false。
+                "tls_session_resumption" => {
+                    g.tls_session_resumption = node
+                        .args
+                        .first()
+                        .is_none_or(|a| parse_bool(&a.value) != Some(false))
+                }
+                "tls_groups" => g.tls_groups = self.tls_groups(node),
                 // ⚠ 這條 `_ => {}` 是「表裡有位置、沒人接」的溫床（批 6 在 `tls` 上栽過）。
                 //   守著它的是 compile_behaviour.rs 的 `全局选项全部有人接`：
                 //   GLOBAL_OPTIONS 裡多一條而這裡沒接，那條測試**直接 panic**。
@@ -1215,6 +1223,47 @@ impl Cx<'_> {
                 None
             }
         }
+    }
+
+    /// `tls_groups` 的值（**G168**）：每個名字都必須是 [`TLS_GROUP_NAMES`] 裡的正式名、且不重複。
+    ///
+    /// ★ 收下的是**合法的那幾個**，錯的逐個報（⇒ 一份設定裡的錯一次看全）；有錯時整份設定本來就
+    ///   不出結構化產物，所以這裡回什麼不影響執行。
+    fn tls_groups(&mut self, node: &Node) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for arg in &node.args {
+            match canonical_tls_group(&arg.value) {
+                Ok(name) if out.iter().any(|g| g == name) => {
+                    self.diags.push(
+                        Diagnostic::error(
+                            DiagCode::BAD_TLS_GROUP,
+                            arg.span,
+                            format!("`tls_groups` 里 `{name}` 写了两次"),
+                        )
+                        .label("同一个组只写一次")
+                        .note("★ 这是一个集合，⛔ 不是偏好序：握手照客户端的顺序在其中挑"),
+                    );
+                }
+                Ok(name) => out.push(name.to_string()),
+                Err(hint) => {
+                    let mut d = Diagnostic::error(
+                        DiagCode::BAD_TLS_GROUP,
+                        arg.span,
+                        format!("`tls_groups` 不认识 `{}`", arg.value),
+                    )
+                    .label("这不是 BoringSSL 的正式组名")
+                    .note(format!(
+                        "认得的组：{}（区分大小写）",
+                        TLS_GROUP_NAMES.join(" ")
+                    ));
+                    if let Some(h) = hint {
+                        d = d.help(format!("你是不是想写 `{h}`？"));
+                    }
+                    self.diags.push(d);
+                }
+            }
+        }
+        out
     }
 
     fn upstream_weight(

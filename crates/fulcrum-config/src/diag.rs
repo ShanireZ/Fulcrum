@@ -372,6 +372,13 @@ impl DiagCode {
     /// ★ 這是本儲存庫反覆抓到的那一族，⛔ 別在這裡退回 `.ok()`。
     pub const BAD_THREADS: DiagCode = DiagCode(46);
 
+    /// `tls_groups` 裡有認不出的組名，或同一個組寫了兩次（**G168**）。
+    ///
+    /// ★ 別名與大小寫寫法（`x25519mlkem768`、`prime256v1`）**也報這一條**、並給出正式名：
+    /// 放行它們等於讓同一個組在結構化設定裡有兩種寫法，而 `POST /load` 逐項比較時會把它判成「改了」。
+    /// ⚠ 不在這裡攔住的話，症狀是**啟動時** BoringSSL 的 `set_curves_list` 失敗 —— 那時已經在起監聽器了。
+    pub const BAD_TLS_GROUP: DiagCode = DiagCode(47);
+
     pub fn as_str(&self) -> String {
         format!("FUL-DSL-{:04}", self.0)
     }

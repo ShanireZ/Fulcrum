@@ -1206,9 +1206,36 @@ pub struct Runtime {
     /// ★ 而 HTTP 面這一份必須是**全域**的，因為它是**連接級**的判斷 ——
     /// 一條連接上還沒有 Host，還不知道會落到哪個站台。
     pub proxy_protocol_from: Vec<Cidr>,
+    /// ★ ★ **兩個全域 TLS 設定**（G168），管每一個 HTTPS 監聽與 h3。
+    ///
+    /// ★ 它住在這張圖上（而不是讓資料面去讀 `cfg.global`）的理由與 `listen_ports` 相同：
+    ///   管理面要拿「啟動時那張圖」與「`POST /load` 建出來的那張圖」比 —— 兩邊從同一個地方取，
+    ///   「啟動時記的」與「load 時算的」就分不了家。
+    pub tls_policy: TlsPolicyRt,
     /// 裝載時要說的 warning（現在只有自環那一條，M2 批 G）。
     /// ★ 與 [`Runtime::unwired_in_use`] 同一個形狀：**本 crate 回傳話，資料面去說**。
     pub self_loop_warnings: Vec<String>,
+}
+
+/// 全域塊那兩個 TLS 設定在執行環境圖上的樣子（**G168**）—— 已驗證過、可以直接交給 BoringSSL。
+///
+/// ★ 預設值 = 「不寫」= 對 BoringSSL 不做任何呼叫（`groups` 空、`session_resumption` 為 `true`）。
+/// ⚠ `PartialEq` 是承重的：`POST /load` 拿它判「改了沒有」，`groups` **逐項逐序**比（owner：任一個不同就 409）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsPolicyRt {
+    /// 允許的金鑰交換組，BoringSSL 正式名，保持書寫順序。空 = BoringSSL 預設。
+    pub groups: Vec<String>,
+    /// `false` ⇒ 不發 session ticket、伺服器端 session cache 關。
+    pub session_resumption: bool,
+}
+
+impl Default for TlsPolicyRt {
+    fn default() -> Self {
+        TlsPolicyRt {
+            groups: Vec::new(),
+            session_resumption: true,
+        }
+    }
 }
 
 /// L4 面的四層協定。
@@ -2408,6 +2435,35 @@ impl Runtime {
             }
         }
 
+        // ── G168：兩個全域 TLS 設定 ──────────────────────────────────────────
+        //
+        // ⚠ **結構化設定是公開入口**（G11）：`FUL-DSL-0047` 只活在編譯層，手寫的 JSON 繞得過去。
+        //   繞過去的症狀是**啟動時** `set_curves_list` 失敗（那時已經在起監聽器了），
+        //   或 `POST /load` 時兩種寫法的同一個組被判成「改了」⇒ 在這裡用同一張表再判一次。
+        let mut tls_groups: Vec<String> = Vec::new();
+        for v in &cfg.global.tls_groups {
+            match fulcrum_config::model::canonical_tls_group(v) {
+                Ok(name) if tls_groups.iter().any(|g| g == name) => errors.push(BuildError::new(
+                    "全局 tls_groups",
+                    format!("`{name}` 写了两次（这是一个集合，⛔ 不是偏好序）"),
+                )),
+                Ok(name) => tls_groups.push(name.to_string()),
+                Err(hint) => errors.push(BuildError::new(
+                    "全局 tls_groups",
+                    format!(
+                        "`{v}` 不是 BoringSSL 的正式组名{}（认得的：{}，区分大小写）",
+                        hint.map(|h| format!("，你是不是想写 `{h}`"))
+                            .unwrap_or_default(),
+                        fulcrum_config::model::TLS_GROUP_NAMES.join(" ")
+                    ),
+                )),
+            }
+        }
+        let tls_policy = TlsPolicyRt {
+            groups: tls_groups,
+            session_resumption: cfg.global.tls_session_resumption,
+        };
+
         // ── M2 批 H：快取後端是**處理程序級**的，全圖只能有一個 ────────────────
         //
         // ⚠ **結構化設定是公開入口**（G11）：`FUL-DSL-0035` 只活在編譯層，手寫 JSON 繞得過去。
@@ -2462,6 +2518,7 @@ impl Runtime {
                 l4_listeners,
                 listen_ports,
                 proxy_protocol_from: http_pp_from,
+                tls_policy,
                 self_loop_warnings,
             })
         } else {

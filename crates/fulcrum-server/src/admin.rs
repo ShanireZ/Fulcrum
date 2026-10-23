@@ -81,6 +81,13 @@ pub struct AdminApp {
     /// 「守衛接在 CLI 上，而管理面是另一個入口」的同族：**一個判據漏掉一個入口，
     /// 等於在那個入口上沒有判據。**
     l4_listeners: Vec<(String, String)>,
+    /// 啟動時的兩個全域 TLS 設定（**G168**）。
+    ///
+    /// ★ 理由與上面兩格逐字相同：TLS context 在**監聽器起來時**就建好了（h1/h2 每個連接埠一份、h3 一份），
+    ///   `POST /load` 換不了它 ⇒ 不同就 409、指向 `systemctl reload`。⚠ 不攔的話，一份改了組的設定會
+    ///   **200「已生效」而握手照舊** —— 只有拿 `--curves` 去試的人才發現。
+    /// ★ 從**當前執行環境**取（與 `l4_listeners` 同一個理由）：與 `serve()` 套到 context 上的是同一格。
+    tls_policy: fulcrum_runtime::TlsPolicyRt,
     acme: Option<Arc<AcmeManager>>,
     /// 快取後端（M2 批 G）。`None` = 這個處理程序沒建快取（測試夾具裡會是這樣）。
     ///
@@ -233,10 +240,12 @@ impl AdminApp {
         // ★ L4 那一格從**當前執行環境**取，而不是另外傳一份進來：
         //   多一個參數就多一處「呼叫方可能忘了給」，而忘了給的後果是這道門變成空的。
         let l4_listeners = l4_key_set(&rt.current());
+        let tls_policy = rt.current().tls_policy.clone();
         AdminApp {
             rt,
             listen_ports,
             l4_listeners,
+            tls_policy,
             acme,
             cache,
             resolver,
@@ -448,6 +457,42 @@ impl AdminApp {
                      ★ 只有**监听器**换不了；`proxy` 后面的上游随时可以改，那条路不经过 bind。\n",
                     fmt(&self.l4_listeners),
                     fmt(&next_l4)
+                ),
+            );
+        }
+        // ── ⚠ ⚠ **兩個全域 TLS 設定同樣換不了**（G168）──────────────────────────
+        //
+        // 理由與上面兩條同一族：TLS context 在監聽器起來時就建好了。★ `tls_groups` **逐項逐序**比
+        // （owner：任一個不同就 409）—— 只換順序在今天的語義下不改變握手（照用戶端順序挑），
+        // 但執行中的 context 與磁碟上那份就不再一致了，而期望狀態是唯一的權威。
+        if next.tls_policy != self.tls_policy {
+            let groups = |p: &fulcrum_runtime::TlsPolicyRt| {
+                if p.groups.is_empty() {
+                    "（不写 = BoringSSL 默认）".to_string()
+                } else {
+                    p.groups.join(" ")
+                }
+            };
+            let mut changed = String::new();
+            if next.tls_policy.groups != self.tls_policy.groups {
+                changed.push_str(&format!(
+                    "  · `tls_groups`：当前 {}，提交 {}\n",
+                    groups(&self.tls_policy),
+                    groups(&next.tls_policy)
+                ));
+            }
+            if next.tls_policy.session_resumption != self.tls_policy.session_resumption {
+                changed.push_str(&format!(
+                    "  · `tls_session_resumption`：当前 {}，提交 {}\n",
+                    self.tls_policy.session_resumption, next.tls_policy.session_resumption
+                ));
+            }
+            return (
+                409,
+                format!(
+                    "全局 TLS 设置变了，本进程换不了（TLS context 在监听器起来时就建好了，G168）：\n{changed}\
+                     请改用 `systemctl reload fulcrum` —— 那是真的换代，零停机。\n\
+                     **没有任何改动生效**。\n"
                 ),
             );
         }
@@ -1338,6 +1383,88 @@ mod tests {
         // ⚠ 這一條才是「原子」的判據：**拒絕之後舊的還在**。
         //   一個「先換後檢核」的實作在上一條上表現完全相同。
         assert!(Arc::ptr_eq(&before, &a.rt.current()), "旧配置被动过了");
+    }
+
+    // ── G168：兩個全域 TLS 設定換不了 ──────────────────────────────────────
+
+    /// 用一段 DSL 起一個管理面（連接埠集照它自己的）。
+    fn app_dsl(dsl: &str) -> AdminApp {
+        let cfg = fulcrum_config::compile_str("t.Fulcrumfile", dsl)
+            .config
+            .expect("样例配置应当能编译");
+        let rt = Arc::new(Runtime::build(&cfg).unwrap());
+        let ports = rt.listen_ports.clone();
+        AdminApp::new(SharedRuntime::new(rt), ports, None, None, None)
+    }
+
+    const SITE: &str = "http://a.com:8080 {\n  respond 200\n}\n";
+
+    fn with_tls_global(lines: &str) -> String {
+        format!("{{\n  {lines}\n}}\n{SITE}")
+    }
+
+    /// 斷言：409、點名 `key`、指向 `systemctl reload`，且執行中的那份一個位元組都沒動。
+    fn assert_tls_409(a: &AdminApp, body: &[u8], key: &str) {
+        let before = a.rt.current();
+        let (status, text) = a.load(body, Some("overrides=clear"));
+        assert_eq!(status, 409, "{text}");
+        assert!(text.contains(key), "409 没点名 `{key}`：{text}");
+        assert!(text.contains("systemctl reload"), "要说清怎么办：{text}");
+        assert!(
+            Arc::ptr_eq(&before, &a.rt.current()),
+            "409 之后旧配置被动过了"
+        );
+    }
+
+    #[test]
+    fn 只改_tls_groups_回_409_且点名() {
+        let a = app_dsl(SITE);
+        assert_tls_409(
+            &a,
+            &json_of(&with_tls_global("tls_groups X25519MLKEM768")),
+            "tls_groups",
+        );
+    }
+
+    #[test]
+    fn 只改_tls_session_resumption_回_409_且点名() {
+        let a = app_dsl(SITE);
+        assert_tls_409(
+            &a,
+            &json_of(&with_tls_global("tls_session_resumption false")),
+            "tls_session_resumption",
+        );
+    }
+
+    /// owner：任一個不同就 409 —— 只換順序也算（執行中的 context 與磁碟上那份就不一致了）。
+    #[test]
+    fn 只改组的顺序也是_409() {
+        let a = app_dsl(&with_tls_global("tls_groups X25519 P-256"));
+        assert_tls_409(
+            &a,
+            &json_of(&with_tls_global("tls_groups P-256 X25519")),
+            "tls_groups",
+        );
+    }
+
+    /// 反方向：兩個都沒改（照樣寫著）⇒ 照舊 200 —— 否則上面幾條在一個「一律 409」的實作下也綠。
+    #[test]
+    fn 两个都没改照旧_200() {
+        let both = "tls_groups X25519MLKEM768 X25519\n  tls_session_resumption false";
+        let a = app_dsl(&with_tls_global(both));
+        let (status, text) = a.load(&json_of(&with_tls_global(both)), Some("overrides=clear"));
+        assert_eq!(status, 200, "{text}");
+    }
+
+    /// 結構化設定是公開入口（G11）：一份**沒有這兩個欄位**的舊 JSON ⇒ 取預設、與不寫的那一份相同 ⇒ 200。
+    #[test]
+    fn 旧_json_不带这两个字段照旧_200() {
+        let a = app_dsl(SITE);
+        let mut v: serde_json::Value = serde_json::from_slice(&json_of(SITE)).unwrap();
+        let g = v["global"].as_object_mut().unwrap();
+        assert!(g.remove("tls_groups").is_some() && g.remove("tls_session_resumption").is_some());
+        let (status, text) = a.load(&serde_json::to_vec(&v).unwrap(), Some("overrides=clear"));
+        assert_eq!(status, 200, "{text}");
     }
 
     // ── M2 批 H：快取後端換不了 ────────────────────────────────────────

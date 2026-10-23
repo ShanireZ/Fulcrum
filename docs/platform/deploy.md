@@ -193,7 +193,7 @@ M1 產品場景實測 `systemctl stop` **30 秒**（預算 35）。`TimeoutStopS
 
 | 路 | 命令 | 能改什麼 | 代價 |
 |---|---|---|---|
-| 全量原子 load（G8）| `curl --unix-socket /run/fulcrum/admin.sock -X POST --data-binary @cfg.json "http://localhost/load?overrides=clear"` | 路由、上游、頭、證書來源…… | 處理程序不換代，**改不了監聽連接埠集**（連接埠變了回 **409**）；`overrides` **必填**、走查詢串（G120）：發佈流水線用 `clear`（回到期望狀態），事故處理中想保留剛打的補丁就用 `?overrides=keep` |
+| 全量原子 load（G8）| `curl --unix-socket /run/fulcrum/admin.sock -X POST --data-binary @cfg.json "http://localhost/load?overrides=clear"` | 路由、上游、頭、證書來源…… | 處理程序不換代，**改不了監聽連接埠集**（連接埠變了回 **409**）、也改不了全域的 `tls_groups` / `tls_session_resumption`（G168，變了同樣 **409**）；`overrides` **必填**、走查詢串（G120）：發佈流水線用 `clear`（回到期望狀態），事故處理中想保留剛打的補丁就用 `?overrides=keep` |
 | 換代（G37）| `systemctl reload fulcrum` | **一切**，含監聽連接埠集 | 起一個新處理程序，老的排空後退出；零停機 |
 
 ★ `systemctl reload` 會讓下一代**重新讀一遍 `/etc/fulcrum/Fulcrumfile`**——

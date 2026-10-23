@@ -34,6 +34,7 @@ use crate::quic::relay::{RelayInbox, RelayOutbox, Relayed};
 use crate::quic::retry::{self, RetryKey};
 use async_trait::async_trait;
 use boring::ssl::{SslContextBuilder, SslMethod};
+use fulcrum_tls::TlsPolicy;
 use fulcrum_tls::resolver::SniResolver;
 use log::{debug, error, info, warn};
 use pingora_core::server::{ListenFds, ShutdownWatch};
@@ -152,10 +153,19 @@ pub fn decide(
 /// ⚠ **`SslContextBuilder::new(SslMethod::tls())` 是照著 quiche 自己 `Context::new()` 來的**
 /// （它內部就是 `SSL_CTX_new(TLS_method())`）。⚠ 它**不載入 CA 證書** ——
 /// quiche 的 `from_boring()` 也不載入，而伺服器端本就不驗用戶端證書。
-pub fn build_quic_config(resolver: &Arc<SniResolver>) -> Result<quiche::Config, String> {
+///
+/// ★ ★ 兩個全域 TLS 設定（**G168**）也在這裡、在**同一個 builder** 上套 —— 與 h1/h2 那側
+/// 叫的是同一個 [`TlsPolicy::apply_to`]（判據：`crates/fulcrum/tests/tls_policy_gate.rs`）。
+pub fn build_quic_config(
+    resolver: &Arc<SniResolver>,
+    policy: &TlsPolicy,
+) -> Result<quiche::Config, String> {
     let mut builder =
         SslContextBuilder::new(SslMethod::tls()).map_err(|e| format!("建不出 SSL context：{e}"))?;
     resolver.install_into(&mut builder);
+    policy
+        .apply_to(&mut builder)
+        .map_err(|e| format!("TLS 政策套不上（{}）：{e}", policy.describe()))?;
 
     let mut cfg = quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, builder)
         .map_err(|e| format!("建不出 quiche 配置：{e}"))?;
@@ -268,6 +278,9 @@ pub struct QuicListenerService {
     /// Retry 的簽發金鑰。★ **每代一把**，理由見 [`retry`] 那一頁。
     retry_key: Arc<RetryKey>,
     resolver: Arc<SniResolver>,
+    /// 兩個全域 TLS 設定（**G168**）。★ 與 h1/h2 那側是**同一個值**（`serve()` 從同一張執行環境圖取），
+    /// 交給同一個 [`TlsPolicy::apply_to`] —— 兩個入口的政策只有一份實作。
+    policy: TlsPolicy,
     /// 一條 h3 請求交給誰去跑。
     /// ★ 監聽器**不認識** `FulcrumApp` —— 那會讓 HTTP/3 入口反向相依資料面本體。
     handler: Arc<dyn H3RequestHandler>,
@@ -286,6 +299,7 @@ impl QuicListenerService {
         bind: String,
         upgrading: bool,
         resolver: Arc<SniResolver>,
+        policy: TlsPolicy,
         gen_id: GenId,
         handler: Arc<dyn H3RequestHandler>,
         run_dir: std::path::PathBuf,
@@ -303,6 +317,7 @@ impl QuicListenerService {
             gen_id,
             retry_key: Arc::new(RetryKey::random()),
             resolver,
+            policy,
             handler,
             run_dir,
             conn,
@@ -359,7 +374,7 @@ impl Service for QuicListenerService {
                 return;
             }
         };
-        let config = match build_quic_config(&self.resolver) {
+        let config = match build_quic_config(&self.resolver, &self.policy) {
             Ok(c) => c,
             Err(e) => {
                 error!("[quic] {e}");
@@ -368,9 +383,10 @@ impl Service for QuicListenerService {
         };
 
         info!(
-            "[quic] 监听 {} （HTTP/3，gen={}）",
+            "[quic] 监听 {} （HTTP/3，gen={}，{}）",
             self.bind,
-            self.gen_id.hex()
+            self.gen_id.hex(),
+            self.policy.describe()
         );
 
         // ── 換代轉交（**M2 批 K**，G109 ②）────────────────────────────────
@@ -798,7 +814,22 @@ mod tests {
         //   ⚠ 之前這裡用的是 `set_default` —— 而那是全倉**唯一**的呼叫方，
         //   於是「default 槽有人填」這件事只在測試裡成立過。
         resolver.install(&[SNI.to_string()], ck);
-        build_quic_config(&resolver).expect("服务端配置")
+        build_quic_config(&resolver, &TlsPolicy::default()).expect("服务端配置")
+    }
+
+    /// G168：非預設的 TLS 政策照樣建得出 h3 設定；BoringSSL 不認的組名在這裡就報、⛔ 不靜默略過。
+    /// （政策在握手上的效果由 `fulcrum-tls` 的單測與 `tests/tls-policy/run.sh` 的 curl `--http3-only` 量。）
+    #[test]
+    fn h3_设定带上非缺省的_tls_政策() {
+        let resolver = Arc::new(SniResolver::new());
+        let pinned = TlsPolicy::new(vec!["X25519MLKEM768".into()], false);
+        assert!(build_quic_config(&resolver, &pinned).is_ok());
+        // 執行環境裝載會先攔住這個名字；這裡證的是「萬一漏過去，啟動時說得出來」。
+        let bogus = TlsPolicy::new(vec!["NotAGroup".into()], true);
+        match build_quic_config(&resolver, &bogus) {
+            Ok(_) => panic!("BoringSSL 不认的组名不该建得出配置"),
+            Err(e) => assert!(e.contains("TLS 政策套不上"), "{e}"),
+        }
     }
 
     fn client_config() -> quiche::Config {
@@ -1611,6 +1642,7 @@ mod tests {
             "127.0.0.1:19003".to_string(),
             false,
             Arc::new(SniResolver::new()),
+            TlsPolicy::default(),
             GenId::random(),
             Arc::new(EchoHandler),
             std::env::temp_dir(),

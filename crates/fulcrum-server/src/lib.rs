@@ -2217,6 +2217,14 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
     let listen_ports = rt.listen_ports.clone();
     // 管理面要拿它當「連接埠集有沒有變」的判據（全量 load 那條路）。
     let listen_ports_for_admin = listen_ports.clone();
+    // ── 兩個全域 TLS 設定（**G168**）—— 一個處理程序一份，h1/h2 每個 HTTPS 連接埠與 h3 共用 ──
+    //
+    // ★ 從**建起來的那張圖**取（與 `listen_ports` 同一條理由）：管理面拿同一格判 `POST /load` 改沒改，
+    //   改了就 409 —— TLS context 在監聽器起來時就建好了，換設定換不了它。
+    let tls_policy = fulcrum_tls::TlsPolicy::new(
+        rt.tls_policy.groups.clone(),
+        rt.tls_policy.session_resumption,
+    );
     // ★ ★ **收流量之前先把網域上游解析一遍。**
     //   ⚠ 少了這一步，第一批請求會撞上「還沒解析出來」而被回 502；
     //   而在改這一批之前，它們撞上的是**每請求一次 panic**（實測過）。
@@ -2325,6 +2333,12 @@ pub fn serve(cfg: &fulcrum_config::StructuredConfig, rt: Arc<Runtime>, opts: Ser
                     //   掛**同一個**回呼，於是「兩個入口各有一套挑證書實作」在結構上做不到。
                     //   那正是取「統一 BoringSSL」而不是「兩套並存」的全部理由（D18/G66 同源）。
                     plan.resolver.install_into(&mut settings);
+                    // ★ ★ G168：同一個 builder 上套兩個全域 TLS 設定 —— 與 h3 那側叫的是同一個函式
+                    //   （判據：`crates/fulcrum/tests/tls_policy_gate.rs`）。預設政策什麼都不做。
+                    if let Err(e) = tls_policy.apply_to(&mut settings) {
+                        error!("{bind} 的 TLS 政策套不上（{}）：{e}", tls_policy.describe());
+                        std::process::exit(1);
+                    }
 
                     // h2 + http/1.1 —— ALPN 裡兩個都要有，否則只會 h2 的用戶端連不上。
                     // ★ ★ 再加一條 `acme-tls/1`：TLS-ALPN-01（RFC 8737 / G54 的「主」）
@@ -2340,7 +2354,8 @@ acme-tls/1";
                             .ok_or(pingora_core::tls::ssl::AlpnError::NOACK)
                     });
                     info!(
-                        "监听 {bind}（HTTPS，按 SNI 动态挑证书，ALPN: h2 / http/1.1 / acme-tls/1）"
+                        "监听 {bind}（HTTPS，按 SNI 动态挑证书，ALPN: h2 / http/1.1 / acme-tls/1，{}）",
+                        tls_policy.describe()
                     );
                     // ★ 與 `add_tls_with_settings(&bind, None, settings)` 只差寫緩衝
                     //   （pingora 裡那個函式就是這一句去掉 `.l4_buffer(…)`），理由見 [`L7_L4_BUFFER`]。
@@ -2378,6 +2393,7 @@ acme-tls/1";
                 bind.clone(),
                 opts.upgrade,
                 plan.resolver.clone(),
+                tls_policy.clone(),
                 gen_id,
                 app.clone(),
                 // ★ ★ **M2 批 K**：換代轉交 socket 落在**換代 socket 的父目錄**裡。

@@ -693,6 +693,15 @@ fn 全局选项全部有人接() {
             "threads_l7" => ("threads_l7 8", |g| g.threads_l7 == Some(8)),
             "threads_l4" => ("threads_l4 3", |g| g.threads_l4 == Some(3)),
             "threads_admin" => ("threads_admin 2", |g| g.threads_admin == Some(2)),
+            // ★ G168。判據用 `false`：預設就是 true，拿 true 去測時「表裡有位置、沒人接」照樣過。
+            "tls_session_resumption" => ("tls_session_resumption false", |g| {
+                !g.tls_session_resumption
+            }),
+            // ★ 判據寫**兩個**組（只收第一個參數的那一版拿一個組去測是過得了的），
+            //   而且有意寫成**非字母序**：一個偷偷排序的實作在這裡露頭。
+            "tls_groups" => ("tls_groups X25519MLKEM768 P-256", |g| {
+                g.tls_groups == ["X25519MLKEM768", "P-256"]
+            }),
             other => panic!(
                 "全局选项 `{other}` 是新加的，而这条测试没有它的判据。\
                  先在这里写明「它该落到 Global 的哪个字段」，再去 compile.rs 接它。"
@@ -1939,4 +1948,103 @@ fn respond_的内联正文收得下四千零九十六字节且逐字节不变() 
         }
         其它 => panic!("第 70 步该是 respond，实际是 {}", 其它.directive_name()),
     }
+}
+
+// ── G168：兩個全域 TLS 設定 ──────────────────────────────────────────────────
+
+/// 兩個鍵都寫 ⇒ 落到 Global 的那兩格，組名**保持書寫順序**（⛔ 不排序、不去重之外的任何改寫）。
+#[test]
+fn tls_groups_与_tls_session_resumption_编进结构化配置() {
+    let cfg = ok(&with_global(
+        "tls_groups X25519MLKEM768 X25519\n  tls_session_resumption false",
+    ));
+    assert_eq!(cfg.global.tls_groups, ["X25519MLKEM768", "X25519"]);
+    assert!(!cfg.global.tls_session_resumption, "写了 false 却没落下来");
+}
+
+/// 不寫 ⇒ 照舊恢復、組清單為空（= BoringSSL 預設）。⚠ 反目標第一條：不寫的人什麼都不變。
+#[test]
+fn 不写这两个键时取默认() {
+    let cfg = ok("http://a.com {\n  respond 200\n}\n");
+    assert!(
+        cfg.global.tls_session_resumption,
+        "缺省必须是 true（照旧恢复）"
+    );
+    assert!(
+        cfg.global.tls_groups.is_empty(),
+        "缺省必须是空（= BoringSSL 默认）"
+    );
+}
+
+/// 認不出的名字、別名、大小寫寫法、重複 ⇒ 都是 `FUL-DSL-0047`；認得出意思的要給正式名。
+#[test]
+fn tls_groups_认不出的名字是_ful_dsl_0047() {
+    for (bad, hint) in [
+        ("x25519mlkem768", Some("X25519MLKEM768")),
+        ("prime256v1", Some("P-256")),
+        ("P256", Some("P-256")),
+        ("secp384r1", Some("P-384")),
+        ("X25519Kyber768Draft00", None),
+    ] {
+        let o = compile_str(
+            "test.Fulcrumfile",
+            &with_global(&format!("tls_groups {bad}")),
+        );
+        let d = o
+            .diagnostics
+            .items()
+            .iter()
+            .find(|d| d.code == DiagCode::BAD_TLS_GROUP)
+            .unwrap_or_else(|| {
+                panic!(
+                    "`tls_groups {bad}` 该报 BAD_TLS_GROUP：\n{}",
+                    o.render_diagnostics()
+                )
+            });
+        assert_eq!(d.code.as_str(), "FUL-DSL-0047");
+        match hint {
+            Some(h) => assert_eq!(
+                d.help.as_deref(),
+                Some(format!("你是不是想写 `{h}`？").as_str()),
+                "`{bad}` 该建议 `{h}`"
+            ),
+            None => assert!(d.help.is_none(), "`{bad}` 不该瞎建议：{:?}", d.help),
+        }
+        assert!(o.config.is_none(), "`tls_groups {bad}` 不该产出结构化配置");
+    }
+    let cs = codes(&with_global("tls_groups X25519 X25519"));
+    assert!(
+        cs.contains(&DiagCode::BAD_TLS_GROUP),
+        "同名重复该报 BAD_TLS_GROUP：{cs:?}"
+    );
+}
+
+/// 值的形狀錯走既有的診斷：布林只認 true / false，兩個鍵都不許不帶值。
+#[test]
+fn tls_两个键的形状错走既有诊断() {
+    let cs = codes(&with_global("tls_session_resumption off"));
+    assert!(
+        !cs.is_empty() && !cs.contains(&DiagCode::BAD_TLS_GROUP),
+        "`off` 该报布尔的那条：{cs:?}"
+    );
+    for key in ["tls_session_resumption", "tls_groups"] {
+        let cs = codes(&with_global(key));
+        assert!(
+            cs.contains(&DiagCode::BAD_ARITY),
+            "`{key}` 不带值该报 BAD_ARITY：{cs:?}"
+        );
+    }
+}
+
+/// 結構化設定是公開入口（G11）：一份**沒有這兩個欄位**的舊 JSON 照樣讀，並取預設。
+#[test]
+fn 旧结构化_json_没有这两个字段照样读() {
+    let cfg = ok("http://a.com {\n  respond 200\n}\n");
+    let mut v = serde_json::to_value(&cfg).expect("序列化");
+    let g = v["global"].as_object_mut().expect("global 是对象");
+    assert!(g.remove("tls_session_resumption").is_some() && g.remove("tls_groups").is_some());
+    let back: fulcrum_config::model::StructuredConfig =
+        serde_json::from_value(v).expect("旧 JSON 读不进来");
+    assert!(back.global.tls_session_resumption);
+    assert!(back.global.tls_groups.is_empty());
 }

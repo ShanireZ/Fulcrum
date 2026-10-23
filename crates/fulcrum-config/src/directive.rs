@@ -484,6 +484,11 @@ pub const GLOBAL_OPTIONS: &[SubSpec] = &[
     //   （G98）。★ 它們不是被靜默丟棄的：`compile.rs` 有一條**專門的診斷**告訴寫了它們
     //   的人這一層去哪了 —— 一個被刪掉的公開設定面，只回「不認識的全域選項」是不夠的。
     sub("proxy_protocol_from", 1, usize::MAX, ArgType::Word),
+    // ★ ★ 兩個全域 TLS 設定（G168）：管每一個 HTTPS 監聽與 h3，改了要換代（`POST /load` 回 409）。
+    //   布林照 `auto_http_redirect` 的形狀；組名的值域判在 compile.rs（`FUL-DSL-0047`），
+    //   與 `threads_*` 走 Word + 專門診斷同一個理由。
+    sub("tls_session_resumption", 1, 1, ArgType::Bool),
+    sub("tls_groups", 1, usize::MAX, ArgType::Word),
 ];
 
 // ── 字面值檢核 ──────────────────────────────────────────────────────────────
