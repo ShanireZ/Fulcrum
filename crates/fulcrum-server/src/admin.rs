@@ -2228,6 +2228,23 @@ http://pool.example:8080 {
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("/stats 不是合法 JSON：{e}\n{text}"))
     }
 
+    /// 原文裡 `"key":` 後面那個數，用 `str::parse` 精確讀出（理由見用到它的那條）。
+    /// ⚠ 鍵必須恰好出現一次，否則讀到的是哪一格說不清。
+    fn 原文里唯一的数(text: &str, key: &str) -> f64 {
+        let pat = format!("\"{key}\":");
+        let mut hits = text.match_indices(&pat);
+        let (i, _) = hits
+            .next()
+            .unwrap_or_else(|| panic!("原文里没有 {pat}：{text}"));
+        assert!(hits.next().is_none(), "{pat} 在原文里不止一处：{text}");
+        let rest = &text[i + pat.len()..];
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        rest[..end]
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("{pat} 后面不是数（{e}）：{text}"))
+    }
+
     #[test]
     fn stats_是合法json且带着全部顶层字段() {
         let a = app_stats();
@@ -2391,11 +2408,12 @@ http://pool.example:8080 {
         a.rt.overrides().slot(&k).set_disabled(true);
         let 之后 = crate::metrics::unix_secs(std::time::SystemTime::now());
 
-        let v = stats_json(&a);
-        let row = &v["overrides"].as_array().expect("overrides 应该是数组")[0];
-        let t = row["set_at_unix"]
-            .as_f64()
-            .unwrap_or_else(|| panic!("set_at_unix 应该是数字：{v}"));
+        let v = a.stats();
+        // ⚠ ⚠ 這個數**從原文精確讀**，⛔ 不經 `serde_json::Value::as_f64`：serde_json 不開
+        //   `float_roundtrip` 時解析浮點只求快、不保證精確，這個量級的時間戳會讀偏 1 ULP
+        //   （約 0.24 µs），恰好壓在上界或下界那一格時本條偶發紅。寫出那側是最短可往返
+        //   表示、`str::parse` 是精確捨入 ⇒ 讀回來逐位元相同。⛔ 不為測試開那個 feature。
+        let t = 原文里唯一的数(&v, "set_at_unix");
         // ⚠ ⛔ 不斷言等於某個具體值：那要求判據與被測物件共用時鐘且零延遲。
         assert!(
             t >= 之前 && t <= 之后,
