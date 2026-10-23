@@ -99,7 +99,7 @@ api.example.com {
 > 而那些數今天還不存在。
 | `proxy_protocol_from` | `proxy_protocol_from <网段…>` | ★ ★ **信任這些來源發來的 PROXY 頭**，管 **HTTP 面全部監聽連接埠**（M2 批 D）。不寫＝**誰都不信**。見下 |
 | `tls_session_resumption` | `tls_session_resumption <true\|false>` | **TLS 工作階段恢復**（G168）。`false` ⇒ 一張 session ticket 都不發、伺服器端 session cache 關 ⇒ TLS 1.2 / 1.3 用戶端每條連接都完整握手。不寫＝ **`true`**（BoringSSL 預設）。管每一個 HTTPS 監聽與 h3 |
-| `tls_groups` | `tls_groups <组名…>` | **允許的 TLS 金鑰交換組**（G168）。⚠ 是**集合**、⛔ 不是偏好序：握手照**用戶端**的順序在其中挑。只認 BoringSSL 的正式名（區分大小寫）：`X25519MLKEM768` `X25519` `P-256` `P-384` `P-521` `MLKEM1024`；別名（`x25519`、`prime256v1`…）、打錯的與重複的都是**裝載期錯誤**（`FUL-DSL-0047`，帶正式名的建議）。不寫＝ BoringSSL 預設。管每一個 HTTPS 監聽與 h3。⚠ 後量子組在 TLS 1.2 裡不存在，而 1.2 下 ECDSA P-256 證書還要求清單裡有 `P-256` ⇒ **只寫 `X25519MLKEM768` 時 TLS 1.2 用戶端一律握不上** |
+| `tls_groups` | `tls_groups <組名…>` | **允許的 TLS 金鑰交換組**（G168）。⚠ 是**集合**、⛔ 不是偏好序：握手照**用戶端**的順序在其中挑。只認 BoringSSL 的正式名（區分大小寫）：`X25519MLKEM768` `X25519` `P-256` `P-384` `P-521` `MLKEM1024`；別名（`x25519`、`prime256v1`…）、打錯的與重複的都是**裝載期錯誤**（`FUL-DSL-0047`，帶正式名的建議）。不寫＝ BoringSSL 預設。管每一個 HTTPS 監聽與 h3。⚠ 後量子組在 TLS 1.2 裡不存在，而 1.2 下 ECDSA P-256 證書還要求清單裡有 `P-256` ⇒ **只寫 `X25519MLKEM768` 時 TLS 1.2 用戶端一律握不上**。⚠ TLS-ALPN-01 的驗證連接（ALPN `acme-tls/1`）走同一個 HTTPS 監聽 ⇒ 釘得太窄也會擋住 CA 的驗證連接，用 TLS-ALPN-01 簽發 / 續期的網域會隨之失敗 |
 
 > ⚠ ⚠ **這兩個 TLS 設定改了要換代**：TLS context 在監聽器起來時就建好了 ⇒ `POST /load` 提交的值與執行中的
 > 任一個不同（`tls_groups` 逐項逐序比）就回 **409**、⛔ 任何改動都不生效，訊息指向 `systemctl reload`

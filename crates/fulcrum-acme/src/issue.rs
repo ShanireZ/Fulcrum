@@ -817,6 +817,8 @@ where
     };
     match place(Some(id)).await {
         Err(instant_acme::Error::Api(problem)) => {
+            // ⚠ `tests/acme/renew.sh` 逐字 grep 這句的開頭「带 replaces 下单被 CA 拒了」判「續期沒走退回」
+            //   ⇒ 改字形或措辭要兩處一起改，否則那條判據會恆綠。
             warn!(
                 "{domain} 带 replaces 下单被 CA 拒了（{problem}），去掉 replaces 再下一次 \
                  —— 照常签，只是拿不到 ARI 续期的速率优惠"
@@ -1129,7 +1131,7 @@ mYRjTQ==
         instant_acme::CertificateIdentifier::new(Der::from_slice(b"aki"), Der::from_slice(b"sn"))
     }
 
-    /// pebble v2.10.1 那一句的原樣（`serverInternal` 不是 `alreadyReplaced`）。
+    /// pebble v2.10.1 那一句拒絕的形狀（`serverInternal` 不是 `alreadyReplaced`）；`detail` 只取了原話的前半。
     fn ca_的拒绝() -> instant_acme::Error {
         instant_acme::Error::Api(
             serde_json::from_str(

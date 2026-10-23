@@ -133,7 +133,7 @@ boring 5 把那個補丁**無條件**打上 ⇒ 上面四處 BoringSSL 一起變
   兩處的用戶端都是 curl 8.14.1 + OpenSSL 3.5.6；在同一張鏡像裡實測這份 libssl 的預設組
   （`openssl s_client` 對 `s_server`，curl 不指定 `--curves` 時用的就是它）協商出 `X25519MLKEM768`
   ⇒ 這個用戶端**本來就發**後量子 key share。★ 所以「多包 Initial」在 rebase 之前就在發生，變的只是伺服器端現在也會選這個組。
-- ★ **G168 起可以釘**：全域選項 `tls_groups <组名…>`（允許的集合、照用戶端順序挑，⛔ 不開伺服器端偏好）與
+- ★ **G168 起可以釘**：全域選項 `tls_groups <組名…>`（允許的集合、照用戶端順序挑，⛔ 不開伺服器端偏好）與
   `tls_session_resumption <true|false>`（`false` = 一張 ticket 都不發、伺服器端 session cache 關），
   由 `fulcrum_tls::TlsPolicy::apply_to` 在 h1/h2 每個 HTTPS 連接埠與 h3 的 context 上**同一處**套用（判據 `crates/fulcrum/tests/tls_policy_gate.rs`），
   改了要換代（`POST /load` 回 409）。不寫 = 上面那段 BoringSSL 預設一個呼叫都不動。鍵的寫法見 [DSL 參考](/architecture/dsl-reference.md)。

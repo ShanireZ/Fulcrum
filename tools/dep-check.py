@@ -131,8 +131,9 @@ TAG_VERSION = re.compile(r"^(\d+(?:\.\d+)*)-")
 
 # ── 釘 rustc 的 Dockerfile 必須同一個版本（`--check-pins`）────────────────────────
 # `Dockerfile.build`（rust:X-trixie）與 `Dockerfile.musl-probe` / `Dockerfile.musl-product`
-# （rust:X-alpine）的 X 必須一起換（build-and-test.md「怎麼升」）。2026-08-27 ～ 10-18 它們漂了
-# 52 天，期間沒有任何門判紅 —— 上面的 `check_build_image` 只讀 `Dockerfile.build`。
+# （rust:X-alpine）的 X 必須一起換（build-and-test.md「怎麼升」）。`Dockerfile.build` 最晚 2026-08-27
+# （倉的歷史從這天開始）已是 1.98.0，musl 兩張到 10-18 才跟上 —— 至少 52 天，期間沒有任何門判紅
+# —— 上面的 `check_build_image` 只讀 `Dockerfile.build`。
 # ★ 集合是**推導**的（`docker/Dockerfile.*` 裡含 `^FROM rust:` 的），⛔ 不寫死清單；判據與
 #   `tests/musl/arm64-trigger.sh` 的觸發集相同（`grep -l '^FROM rust:'`）：寫死的清單在出現
 #   第四張釘 rustc 的 Dockerfile 時會靜靜漏掉它。

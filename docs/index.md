@@ -63,4 +63,4 @@ okf_version: "0.2"
 
 `agents/` 存的是**工具怎麼用這個儲存庫**（issue 落在哪、triage 標籤怎麼對應、領域文件去哪找），不是產品知識；工作區準則與 OKF 維護合同只在工作區根各存一份，由索引指過去。專案級 agent 約束的權威始終是 [`AGENTS.md`](../AGENTS.md)，本目錄只補它引到的那幾份細則。
 
-* [Agent 設定索引](/agents/index.md) - 三份細則的入口：issue tracker 與 Wayfinder 約定、triage 標籤映射、領域文件佈局（`GLOSSARY.md` / ADR，不存在就靜默跳過），外加工作區準則與本 bundle 遵循的 OKF v0.2 維護合同的指針。
+* [Agent 設定索引](/agents/index.md) - 四份細則的入口：issue tracker 與 Wayfinder 約定、triage 標籤映射、領域文件佈局（`GLOSSARY.md` / ADR，不存在就靜默跳過）、在地化時引號裡的 owner 原話只轉字形，外加工作區準則與本 bundle 遵循的 OKF v0.2 維護合同的指針。

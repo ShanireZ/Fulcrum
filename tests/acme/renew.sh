@@ -451,6 +451,8 @@ fi
 #   goroutine 裡才打（`wfe.go` 的 finalize）⇒ 這裡等一小會兒，⛔ 不是立刻 grep。
 #   反面證據取樞衡的話：退回那句一次都不許出現。那條路有單測守著；
 #   本格要證的是 `replaces` 被接受這一條，第一代的前提控制保證走得到它。
+#   ⚠ 下面逐字 grep 的是 `crates/fulcrum-acme/src/issue.rs` 那條 warn 的開頭 ⇒ 那句改字形或措辭時
+#     這裡要一起改，否則這條判據會恆綠（只剩上面 pebble 那條兜底）。
 if wait_log "$WORK/pebble.log" "has been marked as replaced in the DB" 15; then
   ok "续期那单带的 replaces 被 CA 认了（pebble：旧订单已标成被替换）"
 else

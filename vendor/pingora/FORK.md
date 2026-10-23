@@ -1060,16 +1060,16 @@ h2 / h3 用戶端的請求轉發到 h1 上游時若帶了它們，也從小寫�
 
 #### 量了多少（開發機診斷臺，計數口徑，⛔ 不是效能宣告）
 
-改前 `9b43f01`、改後同一棵樹加本改動，同一個容器同一個目標卷編：每請求 malloc / free 各 −2（`respond` 18 → 16、`file_server` 21 → 19，1 與 200 條連接四格都是）；
+改前 `9b43f01`、改後同一棵樹加本改動，同一個容器同一個目標卷編：每請求 malloc 各 −2（`respond` 18 → 16、`file_server` 21 → 19）、free 各 −2（`respond` 18 → 16、`file_server` 22 → 20），1 與 200 條連接四格都是（讀數只在本機 `handoff/spike-http-ceiling/readings/g165-*`，未入庫）；
 使用者指令 1 條連接 `respond` −1.9%、`file_server` −2.5%，200 條連接時在三輪區間內分不出；
-32 種請求（含四條續連接）除 `Date` 外逐位元組相同（指標端點正文是活計數，只比頭），比較器負對照（G162 之前的二進位）紅 9 條。
+32 種請求（28 種單發、都帶 `Connection: close`，加三條續連接與一條 HTTP/1.0 不續）除 `Date` 外逐位元組相同（指標端點正文是活計數，只比頭、不比 `Content-Length`），比較器負對照（G162 之前的二進位）紅 9 條。
 
 #### 守衛（都在 `tests/fulcrum_read_request_alloc.rs`，`tests/vendor/run.sh` 照跑）
 
 | 判據 | 守什麼 | 反證（注入寫在臨時 worktree 裡，⛔ 沒碰工作樹；每次都有 `Compiling pingora-core`）|
 |---|---|---|
 | `枢衡改动19_写响应头不再拷连接头的值也不再冻结缓冲` | 讀完一條請求後 `write_response_header` 一共分配 **1** 次（只剩序列化用的那塊暫存緩衝；上游原樣是 3 次，改前在本 fork 上實測 3）；`keep-alive` 與 `close` 兩種都數。連接用預留了容量的 `Cursor<Vec<u8>>`，寫的時候連接自己不分配 | ① 換回 `&str` ⇒ **只紅它**「分配了 2 次（期望 1）」；② 換回 `freeze` ⇒ **只紅它**，同樣是 2 |
-| `枢衡改动19_写响应头的字节照旧` | 續與不續各寫一次：除 `Date` 的值（核它是 HTTP 日期）外逐位元組等於 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。本 fork 8 個 crate 裡寫回應頭的測試幾乎都關了 `update_resp_headers`，沒有一條釘這兩行（上游只在沒進 fork 的 `pingora-proxy` 整合測試 `test_basic` / `test_upstream` 裡經 OpenResty 查 `Connection` 的值）| 值寫成 `Keep-Alive` ⇒ **只紅它**（迴歸網裡上游自己的測試沒有一條跟著紅 —— 正是要補它的理由）|
+| `枢衡改动19_写响应头的字节照旧` | 續與不續各寫一次：除 `Date` 的值（核它是 HTTP 日期）外逐位元組等於 `HTTP/1.1 200 OK` · `Content-Length: 0` · `Date` · `Connection: keep-alive` / `close`。本 fork 8 個 crate 裡寫回應頭的測試幾乎都關了 `update_resp_headers`，沒有一條釘這兩行（上游只在沒進 fork 的 `pingora-proxy` 整合測試裡經 OpenResty 查 `Connection` 的值 —— 測試二進位 `test_basic` / `test_upstream`，查值的是 `test_connect_close` · `test_duplex` · `test_close_on_response_before_downstream_finish`，見 `upstream-pr/README.md` 投稿八；⚠ 與本 fork 只核狀態碼的 `pingora-core/tests/test_basic.rs` 同名、不是同一個）| 值寫成 `Keep-Alive` ⇒ **只紅它**（迴歸網裡上游自己的測試沒有一條跟著紅 —— 正是要補它的理由）|
 
 proxy task 那處漏了 `freeze` ⇒ 編不過（E0308，類型逼著），不需要測試守。
 ⚠ `Date` 是執行緒本機快取、每秒換一次，換的那一秒裡第一次寫會多分配幾次 ⇒ 分配那條先熱身、再取三次裡最少的。
