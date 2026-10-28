@@ -1,774 +1,128 @@
 ---
-type: 架構基線
-title: 觀測
-description: Prometheus 指標 + 結構化訪問紀錄 + Runtime 即時 stats；首版不做 OpenTelemetry tracing。
-resource: ../../PLAN.md
-tags: [架構, 觀測]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G16（觀測基線）、G8（Runtime 通道）、G23（首版不做 Web UI）、G116–G121（指標與 stats）
-  - id: plan-11
-    resource: /references/plan.md
-    title: PLAN.md §10 G149（版本與相容性策略，原 D9）、G123（快取事件的摺疊口徑與邊界，D31 結案）、G124（status_class 的第 6 個值，D30 結案）、G122（連接類與 TLS 類指標，D32 結案）、G127（標籤值取不到時記 <unknown>）、G128（h3 的 TLS 三格走 fork 改動 14，D27 + D28 結案）
+type: architecture
+title: Observability
+description: Flat access logs, bounded Prometheus metrics and runtime stats.
 ---
+# Observability
 
-★ 本頁屬**技術基線**，帶真內容。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
+This is the approved technical baseline and yields to [PLAN.md](../../PLAN.md) on conflict.
 
-# 三件套（G16）
 
-| 面 | 形態 |
-|---|---|
-| **指標** | Prometheus 端點。✅ **已完成實作** —— 有哪些族看下面「指標清單與基數」那張表，⛔ 這裡**不另抄一份清單**（那張表被一道門逐項釘在 `FAMILIES` 上，抄件沒有）。★ **D32 已由 G122 結案**成「兩半分別完成實作、分別命名」，**兩半現在都完成實作了**：TLS 那半是 `fulcrum_tls_requests_total`，連接那半是 `fulcrum_connections_total` / `fulcrum_connections_active`。⚠ 這一行此前寫著「連接那一類今天仍然一個族都沒有」——**它在批 O 完成實作的那一刻就成了假話**，而本儲存庫內沒有任何門看得見一句過期的散文。⇒ 狀態別寫在這裡，去看那張被門釘住的基數表 |
-| **紀錄** | 結構化訪問紀錄與錯誤紀錄；**欄位清單與格式已由 G113 + G114 定稿**（D7 結案）—— 見下面「訪問紀錄的欄位契約」|
-| **即時** | Runtime 通道上的**唯讀 stats**：每上游的即時連接數、佇列、錯誤、健康態，以及**臨時覆蓋層清單**。⏳ **方案已定（批 N，G119/G120）**，見下面「Runtime 即時 stats」一節 |
+G16 defines metrics, structured logs and live stats. Current milestone state belongs in PLAN, not this contract. OpenTelemetry tracing and a Web UI are outside first-release scope.
 
-# 訪問紀錄的欄位契約（**G113 + G114**，由 D7 結案）
+## Access-log contract (G113/G114)
 
-✅ ✅ ✅ **整份契約已串接完畢**：固定集是**批 L 第 ② 步**
-（`log` 從 [`fulcrum_runtime::UNWIRED`](../../crates/fulcrum-runtime/src/lib.rs) 裡**整條刪掉**），
-**白名單頭與 TLS 資訊是第 ③ 步**。判據都長在**第二十三個場景**
-[`tests/log/run.sh`](../../tests/log/run.sh)（第 ② 步 36 條斷言，第 ③ 步 +26 條 = **62 條**，
-兩批各做過注入反證：第 ② 步四次、第 ③ 步六次）。
+One newline-terminated flat JSON object per record; no nested objects or arrays. Omit unavailable optional fields rather than null or invented values. Outcomes describe execution paths independently of status: respond 503 has outcome=respond and level=error; outcome=error means the built-in/handle_errors path.
 
-⚠ ★ **TLS 那幾格在 HTTP/3 上是 3/4** —— `tls_cipher` 取不到，
-見下面「h3 上有三格，第四格拿不到」。★ 那不是遺漏，是 quiche 的公開 API 到此為止。
-
-★ 分開說，是因為「契約定了」「一半接了」「全接了」是三件事，
-而本頁此前那條「紀錄：欄位清單是 D7（待定）」躺過一段 ——
-**一句被讀成「已經有了」的契約比沒有契約更貴。**
-
-## 形狀
-
-**一行一條 JSON**（`\n` 結尾），**欄位扁平**——沒有任何嵌套物件、沒有陣列。
-
-★ ★ 扁平不是風格：它讓「以後想加 logfmt」只需要換一個序列化器，**欄位清單一個字不動**。
-取 Caddy 那種嵌套（`request.headers` 是一個 map）的話，加 logfmt 就得再定一套拍扁規則，
-而**那套規則自己又是一份要釘住的契約**。
-
-⚠ ⚠ **取不到的欄位不出現，而不是給 `null`。** `null` 在 logfmt 裡沒有對應物，
-而 `upstream=` 與「這條請求沒有上游」是兩個意思。
-
-## 固定欄位（每一條都有）
-
-| 欄位 | 類型 | 語義 |
+| Fixed field | Type | Meaning |
 |---|---|---|
-| `ts` | string | RFC 3339、**UTC**、毫秒精度（`T03:14:15.926Z`）|
-| `level` | string | 按狀態碼派生：`< 400` → `info`，`4xx` → `warn`，`5xx` → `error` |
-| `proto` | string | `HTTP/1.1` · `HTTP/2.0` · `HTTP/3.0`。★ **取自入口而不是推斷**（與 `Alt-Svc` 那處同一條紀律）|
-| `method` | string | 請求方法，原樣 |
-| `host` | string | `Host` / `:authority`，**去掉連接埠** |
-| `uri` | string | **原始**請求目標（path + query），`rewrite` **之前** |
-| `status` | number | 下游看到的狀態碼。⚠ **一個回應頭都沒寫出去時是 `0`** —— 那不是「未知」，是「這條連接上什麼都沒發生」。⚠ ⚠ 此時 `outcome` **仍是執行鏈給的那個值**（站台匹配上了、鏈跑完了，只是下游在我們寫回應之前斷開）。★ ★ 從前這一條靠**人工核對過每一條回傳路徑**，今天由類型系統要求：`outcome` 是 `serve_one` 的**回傳值**而不是 `Record` 上的欄位 ⇒ 一條不產出取值的回傳路徑**編不過**。⇒ 閉集裡沒有「未設定」這一檔，因為那個狀態在類型上表達不出來 |
-| `resp_size` | number | 回應**體**位元組數（**不含頭**）。⚠ ⚠ 這一句需要 fork **第 13 處**改動才成立：上游 h1 的 `body_bytes_sent` 把序列化後的回應頭也加了進去，而 **h2 與 h3 只數體** ⇒ 同一個請求走兩種協定會給出兩個數。★ 那處改動連同一條長在上游測試模組裡的迴歸守衛，見 [`FORK.md`](../../vendor/pingora/FORK.md) |
-| `duration_ms` | number | 從讀到請求頭到回應寫完，毫秒，三位小數 |
-| `outcome` | string | 閉集，見下 |
-| `remote_ip` | string | ★ ★ ★ **見下面「`remote_ip` 是這份契約裡最貴的一格」** |
-| `remote_port` | number | 同上 |
+| `ts` | string | UTC RFC3339 with millisecond precision. |
+| `level` | string | Status-derived: <400 info, 4xx warn, 5xx error. Separate from configured threshold. |
+| `proto` | string | HTTP/1.1, HTTP/2.0 or HTTP/3.0 from the actual entry, not inferred. |
+| `method` | string | Original method. |
+| `host` | string | Host/:authority without port. |
+| `uri` | string | Original request target path/query before rewrite; Pingora normalization applies to absolute-form input. |
+| `status` | number | Written response status; 0 when no response header was successfully written. Buffer acceptance is not proof of peer delivery. |
+| `resp_size` | number | Body bytes only, excluding headers; fork change 13 fixes h1 accounting to match h2/h3. |
+| `duration_ms` | number | Request-header read through response completion, milliseconds with three decimals; idle wait is excluded. |
+| `outcome` | string | Closed path set: reverse_proxy, file_server, respond, redir, error, no_site_match, acme_http01, metrics. |
+| `remote_ip` | string | Socket peer, or original client supplied by explicitly trusted PROXY reception. |
+| `remote_port` | number | Corresponding client port. |
 
-`outcome` 的取值是**閉集**：`reverse_proxy` · `file_server` · `respond` · `redir` ·
-`error` · `no_site_match` · `acme_http01` · `metrics`（**第 8 個，批 M / G116**，見下）。
-★ 閉集意味著**新增一種終結方式必須來改這裡**，而不是悄悄多出一個沒人認得的值。
-（落法：資料面從 `Outcome` 那個枚舉**一次算出來**，窮盡 `match` ⇒ 加一種就編不過。）
+outcomes! generates the constants/closed set from the same literal token; OutcomeName's private field lives in outcome.rs, outside the constructing caller module. serve_one/write_error return the typed value rather than mutating a Record field. This makes an unset/default aborted state unrepresentable and forces every return path to report its outcome. Duplicate literals are separately checked.
 
-⚠ ⚠ ★ **`outcome` 說的是「怎麼終結的」，不是「回了幾號碼」** —— 兩者獨立：
-一條使用者寫的 `respond 503` 的 `outcome` 是 **`respond`**（它沒走錯誤頁那條路），
-而 `level` 那一格才會是 `error`。★ `outcome=error` 專指**走了 `handle_errors` / 預設錯誤頁**
-那條路（連不上上游、靜態檔案 404、站台內無路由匹配）。
-⇒ 想按「出了幾個 5xx」統計就看 `status`；想按「哪條路徑在出問題」統計才看 `outcome`。
-
-## 條件欄位（★ 取不到就不出現）
-
-| 欄位 | 何時出現 |
+| Conditional field | Availability |
 |---|---|
-| `site` | 命中了站台（`outcome=no_site_match` 時**沒有這一格**）。★ 值是**站台的名字** = 設定裡**第一個位址的原文**（例 `http://a.example:9900`），裝載紀錄用的也是它 —— ⚠ 不是主機名：一個站台可以有多個主機名，而紀錄要指得回設定裡那一塊 |
-| `upstream` | `outcome=reverse_proxy` 且真的選中了一個上游 |
-| `cache` | 這條請求過了快取層；取值與 `X-Fulcrum-Cache` **同源**（`HIT` / `HIT-DISK` / `REVALIDATED-DISK` / …）。⚠ 回源**沒有**這個值 —— 那是本儲存庫既有口徑，不是遺漏 |
-| `tls_version` · `tls_cipher` | 這條連接是 TLS。★ 兩格都來自 `SslDigest`，⚠ 值為空串時那一格**不出現**（等同「問不出來」）—— **h3 上 `tls_cipher` 正是這種情況**，見下面那一節 |
-| `tls_sni` | 用戶端發了 SNI（**小寫**）。⚠ 它與 `host` **是兩件事**：一條按 IP 直連、Host 頭寫著網域的請求有 `host` 而沒有 `tls_sni` |
-| `tls_alpn` | 協商出了 ALPN（`h2` / `http/1.1` / `acme-tls/1`）。⚠ 用戶端不發 ALPN 時**不出現**，而 `proto` 照常有值 —— ★ 那條反向判據在場景裡，它證明這一格不是從 `proto` 反推的 |
-| `req_hdr_<名>` · `resp_hdr_<名>` | 該頭**在白名單裡**且這條請求上真的有 |
+| `site` | Matched site name: original first configured address, including scheme/port. Absent for no_site_match. |
+| `upstream` | Reverse proxy actually selected an upstream. |
+| `cache` | Live cache status, same source as X-Fulcrum-Cache (HIT/HIT-DISK/REVALIDATED/etc.); origin contact has none. |
+| `tls_version` / `tls_cipher` | Nonempty negotiated fields; empty omits. |
+| `tls_sni` | Client supplied SNI, lowercase; independent of request host. |
+| `tls_alpn` | Actual negotiated ALPN; absent when no ALPN, even though proto still exists. |
+| `req_hdr_<name>` / `resp_hdr_<name>` | Allowlisted and actually present request/final sent response headers. |
 
-**頭名規範化**：小寫，`-` 換成 `_`，加前綴 `req_hdr_` / `resp_hdr_`
-（`User-Agent` → `req_hdr_user_agent`）。多值頭按 `, ` 連接（RFC 9110 §5.3）。
-⚠ 同一個頭在白名單裡寫兩遍（含大小寫不同）**只留一份** —— 兩個同名的 JSON 鍵，
-哪一個會被解析器留下沒有定義。
-⚠ 回應頭取的是**最終**那一份（`header` 那一步之後寫出去的），不是上游給的那一份。
+Normalize header names to lowercase with '-'→'_', prefixed req_hdr_/resp_hdr_. Join multiple values with comma+space; deduplicate allowlist names case-insensitively. Response values are after header middleware, not merely upstream originals.
 
-## ⚠ h3 上有三格，第四格拿不到
+Both entrances read the same SslDigest. h1/h2 fills it in from_ssl; h3 constructs it from quiche's public server_name/application_proto. h3 version is TLSv1.3 by RFC9001; cipher is unavailable through quiche's private API and therefore omitted. Never invent it. Metrics use <unknown> for the same unavailable datum because every series needs its label value.
 
-一條走 **HTTP/3** 的請求，`tls_version`（恆 `TLSv1.3`）· `tls_sni` · `tls_alpn` 三格都有，
-**只有 `tls_cipher` 不出現**。
+### Logging configuration and failure boundaries
 
-★ ★ **三格與 h1/h2 走的是同一段程式碼** —— 都讀同一個 `SslDigest`，
-差別只在**誰造了那份 digest**：h1/h2 是上游的 `from_ssl()`（拿 `&SslRef`），
-h3 是 `H3Session`（拿 `quiche::Connection`）。
-⇒ 「同一格資料兩個填法」在結構上做不到，而那正是 **D27** 結案時取這條路的理由。
+log output defaults stderr/journal or file <absolute-path>. Open the file during load: failure rejects startup or /load=400 and leaves the previous graph untouched. level is a threshold: debug/info=all, warn=4xx/5xx, error=5xx. Request headers and response headers require explicit nonempty allowlists; absent means no headers. Names must be valid RFC9110 tokens. Authorization, Cookie, Set-Cookie and Proxy-Authorization reject case-insensitively (FUL-DSL-0036), including the independent JSON Runtime::build path.
 
-⚠ **`tls_cipher` 為什麼拿不到**：quiche 的 `Handshake::cipher()` 在**私有** `mod tls` 裡，
-而 quiche 一個 TLS 出口都沒有 re-export（`Connection` 的公開 API 只給得出
-`server_name()` 與 `application_proto()`）。
-★ 處置是**留空 ⇒ 那一格不出現**，而不是編一個值 ——
-⚠ ⚠ **一個編出來的套件名讀起來與真的一模一樣**，而它會一路騙到讀紀錄的人。
+No matched site means no site log configuration, hence no access-log line for no_site_match/421. It still appears in metrics. Request-header parse failures before a Downstream/Record exists have neither a record nor request metrics. Never place private keys, ACME credentials or upstream authentication in ordinary logs; previews and Secret formatting redact by default.
 
-⚠ ⚠ **指標那一側的處置不同，而且必須不同**：`fulcrum_tls_requests_total` 記 `<unknown>`
-（G127）—— 指標裡沒有「那一格不出現」這回事，每條 series 都得給每個標籤一個值。
-⇒ 同一個空串兩處兩種處置，理由各自成立，⛔ 別當成一條紀律的兩次抄寫。
+## Metrics endpoint and collection
 
-★ `tls_version` 恆為 `TLSv1.3` **不是猜的**：RFC 9001 §4.2 寫死了 QUIC 只能用 TLS 1.3。
+metrics is a site terminal at order 75, between respond and reverse_proxy. Protect it inside handle before fallback respond, using source restriction/TLS/logging from existing mechanisms. It returns 200 and `text/plain; version=0.0.4; charset=utf-8`. This is separate from the Unix management API; requiring a Unix-only exporter would violate the single-installation goal. A mistaken matcher can expose metrics. FUL-DSL-0037 recognizes remote_ip/header protection (including enclosing containers/negation), not path/host/method/query alone, and cannot prove a correct CIDR or secret header.
 
-> ✅ **D27 與 D28 一起結案**（`PLAN.md` §10 **G128**）—— 落點是 **fork 改動 14**
-> （`SslDigest` 直接多兩格 `sni` / `alpn`）。⚠ 順帶把 D28 那趟「每條握手多一次掛起/恢復」
-> 也消掉了：那兩格不再需要 `TlsAccept` 回呼。
+encode currently has no effect on metrics/respond/redir; exposition is uncompressed even when configured, at a potentially significant continuing scrape-bandwidth cost. Plain-text format is self-built with no new package; tests own label escaping, histogram bucket/sum/count and _total naming.
 
-## ★ ★ ★ `remote_ip` 是這份契約裡最貴的一格
+Request metrics are recorded only in access_log::Record::finish, before optional emit filters, independent of site log enablement. Outcome/status are calculated once. The same single clock read supplies duration_seconds and duration_ms (wall-clock reversal clamps to zero). Logged-site increments must agree with log rows; no-log/no-site requests are counted separately, and scrape requests can themselves affect deltas.
 
-**語義**：預設是 **socket 對端**；而當這條連接落在全域
-`proxy_protocol_from` 的信任清單裡時，它是 **PROXY 頭裡的真實用戶端**。
+## Metric families and cardinality
 
-⚠ ⚠ 這兩句必須**同時**成立才算這一格做完 —— 先發一個「只可能是 socket 對端」的
-`remote_ip`、以後再改成「可能是 PROXY 頭裡那個」，**是一次靜默的語義變更**，
-而紀錄的消費方不會有任何提示。
-★ 這正是 §10 把「PROXY protocol 的 HTTP 半邊」的時機綁在 D7 上的全部理由 ——
-**理由是契約順序，不是工期**。
+FAMILIES in crates/fulcrum-server/src/metrics.rs is the sole declaration. This table follows its rendering order; series sort by label values. “Event” means increment/observe at an event point; “Live” means read the actual runtime/cert/ACME/connection source at scrape time, never maintain a second registry copy. Each family has one Source. Render HELP/TYPE even without samples so nonexistent and not-yet-observed differ. No family may add uri as a label.
 
-## 設定面
-
-```text
-log {
-    output   stderr | file <绝对路径>
-    level    debug | info | warn | error
-    headers       <名字…>
-    resp_headers  <名字…>
-}
-```
-
-| 子指令 | 語義 |
-|---|---|
-| `output` | `stderr`（預設，進 journal）或 `file <绝对路径>`。★ ★ 檔案**在裝載時就打開**，打不開是**硬錯誤**（`serve` 起不來 / `POST /load` 回 400 且舊設定一個位元組沒動）—— ⚠ 一個用來「出了事你能知道」的東西，自己壞掉時必須有人知道，而不是「起來了、服務正常、紀錄悄悄沒有」。⚠ 必須絕對路徑，理由與 `cache { disk }`（G91）逐字相同 |
-| `level` | **閾值**：`warn` 只記 4xx/5xx，`error` 只記 5xx。⚠ 對訪問紀錄 **`debug` 與 `info` 等價**（都記全部）—— 保留 `debug` 只是因為它本來就在語法裡 |
-| `headers` | **請求頭白名單**。⚠ ⚠ 預設**一個頭都不記** —— 不寫這一行就是不記，沒有「記幾個常用的」這種中間態 |
-| `resp_headers` | **回應頭白名單**。同上。★ 取的是**最終**回應頭（`header` 那一步之後） |
-
-⚠ 白名單裡的名字**必須是合法 HTTP 頭名**（RFC 9110 的 `token`），否則設定裝不上。
-★ 理由是「查不到」與「這條請求上沒有這個頭」在紀錄裡**長得一模一樣** ——
-⇒ 一個拼錯的名字會靜靜地什麼都不記，而維運看到的是「我配了它怎麼沒有」。
-
-### ⚠ ⚠ 白名單裡的四個名字是編譯期錯誤
-
-`Authorization` · `Cookie` · `Set-Cookie` · `Proxy-Authorization`
-寫進任一白名單 ⇒ **`fulcrum validate` 直接報診斷，設定裝不上**（大小寫不敏感）。
-
-★ ★ 理由要連著 G114 一起讀：owner 推翻的是「記不記頭」這條推薦項，
-**沒有**推翻它背後那半條 ——「私鑰、ACME 憑證、上游認證資訊不得進普通紀錄」
-（[安全基線](/platform/security-baseline.md)，也是本頁「最容易在哪做錯」第 2 條）。
-⇒ **一個被推翻的推薦項，它的理由通常只有一半被推翻**，那半條要換一個落點繼續成立。
-★ 取「編譯期拒絕」而不是「執行環境脫敏」：後者要求脫敏表跟得上每一個新的敏感頭名，
-而**漏一個就是一次靜默洩漏**；前者的失效形態是「設定裝不上」，當場可見。
-
-### ⚠ 沒有站台匹配的那條請求，記不進訪問紀錄
-
-`log` 是**站台塊內**的指令，而 `outcome=no_site_match`（421，G63）的請求
-**不屬於任何站台** ⇒ 它沒有一份 `log` 設定可用。**今天仍然如此。**
-
-★ 但**它不再是一條待定項**：**D26 已由 G118 結案** —— 結法是給
-`fulcrum_no_site_match_total` 一個計數器（見下面「D26 由 `no_site_match` 計數器結案」），
-從而回答了 D26 真正想問的那句「誰在拿奇怪的 Host 打我」，
-而**不必回答**「全域 `log` 塊 / 站台級預設 / 就這樣」那個更大的設定面問題。
-
-⚠ ⚠ 所以這一格的現狀是：**這類請求在指標裡有**（`site="<none>"`、
-`fulcrum_no_site_match_total`），**在訪問紀錄裡沒有**。★ 上面那條一致性
-（「指標增量 == 訪問紀錄行數」）在這一類請求上**本來就對不上**，判據場景裡分開數了它。
-
-# 指標（三件套的第一件，**批 M**）✅ **已完成實作**
-
-全部族宣告在 [`crates/fulcrum-server/src/metrics.rs`](../../crates/fulcrum-server/src/metrics.rs)
-的 `FAMILIES` —— ★ **那張表是「有哪些族」的唯一宣告處**，本頁是它的口徑與理由。
-
-## 端點 = 站台塊裡的終結指令 `metrics`（G116）
-
-`metrics` 進執行順序表當 **Terminal**（序號 75，夾在 `respond` 與 `reverse_proxy` 之間），
-寫在**普通站台塊**裡：
-
-```text
-metrics.example:9443 {
-    tls /etc/fulcrum/m.crt /etc/fulcrum/m.key
-    @internal remote_ip 10.0.0.0/8
-    handle @internal { metrics }
-    respond 403
-}
-```
-
-★ ★ **取這條而不是「獨立的 metrics 監聽器」，是為了不長出第二個網路管理面。**
-訪問控制（`remote_ip` 匹配器）、TLS、訪問紀錄**全部重複使用現有機制**（G116 就是這三樣）⇒
-[G14「管理面只綁 Unix socket」的口徑一個字不動](/platform/security-baseline.md) ——
-指標面根本不屬於管理面。
-
-⛔ **壓縮不在這三樣裡**：`metrics` 與 `respond` / `redir` 同病 —— 三者都終結在
-`write_with_headers` 上，而那條路上**沒有 encoder**（`encode` 今天只接在
-`file_server` 與轉發那兩處）。⇒ 站台裡寫一條 `encode gzip`，對抓取端點
-**一個位元組都不影響**。⚠ 而它不會以任何方式說出來：回應仍是 `200`、正文仍然正確，
-只是 `Content-Encoding` 那一格不出現 —— **沒有人會去看一個成功抓取的回應頭**。
-★ 代價說在明處：exposition 是高度可壓縮的純文字（重複的族名與標簽名），
-幾百條 series 時壓不壓差一個數量級，而 15 秒抓一次的話那是**持續**頻寬。
-
-⛔ **不掛在 admin socket 上當唯一出口**：Prometheus 抓不了 Unix domain socket，
-那樣使用者必須再裝一個 exporter，直接撞設計原則 1（「任何讓使用者再裝一個東西的設計都要被質疑」）。
-
-⚠ **代價說在明處**：指標與業務共用監聽器，**使用者把 matcher 寫錯就會把指標暴露出去**。
-這一條只能靠文件與診斷兜，**架構兜不住** —— 寫下來是因為它不該在事後才被發現。
-
-`outcome` 的閉集因此**多第 8 個值 `metrics`**。★ 閉集是窮盡 `match`，加一種就編不過。
-
-## 取數點：與訪問紀錄**同一段程式碼**
-
-⚠ ⚠ ★ **計數器只能加在 [`access_log::Record`](../../crates/fulcrum-server/src/access_log.rs)
-收尾的那一處。**
-
-兩處各算一遍 `outcome` / `status` 的話遲早分家，而**分家的表現是兩個數字都言之鑿鑿、卻對不上** ——
-這正是 D18 / G66 那條「讓分家在結構上做不到」要防的形狀。
-
-⇒ 判據是一條**一致性門**：打一串已知形狀的請求，`fulcrum_requests_total` 的增量必須與訪問紀錄
-裡的行數逐條對得上。★ 它同時守住兩邊，而任何一邊**單獨**的斷言都守不住這件事。
-
-### ⚠ ⚠ 指標的取數**不受站台 `log` 設定管**
-
-`Record::finish` 先**無條件**喂指標，再調按 `log` 早退的 `emit`
-（`emit` 從此只剩這一個呼叫方）。⇒ **沒配 `log` 的站台照樣有指標。**
-
-★ **代價寫在明處**：上面那條一致性 ——「指標增量 == 訪問紀錄行數」——
-**只在配了 `log` 的站台上成立**，判據場景裡寫死了這一點。
-
-⚠ 取這一側而不是「把指標也掛在 `log` 下」：後者的失效形態是**沒配紀錄的站台連指標都沒有**，
-而那是更壞的一側 —— 指標是「出了事你能知道」的那一層，它不該由另一層的開關決定在不在。
-
-### ⚠ ⚠ 整條收尾路徑上**唯讀一次時鐘**
-
-`fulcrum_request_duration_seconds` 那一格與紀錄行裡的 `duration_ms`
-是**同一個讀數的兩種單位**（秒 / 毫秒），連時鐘回撥時的處置（按 0 記）也是同一份。
-
-★ 各取各的話，兩邊**處置一致而輸入不一致**：註解會寫著「它們說的是同一件事」，
-而它們給不出同一個答案 —— 那比差幾微秒本身糟得多。
-
-## 指標清單與基數
-
-⚠ ⚠ **Prometheus 的經典坑是標籤基數。這張表裡每一格都要能說出上界，
-而且那個上界必須由設定定、不由訪問者定。**
-
-★ ★ **下面這張表的行序 = 抓取時的繪製順序**（兩者都照 `FAMILIES` 的宣告順序），
-同一個族內的 series 按標籤值排序。⚠ 順序是確定的這件事沒有任何斷言會因它變紅，
-代價是**兩次抓取的 diff 裡全是噪聲** —— 而人正是靠 diff 看指標出沒出新東西的。
-
-| 指標 | 類型 | 數從哪來 | 標籤 | 上界 |
+| Family | Type | Source | Labels | Bound |
 |---|---|---|---|---|
-| `fulcrum_requests_total` | counter | 事件點 | `site` `outcome` `status_class` `proto` | (address 數 + 1) × 8 × **6** × 3 |
-| `fulcrum_request_duration_seconds` | histogram | 事件點 | `site` `outcome` | (address 數 + 1) × 8，桶寫死 |
-| `fulcrum_cache_events_total` | counter | 事件點 | `event` | `hit`/`miss`/`stale` —— ★ 三個值同一個分母（一條請求）|
-| `fulcrum_no_site_match_total` | counter | 事件點 | `host` | 見下（G118）|
-| `fulcrum_upstream_inflight` | gauge | 活體 | `upstream` | 設定定 |
-| `fulcrum_upstream_healthy` | gauge | 活體 | `upstream` | 設定定 |
-| `fulcrum_upstream_passive_open` | gauge | 活體 | `upstream` | 設定定 |
-| `fulcrum_cert_expiry_seconds` | gauge | 活體 | `domain` | 設定定 —— ⚠ **前提是 `on_demand` 未串接**，串接那一批要回來重算這一行（見下）|
-| `fulcrum_acme_issue_total` | counter | 活體 | `result` | `ok`/`fail`/`deferred` |
-| `fulcrum_build_info` | gauge | 活體 | `version` | 1 —— ⚠ 而它的**值**也恆為 1（標記 gauge，兩個 1 不是一回事）|
-| `fulcrum_overrides_active` | gauge | 活體 | 無 | 恆為 1（無標籤單值；值 = 當前登記處的覆蓋總條目數，懸空的照樣計入，裁決 R13）|
-| `fulcrum_cache_purged_entries_total` | counter | 事件點 | 無 | 恆為 1（無標籤單值；單位是**快取條目**，不是請求 —— G123）|
-| `fulcrum_tls_requests_total` | counter | 事件點 | `version` `cipher` | 版本表 × 套件表，各多一格 `<unknown>` —— ★ 兩個都是**伺服器端協商**的結果，訪問者添不進值（G122 / G127）|
-| `fulcrum_connections_total` | counter | 活體 | `listen` `entrypoint` | **= 監聽器數** —— ★ 每個監聽器只屬於**一個** entrypoint，⛔ 不是 5 × 監聽器數（G122）|
-| `fulcrum_connections_active` | gauge | 活體 | `listen` `entrypoint` | **= 監聽器數**（與 `_total` 是同一批 series）—— `entrypoint` 是 **5** 個值的閉集，而每個監聽器只佔其中一個 |
+| `fulcrum_requests_total` | counter | Event | `site` `outcome` `status_class` `proto` | (addresses + 1) × 8 × 6 × 3 |
+| `fulcrum_request_duration_seconds` | histogram | Event | `site` `outcome` | (addresses + 1) × 8; fixed buckets |
+| `fulcrum_cache_events_total` | counter | Event | `event` | hit/miss/stale: 3 request outcomes |
+| `fulcrum_no_site_match_total` | counter | Event | `host` | Configured literal hosts plus <other> |
+| `fulcrum_upstream_inflight` | gauge | Live | `upstream` | Configuration-bound |
+| `fulcrum_upstream_healthy` | gauge | Live | `upstream` | Configuration-bound |
+| `fulcrum_upstream_passive_open` | gauge | Live | `upstream` | Configuration-bound |
+| `fulcrum_cert_expiry_seconds` | gauge | Live | `domain` | Loaded certificates; currently configuration-bound only while on_demand is UNWIRED |
+| `fulcrum_acme_issue_total` | counter | Live | `result` | ok/fail/deferred: 3 |
+| `fulcrum_build_info` | gauge | Live | `version` | 1 series, sample value always 1 |
+| `fulcrum_overrides_active` | gauge | Live | None | Always 1 series; value is registered overrides including dangling |
+| `fulcrum_cache_purged_entries_total` | counter | Event | None | Always 1 series; cache entries, not requests |
+| `fulcrum_tls_requests_total` | counter | Event | `version` `cipher` | Server-compiled version/cipher sets plus <unknown> for each |
+| `fulcrum_connections_total` | counter | Live | `listen` `entrypoint` | Listener count, each one of 5 entrypoints |
+| `fulcrum_connections_active` | gauge | Live | `listen` `entrypoint` | Listener count, each one of 5 entrypoints |
 
-⛔ **任何形態都不加 `uri` 標籤。**
+The compiled contract compares family sets in both directions, types, Source, ordered labels, unlabeled-series bound and closed-domain cardinalities. Free-form configuration-bound formulas still require human reasoning. On-Demand integration must reconsider cert-domain cardinality: visitor SNI could otherwise create permanently unbounded series.
 
-### ★ ★ ★ 一個族的數只有兩種來處，由宣告表裡的 `Source` 定死
+### Registry implementation (G156)
 
-| | 怎麼取 | 誰 |
-|---|---|---|
-| **事件點記賬** | 發生一次就往處理程序級註冊表裡加一筆，繪製只是把數抄出來 | 上表「數從哪來」那一列寫著 `事件点` 的那幾行 |
-| **抓取時問活體** | 註冊表裡**永遠沒有它們的數**，繪製那一刻現問執行環境圖 / 證書解析器 / ACME 管理器 | 同一列寫著 `活体` 的那幾行 |
+Event writes use 64 fixed shards aligned to 128 bytes; a writing thread claims a shard round-robin and keeps it. More than 64 writer threads share some locks while remaining correct. Borrowed &[&str] lookup avoids steady-state key allocation; first series insertion may allocate. Check family kind/label arity before locking and again inside to avoid poisoning shards on invalid input. Gauges use a separate global table since cross-shard last-writer semantics are undefined.
 
-⚠ 這裡**有意不寫個數**：那兩個數字一道門都沒有，而上表那一列是被門逐字釘住的
-（`metrics.rs` 的 `文档里那张基数表与声明表逐项对得上`）⇒ **指回那一列，不另抄一份計數**。
-★ 此處此前寫著「上表前四個 / 後五個」，而 `fulcrum_cache_purged_entries_total`（事件點）
-加在表尾的那一刻，兩句話就同時錯了 —— 它既不在「前四個」裡，也不在「後五個」裡。
+Scrapes lock/merge/release one shard at a time then render the same ordered format. They are not process-atomic snapshots; request count and duration were already separate writes. Floating histogram-sum low bits can differ due to addition order; single-writer rendering is byte-identical. Cardinality is unchanged but each series can have 64 stored copies (worst-case example around 20MB for all combinations of ten addresses; practical hot subsets are smaller). Concurrent totals, independent-shard progress, borrowed-key ordering, no-allocation steady state and TLS-destructor writes have dedicated tests.
 
-★ ★ **第二類為什麼不在事件點記賬**：能從被測物件本身問到的東西，就不要在旁邊再記一份 ——
-否則兩份遲早不一致，而**不一致的那天沒有任何東西會說**。
-⚠ 代價說在明處：讀數是**抓取那一刻**的瞬時值，兩次抓取之間發生過什麼看不見 ——
-對「在途數」「還有多久到期」這類量而言那本來就是全部真相。
+### Request/site/status semantics
 
-⚠ 一個族**只能有一種來處**。「事件點也記一筆、抓取時又問一遍」在結構上做不到，
-而那種錯的表現是**同一條 series 的值忽大忽小**，兩邊各自都言之鑿鑿。
+status_class is 1xx/2xx/3xx/4xx/5xx/none. status=0, 1–99 and 600+ use none, not an invented 0xx. A downstream RST does not by itself imply status 0: Content-Length headers can succeed into a buffer with no syscall, yielding 200 even though the peer already left. A slow upstream without Content-Length forces header flush, making status 0 observable. tests/metrics/run.sh checks the real log status/outcome/site plus exactly one none increment, and a successful-200 control.
 
-### 沒有樣本的族**照樣出 `# HELP` / `# TYPE`**
+Metric site is the actually matched address literal, not visitor host or first site address: lowercase exact host, wildcard folded to its literal, hostless fallback as :port. This bounds series and keeps address order irrelevant; per-tenant wildcard detail remains in logs. <none> covers no site and pre-routing ACME HTTP-01, distinguished by outcome. Log site instead identifies the block's original first address with scheme/port; these similarly named fields intentionally differ.
 
-⇒ 抓取端分得開「這個指標存在，只是還沒發生過」與「名字拼錯了」。
-★ 活體源沒登記時走的正是這一支：族在、樣本無。
+no_site_match host labels retain only configured hosts, all others <other>; visiting many unknown hosts must both leave series count unchanged and increase <other>. Visitor-supplied SNI/ALPN/URI never become labels. <other> bounds visitor values, <none> marks unmatched/no-site, <unknown> means unavailable server data; sentinel syntax cannot collide with valid values.
 
-### 註冊表按執行緒分片（G156）
+### Cache metrics
 
-每條請求收尾都要往事件點那一類的族裡寫兩筆（TLS 請求三筆）⇒ 寫路徑就是**請求路徑**。
-它的兩條紀律：⛔ 不拿全處理程序共用的鎖，⛔ 穩態下不分配。
+hit/miss/stale count requests that queried cache and whose content source is decided. hit and stale are recorded at write_cached, from the same state as response/log headers. miss is recorded at origin contact, not initial lookup failure: only-if-cached can return 504 and coalesced followers can later hit. Origin-connect failures are absent from all three, biasing hit/(hit+miss) high during outage; consult upstream health and outcome=error. Uncached routes do not contribute. Memory/disk hit kinds fold together because backend is process-constant; detailed type stays in the cache log field.
 
-- 事件點那一類的註冊表分成 **64 片**（寫死，⛔ 不按核數算）：執行緒第一次寫時輪流領一個片號，
-  之後一直寫這一片 ⇒ 每片的鎖只有領了它的執行緒用。寫執行緒多於 64 個時幾個執行緒共用一片 ——
-  仍然正確，只是那幾片回到有人爭。
-- gauge **不分片**，單獨一張全域表：「最後一次寫贏」在多片之間沒有定義，而事件點那一類裡沒有 gauge 族。
-- 標籤值的鍵能拿寫入方手裡的 `&[&str]` **借用查找** ⇒ 一條 series 只在第一次出現時分配。
-- 抓取時**逐片**鎖、合併、放鎖，再按上面那張表的順序繪製 ⇒ 輸出格式、族序、series 排序都與一張表時相同。
+purged_entries counts entries removed by key/prefix/all, not purge calls, with no redundant mode label. Record +0 after a zero-entry purge so “never purged” differs from “purged nothing”. Keep it separate from request events; summing mixed entries and requests would create meaningless traffic spikes.
 
-⚠ 兩處與「一張表」不同的語義：
+### TLS and connection metrics
 
-| | |
-|---|---|
-| 一次抓取**不是全處理程序的原子快照** | 各片在各自被合併的那一刻一致。★ 對外可見的一致性沒有變差：同一條請求的 `fulcrum_requests_total` 與 `fulcrum_request_duration_seconds` 本來就是兩次寫，一次抓取本來就可能落在兩次之間 |
-| 直方圖 `_sum` 的**末位可能有差** | 它由各片的和相加，浮點加法順序與「一張表從頭加到尾」不同。多執行緒並行寫時順序本來就不確定；單執行緒寫入時逐位元組相同 |
+TLS counts requests, not handshakes: keep-alive permits many requests per handshake. Clear requests contribute nothing, so sum(TLS)<=sum(requests), with strict inequality only when measured traffic includes clear requests. Both labels are server-negotiated, not visitor-supplied, and empty values become <unknown> through a transport-independent helper. For h3 this gives TLSv1.3/<unknown>; logs omit cipher. Never collapse empty into absent-label semantics.
 
-★ 記憶體：基數（series 數）不變，上面那張表的每一格上界照舊；每條 series 在寫過它的片裡各存一份，
-最多 64 份。⚠ 最壞情況的量級：10 條位址、`fulcrum_requests_total` 的組合全部出現、64 片都寫過 ⇒ 約 20 MB；
-現實裡熱組合幾十條 × 寫執行緒數，是 KB 級。
+Connection instrumentation covers four accept loops: fork Service::run_endpoint for HTTP/admin, L4 TCP, L4 UDP and QUIC. All use one ConnRegistry/label definition. entrypoint's closed set is http/admin/quic/l4_tcp/l4_udp, deliberately named differently from request proto. listen plus entrypoint distinguishes same-port TCP/UDP and multiple addresses; cardinality is listener count, not five times it. Create zero samples when a listener is declared. An undeclared source warns once and uses <undeclared> rather than dropping evidence of missing wiring.
 
-### `status_class` 是**六個值**，`status == 0` 歸 `none`
+Count accepts before TLS handshake, including waiting/failed/time-out handshakes. One Drop guard decrements active for every exit. l4_udp instead derives active from sessions.len(), measured at loop start so continue paths cannot skip refresh; UDP has sessions, not connections. Check active<=total, each entrypoint, pre-handshake active and failed-handshake cleanup with actual connections.
 
-閉集 = `1xx` `2xx` `3xx` `4xx` `5xx` **`none`**。
+### Live values and generations
 
-`status = 0` 是「**一個回應頭都沒寫出去**」——
-按上面那份紀錄契約（「固定欄位」一節的 `status`）的原話，那不是「未知」，是**什麼都沒發生**。
-⚠ 它**可達且會被記進訪問紀錄**：站台匹配上了、執行鏈跑完了、下游在我們寫回應之前斷開時
-就是這個形狀。⇒ 那張表裡的 `status_class` 是 **6** 不是 5。
+Group same-address upstream inflight by sum, healthy by AND and passive_open by OR, preserving evidence of any failure. A no-active-check reference is always healthy, so OR would mask a failing checked reference. Certificate expiry is absolute notAfter Unix seconds; consumers subtract time(). Read loaded production certificates only; challenge certificates live in a separate table. Do not periodically maintain a redundant remaining-time counter.
 
-⚠ **1–99 與 600 以上也歸 `none`**（上游給的一個編出來的數），⛔ 不給它們各開一格 ——
-★ 那等於把這一格的**上界交回給別人**，而基數這張表管的正是這件事。
+Build info identifies the binary using FULCRUM_BUILD_ID, direct .git then explicit package-version+unknown; no dirty-tree detection, so packaging supplies identity. No gen_id/pid label: every upgrade would leave abandoned series. Counters reset per process and never transfer across generations; Prometheus rate/reset semantics handle this without another interprocess state channel.
 
-> ✅ **D30 已由 G124 結案**（六個值，第六個是 `none`，並要求補一條端到端判據）。
+## Runtime stats/control
 
-#### ★ ★ ★ `status == 0` 到底要什麼條件才走得到（**實測，2026-09-03**）
+POST /runtime accepts set_weight/disable/enable verbs without persistence. POST /purge shares the same management socket. GET /stats returns JSON for generation/load time, upstream inflight/healthy/passive state, certificate expiry, cache occupancy and full overrides (keys, affected routes, disabled/weight/dangling/set_at_unix). Read the same live atomics as metrics instead of counting separately. Scrapes hold one runtime snapshot and use override_entries_of rather than taking another snapshot.
 
-⚠ ⚠ **「下游在我們寫回應頭之前斷開」不足以讓 `status` 變成 0**，而那句話讀起來像是夠的。
-三種構型，同一棵樹同一天：
+`POST /load?overrides=keep|clear` requires exactly one parameter, no default or JSON envelope. clear names every removal; keep names dangling entries. Load/runtime text responses carry active/dangling counts; stats stays valid JSON. Last-modification timestamps are absolute wall-clock seconds, not ages. See [control plane](control-plane.md) for atomic-load refusals, state authority and ACL boundaries.
 
-| 構型 | `status` |
-|---|---|
-| `respond` 站台，發完請求立刻 RST | **200** |
-| `reverse_proxy` 打到睡 1.5s 的上游（**帶** `Content-Length`），RST 之後 1.2s 才寫 | **200**（而 `resp_size` 是 0）|
-| 同上，但上游回應**不帶** `Content-Length` | **0** ✅ |
+## Validation boundaries
 
-機制在 pingora 的 `write_response_header`（`v1/server.rs`）：回應頭 `write_all` 進的是
-**帶緩衝的流**，而 flush 只在「1xx 或**沒有** `Content-Length`」時才發生
-⇒ 帶 CL 的回應頭**根本不產生 syscall**，`write_all` 回傳 `Ok`，`response_written` 照樣被
-置上，於是 `status` 是 200 —— 哪怕對端早就 RST 了。
-★ 只有會 flush 的那一支才真的碰 socket，也只有它會在被 RST 掉的連接上失敗；
-失敗了 `write_response_header` 才回傳 `Err`，`response_written` 才留在 `None`。
-
-⇒ 判據用的是**不帶 `Content-Length` 的慢上游**：它把「伺服器端此刻還一個位元組都沒寫」與
-「寫的時候真的會有一次 syscall」兩件事同時釘住 —— ⛔ **那不是一場競賽**。
-★ 對照組（同一條路、用戶端正常收完）拿到 200，那證明這把尺子量得了兩邊。
-
-⚠ ★ **G124 在 `PLAN.md` §10 裡給的可達性論證只說到「`response_written` 只在 `write_all`
-成功之後才被置上」為止** —— 那句話本身對，但推不出結論：帶 `Content-Length` 時那次
-`write_all` 根本沒碰 socket。**決定不變，欠的是這半句機制**，現補在這裡。
-
-### `site` 那一格 = 請求**實際匹配到的那條位址字面值**（G121）
-
-`site="a.example"` / `site="*.wild.example"` —— 通配符**摺疊成它自己的字面值**。
-
-⚠ **不能直接用 `host`**：通配符站台下 host 由請求方決定 ⇒ 一個 `*.example` 站台就能讓 series
-無限增長。★ **「已命中站台的請求，host 總是有界的」是錯的，而它錯得很像對的。**
-
-⚠ 也不取「站台塊的第一個位址」：那會把同一個塊裡的 `a.example` 與 `b.example` 混成一格，
-而且**改位址的書寫順序就會讓時序斷裂** —— 一個在設定裡完全看不出來的副作用。
-
-★ 代價：通配符站台下各子網域合併成一格，「哪個租戶在打我」這一格答不了。
-**那個問題留給訪問紀錄** —— 它有真的 `host`。
-
-★ 摺疊規則：`host` 非空取其**小寫**，`host` 為空（不帶主機名的備援位址）取 `:port`
-（例如 `:8080`）。取小寫是因為路由本來就按小寫匹配 —— 保留原文會讓只有大小寫
-不同的兩份設定在指標上產生兩條時序。
-
-### 沒匹配到站台的請求**也計入**，`site` 取 `<none>`
-
-⇒ `fulcrum_requests_total` 是**真的總數**，上面那條一致性門才有東西可對
-（它要與訪問紀錄逐條對得上，而漏掉一類請求的「總數」對不了任何東西）。
-
-★ `<none>` 與 G118 的 `<other>` 是**同一族寫法**：尖括號形式在合法位址字面值裡
-不可能出現 ⇒ 它不會與任何一條真位址撞車。⇒ `site` 的上界 = **address 數 + 1**，仍由設定定。
-
-⚠ **`<none>` 比這一節的標題寬**：ACME 的 HTTP-01 應答**也歸它** —— 那條路在路由**之前**
-就回傳了，於是它同樣沒有站台。⇒ `fulcrum_requests_total{site="<none>"}` 裡混著
-`outcome="no_site_match"` 與 `outcome="acme_http01"` 兩種，要哪一種就把 `outcome` 也寫上。
-★ 不影響基數（`<none>` 本來就只佔一格），但**按 `site` 過濾時它會多給你一類請求**。
-
-⚠ ⚠ **這一格與訪問紀錄的 `site` 欄位（見上面「條件欄位」一節）是兩件不同的事，
-長得像是巧合**：訪問紀錄的 `site` = 站台的名字 = 第一個位址的原文
-（`http://a.example:9900` 這種，帶 scheme 與連接埠）；這裡的 `site` 標籤 = 請求實際
-命中的那一條位址（`a.example`，只留主機名）。兩者共用「site」這個名字純屬巧合，
-互不派生，同一個站台配多條位址時兩者會給出不同的值。
-
-## D26 由 `no_site_match` 計數器結案（G118）
-
-`host` 那一格**來自請求方、攻擊者可控** ⇒ **只有出現在設定裡的 host 才帶真值**，
-其餘一律歸 `host="<other>"`。⇒ 上界 = 站台 address 數 + 1，仍由設定定。
-
-★ 這回答了 D26 真正想問的那句「誰在拿奇怪的 Host 打我」，
-而**不必回答**「全域 `log` 與站台 `log` 是覆蓋還是合併」那個更貴的設定面問題。
-
-⚠ 代價寫在明處：**只知道有多少、來自哪個已知 host，不知道具體是哪個未知 host。**
-這是有意的 —— 不讓外人往我們的記憶體與時序庫裡寫任意字串。
-
-## `fulcrum_cache_events_total{event}`：一個閉集，**一個分母**
-
-`event` 是**閉集**：`hit`（從快取發出去，**含磁碟後端**）· `miss`（回源）·
-`stale`（重驗證之後把快取裡那份發出去）。**三個值數的都是「一條請求」。**
-
-⚠ 它比 `X-Fulcrum-Cache` **粗**：`HIT` 與 `HIT-DISK` 折成同一個 `hit`。
-★ 想知道「是哪一種命中」去看訪問紀錄 —— 它記的是 `cache` 的原值。
-⚠ 摺疊函式裡**沒有備援臂**（收的是枚舉不是字串）：將來新增一種快取狀態時**編不過**，
-而不是被靜默算成別的 —— 後者的表現是指標數字照漲，只是漲錯了格。
-
-### ★ ★ ★ 記在哪一處，是這一族裡最貴的一句
-
-| 事件 | 記在哪 |
-|---|---|
-| `hit` / `stale` | **發快取**那一處（`write_cached`），與回應頭、訪問紀錄那一格取同一個狀態、在同一處賦 |
-| `miss` | **回源**那一處 —— 即「這條回應的內容來自上游」唯一的判定點 |
-
-⚠ ⚠ **`miss` 有意不記在「查快取沒命中」那一處**：那裡之後還會拐彎 ——
-`only-if-cached` 回 504 **根本沒回源**，防驚群的 follower 等完重查一次會**命中**。
-在那裡記，兩種都會被算成 `miss`，而**數字看起來完全正常**。
-
-⇒ **`hit + stale + miss` 覆蓋的是「查了快取**並且**已經定下這條回應的內容從哪來」**：
-⚠ **上游連不上的那些請求三格都不在**，所以**上游故障時 `hit/(hit+miss)` 會偏高**。
-⚠ 沒配 `cache` 的站台一條都不記 —— 記了的話這個比例會被沒開快取的流量稀釋成一個假比例，
-而那個比例讀起來同樣完全正常。
-
-★ 寫下這個邊界本身就是判據的一部分：**一個沒寫下來的邊界才是會咬人的那個。**
-
-## `fulcrum_cache_purged_entries_total`：被清掉的**條目**數，自成一族（G123）
-
-它數的是 `POST /purge` 清掉了多少條**快取條目**，⛔ 不是「purge 被調了幾次」——
-問「清掉了多少」的人遠多於問「這個介面被調了幾次」的人。**無標籤**：
-三種粒度（`key` / `prefix` / `all`）是呼叫方自己剛說過的話，指標上再說一遍資訊量為零。
-
-⚠ **清掉 0 條時也記一次 `+0`**（讓那條 series 儘早存在）——
-「這個處理程序從來沒 purge 過」與「purge 過、只是沒清到東西」在抓取端要分得開。
-★ 這與 `hit`/`miss`/`stale`「發生了才出現」**有意不對稱**。
-
-### ★ ★ ★ 它為什麼必須自成一族（**D31 由 G123 結案**）
-
-它此前是 `fulcrum_cache_events_total{event="purge"}` 的一格，而那個族另外三格數的是
-**請求** ⇒ `sum(cache_events_total)` 得到的是**請求數與條目數相加**的一個數。
-⚠ ⚠ 那個數**長得完全正常、也會隨流量漲**，而一次 `POST /purge all` 清掉十萬條時
-那個尖峰**讀起來像是流量突增**。
-
-★ ★ 拆開之後，`sum(cache_events_total)` 恢復成「查過快取並且已經定下內容從哪來的
-請求數」，**命中率直接可寫**。⇒ 這是**把一個靠使用者記住的陷阱，換成一個結構上不存在的
-陷阱**：兩個分母不再共用一個族，也就沒有「求和求出個沒意義的數」這回事了。
-
-⛔ **不要把它搬回去**，哪怕只是「順手多一個 `event` 值」。⚠ 那種提議通常長這樣：
-把「一條請求」與「一條快取條目」並列列出來，再用一句「單位都是『條』」收口 ——
-「條」這個量詞對兩者都成立，於是整段讀起來自洽，**而它斷言的等價關係是假的**。
-
-## `fulcrum_tls_requests_total{version,cipher}`：走 TLS 的請求（G122 的 TLS 半）
-
-取數點是 `Record::finish`，**與 `fulcrum_requests_total` 逐字同一處**。
-
-### ⚠ ⚠ 它的總數**小於** `fulcrum_requests_total`，而那是有意的
-
-明文請求的 `tls` 是 `None` ⇒ **一筆都不記**。⛔ **不許寫「兩個族總數相等」那種判據** ——
-它會在第一條明文請求上紅，而那條請求什麼問題都沒有。
-★ 說得出口的關係只有一條：`sum(fulcrum_tls_requests_total) ≤ sum(fulcrum_requests_total)`。
-
-### ⚠ 名字裡是 `requests` 不是 `handshakes`
-
-數的是**請求**。keep-alive 下一次握手對應多條請求 ⇒ 叫 `handshakes`
-會是一句**讀起來完全成立的假話**。想知道握手數要等連接那半（G122 的另一半，批 O）。
-
-### ★ 上界由**伺服器端**定：⛔ `sni` / `alpn` 不當標籤
-
-`version` 與 `cipher` 都是**協商結果**，取值只能來自我們編進去的那兩張表
-⇒ 訪問者一個值都添不進來。而 `sni` / `alpn` 是**訪問者給的** ——
-把它們做成標籤與 G121 擋住 `host` 是同一件事。★ 要按 SNI 下鑽，去訪問紀錄，它有真值。
-
-### ★ ★ ★ 取不到的那一格記 `<unknown>`，⛔ 不記空串（G127）
-
-h3 走 quiche，而 `Handshake::cipher()` 鎖在私有 `mod tls` 裡 ⇒ 那一格問不出來。
-
-⚠ ⚠ **在 Prometheus 資料模型裡，空標籤值與「這個標籤不存在」是等價的。**
-⇒ 記空串的話，「今天這一格取不到」與「明天把 `cipher` 整個刪掉」在抓取端**分不開**；
-而 `cipher=""` 恰好是 PromQL 裡「該標籤不存在」的慣用寫法，維運照著寫出來的過濾器
-會命中一批他沒打算命中的 series。
-
-⚠ ⚠ **判據落在「值為空」上，⛔ 不落在「是不是 h3」上。** 後者是把一個今天成立的巧合
-釘進程式碼：哪天別的傳輸也讀不出套件，它會走到分支外面記一個空串，**而那時不會有東西紅**。
-★ 落法是 `metrics::label_or_unknown`，它**看不見**呼叫方走的是哪種傳輸 —— 那正是全部意義。
-
-### ⚠ ⚠ 同一個空串，紀錄與指標**兩種處置**，別當成一條
-
-| | 空的 `cipher` 怎麼記 | 為什麼 |
-|---|---|---|
-| 訪問紀錄 | **那一格不出現** | 契約是「取不到的欄位不出現」；`tests/log/run.sh` 有一條反向斷言防著有人給它編一個值 |
-| 指標 | 記 `<unknown>` | 指標**沒有「那一格不出現」這回事** —— 每條 series 都必須給每個標籤一個值 |
-
-★ 記號形狀隨 G118 的 `<other>` 與 `site` 那一格的 `<none>`（尖括號在真實套件名
-`TLS_AES_256_GCM_SHA384` 裡不可能出現，撞不上真值）。
-⚠ **但三者動機各不相同**：`<other>` 擋的是**訪問者可控的無界基數**、
-`<none>` 說的是**這條請求沒匹配到站台**、`<unknown>` 說的是**我們問不出來**。
-
-## `fulcrum_connections_{total,active}{listen,entrypoint}`：連接（G122 的連接那半）
-
-### ⚠ ⚠ 它是**四處 accept 循環**記的，不是一處
-
-pingora 的 `Service::run_endpoint`（覆蓋 h1/h2 **與 admin**，經 **fork 改動 15** 的接縫）·
-L4 TCP · L4 UDP · QUIC —— 後三者**各有各的循環**，pingora 那個一次都不經過。
-★ 四處只負責把數加到**同一個** `conn_stats::ConnRegistry` 上，而標籤定義只有一份。
-
-### ⚠ ⛔ 第二個標籤叫 `entrypoint`，**不叫 `proto`**
-
-`fulcrum_requests_total` 已經有一個 `proto`，取值是 `HTTP/1.1` 那一族。
-⇒ 同名不同值域會讓維運跨族寫同一個過濾器時**拿到空集而不回報錯誤**。
-★ 閉集五值：`http` · `admin` · `quic` · `l4_tcp` · `l4_udp`，由窮盡 `match` 派生
-（加一種入口就編不過）。
-
-### ★ 上界 = **監聽器數**，⛔ 不是 5 × 監聽器數
-
-每個監聽器**只屬於一個** entrypoint。⚠ 而兩截標籤缺一不可：只按 `listen` 分的話，
-G110 下同一個連接埠號上的 TCP（h1/h2）與 UDP（QUIC）會**合併成一條 series**；
-只按 `entrypoint` 分的話，一個 `Listeners` 的多個位址會合並。
-
-### ★ ★ 計在**握手之前** ⇒ `active` 含還在握手的連接
-
-`enter` 的呼叫點在 accept 之後、TLS 握手之前 ⇒ 一條握手失敗的連接**也會** `total +1`。
-★ 那是有意的：握手階段的堆積（打爆 TLS、slowloris）正是最該看得見的東西，
-而計在握手之後就把它整段藏起來了。
-
-### ★ ★ ★ 減一**只有一個**呼叫點
-
-那條連接任務有三條退出路徑（握手超時 / 握手失敗 / 正常結束），減一全部由 fork 那側
-`ConnGuard` 的 `Drop` 做。⚠ 手寫三處 `fetch_sub` 正是 D18/G66 那個分家形狀 ——
-**分家時的表現是這個數只漲不降**，counter 照常，**沒有任何東西會說**。
-
-### ⚠ `entrypoint="l4_udp"` 那一格數的是**工作階段**，不是連接
-
-UDP 上沒有連接。那一格從 L4 UDP 的工作階段表 `sessions.len()` **派生**，⛔ 不是 `+1/-1`：
-`sessions.len()` 本身就是權威，在旁邊再記一份會讓清掃、到上限被拒、停機不再收包
-三條路各需要記得減一。
-⚠ 寫入點在**循環體開頭**而不是末尾 —— 那個 `select!` 的 recv 分支裡有七八處 `continue`，
-而 `continue` **跳過循環體末尾**。★ 開頭則每一輪迭代必經；而阻塞在 `select!` 期間
-`sessions` 不可能變（循環是它唯一的改寫者）⇒ 這個讀數是**精確**的，不是陳舊的。
-
-### ★ 每個監聽器**建成就出樣本**（值是 0）
-
-⇒ 「這個監聽器在、只是沒人連」與「設定裡根本沒有它」分得開 ——
-而後者正是「我配了這個連接埠怎麼沒流量」要靠的第一個區分。
-⚠ 一個**沒被宣告過**的 `listen` 會落進 `listen="<undeclared>"` 並 warn 一次：
-⛔ 不丟掉那一筆 —— 丟掉的話，「串接漏了一個監聽器」表現為指標上什麼都沒有，
-而那與「那個連接埠沒人連」長得一模一樣。
-
-## `fulcrum_cert_expiry_seconds` 的值 = `notAfter` 的**絕對 Unix 秒**
-
-不是「還剩多少秒」。★ 絕對值**不隨時間漂**，抓取端一句 `- time()` 就得到剩餘量；
-而「剩餘量」需要有人定期刷新 —— **那等於在旁邊再記一份會過期的東西**。
-
-⛔ **挑戰證書不進這一族**（TLS-ALPN-01 那種臨時自簽）：它們幾分鐘就沒了，
-進來只會在時序庫裡留下一串永遠快到期的噪聲。★ 這一條不靠過濾 ——
-挑戰證書本來就存在**另一張表**裡，而這一族取的是已裝載證書那張表。
-
-### ⚠ ⚠ ⚠ `domain` 的上界是全部族裡**唯一一個不由本儲存庫程式碼封頂**的
-
-它來自證書解析器手裡那張已裝載表，而**表裡有哪些網域由「裝了哪些證書」決定**。
-今天由設定定，理由只有一條：**`on_demand`（G15 的握手期按 SNI 現簽）還掛在
-[`fulcrum_runtime::UNWIRED`](../../crates/fulcrum-runtime/src/lib.rs) 裡**。
-它一串接，裝進去的網域就由**訪問者的 SNI** 決定（存取資格控制之外那一層），
-這一格立刻變成 G118 剛剛為 `host` 擋下的同一件事 ——
-每一個被現簽過的網域在這一族裡留一條**永久** series。
-
-⚠ 而釘住這張表的那道門**有意只釘族名、不釘上界**（`fulcrum-server/src/metrics.rs`
-那條測試寫了為什麼）⇒ 「設定定」這三個字漂成假話的那一天，**沒有任何東西會紅**。
-★ ⇒ 接 `on_demand` 的那一批必須回到上面那張表重算這一行，
-而這句話就是這件事**唯一**的提示。
-
-## 上游那兩個族**按位址歸併**
-
-同一個上游位址被多處引用時：`fulcrum_upstream_inflight` **求和**（它是計數，
-聚合只有這一種說得通的做法）· `fulcrum_upstream_healthy` 取**合取**（全都健康才是 1）·
-`fulcrum_upstream_passive_open` 取**析取**（任一處熔斷就是 1）。
-★ ★ 後兩條方向相反而**紀律相同**：都往「說得出故障」那一側倒 —— `healthy` 的 1 是「好」，
-`passive_open` 的 1 是「壞」。⚠ 寫反的表現是一條沒配 `passive_fail` 的引用把一次真實的熔斷蓋掉。
-
-★ ★ **取合取而不是析取**，是因為混配時一個沒配 `health_uri` 的物件**恆為 1** ——
-析取會讓它**把真實故障蓋掉**，而蓋掉之後那條 series 讀起來完全正常。
-
-## `fulcrum_build_info{version}` 報的是**建置身分**，⛔ 不是版本承諾
-
-值由 [`crates/fulcrum-server/build.rs`](../../crates/fulcrum-server/build.rs) 在編譯期算出（`G141`），
-取值鏈是 `FULCRUM_BUILD_ID` → 讀 `.git` 推出提交號 → 顯式 `unknown`。
-
-⛔ ★ **取不到時是 `<包版本>+unknown`，不是裸的 `0.0.0`** ——
-「讀不到」與「讀到了 0.0.0」必須區分得開。看到 `+unknown` 就說明這次建置**沒有**身分可報
-（多半是 `.git` 不在上下文裡，例如 `Dockerfile.musl-product` 那一趟），
-⇒ 那種建置要靠 `FULCRUM_BUILD_ID` 喂真值。
-
-★ 用 semver 的**建置中繼資料**語法（`+` 之後那一段不參與版本先後比較）
-⇒ 語法本身就在宣告「這是身分，不是承諾」。**承諾**是另一件事，見
-[相容性分類法](/governance/compatibility.md)：分類法今天生效，承諾從 M4 起。
-
-⚠ **它不判工作樹髒不髒** —— 同一個提交上帶著不同未提交改動的兩次建置，報出來的身分相同。
-
-⛔ **不帶 `gen_id`、不帶 pid**：那會讓每一次換代長出一條新 series，
-而舊的那條從此再也不更新 —— 抓取端看到的是一堆看起來還活著的殭屍時序。
-
-## 計數器在換代時歸零，**不跨代轉交**
-
-Prometheus 的 counter reset 語義本來就處理這件事：新處理程序從 0 開始，`rate()` 在換代那一刻
-只有一個凹口，抓取端會正確處理。
-
-⛔ **跨代轉交計數器等於在 G8/G109 之外再開一條狀態通道** ——
-[期望狀態是唯一權威](/architecture/control-plane.md)，而一條只為了讓數字連續而存在的
-處理程序間狀態通道，是要一直維護下去的。★ 這一條只寫文件，**程式碼上沒有對應物**。
-
-<a id="格式自研零新依賴g117"></a>
-
-## 格式自研，零新相依（G117）
-
-Prometheus 的 text exposition 是行式純文字，自己寫約百行。
-★ 它**不是安全敏感協定棧**，不撞[安全基線](/platform/security-baseline.md)第 5 條
-（那條管的是 TLS / HPACK / QUIC 這類）。零新相依 ⇒ 供應鏈門不用動，musl 靜態產物也不受影響。
-⚠ 代價：直方圖分桶、標籤值轉義、`_total` 後綴這些細節要自己釘住，由單測守。
-
-## 批 M 的門 ✅ **已掛上**
-
-新場景 [`tests/metrics/run.sh`](../../tests/metrics/run.sh)（連接埠段見
-[主機與門禁陷阱](/platform/host-and-gate-traps.md) 那張連接埠表，單獨跑是 `METRICS_ONLY=1`）。
-
-★ ★ ★ **判據掛在「增量」與「交叉對照」上，不掛在「抓到了東西」** ——
-一個把指標硬編碼成常數的實作，能通過每一條只問「正文裡有沒有那幾個字」的判據。
-⚠ 計數發生在 `Record::finish`（回應寫完**之後**）⇒ 第 N 次抓取看到的是前 N−1 次的量，
-所以每條增量判據都**抓兩次做差**。
-
-| 判據 | 守的是什麼 |
-|---|---|
-| 格式 | 每個族的 HELP/TYPE 一個不少（族的清單**從 `FAMILIES` 派生**，不手寫）· `Content-Type` 逐字 · `fulcrum_requests_total` 的標籤鍵集合**逐字相等**（多一個 `uri` 就紅）· 上游兩族**族在、樣本無**（分得開「沒接上」與「沒資料」）|
-| 訪問控制**兩個方向** | 夠得著的抓得到；站台 C 把 `metrics` 圈在 `10.0.0.0/8` 裡 ⇒ 我們夠不著，拿到備援 403 |
-| 診斷**兩個方向** | 圈住了來源的 `metrics` 不報 `FUL-DSL-0037`；沒圈的**必須**報 |
-| 反向 ① | 沒寫 `metrics` 的站台上，同一路徑**必須不是**指標 —— 否則「抓到了指標」證明不了是這條指令乾的 |
-| 反向 ② | 50 個互不相同的未知 `Host` 之後 series 條數**不增長**，**且**`host="<other>"` 那一格正好 **+50** |
-| 一致性門 | `fulcrum_requests_total` 在站台 A 上的增量 = 訪問紀錄新增行數 **+ 1**（那個 +1 是左端那次抓取自己）|
-| G121 的正面判據 | 同一條請求上，指標的 `site="a2.example"` 與紀錄的 `site="http://a.example:9920"` 給出**不同的值**；且 `site` 標籤的取值是一個**閉集** = 四條位址字面值 + `<none>` |
-| `status_class="none"`（G124）| **兩邊一起斷**：一條「發完請求立刻 RST、而上游還要 1.5s 才回話且**不帶 `Content-Length`**」的請求 ⇒ ① 訪問紀錄真的多了一行，`status` 是 **0**、`outcome` 仍是 `reverse_proxy`（★ 這一條立起來時防的是一個叫 `aborted` 的預設值；那個欄位已經刪掉，它今天在類型上就表達不出來 —— 判據留著，因為它守的是「鏈給的值不被收尾覆蓋」這件事本身）、`site` 在；② `fulcrum_requests_total{status_class="none"}` 正好 **+1**，且那一筆落在 `site=a.example` 上（證明兩邊說的是**同一條請求**）。★ 對照組（同一條路、用戶端正常收完）拿到 200 且 `none` 一格不漲 —— 少了它，一個 `status` 恆為 0 的實作也全綠 |
-| 連接那兩個族（G122 的連接半）| ★★★ **series 集合與本處理程序的監聽器集合逐字相同**（從夾具派生）—— 一條斷言同時驗掉「建成就出樣本」與「**四處都記進了同一個族**」· 五個 entrypoint **各打一條連接、各斷一條**（合成一條的話，一個只在 http 上記的實作照樣全綠）· ★★★ **連上 TLS 連接埠什麼都不發** ⇒ `active` +1（唯一證明「`enter` 在握手之前」與「`run_endpoint` 裡那句 `let _conn_guard` 沒寫成裸 `let _`」的地方）· **發垃圾位元組** ⇒ `total` +1 而 `active` 回基線（Drop 守衛在非正常退出路徑上真的在守）· l4_udp 那一格 `active` 從 `sessions.len()` 派生 · `active ≤ total` 逐格成立 |
-| TLS 族（G122 / G127）| 明文請求**一筆都不記**（先自證那幾條明文真的被 `requests_total` 數到了）· h1 與 h2 **分開打、分開斷**，每條正好 +1，且漲的那一條的 `{version,cipher}` 與**訪問紀錄剛報出來的那一對值**逐字相同（⛔ 不寫死套件名）· h3 那一條落在 `cipher="<unknown>"` 上 · 而**同一條 h3 請求的紀錄行裡 `tls_cipher` 必須不出現**（兩側兩種處置一併釘住）· ★★★ 這個族裡**一個空標籤值都不許有**（G127 的正主，它不看是不是 h3）· 標籤鍵集合逐字 `{cipher, version}`（⛔ 不許有 `sni`/`alpn`）· `sum(tls) 严格小于 sum(requests)` |
-
-⚠ ⚠ 反向 ② 的**兩句都要**：實測把那句 `inc` 刪掉之後，「series 條數不增長」是**綠的** ——
-一把在好壞兩種情況下讀數相同的尺子，分不開它要分的那兩件事。
-
-⚠ ⚠ **TLS 族那一組也是同一個形狀，而且實測過**：把 `label_or_unknown` 改成原樣回傳
-（即記空串）之後，「h3：TLS 族正好 **+1**」**仍然是綠的** —— 那一筆確實記了，
-只是記在了一條空標籤值的 series 上。★ 逮住它的是「這個族裡一個空標籤值都不許有」那條，
-⇒ **「漲沒漲」與「漲在哪一格」是兩件事，各要一條判據。**
-
-⚠ 另外三次注入各自被對應那一條點名，無遮蔽：只在 h2 上記 ⇒ h1 那條紅而 h2 那兩條**仍綠**
-（紅的確實是「只在 h2 上記」，不是「全都不記」）；明文也計 ⇒ 「TLS 族一筆都沒漲」紅；
-給族加一個 `sni` 標籤 ⇒ 「標籤鍵集合逐字」紅。
-★ ★ 明文也計那次順帶演示了**為什麼 ⛔ 不能把「兩族總數相等」當判據**：
-那條紅列印出來的正文是 `tls_requests_total(81) < requests_total(81)` ——
-**相等不是不變數，它恰好是那個缺陷的症狀。**
-
-★ 讀 exposition 的是一個**自帶自證**的 `python3` 解析器：它先在已知樣本上證明
-「命中得了、也落空得了」，然後下面每一條增量判據才有意義。
-
-# Runtime 即時 stats（三件套的第三件，**批 N**）
-
-**批 N 的順序 = G8 增量通道 → G18 臨時覆蓋層 → 唯讀 stats（G119）。**
-⚠ owner 拍的是這個順序（AI 推薦的是「先唯讀 stats、寫通道留後」）⇒
-stats **從第一天就帶 `overrides` 一節**，不存在「先發一個沒有覆蓋層的 stats、以後再補」的中間形態。
-
-## 增量通道（G8 的另一半）
-
-admin socket 上 `POST /runtime`，收的是**動詞**而不是一份設定：`set_weight` · `disable` · `enable`。
-⚠ ⚠ **不寫盤。** 期望狀態是唯一權威，[管理面](/architecture/control-plane.md)**不許出現第二條持久寫路徑**。
-
-## `POST /load` 與覆蓋層：`overrides` 是**必填**參數（G120）
-
-**走查詢串**：`POST /load?overrides=keep` 或 `POST /load?overrides=clear`，**缺了、
-寫了這兩個值之外的東西、或者寫了不止一次（哪怕兩次值一樣）就拒絕**（400，舊
-設定一個位元組都不動）。⚠ **重複不是「值不認識」，而是它自己的一檔**——G120 的
-立身之本是「兩種現實互相沖突就不猜」，`?overrides=keep&overrides=clear` 正是
-這個形狀的教科書執行個體，不許靜默取第一個（修復輪 1，評審 F3）。
-
-⛔ ⛔ **不把它塞進載荷**（`{"overrides":…,"config":{…}}` 的信封）——載荷是
-結構化設定，與磁碟上那份**同一種**（G48），多包一層信封就是兩種格式分了家。
-`PLAN.md` §10 的 G120 只說「是必填參數」，沒指定走哪兒；查詢串是**批 N 任務 5**
-拍板的傳輸口徑。
-
-★ ★ **不給預設值就是這條的全部內容**，因為兩種維運現實都正確且互相沖突：
-
-| 誰在呼叫 | 想要什麼 |
-|---|---|
-| 發佈流水線 | `clear` —— 發佈就是回到期望狀態 |
-| 事故處理中的人 | `keep` —— 一次無關的設定發佈不該把剛摘掉的壞節點放回去 |
-
-⇒ **任何一個預設值都會在另一種場景裡悄悄做錯事。**
-★ 與「`POST /load` 遇到監聽連接埠變化時**顯式拒絕**」同一條紀律：
-**判據在拒絕上，不在盡力而為上。**
-
-⚠ `clear` 那一檔必須在回話裡**逐項列出**被清掉的覆蓋 ——
-[§3](../../PLAN.md) 點名要避開 HAProxy 那個「runtime 改動 reload 後無聲消失」的短處。
-
-## 唯讀 stats
-
-`GET /stats`（admin socket），JSON：世代標識與設定裝載時間 · 每上游的 `inflight` 與 `healthy` ·
-證書到期 · 快取佔用 · **`overrides` 清單**。
-
-★ `inflight` 與 `healthy` 這兩個量在
-[`Upstream`](../../crates/fulcrum-runtime/src/lib.rs) 上**已經有了**（`AtomicUsize` 與 `AtomicBool`）——
-這正是 G16 那句「邊際成本最低」的實處，不是修辭。
-
-⚠ ⚠ **與 `/metrics` 同源**：兩個出口從**同一組原子量**讀，不各算一遍 ——
-否則就是本頁上面剛點過名的那個形狀。
-
-⚠ G18 的原話是「stats 與 API 的**每一次回應**都攜帶」覆蓋層清單
-⇒ 它**不是一個單獨的端點**，見下面「最容易在哪做錯」第 1 條。
-
-# 三件套的進度要分開數
-
-⚠ ⚠ **批 M 做完之後觀測三件套是 2/3，仍然不是 ✅。**
-紀錄（批 L）與指標（批 M）都在了，**Runtime 即時 stats 還欠著** —— 它是批 N。
-⚠ **一格裡裝三件事，最容易被讀成一件。**
-
-★ 剩下那一件的方案已經定了（G119/G120，見上面「Runtime 即時 stats」一節）。
-⚠ ⚠ **「方案定了」與「做完了」是兩件事** —— 這一句在指標那一件上剛剛成立過一次：
-它的方案在批 M 開工前就寫在本頁上，而當時程式碼一行都沒有。
-
-# ★ 為什麼 Runtime stats 是邊際成本最低的高價值功能
-
-Runtime stats 是 HAProxy `show stat` 的對應物。它**重複使用 G8 已經要做的 Runtime 通道**——通道本來就要建，在其上加一個唯讀端點幾乎不增加工作量。
-
-★ 而它承載的是 G18 的強制要求：**臨時覆蓋層必須永遠可見**。這不是一個可選的觀測特性，是狀態模型的一部分。見 [管理面](/architecture/control-plane.md)。
-
-# ~~回落層要計數~~ ⛔ **這一節已經沒有物件了**
-
-原文要求「哪些請求走了回落，必須在 stats 中計數」，並把**回落計數歸零**當作
-M2 退出條件「回落層已無常態使用」的判據。
-
-⚠ **G98 把[回落層](/architecture/fallback.md)整塊刪掉之後，這條判據連被測物件都不存在了** ——
-而「回落層已無常態使用」也因此**恆真**（層不在，就不可能有常態使用），見 `PLAN.md` §7 裡
-把退出條件拆成兩半的那張表。
-★ 留著這一節而不是刪掉，是因為**一條讀起來仍然成立、而物件已經消失的要求，比一條明顯過時的要求更難發現**。
-
-# 首版不做
-
-**OpenTelemetry tracing**（G23 範圍之外）。
-
-Web UI 也不做——★ **G16 的 Prometheus 指標接 Grafana 已覆蓋視覺化需求**，而 nginx、HAProxy、Caddy 三家都沒有官方 UI。
-
-# 最容易在哪做錯
-
-1. ★ **把臨時覆蓋層清單做成一個需要單獨查詢的端點。** G18 的原話是「stats 與 API 的**每一次回應**都攜帶」。見 [管理面](/architecture/control-plane.md) 的易錯點 2。
-2. **私鑰、ACME 憑證、上游認證資訊進了普通紀錄。** [安全基線](/platform/security-baseline.md) 明令禁止，設定預覽也必須脫敏。
-
-# 相關
-
-[管理面](/architecture/control-plane.md) · [回落層](/architecture/fallback.md) · [安全基線](/platform/security-baseline.md)
+The real metrics scenario checks format/Content-Type/label key sets, access-control allow+deny, configuration diagnostics, absence without metrics, bounded unknown hosts, and log/count consistency. TLS cases separately check h1/h2/h3 increments, label values against real logs, no cleartext count, no empty labels or SNI/ALPN labels. Family declaration presence and active source wiring are distinct assertions; positive counts alone do not prove the correct label bucket. Parser fixtures witness hit/miss behavior before deltas are trusted. No synthetic gate substitutes for production observation.

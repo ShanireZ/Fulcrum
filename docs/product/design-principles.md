@@ -1,40 +1,10 @@
 ---
-type: 產品定位
-title: 設計原則
-description: 七條原則；每條都對應一個可以拿來否決設計的判據，不是口號。
-resource: ../../PLAN.md
-tags: [原則, 必讀]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-4
-    resource: /references/plan.md
-    title: PLAN.md §4 設計原則（七條全文）
+type: product
+title: Design principles
+description: How the authoritative product principles constrain changes.
 ---
+# Design principles
 
-★ **完整表述在 [`PLAN.md`](../../PLAN.md) §4。** 這裡只補每條**怎麼用來否決一個設計**。
+Read [PLAN §4](../../PLAN.md). In design reviews, test whether the proposal keeps one process/configuration/observability system; retains one persistent expected-state authority; makes temporary exceptions visible; validates atomically before activation; preserves secure defaults; and supports reproducible performance claims.
 
-| | 原則 | 拿它否決什麼 |
-|---|---|---|
-| 1 | **一個處理程序，一份設定，一套觀測** | 任何讓使用者「再裝一個東西」的設計。★ 這是產品的**全部理由**——[定位](/product/positioning.md) 裡那個狹窄空位就建在它上面 |
-| 2 | **吸收長處，不繼承短處** | 任何「三家都這麼做」但說不清避開了哪個坑的抄襲。`PLAN.md` §3 的長短處表是檢查表 |
-| 3 | **期望狀態是唯一權威，例外必須可見** | 第二條持久化寫路徑；不出現在 stats 裡的隱式狀態 → [管理面](/architecture/control-plane.md) |
-| 4 | **先驗證，再發布；失敗即回復** | 把設定變更當成檔案寫入而不是交易的實作 |
-| 5 | **預設即安全** | 預設出機器的管理面；不要求顯式存取資格就能啟用的危險能力 → [安全基線](/platform/security-baseline.md) |
-| 6 | **效能以端到端實測為準，且資料公開** | ★ 任何「快 N 倍」式表述；任何無法重現的效能宣告 → [效能驗收標準](/verification/performance-bar.md) |
-| 7 | **回落是腳手架不是架構** | 任何讓回落層長大的改動 → [回落層](/architecture/fallback.md) |
-
-# ★ 第七條的判據最特別
-
-> **它的成功標誌是被刪除。**
-
-這句話把回落層從「一個模組」變成了「一段有終點的工期」。判據因此是可操作的：**如果一個改動讓回落層更難刪，它就違反了第七條**——哪怕那個改動本身讓回落工作得更好。
-
-能力翻譯、設定語義映射、統一兩家的行為差異，全部因此出局。
-
-# ★ 第三條與第六條是本專案最容易被違反的兩條
-
-- **第三條**：加一個「順手持久化一下」的寫路徑太容易了，而 G18 的整個判據就是**丟得無聲無息比丟本身更糟**。
-- **第六條**：效能數字是最容易脫口而出的東西。[工作方式](/governance/working-agreement.md) 把它單列成一條紀律，`AGENTS.md` 裡也寫了一遍。
+Requiring an auxiliary installation, adding persistent runtime writes, hiding overrides or treating partial load as success needs resolution against those principles. The removed fallback layer remains an example of temporary scaffolding whose success criterion was deletion.

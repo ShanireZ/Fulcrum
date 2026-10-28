@@ -1,130 +1,21 @@
 ---
-type: 架構基線
-title: 設定分層
-description: DSL 編譯到結構化設定，結構化那份是唯一內部事實；方向單一，不做反向生成。
-resource: ../../PLAN.md
-tags: [架構, 設定, 承重牆]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G4（自研 DSL）、G11（設定分層）、G20（Caddyfile 式）
-  - id: plan-10-d3
-    resource: /references/plan.md
-    title: PLAN.md §10 G47 / G48（D3 結案：未自研的能力走隱式回落、不寫 fallback 指令；結構化設定的完成實作格式取 JSON）
+type: architecture
+title: Configuration layers
+description: DSL compiles to JSON and a validated runtime graph.
 ---
+# Configuration layers
 
-★ 本頁屬**技術基線**，帶真內容。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
+This is the approved technical baseline and yields to [PLAN.md](../../PLAN.md) on conflict.
 
-# 三層，方向單一
 
-```text
-DSL（Caddyfile 式，人写）
-        │  编译
-        ▼
-结构化配置（唯一内部事实；机器、UI、自动化直接写这一层）
-        │  校验 + 装载
-        ▼
-运行时对象图（路由表、上游池、TLS 解析器、缓存句柄）
-```
+The direction is DSL → structured JSON → validated runtime graph (site index, matchers, execution chain, upstream pools, TLS resolvers and cache handles). Both DSL and JSON are public inputs. The JSON layer is the sole internal configuration fact for diffs, versioning and rollback (G11/G48). There is no JSON-to-DSL generation: comments, indentation and shorthand would not survive a round trip.
 
-- **兩個入口都合法**：人寫 DSL，機器寫結構化設定。★ **DSL 是結構化設定的一個前端，不是它的替代。**
-- **diff、版本化、原子回復全部建在結構化層。** DSL 因此可以自由演進而不動核心。
-- ★ **不做反向生成**（結構化 → DSL）。註解、縮進、簡寫形式在往返中**必然丟失**，投入產出比不成立。
+JSON provides unambiguous types and stable machine-generated diffs without YAML's implicit conversions or TOML's awkward nested route arrays. The load API accepts the same format as the on-disk structured representation; no wrapper envelope. Pingora's own conf/*.yaml ServerConf is a separate, generated framework input.
 
-# 結構化那一層是 **JSON**（G48）
+`fulcrum validate` checks diagnostics, structured configuration, runtime graph and TLS loading. `compile` emits JSON; `plan` explains ordered steps; `serve` activates the graph. `Runtime::build()` validates the public JSON route independently of the DSL frontend, including values that are lexically valid DSL words but semantically invalid CIDRs or identifiers.
 
-★ **這一項此前是規格真空**——G11 把 diff、版本化、原子回復全建在結構化層上，
-卻從沒有一處文件寫過它是什麼格式。由 **G48** 定為 **JSON**：
-機器寫、diff 穩定、類型無歧義、無縮進陷阱，且 **load API 與磁碟上那份是同一種格式**，
-不需要兩套編解碼。未選 YAML 是因為隱式類型轉換（`no` → `false`）與縮進噪音**恰好打在
-diff 與原子回復這兩件事上**；未選 TOML 是因為路由樹是深嵌套 + 陣列套表，機器生成的產物最難讀。
+The `fulcrum-config` sources own mechanics: directive.rs (`chain_directives!` with explicit order), compile.rs (stable site-top-level ordering and order-preserving route blocks), diag.rs (stable FUL-DSL diagnostics), placeholder.rs (position validation) and model.rs (serde JSON, including null for None).
 
-⚠ **別和 `conf/*.yaml` 搞混**：那是 **Pingora 自己的 `ServerConf`**，不是樞衡的設定層。
-M1 之後它由樞衡的結構化設定生成，不由人手寫。
+G49's built-in order has four required companions: a published [order table](dsl-reference.md#3-execution-order); `route` as an order-preserving escape; compile-time exhaustive placement and handling of new directives; and diagnostics explaining the actual execution position. `doc_contract.rs` compares table rows with code, runtime routing tests check semantics, and real serving tests check responses. Unit routing logic remains independent of Pingora; this costs a RequestHeader-to-RequestCtx conversion and enables isolated tests. Neither layer alone proves the other.
 
-# ✅ 完成實作進度
-
-**DSL → 結構化設定這一段已經實作**，在 [`crates/fulcrum-config`](../../crates/fulcrum-config)；
-命令行是 `fulcrum validate` / `compile` / `plan`。
-✅ **「結構化設定 → 執行環境物件圖」也已完成實作**（`crates/fulcrum-runtime` +
-`crates/fulcrum-server`），`serve` 隨之上線；`validate` 現在跑**四層**（診斷 → 結構化 →
-執行環境圖 → TLS 裝載）。★ 結構化層是**公開入口**（G11），所以 `Runtime::build()` 本身
-就是那一層的檢核器 —— `remote_ip 10.0.0.0/99` 這類在 DSL 前端是合法的一個詞。
-
-| 這一層的規格 | 落在哪 |
-|---|---|
-| 執行順序表（G49）| `src/directive.rs` 的 `chain_directives!` —— ★ **序號是每行的第一個欄位** |
-| 排序與容器語義 | `src/compile.rs`：站台塊頂層穩定排序；`route { … }` 塊內不排 |
-| 診斷（G51）| `src/diag.rs` —— 穩定錯誤碼 `FUL-DSL-NNNN`、行列號、原始碼片段、caret |
-| 匹配器（G50）| `src/compile.rs` 的 `matcher_ref` + `condition` |
-| 佔位符（G61）| `src/placeholder.rs` —— ★ 不可用位置是**編譯錯誤**，不是空串 |
-| 隱式回落（G47/G52）| `fallback_for()` 打標記；`StructuredConfig::fallback_routes()` 逐條列出 |
-| 結構化設定（G48）| `src/model.rs` —— serde 到 JSON，★ `None` 照樣序列化成 `null` |
-
-★ ★ **順序表這份契約的兩側被釘在一起**：`tests/doc_contract.rs` 把
-[DSL 指令集參考](/architecture/dsl-reference.md) §三那張表與程式碼裡那張**逐行比對**，
-改一側不改另一側就紅。**契約不靠自覺維護。**
-
-# DSL 的四條已定語義
-
-✅ **D3 已結案**（G60–G63）。**完整指令清單見 [DSL 指令集參考](/architecture/dsl-reference.md)**；本頁只記語義層面的四條：
-
-| | 決策 | 一句話 |
-|---|---|---|
-| 執行順序 | ★ **G49** | 站台塊內按**內建順序表**執行，**不是書寫順序**（照 Caddy）。★ owner 推翻了 AI 的「書寫順序即執行順序」 |
-| 匹配器 | **G50** | 複雜條件走 `@name { ... }` 命名塊；行內**只允許路徑** |
-| 回報錯誤 | **G51** | 一次報全 + 行列號 + 原始碼片段 + caret + **穩定錯誤碼**（`FUL-DSL-0007` 形） |
-| 未實作能力 | **G47 / G52** | **隱式回落**（DSL 裡不寫 `fallback`），但**裝載紀錄逐條列出**走了回落的路由 |
-
-## ★ ★ G49 的代價必須一起落實，否則它會長成自己批評的那個東西
-
-內建順序表換來「使用者隨便寫也能跑對」與「Caddyfile 遷移零意外」，代價是
-**書寫順序 ≠ 執行順序**。四條配套缺一不可：
-
-1. **順序表是公開契約**，與 DSL 參考文件同級維護，不能只活在程式碼裡。
-2. **必須有保序逃生口**（`route` 塊內按書寫順序執行）。
-3. ★ ★ ★ **新增指令必須在表裡有位置，否則編譯不過。** 這是最容易爛掉的一處：
-   若按「不在表裡就排最後」處理，新指令會**悄悄跑在錯誤的位置上**，
-   而沒有任何一行輸出會說出來。**做成編譯期窮盡性檢查，不是註解提醒。**
-   ★ Caddy 自己就是這麼做的：不在 order 列表裡的指令直接回報錯誤。
-4. **錯誤提示要能解釋位置**：執行順序與書寫順序不同而出了意外時，
-   診斷必須說出「它實際跑在哪一步、為什麼」，否則使用者只能去背那張表。
-
-# DSL 形狀（示意）
-
-```text
-example.com {
-    reverse_proxy 127.0.0.1:3000
-}
-
-api.example.com {
-    reverse_proxy 10.0.0.1:8080 10.0.0.2:8080 {
-        lb_policy      least_conn
-        health_uri     /health
-        health_interval 5s
-    }
-}
-```
-
-# ★ 為什麼是 Caddyfile 式而不是 nginx 式（G20）
-
-未採納 nginx 式語法的理由值得記住，它不是審美判斷：
-
-> **看起來一樣但語義不同，比完全不同更危險**——使用者會帶著舊假設一路踩坑。
-
-nginx DSL 被點名的兩個坑（`PLAN.md` §3）：`if` 不可靠、`location` 匹配順序反直覺。**照抄它的形狀就會把這些期待一起繼承過來。**
-
-# 最容易在哪做錯
-
-0. ★ ★ ★ **給順序表加一個指令，卻沒給它在表裡安排位置。** G49 之下這不是小疏忽：不在表裡的指令若被「預設排最後」接住，就會**悄悄跑在錯誤的位置上**，而設定能裝載、請求能通、紀錄一行不報。這與本專案反覆抓到的「宣告了卻沒人接」是同一個形狀，處置也一樣——**做成編譯期窮盡性檢查，讓它編不過**。
-1. ★ **把 DSL 當成唯一入口。** 機器寫的是結構化設定那一層；如果只給 DSL 加了某個能力而結構化層沒有，自動化就用不上它。
-2. ★ **把 diff / 回復建在 DSL 文字上。** 那樣註解與格式變化會被當成設定變更，而真正的語義變更可能被格式化掩蓋。**它們必須建在結構化層。**
-3. **試圖做反向生成。** 每隔一段時間就會有人提議它，理由通常是「讓 UI 能改設定再寫回 DSL」——但 G23 首版不做 UI，而機器本來就該直接寫結構化層。
-
-# 相關
-
-[管理面](/architecture/control-plane.md)（這份設定怎麼裝載與回復） · [處理程序與元件邊界](/architecture/process-model.md)
+See [DSL](dsl-reference.md), [control plane](control-plane.md) and [process model](process-model.md).

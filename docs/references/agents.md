@@ -1,10 +1,8 @@
 ---
 type: reference
-title: Agent rules
-description: Project rules and decision authority.
-resource: ../../AGENTS.md
-tags: [agents, authority]
-status: stable
+title: Contributor guide
+description: Repository-local working and verification contracts.
 ---
+# Contributor guide
 
-Read [AGENTS.md](../../AGENTS.md) before work. [PLAN.md](../../PLAN.md) owns decisions; keep guide and bundle constraints consistent with it.
+[AGENTS.md](../../AGENTS.md) lists repository authorities, implementation boundaries and validation entrypoints. It is self-contained for contributors cloning this repository; workspace-only operating material is not a public prerequisite.

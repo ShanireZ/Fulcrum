@@ -1,690 +1,305 @@
-# 樞衡對拍（M3）
+# Fulcrum comparison benchmarks (M3)
 
-> ★ ★ ★ **真實讀數在 [`results/`](results/) 下：每開一次壓測視窗一個目錄，目錄名以日期開頭
-> ⇒ 按名字排序，最後那個就是最新的**；每個目錄自己的 `README.md` 寫著那一趟的讀數、結論與
-> 「它說不了什麼」。⛔ **本頁有意不抄任何一趟的具體讀數** —— 抄在導覽頁上的數，下一次視窗
-> 一跑就成了過期斷言（這裡原先寫的正是 2026-09-06 那組的結論，而 2026-09-10 那趟按 `G147` ⑤
-> 把它整組替掉了）。里程碑狀態只在 [`PLAN.md`](../PLAN.md) §1。
->
-> ⚠ ⚠ **G132「本輪不產出任何效能數字」那句話的前提是「合格宿主今天還不存在」，
-> 而那個前提在 2026-09-06 到期了。** ⛔ 別把它讀成「G132 被違反了」——
-> 恰恰相反：G132 要的從來不是那句話本身，而是**讓它由判據的形狀守著**，
-> 而那套形狀原樣起作用了 —— 這臺開發機在第 ② 步仍然被判成不合格、第 ④ 步仍然
-> 結構上算不出結論；數字只在一臺真的過了六條判據的機器上才出得來。
->
-> ⇒ 本目錄的交付物仍然是**指令碼、環境快照與判定口徑**；★ 現在它多了一份
-> **原始資料**（G19 要求全部公開，⛔ 包括不好看的那一份）。
+[PLAN.md §8](../PLAN.md) (G19) defines acceptance: compare Caddy, HAProxy and
+nginx on the same host, cases and load generator; meet at least 90% of the
+strongest applicable competitor in every category; publish scripts and raw data.
+Milestone state belongs to PLAN. Historical readings and their qualifications
+remain in the dated [results](results/) directories. Preserve those snapshots
+byte-for-byte (G147), including unfavorable readings and redaction disclosures.
 
-> ⚠ **2026-09-06 那組**（已按 `G147` ⑤ 降為歷史，目錄一個位元組不改）有兩處已知毛病，讀它時自己糾正：
-> ① [`REDACTION.md`](results/2026-09-06-static-throughput/REDACTION.md) 說入庫版與執行環境原文
-> 「差別只有一處」（具名 → 不具名），而它下文自己寫著入庫版「把怎麼核的寫得更明確了」⇒ 字面上不止一處；
-> ② 那份 `README.md` 末行的連結顯示 `../../README.md`，href 卻是 `../README.md`
-> （指向並不存在的 `bench/results/README.md`）⇒ 它要指的是本頁。
-
-`PLAN.md` §8（G19）定了四條口徑：三家全部對拍 · 同機同案例同負載生成器 ·
-逐類不劣於**該類最強者** 10% · 指令碼與原始資料全公開。本目錄是那四條的執行面。
-
----
-
-## 怎麼跑
-
-對拍跑在自己的鏡像裡（[`../docker/Dockerfile.bench`](../docker/Dockerfile.bench)），
-樞衡與三家競品同處一室。
+## Running the pipeline
 
 ```bash
 bash tests/bench/run.sh
 ```
 
-這條命令建鏡像、核對釘死的版本、然後在容器裡把整條流水線跑一遍並斷言判據兩個方向
-都判得動。**它不是對拍本身**，它是「對拍這套東西還活著」的門。
-
-真正要出數的那天，在**合格宿主**上跑**啟動器**（G145）：
+This development gate builds the pinned benchmark image, exercises the pipeline
+and tests both directions of its criteria. It is not a qualified performance run.
+For measurements, use the launcher on a qualified host, with explicit CPU topology,
+workers and load settings:
 
 ```bash
-BENCH_HOST_ATTEST="专机 · 无 TUN 代理" \
+BENCH_HOST_ATTEST="Dedicated host; no TUN proxy or VPN on the network path" \
 BENCH_SERVER_CPUS=0-1 BENCH_LOAD_CPUS=2-3 \
 BENCH_DURATION=60s BENCH_CONNECTIONS=200 BENCH_WORKERS=2 \
 BENCH_FULCRUM_BIN=/path/to/fulcrum \
   bash bench/docker-run.sh bench/out
 ```
 
-★ ★ **⛔ 不要直接 `bash bench/run.sh`**（那是容器內那一步）。啟動器做三件容器
-自己做不到的事：在**宿主上**判 `net.core.netdev_max_backlog`（不符就拒絕啟動）、
-把另外四個鍵作為 `--sysctl` 旗標帶進容器、把宿主實測值經環境變數傳進去。
-⇒ 繞過它起容器，快照拿不到那個憑證，**這一趟會被判成不合格** —— 那是有意的。
+CPU sets above are examples, not a topology recommendation. The launcher checks
+host-only sysctls, applies container sysctls and passes host observations into the
+snapshot. Calling `bench/run.sh` directly bypasses that evidence and produces an
+unqualified run.
 
-五步，順序是承重的：**① 判據自測 → ② 環境快照與合格性 → ③ 逐類跑（只產原始資料）
-→ ③′ 診斷讀數 → ④ 判定**。①排最前的理由：判據壞掉最典型的形態是**它恆回傳同一個答案**，
-而那種壞法在後三步裡長得和一切正常一模一樣。
-★ ③′ 見下面「**診斷讀數（⛔ 不是 §8 的一類）**」那一節 —— 它**不參與 ④**，
-且它的失敗**有意不中止 ④**：④ 是 §8 的結論，讓一個診斷步驟把它扣掉，
-在合格宿主的視窗裡意味著白停一次服。
+Order is significant: criterion self-tests → environment snapshot/qualification →
+case raw data → diagnostics → verdict. Diagnostic failure does not suppress case
+verdicts. Defaults are defined once in [lib.sh](lib.sh), not independently in each
+case: duration 10s, connections 50, workers 1, payload 4096 bytes (G147).
+`env.json.load_params` records effective values. Set workers explicitly for a
+qualified measurement window.
 
----
+## Host qualification
 
-## 合格宿主
+`bench_disqualifiers` in lib.sh is a pure function with synthetic positive and
+negative controls (`bash bench/lib.sh --self-check`). No disqualifiers means qualified.
 
-判據在 [`lib.sh`](lib.sh) 的 `bench_disqualifiers`，寫成**純函式** ——
-讀數由呼叫方傳進來，⇒ 兩個方向都能用合成輸入當場證給人看
-（`bash bench/lib.sh --self-check`）。**一條理由都打不出來 = 合格。**
+| Criterion | Disqualifying condition |
+|---|---|
+| `kernel` | Kernel string contains `microsoft` or `wsl`. |
+| `cpus` | Fewer than `BENCH_MIN_CPUS` (default 4). |
+| `load` | One-minute load exceeds `BENCH_MAX_IDLE_LOAD` (default 0.50). |
+| `affinity` | Server/load CPU sets are missing, invalid or overlap. |
+| `kernel-params` | Required kernel/resource settings or launcher evidence are absent or differ. |
+| `attest` | No explicit `BENCH_HOST_ATTEST` declaration of a dedicated host and no TUN proxy/VPN. |
 
-**六條**，分成性質完全不同的三半（★ G145 把「核心參數」那一條從人寫的宣告裡拆了出來）：
+Logical affinity does not establish physical-core separation. `host.cpu_topology`
+records sibling threads, server/load physical cores and `shared_cores`; topology
+is disclosed, not an additional qualification decision. Three earlier historical
+sets predate topology capture. Attestation records a human declaration, not proof;
+disclose resident probes or tunnel clients honestly.
 
-### 容器自己看得見的（機器判）
+### Kernel parameters and limits (G145)
 
-| 判據 | 不合格的形態 | 為什麼 |
+| Location | Required settings | Check |
 |---|---|---|
-| `kernel` | 核心串裡帶 `microsoft` / `wsl` | Docker Desktop 的 Linux 側跑在 WSL2 裡。G132 記的實測理由是這臺開發機上那個 TUN 代理**會干擾網路**（容器出不去 UDP/443）⇒ 這是唯一一條不需要人配合就判得死的證據 |
-| `cpus` | 核數少於 `BENCH_MIN_CPUS`（預設 4） | 負載生成器與被測**不許共享 CPU**，分不出兩組就談不上 |
-| `load` | 1 分鐘負載高於 `BENCH_MAX_IDLE_LOAD`（預設 0.50） | 機器在幹別的活，等於被測在與別人共享 CPU |
-| `affinity` | 沒有**同時**給 `BENCH_SERVER_CPUS` 與 `BENCH_LOAD_CPUS` | §9 的緩解項逐字寫著基準環境要固化**核心參數與 CPU 親和**。⚠ 只給一個等於沒給 |
+| Container network namespace | `net.core.somaxconn=65535`, `net.ipv4.tcp_max_syn_backlog=65535`, `net.ipv4.ip_local_port_range=10240 65535`, `net.ipv4.tcp_tw_reuse=2` | Launcher derives `--sysctl` from `bench_container_sysctls`; snapshot compares actual container values with requirements. |
+| Host | `net.core.netdev_max_backlog=16384` | Configure using [sysctl.conf](sysctl.conf); launcher reads host `/proc/sys`, refuses mismatches and passes `BENCH_HOST_SYSCTLS`. |
+| Process resource limit | `nofile=1048576` | Docker `--ulimit`; snapshot checks `ulimit -n`. |
 
-⚠ `affinity` 判的是「有沒有釘到不相交的核上」，⛔ **不是**「釘得對不對」——
-後者要看具體機器的拓撲。★ 2026-10-05 起 `env.json` 的 `host.cpu_topology` 記下每個邏輯 CPU 的超執行緒兄弟，
-以及被測 / 壓測兩組各落在哪幾個物理核上、有沒有共用（`shared_cores` 非空 = 兩組超執行緒互搶執行單元）。
-⛔ 它仍然**不判**合格性：同一個親和在不同機器上落成不同的物理核，那是要寫在資料裡的口徑，不是不合格的理由。
-（開發機上 `0-1` 是同一物理核的兩個超執行緒；合格宿主在那之前的三組讀數沒記拓撲。）
+Host per-netns settings do not configure a new container namespace. Conversely,
+`netdev_max_backlog` is not available to configure/read inside this container.
+`tcp_tw_reuse=2` covers loopback without enabling global reuse. `fs.file-max` is
+intentionally excluded: lowering an already larger host limit is harmful, while
+the relevant process restriction is RLIMIT_NOFILE. Congestion control, socket
+buffers and `vm.*` are excluded because they change the experiment itself.
 
-### 核心參數與資源上限（`kernel-params`，**G145 起是門，不再是宣告**）
+The gate deliberately omits host evidence: it verifies container sysctls positively
+and host-evidence rejection negatively (C13/C12). Do not fabricate evidence to
+make that output green. Snapshots distinguish `sysctl_as_seen_in_container` from
+`kernel_params`. The launcher reads host values once; it cannot prove they remain
+unchanged throughout the run. The 16384 backlog value is not proven sufficient;
+`/proc/net/softnet_stat` drop deltas are not automatically collected.
 
-★ ★ ★ 這一格此前是下面那句人寫的宣告裡的第三件。2026-09-06 的實測把那條路整個
-否掉了 —— 兩個方向都量過：
+## Verdict and invalidation
 
-| 在宿主上設 | 新開的預設網路容器讀到 |
+[verdict.sh](verdict.sh) first checks qualification. An unqualified host produces
+`VERDICT: UNQUALIFIED` and reasons, without computing a strongest competitor,
+threshold or PASS/FAIL. Raw data remains useful only as pipeline evidence.
+
+For qualified, valid, higher-is-better cases:
+
+```text
+strongest = max(all non-Fulcrum readings in this category)
+threshold = strongest × 0.9
+PASS iff Fulcrum >= threshold
+```
+
+Derive competitors from raw files; do not hard-code a subset or average across
+competitors/categories. A first lower-is-better category requires an explicit
+direction, rather than guessing from its name.
+
+[read-raw.py](read-raw.py) requires `successRate == 1.0`, only status 200, and no
+transport errors before comparison. Any invalid reading gives that category
+`NO-VERDICT`. Preflight additionally checks status and exact body bytes; preflight
+and load-time validity cover different times.
+
+### External ceilings (criterion ④)
+
+- **B, full spread:** `(highest-lowest)/highest < BENCH_MIN_SPREAD` (default 0.05)
+  gives `VOID`. Convergence suggests an external limit; it does not identify oha,
+  loopback or affinity as the cause.
+- **C, top convergence (G146):** compare the best and second-best readings, but
+  invalidate only an apparent PASS. An external ceiling lowers the competitor
+  threshold, so a FAIL remains a FAIL. One slow implementation must not conceal
+  convergence among faster ones. Equality at 0.05 counts as separated.
+- **A, optional absolute ceiling:** with positive `raw/<case>/ceiling.txt`, check
+  the strongest against generator ceiling × `BENCH_GEN_HEADROOM` (default 0.90).
+  Without that file this criterion is inactive. A reference must actually exceed
+  all compared servers; measuring a slower server underestimates the ceiling.
+
+Insufficient readings or invalid ceiling inputs give `VOID`, not acceptance.
+The 0.05/0.90 thresholds remain judgment values without empirical validation.
+The first qualified 2026-09-06 set exposed the full-spread blind spot that led to
+G146; it did not validate the numerical thresholds. Without A, separated readings
+do not prove the generator has spare capacity.
+
+## Aligning the implementations
+
+[conf/](conf/) contains the actual reproducible server templates.
+
+| Dimension | Contract |
 |---|---|
-| `net.ipv4.ip_local_port_range = 20000 60000` | 仍是 `32768 60999` |
-| `net.core.somaxconn = 12345` | 仍是 `4096` |
-
-那四個鍵是 **per-netns** 的，而對拍整個跑在自己 netns 的容器裡
-⇒ **一句完全誠實的「已固化」宣告，對被測行為零影響**。
-⚠ 這正是本儲存庫最在意的那一族：一道恆綠的門與一道不存在的門，輸出完全一樣。
-
-⇒ 六個鍵按「設得進哪裡」重新分了三處，**每一處都有門**：
-
-| | 鍵 | 在哪裡設 | 誰判 |
-|---|---|---|---|
-| 容器側 | `net.core.somaxconn` = 65535 · `net.ipv4.tcp_max_syn_backlog` = 65535 · `net.ipv4.ip_local_port_range` = `10240 65535` · `net.ipv4.tcp_tw_reuse` = **2** | `docker run --sysctl`（由 `bench/docker-run.sh` 從 `bench_container_sysctls` 推導）| `env-snapshot.sh` 在容器內逐條斷言「實測==宣告」|
-| 宿主側 | `net.core.netdev_max_backlog` = 16384 | `bench/sysctl.conf` → `/etc/sysctl.d/` | `bench/docker-run.sh` 在**宿主上**直讀 `/proc/sys`，不符**拒絕啟動** |
-| 資源上限 | `nofile` = 1048576 | `docker run --ulimit` | `env-snapshot.sh` 核 `ulimit -n` |
-
-- ⚠ `netdev_max_backlog` **設不進也讀不到**容器（runc 當場拒絕；容器裡 `/proc/sys/net/core/`
-  下沒有這個檔案）⇒ 它只能宿主判，而啟動器把宿主實測值經 `BENCH_HOST_SYSCTLS` 傳進容器。
-  ★ 繞過啟動器手起容器 ⇒ 拿不到那個憑證 ⇒ **判成不合格**。
-- ⚠ `tcp_tw_reuse` 宣告成 **2 而不是 1**：`2` 的語義是「僅對環回啟用」，而四家與 oha
-  同處一個容器、只走環回 ⇒ 2 恰好覆蓋本場景，1（全域）更寬卻**不更貼切**。
-- ⚠ ⚠ **`fs.file-max` 已從清單中移除**。★ 實測那臺候選宿主上它是 `9223372036854775807`，
-  而此前 `sysctl.conf` 裡寫的 `2097152` 是把它**往下壓**。真正會咬的是每處理程序的
-  `RLIMIT_NOFILE` —— ★ **實測容器預設只有 1024**。⇒ 改設 `--ulimit nofile`。
-- ★ `bench/sysctl.conf` 仍寫明**有意不放進來的三類**（擁塞控制 · socket 緩衝 · `vm.*`）——
-  它們會**改變結論本身**，而不只是消除噪聲。
-
-★ **這道門在每一次 `tests/bench/run.sh` 裡兩個方向都被走到**：門禁**有意不設**
-`BENCH_HOST_SYSCTLS` ⇒ 容器側四個鍵因旗標真的生效而**相符**（C13，正向），
-宿主側那一條因缺憑證而**判紅**（C12，反向）。⛔ 別為了讓輸出好看去補那個變數。
-
-### 容器原理上看不見的（要人宣告：`BENCH_HOST_ATTEST`）
-
-容器無從知道這臺機器是不是在跑真業務、網路路徑上有沒有代理。⇒ 這兩件只能由人寫下來：
-
-1. **這是專機** —— 沒有在承載任何真業務（生產機不算合格宿主，它會與被測搶 CPU）
-2. **網路路徑上沒有 TUN 代理 / VPN**
-
-★ ★ **宣告不是證明。** 這一格能做到的只有「誰都沒宣告過就一定不算合格」，
-⛔ 它攔不住一句不實的宣告 —— 那一格沒有門，只有紀律。快照會把宣告原文記下來。
-⚠ **宣告原文要如實**：這臺機器上如果還有任何東西在跑（雲廠商探針、隧道用戶端），
-⛔ 不是裝作沒有 —— 照實寫進那句話裡。
-
----
-
-## 判定口徑
-
-判定在 [`verdict.sh`](verdict.sh)，它**先問宿主合不合格**：
-
-- **不合格** ⇒ 逐條說出理由，寫 `VERDICT: UNQUALIFIED`，然後停下 ——
-  不取最強者、不算門檻、不打 PASS / FAIL。原始資料仍然完整寫入磁碟，
-  ⚠ ⛔ 那份資料證明的是**流水線跑得通**，它不是、也不許被引用成效能讀數。
-- **合格** ⇒ 逐類判：
-
-  ```
-  该类最强者 = max(三家竞品在这一类的读数)      ⛔ 不是三家平均，⛔ 不是钉死某一家
-  门槛       = 最强者 × 0.9                     （G19「不劣于 10%」，含等号）
-  PASS       ⟺ 枢衡 ≥ 门槛
-  ```
-
-★ **「最強者」逐類現算。** §8 寫著靜態那一類比的是 nginx、L4 那一類比的是 HAProxy ——
-樞衡要在**每一格**追上那一格的冠軍。⛔ 跨類取最強者是錯的。
-
-⚠ 競品集合是「除樞衡以外的全部」，**推匯出來而不是寫死的名單** ——
-寫死的名單在加第四家時沒人會想起來去改，而它安靜地少比一家。
-
-⚠ ⚠ **方向今天只處理「越大越好」那一種。** 延遲類是反過來的；加**第一個方向相反的類**時要
-顯式給方向參數，⛔ 不許讓判據去猜。★ 今天有指令碼的幾類都是 rps、越大越好 ⇒ 還沒加
-（⚠ 這句原先寫的是「加第二類時」，而第二類、第三類都加了 —— 那句話會讓人以為有人偷懶）。
-
-### 讀數什麼時候不算數
-
-一份跑得飛快的 5xx 會給出非常好看的 `requestsPerSec`。⇒ [`read-raw.py`](read-raw.py)
-在比較**之前**先檢核每一份原始資料：`successRate` 必須**恰好** 1.0 ·
-狀態碼分佈裡**只有** 200（⛔ 判「只有」不是判「有」）· 傳輸層錯誤為空。
-任何一份不合格 ⇒ 這一類報 `NO-VERDICT`，⛔ 它不會被當成一個數悄悄排進去。
-
-★ 案例指令碼在**開跑前**還核過一次（狀態碼 + 位元組數逐位元組對）。兩次核的不是同一段
-時間：一次防「一開始就沒在服務那個資源」，一次防「負載期間中途變壞」。
-
-★ **TLS 握手那一類多一道開跑前的握手探針**（G168）：有一家不過 ⇒ **只作廢這一類**（`VERDICT: VOID`，
-逐條寫明哪一家哪一條），其他類照常判（owner 2026-10-23 拍：壓測視窗要停服，⛔ 不因一類的設定問題白開一次）。
-探針的口徑與判法見下面「§8 的類」那一節。
-
-### ★★★ 壓測端自己先飽和 ⇒ 這一類作廢（判據 ④）
-
-上面那幾條守的都是**單份讀數**壞掉。還有一種壞法，每一份讀數都完美合格：
-**負載生成器自己先到頂了。** 那時四家會一起收斂到 oha 的天花板，而
-「不劣於最強者 10%」這條**照常打 PASS** —— 輸出一組看起來完全正常、
-其實量的是 oha 的數。⚠ 合格宿主那六條一條都答不了它：它們判的是這臺機器合不合格，
-而這裡壞掉的是**量具本身到頂了**。
-
-兩條判據，性質完全不同：
-
-| | 判什麼 | 閾值 | 今天的地位 |
-|---|---|---|---|
-| **B 收斂** | 全場讀數彼此擠在一起（`(最高−最低)/最高` 低於閾值）| `BENCH_MIN_SPREAD`（預設 **0.05**）| ★ **承重**。不需要任何新測量，用已採到的那組數 |
-| **A 絕對天花板** | 最強者越過「生成器上限 × headroom」| `BENCH_GEN_HEADROOM`（預設 **0.90**）| ⏳ **可選**。要 `raw/<类>/ceiling.txt` 裡有個數，沒有就整條不參與 |
-
-B 的依據：nginx（C）· HAProxy（C）· Caddy（Go）· 樞衡（Rust/pingora）是四套結構
-完全不同的實作，它們落進同一個百分點裡，**「共享了某個外部上限」遠比「它們真的
-一樣快」更可能**。⚠ 它說不出是哪一個上限（生成器 / 環回 / 親和）——
-⛔ 別把它讀成「一定是 oha 飽和了」，它只說**這組數不可比**。
-
-⚠ ⚠ **A 今天有意不是承重件**：它的正確性整個壓在「參照服務真的比四家都快」這一條上，
-而那條在合格宿主到位之前**驗不了** —— 參照選慢了就恆作廢，選的是另一個真實伺服器
-則量到的是 `min(oha, 那个服务器)`，天花板被低估。⇒ 參照服務選定那天再打開它。
-⛔ ⚠ 那個檔案**不許叫 `ceiling.json`**：`read-raw.py` 對該目錄做 `glob("*.json")`，
-一個 `.json` 會被當成第五家被測混進競品集合，而那不會有任何東西說。
-
-### ★★★ 2026-09-06：第一趟真實資料之後，這兩個閾值的回核
-
-原文寫的是「`0.05` 與 `0.90` 沒有實測支撐，它們是判斷不是讀數，**第一次在合格宿主上
-跑完之後要回頭核**」。跑完了，回核結論如下。
-
-**`BENCH_MIN_SPREAD = 0.05`：這一趟沒誤報，但暴露了 B 的一個真實缺陷。**
-
-| | |
-|---|---|
-| 全場 spread `(最高−最低)/最高` | **0.8599** ⇒ 遠高於 0.05，不作廢 ✔ |
-| ⚠ ★ 最快兩家 haproxy vs nginx | **0.0071** —— **低於 0.05** |
-
-⚠ ⚠ ★ **兩套結構完全不同的實作（C 寫的 nginx 與 C 寫的 HAProxy，架構差異極大）
-落進 0.71% 以內，正是 B 聲稱要懷疑的形狀 —— 而 B 一聲沒吭。**
-原因在判據的形狀裡：B 取的是**全場極差**，而樞衡的慢（0.86）把它整個撐開了。
-⇒ **一個慢的被測會掩蓋掉快的那幾家之間的收斂。**
-
-★ 這條是第一組真實資料給出的、可以推翻原設計的證據 —— 正是「回頭核」要的東西。
-✅ **已由 `G146` 結案**（原 `D34`）：新增判據 **④C `bench_top_convergence`**，
-判「最強者 vs 第二強」，⚠ ⚠ ★ **只作用於 PASS，永遠不作用於 FAIL**：
-
-> 門檻 = `max(竞品) × 0.9`。那個 max 被外部上限壓住時，**門檻是被低估的**。
-> · 結論是 **PASS** ⇒ 樞衡可能只是壓過了一個被低估的門檻 ⇒ 不可信，**作廢**。
-> · 結論是 **FAIL** ⇒ 真實門檻只會**更高** ⇒ FAIL **更成立** ⇒ ⛔ **不該作廢**。
-
-★ `G142` 那條「兩邊都往作廢側倒」的初衷是**不給出錯結論**，而天花板之下的 FAIL
-不可能是錯的 ⇒ 這不是放鬆。⛔ 三條原候選（最快 k 家 / 每一對 / 極差外加一條）
-都會把 2026-09-06 那個結實的 FAIL 扣掉 —— 而那**不是推理，是量出來的**：
-反證裡把判據改成「作用於所有結論」（就是那三條的形狀），C15 那個 FAIL 當場變成 VOID。
-
-⚠ ⚠ ⛔ **`0.05` 這個數本身仍然沒有實測支撐** —— G146 改的是「拿它去比什麼」，
-**不是「它該取多少」**。⛔ 別把這一條讀成「閾值已被實測確認」。
-
-**`BENCH_GEN_HEADROOM = 0.90`：仍然驗不了。**
-
-A 這一趟沒打開（沒有 `ceiling.txt`）⇒ 這個數**一次都沒被執行過**。
-⚠ 而這一趟恰恰給出了「為什麼需要 A」的第一個真實理由：haproxy/nginx 收斂在
-~54.5k，**與「oha 在 2 個核上到頂」的形狀一致**，而本套東西證不了它們不是撞到了
-量具的天花板。⇒ 選定參照服務那天再回來。
-
-★ 誤判方向是**有意不對稱**的：一次誤作廢只是**扣下一個結論**，一次漏判是**給出一個
-錯結論** ⇒ 兩條都往「作廢」那側倒，且**「判不了」（有效讀數不足兩條 / 上限不是正數）
-一律作廢，⛔ 不算通過**。判定報 `VOID`。
-
----
-
-## 四家怎麼擺平
-
-設定範本在 [`conf/`](conf/)，是交付物的一部分 —— 第三方要看的就是那四份設定本身。
-
-| 對齊項 | 口徑 |
-|---|---|
-| **一次只起一家** | 四家同時跑會互相搶 CPU，量到的是「四家一起跑」這件事 |
-| **同一個 payload** | 固定位元組數（預設 4096），同一個 URL 路徑。★ 用隨機位元組而不是可壓縮的重複位元組：**不比壓縮**。⚠ ⚠ **兩類取的不是同一份位元組**：靜態吞吐用 `/dev/urandom`，反代吞吐用 base64 字母表（源站的 `respond` 正文**只有內聯形態**，必須可列印）⇒ ⛔ 兩類的絕對讀數不可並排比較 |
-| **訪問紀錄全關** | 紀錄是另一件事，開著會把它的代價算進吞吐 |
-| **明文 HTTP/1.1**；keep-alive 除「高並行短連接」那一類外都開 | TLS 歸「TLS 握手」那一類，⛔ 不混進來；短連接那一類的口徑見「§8 的類」 |
-| **上游連接重複使用** | ★ 只對**有上游**的類（今天是反代吞吐）。四家的**預設**行為不同，而 **oha 的 JSON 裡看不出這件事** ⇒ 四家全部顯式設定；逐家的理由寫在各自的 [`conf/`](conf/) 範本裡。由判據 ⑤ 判著，見「§8 的類」那一節。★ caddy / nginx 的空閒連接上限**跟著並行數走**（[`lib.sh`](lib.sh) 的 `bench_upstream_idle_cap` = max(64, 並行連接數)，2026-09-10）：寫死 64 時，視窗的 200 並行下兩家部分不復用（[視窗二](results/2026-09-10-window-2/README.md)）；改後 [視窗三](results/2026-10-05-window-3/README.md) 同參數下四家 0.65–1.43 條/千 |
-| **權限身分一致** | 四家在容器裡都是 root。⚠ nginx 因此要顯式 `user root`（只搬二進位搬不到官方鏡像裡那個系統使用者），⛔ 不許改成只給它降權 —— 降權本身對吞吐有代價 |
-| **worker 數一致** | `BENCH_WORKERS`，**預設 1**，見下 |
-| **站台根的檔案系統** | `BENCH_WWW_ROOT`，預設是啟動器掛的一個**匿名卷（ext4）**，見下 |
-
-⚠ ⚠ ★ **上面這幾個預設只在 [`lib.sh`](lib.sh) 的「負載參數」一節定義一次**，
-案例指令碼與 `env-snapshot.sh` 都從那裡取 ⇒ **`env.json` 的 `load_params` 四格
-必然說得出這一趟真的用了什麼**。
-⛔ **別在案例指令碼裡再寫一份 `:-` 預設**：2026-09-06 之前正是那樣 —— 案例用
-「宣告值**或預設**」而快照記「宣告值」，於是沒人顯式設的參數，
-**案例真的用了預設而快照寫 `null`**。那一趟的 `payload_bytes` 就是這麼丟的
-（門禁裡 `workers` 同時也是 `null`）。
-★ 這一格現在由 `tests/bench/gate.sh` 的 **C16** 守著（判 A 那一趟**真跑出來的**
-快照，⛔ 不是合成夾具）。
-
-### ★★★ 站台根落在哪種檔案系統上 —— 它是口徑，⛔ 不是編排細節
-
-樞衡的靜態檔案路徑先在**本執行緒**上試一次 `open` + `fstat` +
-`preadv2(RWF_NOWAIT)`，讀全了就整趟零跨執行緒；只有核心說「這一次要等」才付一次
-`spawn_blocking`。⚠ ⚠ ★ 而 **`RWF_NOWAIT` 是每個檔案系統各自決定認不認的**。
-
-2026-09-06 在核心 `6.18` 上實測：
-
-| 檔案系統 | 4096 位元組熱檔案上的 `preadv2(RWF_NOWAIT)` |
-|---|---|
-| **ext4** | **讀全了** |
-| overlayfs | `EOPNOTSUPP` |
-| tmpfs | `EOPNOTSUPP` |
-
-⇒ **同一個二進位、同一份設定、同一臺機器，站台根換一種檔案系統，
-靜態吞吐差 45%**（診斷臺實測 28.6k → 44.4k rps）。
-
-⚠ ⚠ **在 2026-09-06 之前，站台根來自 `mktemp -d`，落在容器可寫層（overlayfs）上**
-—— 那是編排的副產品，**從來沒人挑過**，卻決定了被測的哪條路徑會被走到。
-⇒ 現在 [`docker-run.sh`](docker-run.sh) 掛一個**匿名卷**（`-v /bench-www`，
-`--rm` 會連它一起刪）並把 `BENCH_WWW_ROOT` 指過去，理由是**樞衡按 G13 的散佈形狀
-（systemd + 單靜態二進位）在生產上的站台根就在 ext4/xfs 上**。
-
-⛔ 這**不是**給樞衡開的小灶：另外三家從同一個目錄讀同一份 payload，
-換的仍然只有被測的那一家。⚠ 但它確實**換掉了一個口徑維度**
-⇒ **2026-09-06 那組讀數與此後的讀數在這一格上不同**，⛔ 不許直接並排比較。
-
-★ 兩種形狀都量得了：顯式傳一個空的 `BENCH_WWW_ROOT` 就回到 overlayfs。
-而**不管走哪條，[`env-snapshot.sh`](env-snapshot.sh) 都把實測結果寫進
-`env.json` 的 `site_root`**（`path` / `fs` / `rwf_nowait`，由
-[`site-root-probe.py`](site-root-probe.py) 探出來）⇒ 每一份原始資料都說得出
-自己是在哪種形狀下量的。
-⚠ **那兩個欄位要一起讀**：一個恆回傳 `no` 的探測與「真的跑在 overlayfs 上」輸出
-完全相同 ⇒ `fs=ext4` 配 `rwf_nowait=no` 是一個看得出來不對勁的組合。
-⛔ `unknown` 是「探不了」，**不是**「不認」。
-
-### ★ worker 數：四家各自的旋鈕，以及第一刀是怎麼撞出一個缺陷的
-
-| 被測 | 旋鈕 |
-|---|---|
-| 樞衡 | `threads_l7`（全域塊）|
-| nginx | `worker_processes` |
-| HAProxy | `nbthread` |
-| Caddy | `GOMAXPROCS`（Go，沒有 worker 處理程序的概念）|
-
-⚠ ⚠ ★ **樞衡那一格是這一刀跑通之後才有的。** 2026-09-05 之前它走 pingora
-`ServerConf::default()`（`threads: 1`），DSL 與 CLI 都沒有調它的口子 ⇒ 四家當時
-**唯一可對齊的值只有 1**。那條缺陷（D33）由 **G140** 結案：執行緒數按 service 角色定預設
-（L7 = CPU 核數 · L4 = 2 · 管理面與後台 = 1），三格都可被設定覆蓋。
-
-★ 這是「第一刀的價值在於把整條流水線真的跑一遍」的活樣本 ——
-**那個缺的旋鈕不是想出來的，是撞出來的。**
-
-`BENCH_WORKERS` 預設仍取 **1**：它與機器無關 ⇒ 門禁裡那一趟在任何機器上讀數一致。
-⛔ **真要出數那天必須顯式設它**（按那臺合格宿主的 CPU 分配）——
-「四家都跑各自的預設」與「四家跑同一個 worker 數」是兩個不同的實驗，
-⚠ 而它們的差別在報告裡看不出來，除非環境快照裡那個數被讀到。
-
-### ⚠ HAProxy 在「靜態吞吐」這一類裡做的事更少
-
-HAProxy **不是檔案伺服器**。它靠 `http-request return ... file <路径>` 回一個固定
-body —— 那是它能做到的最接近「服務一個靜態資源」的事，但它**不做目錄、不做條件
-請求、不做 range**。
-
-⇒ 這一類量的是「把同一個固定 body 推出去有多快」，而 §8 的「靜態吞吐」正是這個意思。
-⚠ ⚠ **但這條口徑不許在引用數字時被丟掉**：它少做了幾件事，
-⇒ 若它在這一類領先，那個領先裡有一部分來自它沒做的那幾件。
-
----
-
-## 釘死的版本
-
-★ 全部按 **digest / sha256** 釘死，⛔ 不按浮動 tag：tag 浮動意味著今天綠的那一趟
-和明天綠的那一趟用的不是同一個被測物件，而對拍的全部價值建立在
-「換的只有被測的那一家」上。
-
-| 用途 | 版本 | 來源 digest |
+| Server scheduling | Run one competitor at a time. |
+| Payload | Same bytes and URL within a case; no compression. Static uses `/dev/urandom`; inline respond/proxy cases use printable base64 bytes. Do not compare absolute results across these different payloads. |
+| Logging/protocol | Access logs off; HTTP/1.1 cleartext except TLS-handshake; keep-alive except short-connection/handshake cases. |
+| Identity | All four run as root inside the container, including explicit nginx `user root`. |
+| Workers | Fulcrum `threads_l7`, nginx `worker_processes`, HAProxy `nbthread`, Caddy `GOMAXPROCS`, all set from `BENCH_WORKERS`. |
+| Upstream reuse | Configure all four explicitly. Caddy/nginx idle capacity follows `bench_upstream_idle_cap = max(64, connections)`. |
+| Site filesystem | Launcher uses an anonymous volume at `BENCH_WWW_ROOT`; empty `BENCH_WWW_ROOT` selects the container writable layer. Snapshot actual `site_root.path/fs/rwf_nowait`. |
+
+Filesystem is part of the method. Fulcrum first tries open/fstat/RWF_NOWAIT on the
+current thread, then falls back to blocking work. The 2026-09-06 probe on kernel
+6.18 read a hot 4096-byte file fully on ext4, while overlayfs/tmpfs returned
+`EOPNOTSUPP`. This changes the exercised code path. Earlier overlay readings and
+later volume readings are not directly comparable. `unknown` means the probe
+could not determine support, not that support is absent. Read fs and rwf_nowait together.
+
+HAProxy's static case uses `http-request return ... file`, not a file server: no
+directory handling, conditional requests or ranges. Its fixed-body throughput
+therefore includes less work; retain this caveat with every cited result.
+
+## Pinned versions
+
+The image in [Dockerfile.bench](../docker/Dockerfile.bench) is pinned by digest,
+not floating tags. Keep this table synchronized; tests/bench/run.sh checks it and
+requires matching oha versions/SHA256 in build and benchmark images. G152 freezes
+the entire benchmark image during M3; G36 separately governs compiler changes.
+
+| Purpose | Version | Source digest |
 |---|---|---|
 | nginx | 1.29.1 | `nginx@sha256:8adbdcb969e2676478ee2c7ad333956f0c8e0e4c5a7463f4611d7a2e7a7ff5dc` |
 | HAProxy | 3.2.3 | `haproxy@sha256:baecd003ae5c2376e58d04a5b2ffc7d82d30e9bebe2869f76222b819f719dee3` |
 | Caddy | 2.10.2 | `caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d` |
-| 執行基座 | Debian trixie slim | `debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132` |
-| 負載生成器 | oha v1.15.0 | 與 `Dockerfile.build` 裡那一份**必須同版本同 sha256** |
+| Runtime base | Debian trixie slim | `debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132` |
+| Generator | oha v1.15.0 | Must match Dockerfile.build version and SHA256. |
 
-⚠ **改 `Dockerfile.bench` 就要改這張表**：`tests/bench/run.sh` 的門 ① 把表裡的
-digest 與 Dockerfile 裡的逐條對上，門 ② 把兩張鏡像裡的 oha 對上。⛔ 單獨改一邊會紅。
+Build/runtime Debian codenames must match because Fulcrum links glibc. nginx and
+HAProxy binaries originate on bookworm; trixie uses different package names for
+some identical SONAMEs (for example `libssl3t64`).
 
-★ 基座必須與 `Dockerfile.build` **同一個 Debian 代號**：樞衡的二進位在那張鏡像裡
-編出來，動態連結 glibc。⚠ nginx 與 haproxy 是從 bookworm 搬到 trixie 上的，
-SONAME 同名而 **Debian 包名不同**（bookworm 的 `libssl3` 在 trixie 叫 `libssl3t64`）。
+## Categories from PLAN §8
 
----
-
-## §8 的類
-
-`bench/case/` 下每個指令碼是 §8 七類裡的一類，讀數落 `raw/<类名>/`，
-**參與最強者、門檻與 `PASS` / `FAIL`**。
-
-| 類 | 形狀 | 狀態 |
-|---|---|---|
-| [`case/static-throughput.sh`](case/static-throughput.sh) | 四家各服務同一個固定資源 | ✅ 已在合格宿主出過數（`FAIL`）|
-| [`case/reverse-proxy-throughput.sh`](case/reverse-proxy-throughput.sh) | 四家各作反代，轉發到**同一個常駐源站** | ✅ 已在合格宿主出過數（`FAIL`；視窗二那組上游重複使用沒對齊，視窗三那組對齊了）|
-| [`case/short-connection-throughput.sh`](case/short-connection-throughput.sh) | 四家各從**記憶體**回同一份正文，**每個請求一條新連接、伺服器端先關** | ✅ 已在合格宿主出過數（`FAIL`，視窗三）|
-| [`case/tls-handshake.sh`](case/tls-handshake.sh) | 「HTTPS 版的高並行短連接」：同上，**每條連接一次完整 TLS 1.3 握手** | ⏳ 指令碼與判據就緒（G168，2026-10-23），還沒在合格宿主上出過數 |
-
-⏳ 還沒有指令碼的類：L4 轉發 · 快取命中 · 長連接。
-
-★ **TLS 握手的口徑**（owner 2026-09-24 拍，2026-10-23 補拍組；落在 [`case/tls-handshake.sh`](case/tls-handshake.sh) 頭部）：
-
-| | 口徑 |
+| Case | Method |
 |---|---|
-| 握手形態 | 每條連接都做**完整握手**，⛔ 不復用工作階段 |
-| 證書 | ECDSA P-256，每趟現造一張自簽葉證書（無中間證書），四家同一對檔案 |
-| 協定版本 | TLS 1.3 —— ⛔ 不在伺服器端限版本（樞衡沒有那個旋鈕，只限另外三家就不對等），由探針核協商出來的是 1.3 |
-| 判法 | 按**每秒握手數**判 —— 判據 ⑥ ① 證了一請求一條新連接 ⇒ 每秒請求數就是每秒握手數；沿用「越高越好」，⛔ 不給 `verdict.sh` 加方向參數 |
-| 不復用工作階段怎麼保證 | **四家伺服器端統一關掉**，而「關掉」= **一張 session ticket 都不發**（只做到「發了也用不上」的那一家每次握手照樣多簽發 ticket）。⛔ 不相依 oha 的預設行為（1.15.0 實測從不帶 `pre_shared_key`，但那不是口徑）。樞衡靠 G168 的 `tls_session_resumption false`；nginx 要 `ssl_conf_command NumTickets 0`、HAProxy 要只給它的 `OPENSSL_CONF`（`NumTickets = 0`）—— OpenSSL 3.5 在 TLS 1.3 下光關 ticket 與 cache 仍發 2 張有狀態 ticket（2026-10-23 實測）；Caddy 走 JSON 的 `session_tickets.disabled` |
-| 金鑰交換組 | 四家**顯式寫成同一個**：**`X25519MLKEM768`**（`BENCH_TLS_GROUP`；owner 2026-10-23 拍）。理由：現行瀏覽器的預設、五個 TLS 棧的首選，量的是真實用戶端的握手。⚠ 它必須是 oha 發 key share 的組之一（10-23 抓包：只發 `X25519MLKEM768` 與 `X25519`），換成 `P-256` 每次握手都會多一次 HelloRetryRequest |
-| 開跑前的握手探針 | `bench_tls_probe`（`openssl s_client -trace` 連兩次、第二次帶 session，摘要落 `raw/tls-handshake/probe-<名字>.txt`）判 TLSv1.3 · 組 · 無 HRR · **0 張 ticket** · 第二次是新握手。**不過 ⇒ 只作廢這一類**（見「讀數什麼時候不算數」）。探針真的看得見恢復與 ticket，由門禁 C23 對**不寫鍵的樞衡**與**少了 `NumTickets 0` 的 nginx** 各證一次 |
-| SNI | URL 走主機名 `bench-tls.test`（oha `--connect-to` 連到 127.0.0.1）⇒ 四家都走按 SNI 挑證書那條路 |
+| [Static throughput](case/static-throughput.sh) | All four serve one fixed resource; retain HAProxy's reduced-work caveat. |
+| [Reverse proxy throughput](case/reverse-proxy-throughput.sh) | One persistent Fulcrum respond origin, reused across all four proxy runs. |
+| [Short-connection throughput](case/short-connection-throughput.sh) | Memory responses, new connection per request, server closes first. |
+| [TLS handshake](case/tls-handshake.sh) | HTTPS short connections with a full TLS 1.3 handshake per connection. |
 
-形狀上它就是「HTTPS 版的高並行短連接」：同一份 payload、訪問紀錄全關、worker 數一致、判據 ⑥ 全套（伺服器端先關的行為探針走 `close-probe.py --tls`）。
+L4 forwarding, cache-hit acceptance and long connections do not yet have case
+scripts. The frozen official Caddy binary has neither L4 nor HTTP cache support;
+those categories require a missing-competitor rule before implementation. HAProxy
+has a limited small-object memory cache; its use/alignment is not yet designed.
+Case execution and verdict discovery derive from `case/*.sh` and `raw/*/`.
 
-#### ⚠ ⚠ ★ 引用這一類的數字時，兩條不對等一條都別丟
+### Reverse proxy
 
-- **TLS 1.3 密碼套件四家拉不齊**：oha 的 rustls 把 AES-256-GCM 排第一，樞衡（BoringSSL）、nginx 照用戶端順序、HAProxy 照 OpenSSL 預設 ⇒ `TLS_AES_256_GCM_SHA384`；
-  Caddy（Go）在有 AES 指令的硬體上照自己的順序選 `TLS_AES_128_GCM_SHA256`（2026-10-23 開發機門禁實錄）。Go 沒有 TLS 1.3 套件的設定、樞衡也不加這個旋鈕 ⇒ **伺服器端拉不齊**。
-  探針把協商出的套件記在 `probe-<名字>.txt` 的 `cipher=`（診斷，⛔ 不判）—— 每次引用前按實錄寫明方向。
-- **nginx 的正文是兩個變數拼起來的**（與高並行短連接那一類同一條，見下）。
+The origin and tested proxy share server CPUs. This preserves load-generator cores
+but prevents absolute comparison with static throughput. Fulcrum's own turn is
+Fulcrum→Fulcrum; the qualitative bias is conservative for PASS and cannot excuse
+FAIL. The earlier 2×2 proxy/origin diagnostic confounded same-binary and origin
+main effects, so it did not quantify that cost. Printable payloads also differ
+from static throughput.
 
-⚠ 其餘三類**難度不均勻**：L4 轉發撞「Caddy 官方二進位不含 L4 支援」（要 caddy-l4
-外掛重新建置）；快取命中撞的**也是 Caddy** —— 它的官方二進位沒有 HTTP 快取，
-要 `caddyserver/cache-handler` 外掛重新建置（`xcaddy build --with …`，同一件事）。
-★ 2026-09-24 起 **`G152`** 把 `G36` 的「M3 對拍期間凍結」擴到了對拍鏡像 ⇒ 客製建置**進不了鏡像**，
-M3 內這兩類**只能缺 Caddy**。
-⚠ **不是 HAProxy**：此前這裡寫的「HAProxy 沒有快取層」不準確 —— HAProxy 自帶一個放在記憶體裡的
-小物件快取（官方設定手冊「Cache」一章：`cache` 段 + `http-request cache-use` /
-`http-response cache-store`），帶著它自己的限制（只存 200、要有顯式過期時間或檢核器、
-物件大小受 `max-object-size` 限制等）；這一類要不要用它、怎麼對齊，⛔ 還沒設計過。
-兩者都自帶一個「缺一家競品怎麼判」的問題。
+Criterion ⑤ measures new origin connections per thousand requests using
+`Tcp: PassiveOpens` deltas, saved as `upstream-conns.txt`. The maximum is
+`BENCH_UPSTREAM_REUSE_MAX=50`. Small gate loads detect one-new-connection-per-request
+but can miss partial non-reuse visible at measurement-window concurrency. Do not
+tighten the threshold to small-run noise; lib.sh self-tests retain that blind spot.
 
-★ `run.sh` 與 `verdict.sh` 兩處都是**推導**的（`case/*.sh` 與 `raw/*/`）
-⇒ 放一個指令碼進 `case/` 就自動被跑到、被判到，兩個檔案一行都不用改。
+### Short connections
 
-### 反代吞吐：源站是**樞衡自己的 `respond`**，而這是個有代價的選擇
+All four return the same memory body. Use both `--disable-keepalive` and
+`-H 'Connection: close'`: oha 1.15.0 already inserts that header, but the explicit
+argument documents the method. Templates are named by response shape, not category.
 
-一個**常駐**源站（跨四趟不重起 —— 它是環境不是被測），四家反代背靠背打它。
-源站與被測**共享** `BENCH_SERVER_CPUS`：合格宿主只有 4 核，分三組會讓 oha 只剩
-1 核去打四萬多 rps ⇒ 很可能**壓測端先飽和**，而那正是判據 ④B 會作廢整類的情形。
+Criterion ⑥ checks:
 
-⚠ **樞衡 `file_server` 當時出局**：2026-09-06 靜態吞吐實測 7638.6 rps ⇒ 四家會一起被它壓住，
-判據 ④B 收斂作廢整類 —— 白開一次視窗，而視窗要停一次服。
-★ **這條理由按今天的數已經不成立**：[視窗二](results/2026-09-10-window-2/README.md) 的 `file_server`
-是 19811.2 rps，已高於這一類的最強者 nginx 12971.5。⇒ 選 `respond` 作源站今天只靠下面那條依據
-（**誤差方向**）站著，而那一條不受影響。
+1. `Tcp: PassiveOpens` delta/request × 1000 is at least
+   `BENCH_SHORT_NEW_CONNS_MIN=990`, saved in `new-conns.txt`.
+2. The actual request contains `Connection: close`, captured before load with the
+   same `OHA_SHORT_ARGS` by [close-probe.py](close-probe.py) `--capture-request` on :9960.
+3. Each server's preflight reaches EOF within a deadline; inspect behavior rather
+   than trusting a response header. The probe has positive/negative controls.
 
-★ 鏡像裡能當源站的只有四家自己與 python3 ⇒ 加第五個實作要改鏡像，撞 G36（`G152`：M3 期間對拍鏡像整張凍結）。
-⇒ **無論選誰，都必然有一趟是「同二進位兩執行個體」**。選樞衡的依據是**誤差方向**：
+TIME_WAIT server/client counts remain diagnostic only: table overflow and the
+close race make them unsuitable as verdict criteria. Omitting a redundant flag
+need not fail when wire behavior is unchanged; forcing keep-alive must fail the
+header criterion even if every request still opens a new connection.
 
-> 受損的是**樞衡自己那一趟** ⇒ 若結論是 `PASS`，樞衡實際只會更強，那個 `PASS`
-> 是**保守**的；⛔ 若結論是 `FAIL`，**不許拿這一條去辯解**。
-> ⚠ 反過來選 haproxy 作源站，受損的是很可能的**最強者** ⇒ 門檻被低估 ⇒ `PASS`
-> 不可信 —— 那正是判據 ④C（`G146`）在治的那個失效。
+nginx cannot hold a 4096-byte return argument in its 4096-byte configuration buffer,
+so [nginx-respond.conf](conf/nginx-respond.conf) joins two variables. This adds
+allocation/copy relative to nginx's optimal literal response; its size has not
+been measured. If nginx leads, the threshold is biased downward: discount PASS,
+not FAIL. Retain differing response headers and printable-versus-static payloads
+as further caveats. Client connect/close cost makes generator saturation a risk.
 
-### ⚠ ⚠ ★ 引用這一類的數字時，三條一條都別丟
+### TLS handshake (G168)
 
-1. **樞衡那一趟是 fulcrum→fulcrum**，四家裡只有它的源站與被測同二進位。
-   ⛔ **不聲稱這個代價有多大** —— 選型那組開發機實測是個 2×2（反代 × 源站），
-   而**它的對角線正好是「同二進位」格** ⇒「同二進位效應」與「源站主效應」
-   **完全混雜，分離不出來**。能站住的只有定性結論：兩行方向相反 ⇒ 交互作用存在，
-   且對 haproxy 遠大於對樞衡。
-2. **源站與被測共享 server 組的核** ⇒ 這一類的**絕對讀數不可與靜態吞吐並排比較**。
-   ★ 但源站對四家一視同仁 ⇒ 類內的相對比較（G19 那 10%）成立。
-3. **payload 與靜態吞吐不是同一份位元組**（可列印 base64 對 `/dev/urandom`）——
-   又一條「兩類不可並排比較」的理由。
+Use one freshly generated self-signed ECDSA P-256 leaf certificate/key for all
+four servers, hostname `bench-tls.test`, and oha `--connect-to` loopback. Verify
+TLS 1.3 rather than imposing a server-only version restriction unavailable to
+Fulcrum. Requests/second equals handshakes/second because criterion ⑥ proves one
+request per new connection.
 
-### 判據 ⑤：上游連接重複使用 —— 以及它**抓不住**什麼
+Disable session resumption on every server, including issuance of all tickets:
+Fulcrum `tls_session_resumption false`; nginx `ssl_conf_command NumTickets 0`;
+HAProxy's private `OPENSSL_CONF` with `NumTickets = 0`; Caddy JSON
+`session_tickets.disabled`. Disabling only cache/tickets flags under OpenSSL 3.5
+can still issue two stateful tickets.
 
-四家對上游連接的預設行為不同，而 **oha 的 JSON 裡看不出這件事**：成功率、
-狀態碼、錯誤分佈全都正常，只是那一家的 rps 被系統性壓低。觀測量是
-**每千請求新建的上游連接數**（`/proc/net/snmp` 的 `Tcp: PassiveOpens` 前後差值），
-落 `raw/<类>/upstream-conns.txt`，由 `bench_upstream_reuse_violations` 判，
-上限 `BENCH_UPSTREAM_REUSE_MAX`（預設 **50**，取值依據寫在 `lib.sh` 裡）。
+All four explicitly use `BENCH_TLS_GROUP=X25519MLKEM768`, one of oha's offered
+key shares. Choosing P-256 instead would add HelloRetryRequest. `bench_tls_probe`
+runs `openssl s_client -trace` twice, reusing the first session on the second
+attempt. Save `probe-<server>.txt`; require TLSv1.3, the selected group, no HRR,
+zero tickets and a fresh second handshake. Failure gives only this category
+`VERDICT: VOID`. C23 checks ticket/resumption visibility against negative controls.
 
-⚠ ⚠ ⛔ **`upstream-conns.txt` 有意不叫 `.json`** —— `read-raw.py` 對該目錄做
-`glob("*.json")`，一個 `.json` 會被當成**第五家被測**混進競品集合。
-★ 與上面 `ceiling.txt` 逐字同一條教訓。
+TLS 1.3 cipher selection cannot be fully aligned: Go/Caddy may choose AES-128-GCM
+while the others choose AES-256-GCM. Record `cipher=` diagnostically and disclose
+the actual result when citing readings. nginx's joined-body caveat also applies.
 
-⚠ ⚠ ★ ★ ★ **它的能力邊界（2026-09-09 實測，⛔ 別讀成「四家都驗過了」）**：
+## Diagnostics: outside §8 acceptance
 
-| 失效形態 | 門禁參數（2s / 10 連接） | 視窗參數（連接數大一個量級） |
-|---|---|---|
-| **每請求新建**（nginx 少那三行）| **1005.65** ⇒ 抓得住 | 抓得住 |
-| **部分不復用**（caddy 少 transport 塊）| **4.12** ⇒ ⛔ **抓不住** | 100.30 ⇒ 抓得住 |
+[diag/](diag/) contains Fulcrum-only diagnostics. Save them under `diag/`, never
+`raw/`, and exclude them from strongest/threshold/PASS/FAIL calculations. C17 derives
+the diagnostic names and verifies that none becomes a raw category.
 
-「部分不復用」那一族的表現**相依並行數**，而門禁只跑 10 條連接。
-⇒ **同一道判據在兩種參數下各抓一族**，而視窗那一趟的讀數會進原始資料。
-⛔ **沒有為此把閾值壓到 4 附近**：對齊那側三趟實測在 0.68–3.20 之間波動（約 5 倍），
-壓緊會變成一道**隨機翻面**的門。★ 這個盲區由 `bench_self_check` 裡一條斷言釘著 ——
-哪天有人把閾值壓緊到會誤傷它，那條當場紅。
+- [respond-ceiling.sh](diag/respond-ceiling.sh) compares file_server and respond
+  back-to-back. Neither uses encode; both use the same printable payload. Their
+  response paths differ, and these readings cannot be compared directly with the
+  separate static-throughput payload.
+- [cache-hit-p99.sh](diag/cache-hit-p99.sh) compares memory and disk backends
+  back-to-back, with a file_server origin behind reverse_proxy. Cache only wraps
+  reverse_proxy. Backends are process-wide (`FUL-DSL-0035`), so derive memory
+  configuration by removing disk, with only that setting and necessary listen-port
+  changes. Run one variant at a time; a hit does not visit the origin.
 
-### 高並行短連接：從記憶體回、每個請求一條新連接、伺服器端先關
+Derive cache TTL as 10× BENCH_DURATION. Pre/post state must be HIT/HIT-DISK, and
+post-load `Age >= duration`: revalidation resets stored_at and Age, then becomes
+Hit again, so a final HIT alone cannot prove the entry stayed fresh. Save
+`cache_state` before/after `{state, age}` and `duration_secs` in delta.json; C18
+independently checks them. C19 verifies `cache_root.path/fs/rwf_nowait`, matching
+the site-root disclosure. Development overlay and qualified-host volumes are
+not directly comparable.
 
-owner 2026-09-23 拍了三條口徑：
+G151 assigns no millisecond threshold to disk-p99 minus memory-p99 under saturated
+closed-loop load: much of it is throughput-derived queueing, not tail latency.
+Keep recording it; only the eventual cache-hit acceptance category may reopen D20.
 
-| | 口徑 | 放棄的那一條 |
-|---|---|---|
-| **資源形態** | 四家都**從記憶體**回同一份正文（樞衡 `respond` · Caddy `respond` · HAProxy `http-request return … file`，啟動時讀進記憶體 · nginx `return`）⇒ 量的只是「建連 → 解析 → 回應 → 拆連」 | 與靜態吞吐同一個檔案 —— 樞衡檔案路徑的已知成本會混進來，分不出差距來自哪 |
-| **誰先關** | **伺服器端**：oha 同時帶 `--disable-keepalive` 與 `-H 'Connection: close'` | 用戶端先關 —— ⚠ 用 oha v1.15.0 其實**做不出來**：只帶 `--disable-keepalive` 它也會自己帶上 `Connection: close`（見下）|
-| **並行數** | 沿用 `BENCH_CONNECTIONS` ⇒ `load_params` 不多一格 | 單獨一個更高的並行 |
+## Output and interpretation
 
-⚠ ⚠ **`Connection: close` 在 oha v1.15.0 下其實由 `--disable-keepalive` 自己帶上**（`src/lib.rs:537`：
-HTTP/1.1 時插入 `Connection: close`，然後才插使用者的 `-H`，後者可以覆蓋前者）。
-★ 2026-09-23 的注入反證實測推翻了設計時的判斷 —— 當時唯讀了 `src/client.rs`，以為它不發。
-⇒ `-H 'Connection: close'` 在這個版本下是**冗餘**的；⛔ 但留著：口徑寫在明處，不相依 oha 的一個
-隱式行為（換個版本它可能就不加了）。★ owner 2026-09-24 確認保持現狀，也不另做「用戶端先關」的變體。判據 ⑥ ② 判的是**線上那個請求頭本身**，與它是哪個旗標帶上的無關。
-★ 範本按**形態**命名（[`conf/*-respond*`](conf/)），⛔ 不按類名：將來別的類要「從記憶體回一份正文」可以直接用；
-樞衡那一家重複使用 [`conf/fulcrum-respond.Fulcrumfile`](conf/fulcrum-respond.Fulcrumfile)（它的第三個用途，頭部寫著）。
-
-#### ⚠ nginx 的正文是兩個變數拼起來的 —— 本類唯一一條已知不對等
-
-nginx 讀設定用一塊 **4096 位元組**的緩衝區（1.29.1 `src/core/ngx_conf_file.c`：`NGX_CONF_BUFFER 4096`），
-一個參數長到填滿它就報 `too long parameter` ⇒ 4096 位元組的正文寫不進一個 `return`
-（2026-09-23 實物核過：對拍鏡像裡同一個 nginx 1.29.1，4000 位元組 `nginx -t` 通過，4096 位元組報
-`too long parameter, probably missing terminating """ character`）。
-⇒ [`conf/nginx-respond.conf`](conf/nginx-respond.conf) 拆成 `$p1` / `$p2` 兩半、在 `return` 裡拼。
-靜態文字的 `return` 不拷貝，拼接每請求多一次約 4 KB 的分配 + 拷貝 —— 另外三家本來就在每請求上
-處理一遍正文（Caddy 掃佔位符再寫 · HAProxy 拷進輸出緩衝 · 樞衡 `respond` 展開一遍，均已讀原始碼核過）
-⇒ 它讓 nginx 做的是同一類活，⛔ 但比它自己的最優寫法多一步。
-**方向**：若 nginx 是這一類的最強者，門檻會被略微壓低 ⇒ **對樞衡有利** ⇒ `PASS` 打折扣，`FAIL` 不受影響。
-⛔ 不聲稱它有多小（沒量過）。
-
-#### ⚠ ⚠ ★ 引用這一類的數字時，三條一條都別丟
-
-1. **nginx 的正文是拼起來的**（上一節）—— `PASS` 打折扣。
-2. **payload 與靜態吞吐不是同一份位元組**（可列印 base64 對 `/dev/urandom`，與反代類同一手法）
-   ⇒ 與靜態類的絕對讀數不可並排比較。
-3. **回應頭四家不同**（`Server` / `Date` / `Content-Type` / `Connection` 的有無與長短）——
-   開跑前只核狀態碼與正文位元組，⛔ 不為此去改任何一家的回應頭。
-
-#### 判據 ⑥：每請求一條新連接 · oha 真帶著那個頭 —— 外加四家會不會真的先關
-
-| 要證的事 | 怎麼證 | 落在哪 |
-|---|---|---|
-| **每個請求都是一條新連接** | `Tcp: PassiveOpens` 在 oha 前後的差值 ÷ 請求數 × 1000，下限 **990**（`BENCH_SHORT_NEW_CONNS_MIN`，依據寫在 [`lib.sh`](lib.sh)）。本類沒有源站 ⇒ netns 裡只有 oha→被測這一段在建連 | 判據 ⑥ ①，讀 `raw/<类>/new-conns.txt` 第 2 列 |
-| **oha 真的帶著 `Connection: close`** | 開跑前用負載那一組 oha 參數（**同一個陣列** `OHA_SHORT_ARGS`）向一個只記請求頭的合成伺服器端（[`close-probe.py`](close-probe.py) `--capture-request`，連接埠 9960）發一次 | 判據 ⑥ ②，讀 `raw/<类>/oha-request.txt` |
-| **四家收到那個頭會先關** | 每家開跑前的行為探針：發一個帶 `Connection: close` 的請求，限時內讀到 EOF 才算（⛔ 判在行為上，不判回應頭）；探針自己先用合成被測兩個方向自證 | 案例指令碼，不過這一家就不跑 |
-
-★ 單點變化各自落在哪道門上 —— 2026-09-23 在開發機上逐個注入、各跑一趟 `BENCH_ONLY` 實測
-（串接由 `tests/bench/gate.sh` 的 **C21** 判）：
-
-| 注入（`OHA_SHORT_ARGS` 改成…） | ⑥ ① 每請求新連接 | ⑥ ② 請求帶 `close` | 說明 |
-|---|---|---|---|
-| `()`（兩個都刪） | ✗ 每千 0.11–0.25 | ✗ | 這一類悄悄變回 keep-alive 吞吐 |
-| `(--disable-keepalive)`（只刪頭） | ✓ | ✓ | ⛔ **不紅，而且這是對的**：oha 自己帶上了 `connection: close`（`src/lib.rs:537`），線上口徑沒變 |
-| `(--disable-keepalive -H 'Connection: keep-alive')` | ✓ 每千 1000.22–1000.42 | ✗ | ★ **⑥ ② 單獨守著的就是這一種**：每請求仍是新連接，但伺服器端不再先關（抓到的原文是 `connection: keep-alive`）|
-| 陣列不動，負載那一行加 `-t 1ms` | ✓ | ✓ | C21 第 ① 半（原始資料算不算數）紅：三家 `successRate < 1.0` 被 `read-raw.py` 判 INVALID |
-
-⚠ 只刪 `--disable-keepalive`（留著頭）按推理也不該紅（伺服器端按頭關 ⇒ 每請求仍是新連接）——
-⛔ **這一格沒實測**，別把它當成上表的第四行。
-⚠ ⚠ ⛔ 兩個觀測檔案**有意不叫 `.json`**（`read-raw.py` 會把它們當成第五家被測）。
-
-⚠ ⚠ **`new-conns.txt` 後兩列（TIME_WAIT 落在伺服器端 / 用戶端的條數）是診斷，⛔ 不判** ——
-它原本是判據 ⑥ 的第二半，2026-09-23 實測站不住，owner 改判成上面那條「抓請求頭」：
-① 門禁參數下 netns 的 TIME_WAIT 表（開發機容器 65536 條）被前兩家佔滿，後兩家讀到 `0 0`
-（`TcpExt: TCPTimeWaitOverflow` 一趟漲到 112042）；
-② 表是空的時候它也只是**競態**：oha 讀完回應自己也立刻關 —— 每家之間等 65 秒時，伺服器端那一側的佔比
-nginx 0.946 · HAProxy 0.975 · 樞衡 0.581 · Caddy 0.569；③ **而且它隨負載變**：同一臺開發機換成
-200 並行 × 20 秒（釘核 `0-1` / `2-3`）時，樞衡那一格變成 0.997、Caddy 0.82。
-⛔ 那些都是開發機上的口徑觀察，不是效能結論。
-
-#### ★ ★ 風險：壓測端先飽和的可能比另外兩類都大
-
-短連接的成本有一半在**用戶端**（每個請求一次 `connect` + 一次拆連），而合格宿主上 oha 只有 2 個核。
-那時四家會一起收斂到 oha 的天花板，判據 ④B 會把整類判成 `VOID` —— ★ 結構上**不會出錯結論**，
-但可能**白開一次視窗**。
-2026-09-23 在開發機上按接近視窗的參數（200 並行 × 20 秒、釘核 `0-1` / `2-3`、2 個 worker）試跑一次：
-四家讀數全部有效，判據 ④B / ④C **都沒響**（四家分得開）。⛔ 開發機不合格、讀數不引用；
-合格宿主只有 4 核、核也不是同一種 ⇒ **這個觀察不能外推**，風險仍然掛著。
-
-## 診斷讀數（⛔ 不是 §8 的一類）
-
-`bench/diag/` 下的步驟產出的是**診斷讀數**：只有樞衡自己，⛔ 沒有競品，
-⛔ 不參與最強者、門檻與 `PASS` / `FAIL`。今天有兩個：
-
-| 步驟 | 量什麼 | 為誰量 |
-|---|---|---|
-| [`diag/respond-ceiling.sh`](diag/respond-ceiling.sh) | 同一趟裡 `file_server` 與 `respond` 背靠背 | 「把檔案那條路修到極限能到哪」——靜態檔案快取那個方案做不做由它決定 |
-| [`diag/cache-hit-p99.sh`](diag/cache-hit-p99.sh) | 同一趟裡**記憶體後端**與**磁碟後端**的命中背靠背 | `G150` ②：「磁碟命中的 p99 − 記憶體命中的 p99」那一格 |
-
-⚠ ⚠ ⛔ **它的輸出落 `diag/`，不落 `raw/`。** `verdict.sh` 是
-`for raw_case in "$OUT_DIR"/raw/*/` —— **`raw/` 下每個子目錄都會被當成一類去判**，
-而 `read-raw.py` 把該目錄下每個 `*.json` 當成一家被測。只有一家讀數
-⇒ 判據 ④ 會按「有效讀數不足兩條」判 `VOID`：那不是錯結論，
-但它把一個**診斷上界**擺成了 §8 的一個類別，而七類裡沒有它。
-★ 與上面 `ceiling.txt` **不許叫 `.json`** 那條同族。
-兩個方向由 `tests/bench/gate.sh` 的 **C17** 釘著（① 兩份讀數真的產出；
-② `bench/diag/` 下**每個指令碼的名字**都不在 `raw/` 下出現）。
-⚠ ★ 第 ② 半 2026-09-09 改過：它原本數的是 `raw/` 的**類別總數**（`!= 1`），
-而 §8 有七類 ⇒ 補齊路上那個數要改 5 次，漏改一次要麼誤紅、要麼被人順手放寬成不判。
-⇒ 換成**推導**那份名單：加 §8 的類不用改它，加診斷步驟也不用改它。
-
-⚠ **兩處口徑，引用差值時一條都別丟**：
-
-1. **`respond` 與 `file_server` 寫回應走的是不同的路** ——
-   [DSL 參考](../docs/architecture/dsl-reference.md)：`encode` 今天只接在
-   `file_server` 與轉發那兩處。⇒ 兩個變體**都不配 `encode`**，且 payload 不可壓縮
-   ⇒ 這一格對兩邊都不起作用。
-2. **它的 payload 與「靜態吞吐」那一類不是同一份位元組** —— `respond` 的正文
-   **只有內聯形態**（⛔ 沒有 file 形式）⇒ 必須可列印，取的是 base64 字母表，
-   而靜態吞吐那一類取的是 `/dev/urandom`。
-   ⇒ ⛔ **不許**把 `diag/` 的讀數與 `raw/static-throughput/fulcrum.json` 並排比；
-   本步比的是**同一趟裡的兩個變體**，兩邊用的是同一份可列印位元組。
-
-### `cache-hit-p99` 的口徑（`G150` ②）
-
-**拓撲**：一個 `file_server` 源站 + 兩個帶 `cache` 的反代變體，**一次只起一個變體**。
-★ 源站是必須的：`crates/fulcrum-server/src/lib.rs:654` 寫著「快取**只裹
-`reverse_proxy`**」⇒ ⛔ 不能把 `cache` 掛在 `file_server` 上省掉這一層。
-⚠ 命中之後源站根本不被訪問 ⇒ 它在測量視窗裡的成本 ≈ 0。
-
-**為什麼必須背靠背**：快取後端是**處理程序級**的，多個 `cache` 塊寫不同的 `disk`
-（含「一個寫了、一個沒寫」）是編譯期錯誤 `FUL-DSL-0035` ⇒ 兩個後端不可能共存於一個處理程序。
-★ 記憶體那份設定由磁碟那份**刪掉 `disk` 一行派生**，⛔ 不是另寫一份。
-⚠ 兩處差別如實寫在指令碼頭部：`disk` 那一行（被測變數）與監聽連接埠（機械必需）。
-
-**`ttl` 由 `BENCH_DURATION` 算出來（10 倍），⛔ 不是字面值** —— 兩處會飄的值，
-飄掉的那天沒有任何東西會說，而症狀是「量到的其實是重驗證」。
-
-**⚠ ⚠ 這一格不定毫秒閾值**（`G151`，2026-09-24 修訂 `G150` ② ③）：它是在閉環飽和負載下量的，
-兩臂 p50 都等於 並行 ÷ rps（2026-09-10 視窗二：7.03 ≈ 200 ÷ 28461.0，14.80 ≈ 200 ÷ 13544.9）⇒
-差值 9.22 ms 裡約 84% 是吞吐差換算出的排隊時間，⛔ 不是尾延遲 —— 給它定毫秒閾值正是 `G148` ③
-點名的那種錯。本步照舊量、照舊落原始資料；`D20` 何時重開改由「快取命中」那一類的判定決定。
-
-**這一格的判據長什麼樣，以及它們是怎麼被證出來的**（2026-09-09 實測，四條反證）：
-
-| # | 注入 | 實測 |
-|---|---|---|
-| ① | 輸出改落 `raw/` | `C17` 與 `C18` **各紅一條**（前者：`raw/` 類別數 1→2；後者：`diag/` 下產物為 0）|
-| ② | `disk` 指向不可用目錄 | `✗ cache-disk（开跑前）X-Fulcrum-Cache 该是 'HIT-DISK'，实际 '（这个头根本没出现）'`；⚠ **同趟記憶體臂四項全過** ⇒ 單變數。★ 這條由 diag 指令碼自己攔下，門禁在步驟 A 就中止，**沒走到 C18** |
-| ③ | `ttl` < `BENCH_DURATION` | ⛔ ⛔ **第一版判據在這個注入下全綠** —— 見下 |
-| ④ | 刪掉 `SNAP_CACHE_FS` 那次 export | `✗ C19 这几格没被记进去：fs`，另兩格照舊 ⇒ 那一格真的來自探測 |
-
-⛔ ⛔ **③ 那條必須讀完**：本步原先寫的是「跑完後再核一次 `X-Fulcrum-Cache`，
-與開跑前相同 ⇒ 整趟沒重驗證」。**那是錯的**，`ttl=1s` < `duration=2s` 的注入下
-整個門禁**照樣全綠**。★ 根因：`CacheState` 只有 `Hit` / `Revalidated` 兩個值
-（`cache/mod.rs:261`），而**重驗證之後條目重新變新鮮** ⇒ 之後的請求又是 `Hit`，
-與「從未過期」在最終那一次觀測上**完全相同**。
-⇒ 改判 **`Age`**：`Age = now − stored_at`（`lib.rs:1384`），而重驗證走
-`refresh(…, now_unix(), …)` → `stored_at = now`（`cache/store.rs:208`）⇒ **`Age` 歸零**。
-判據是**跑完後 `Age` ≥ 負載時長**（預熱在負載之前 ⇒ 沒被刷新的話只會更大）。
-同一注入下新判據**當場紅**。
-★ 這是 `G148` ③ 那一族的又一例：**判據看著正經，但量綱挑錯了** ——
-⚠ 而它是被**反證**抓出來的，⛔ 不是讀程式碼讀出來的。
-
-**觀測值落進原始資料，⛔ 不只列印**：`delta.json` 記 `cache_state`
-（每個變體 `before` / `after` 各一組 `{state, age}`）與 `duration_secs`，
-由 `tests/bench/gate.sh` 的 **C18** 獨立複核。
-★ 起因同樣是實測：門禁把 `bench/run.sh` 的輸出重定向進**容器裡**的紀錄，
-`--rm` 之後就沒了 ⇒ 只列印等於沒有證據。
-
-**快取根的檔案系統**由 `env.json` 的 `cache_root` 三格記著（`path` / `fs` / `rwf_nowait`），
-與 `site_root` 同形，由 **C19** 判它說不說得出話。
-⚠ ⚠ **兩條路上它不是同一種檔案系統**：`bench/docker-run.sh`（合格宿主）掛 ext4 匿名卷；
-而 `tests/bench/run.sh`（開發機門禁）不設 `BENCH_WWW_ROOT` ⇒ 落在 **overlay** 上
-（實測 `{'path': '/tmp', 'fs': 'overlay', 'rwf_nowait': 'no'}`）。
-⇒ ⛔ **兩條路的讀數不許並排比** —— 而現在原始資料自己說得出這件事。
-
----
-
-## 產物佈局
-
-```
-<输出目录>/
-  env.json                       环境快照 + 合格性判定（schema: fulcrum-bench-env/1）
-  raw/<用例类>/<被测>.json        oha 的原始输出，原样落盘
-  diag/<诊断步骤>/<变体>.json     诊断读数（⛔ 不参与判定，见上一节）
-  verdict.txt                    判定结论，或「为什么不出结论」
+```text
+<output>/
+  env.json                       environment/qualification; fulcrum-bench-env/1
+  raw/<case>/<server>.json        unmodified oha output
+  diag/<diagnostic>/<variant>.json
+  verdict.txt                    verdict or reasons for withholding one
 ```
 
-★ `raw/` 下的東西是 G19 要求「全部公開」的那份**原始資料**。⛔ 不要在提交時
-篩掉「不好看」的那幾趟 —— 那樣公開的就不是原始資料了。`diag/` 同理。
+Each raw-case `*.json` is interpreted as a competitor. Auxiliary observations must
+use `ceiling.txt`, `upstream-conns.txt`, `new-conns.txt`, `oha-request.txt` or probe
+text files, not additional JSON files in that directory. Preserve all raw and
+diagnostic data; publication cannot select only favorable runs.
 
----
+A green development gate proves pipeline/criterion behavior, not M3 acceptance,
+production readiness or a root cause for a throughput gap. Incomplete categories,
+unverified attestations and external-ceiling uncertainty remain explicit limits.
 
-## ⛔ 這套東西證不了什麼
+The immutable 2026-09-06 set has two known documentation defects: its REDACTION
+text describes more than one textual change despite saying one; its final README
+link points to nonexistent bench/results/README.md instead of this page. Preserve
+the original evidence and apply these corrections when reading it.
 
-- ⚠ **各組讀數在 [`results/`](results/) 下，每組的 README 逐條寫著它說不了什麼。**
-  ⛔ 別把任何一組讀成 M3 的整體結論 —— 里程碑狀態只在 `PLAN.md` §1。
-- ⛔ **它說不了樞衡為什麼慢。** 讀數只是讀數，本目錄不含任何根因結論。
-- **§8 劃了七類**（靜態吞吐 · 反代吞吐 · TLS 握手 · L4 轉發 · 快取命中 · 長連接 ·
-  高並行短連接），**有指令碼的只是其中幾類**，見「§8 的類」那張表（⛔ 這裡不抄那個數，抄了就會過期）。
-  第一刀按 G132 只做一類 × 三家的理由仍然成立：「該類最強者」這個概念還沒被檢驗過之前
-  先鋪覆蓋面，是在檢驗之前鋪。
-- **`tests/bench/run.sh` 全綠 ≠ 對拍達標。** 它判的是流水線活著、判據判得動。
-- **合格性裡那兩件靠宣告的事沒有門**（專機 · 無 TUN 代理）。★ G145 把第三件
-  （核心參數）從宣告裡拆出來變成了門，⛔ 但那**沒有**讓這兩件也變得可驗證。
-- **判據 ④ 說不出壓測端到底有沒有飽和。** 承重的那一半（B 收斂）只回答「這組數
-  不可比」，⛔ **它分不出是生成器到頂、環回到頂、還是 CPU 親和沒分開**。真正能直答
-  這一問的是 A（絕對天花板），而 **A 今天沒打開** —— 它要一個「確實比四家都快」的
-  參照服務，那個選擇在合格宿主到位之前驗不了。⇒ 在 A 打開之前，「oha 沒有先飽和」
-  這句話**本套東西證不了**，它只能證「四家的數彼此分得開」。
-- **`BENCH_MIN_SPREAD` / `BENCH_GEN_HEADROOM` 這兩個閾值沒有實測支撐**（見上一節）。
-- **容器裡讀到的 sysctl 仍然不是宿主的** —— G145 沒有改變這一點，它改變的是
-  **我們不再假裝那兩者是一回事**：四個 per-netns 鍵改成在容器裡設、在容器裡判，
-  宿主那一個在宿主上設、在宿主上判。快照把容器實測記成 `sysctl_as_seen_in_container`，
-  把兩側宣告與宿主實測記成 `kernel_params`，⇒ 第三方可以自己重算那次比較。
-  ⚠ ⛔ 但它**證不了宿主上那個值在整趟對拍期間沒被改過** —— 啟動器只在開跑前讀一次。
-- **`netdev_max_backlog` 那道門證不了 16384 就夠用。** ★ 夠不夠是可以量的：
-  `/proc/net/softnet_stat` 第 2 列就是這一項的丟包數（實測它是全域的，容器裡讀到的
-  就是宿主的）⇒ **對拍前後各讀一次**才是那個判據，⛔ 而本套東西今天還沒有自動讀它。
-
----
-
-相關：[`PLAN.md`](../PLAN.md) §7 M3 / §8 / §9 ·
-[效能驗收標準](../docs/verification/performance-bar.md) ·
-[建置與驗證](../docs/platform/build-and-test.md)
+[Performance acceptance](../docs/verification/performance-bar.md) ·
+[Build and test](../docs/platform/build-and-test.md) · [PLAN](../PLAN.md)

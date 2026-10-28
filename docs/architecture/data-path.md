@@ -1,230 +1,49 @@
 ---
-type: 架構基線
-title: 資料路徑
-description: 三個入口歸一到同一個路由層與同一個上游池；靜態檔案自研，快取磁碟後端自研；上游支援 DNS 定期重解析。
-resource: ../../PLAN.md
-tags: [架構, 承重牆, 必讀]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G6（Pingora 底座 —— ⚠ HTTP/3 那半已由 G103 從 quinn/h3 改成 quiche）、G7（自研四塊）、G17（上游發現）
-  - id: plan-6
-    resource: /references/plan.md
-    title: PLAN.md §6.1 首版自研範圍
-  - id: plan-10-d8-d11
-    resource: /references/plan.md
-    title: PLAN.md §10 G83 / G84（D8 結案：磁碟快取的佈局與崩潰恢復）、G103（D11 結案：HTTP/3 取 quiche）
+type: architecture
+title: Data path
+description: Shared HTTP routing, L4 forwarding, static files and cache.
 ---
+# Data path
 
-★ 本頁屬**技術基線**，帶真內容。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
+This is the approved technical baseline and yields to [PLAN.md](../../PLAN.md) on conflict.
 
-> ✅ **h1/h2 那條入口已經真的在跑了。** 下面 §「M1 批 2 完成實作了什麼」是實測記錄，
-> 其餘各節仍然是目標形態。
 
-# M1 批 2 完成實作了什麼
+`fulcrum-runtime` owns the `(Host, local port)` site index, matchers and execution chain without referencing Pingora. `fulcrum-server` connects it to HttpServerApp/ServerSession and upstream connectors. One app per listening port supplies the local port that ServerSession cannot expose. Runtime unit tests and real data-plane tests cover distinct claims.
 
-```text
-结构化配置 ──▶ crates/fulcrum-runtime（运行时对象图，纯逻辑）
-                     │   站点索引 (Host, 端口) · 匹配器 · 执行链求值
-                     ▼
-              crates/fulcrum-server（数据面）
-                     │   HttpServerApp + connectors::http
-                     ▼
-                  Pingora
-```
+## Entrypoints
 
-| 已經在跑 | 說明 |
+| Entry | Contract |
 |---|---|
-| HTTP/1.1 + h2c 入口、keep-alive | `HttpServerApp`；**每個監聽連接埠一個 app 執行個體**。h1 的空閒視窗 60 s 從開始等下一條請求算到它的請求頭讀完（合計，**G160**），計時器每連接一個、由 `keepalive.rs` 跨請求帶著走。續不續聽 pingora 的判定（HTTP/1.0 沒要求 keep-alive · `Connection: close` · TE 與 CL 同在都不續，**G161**），樞衡只管時長 |
-| `respond` / `redir` / `header` / `rewrite` / `handle` / `route` | 按執行順序表（G49）求值 |
-| `reverse_proxy` | h1/h2 上游、四種 `lb_policy`、`header_up` / `header_down` |
-| 421 / 404 / 502（G63）與 `handle_errors` | 無站台匹配真的回 421 |
-| 回落指令（`file_server` / `cache`）| ✅ **薄轉發給 nginx**（G79）；沒配 `fallback_nginx` 才回 501，見下 |
+| h1/h2 TCP/TLS | Pingora HttpServerApp with keep-alive, WebSocket upgrade and gRPC/h2. |
+| h3 UDP/QUIC | Custom quiche::h3 Service sharing the same FulcrumApp/router/upstream pool, including errors and files. TLS automatically adds same-port UDP and Alt-Svc. |
+| L4 TCP/UDP | Custom Services participate in fd transfer and share upstream selection with reverse_proxy; protocol semantics remain distinct. |
 
-★ ★ **路由語義與資料面被故意切開**：`fulcrum-runtime` **一行 pingora 都不引用**。
-代價是資料面要做一次 `&RequestHeader → RequestCtx` 的轉換，
-換來的是整套路由語義**可以脫網單測**——而那正是本專案最需要被測的邏輯。
-⚠ 兩層測試都要有：只有單測，一個「決策算對卻寫錯回應」的資料面照樣全綠；
-只有端到端，一條規則錯了只會得到一個狀態碼。
+The h3 handler is the same app instance, with an H1Entry newtype avoiding a second pool. Compare several outcomes over real h1/h3, not only a canned 200 page. During upgrade two generations share a UDP socket but only one owns each connection; authenticated generation prefixes in server CIDs route foreign DCIDs over Unix datagram relay. Decode returns no ownership information for another hop, enforcing one-hop relay. Drop when the owner exited; never ask another library to reset an unrecognized DCID.
 
-## ✅ 回落指令怎麼走（G79）
+Client identity is the socket peer unless explicitly trusted PROXY reception supplies it. Never use the leftmost X-Forwarded-For for remote_ip. HTTP reception happens before TLS through the fork seam; L4 receives and sends independently. Sending PROXY to HTTP upstreams remains unwired despite its reserved configuration syntax.
 
-`file_server` / `cache` 該回落給 nginx（§6.3），`l4` 該回落給 caddy。
-全域塊裡寫 `fallback_nginx <主机:端口>` 就**薄轉發**過去。
+## HTTP boundaries
 
-| 全域塊裡 | 該走回落的請求 |
-|---|---|
-| 沒寫 | **501** —— 誠實的中間態：你沒告訴我後端在哪 |
-| 寫了，後端連得上 | **轉發過去**（+1 跳，裝載紀錄逐條列出）|
-| 寫了，後端連不上 | **502**（`all_upstreams_down`）|
+Pingora 0.9 rejects ambiguous requests before Fulcrum creates a request record. h1 duplicate Host, userinfo, absolute-target/Host mismatches (including spelling/case/port), malformed absolute targets and backslash authority close the connection without a 400; no access-log/metric record exists. h2 rejects duplicate Host, userinfo, Host/:authority disagreement or both absent, absolute/ambiguous :path and CR/LF in :path with 400 or stream reset; 32 cumulative bad streams can close the connection. h3 does not share this validation: the authority/duplicate-Host difference is known and unresolved.
 
-★ ★ **501 與 502 有意不合並**：合併之後，一次設定遺漏與一次後端故障
-在現場長得一模一樣。三個方向各有一條端到端判據。
+Absolute-form uri.path() is the path with fragment stripped; forwarded raw_path stays unchanged. Identical duplicate Content-Length (including comma form) is accepted, including upstream responses. NUL/LF/CR/space in an upstream request target makes upstream writing fail; upstream obs-fold normalizes to one space. Incomplete upstream h1 bodies do not return the connection to the pool. Downstream h1 pipelining remains opt-in/off by default. h2 defaults are 100 concurrent streams and 64 KiB decoded headers (Fulcrum does not override h2_options); received h2 streams drain before shutdown.
 
-★ ★ ★ **「薄轉發」是用「共用同一段程式碼」落實的**：回落目標就是一個普通的
-`ProxyTarget`，走的是與 `reverse_proxy` **完全同一段**轉發函式 ——
-於是能力翻譯、設定語義映射、統一兩家行為差異這三件事**做不到**，
-而不是靠自覺不去做。見[回落層](/architecture/fallback.md)。
+For h1 keep-alive, one connection timer bounds total time from beginning to wait for the next request to completion of its headers at 60s (G160). Respect Pingora's continuation decision: HTTP/1.0 without opt-in, Connection: close and TE+CL do not continue; shutdown never continues (G161). No timer is added for h2/h3 or unlimited/noncontinuing reads.
 
-⚠ `l4` 整條仍未串接，所以 caddy 那一側目前**沒有請求走得到**。
+## L7 write buffering (G155)
 
-## ⚠ 每個監聽連接埠一個 app 執行個體
+Clear/TLS L7 listeners use 16 KiB write buffers, versus Pingora's 1460-byte default; reads remain 64 KiB. Known Content-Length responses whose headers+body fit can leave in one send (TLS records can share the send). Large responses still flush headers separately; unknown-length/chunked/compressed responses flush headers regardless of buffer size. Admin uses defaults; L4/h3 do not use this buffer.
 
-站台索引按 `(Host, 本地端口)` **兩維**查，而 Pingora 的 `ServerSession`
-**問不出「這條連接落在哪個監聽器上」**。把連接埠寫進 app 裡是唯一不靠猜的辦法。
+Costs are about 15 KiB additional allocation per connection, and an unbounded header delay when a reverse-proxy upstream sends headers plus a partial Content-Length body below 16 KiB then pauses. The client may receive no status line until the pause ends; this includes cache misses. Chunked/close-delimited bodies flush each write and are unaffected. Exposing flush or combining header/first body in the fork remains unscheduled option B. TCP_INFO tests cover clear/TLS h1 4 KiB single-segment responses with a 32 KiB multi-segment control; h2 has not been separately measured.
 
-## ★ ★ 用戶端 IP 只取 socket 對端
+## Upstreams
 
-`remote_ip` 匹配器拿到的是 `session.client_addr()`，**不是 `X-Forwarded-For`**——
-後者的最左項用戶端可以隨便寫，拿它做內網放行等於沒有放行控制。
-口徑見[安全基線](/platform/security-baseline.md)。
-~~⚠ 將來支援「信任前置代理」時，判據是**最近一跳**且必須顯式設定。~~
+Use static address lists or DNS names with periodic re-resolution. DNS refresh schedules at the repository-wide minimum interval and refreshes all upstreams; an individual longer period can therefore refresh more often. Active health checks are per-proxy, with whole-request timeout and configurable interval/status; absent health_uri means no probes. Passive circuit breaking independently watches real business failures (connect/timeout and genuine upstream 5xx), with a single half-open probe after cooldown. Do not conflate active healthy and breaker state or retry after a request has been sent. See [DSL](dsl-reference.md) for defaults, limits and weight semantics.
 
-★ ★ **（M2 批 D）：上面那句「將來」到了一半。**
-`proxy_protocol_from <网段…>` 就是那個「必須顯式設定」的清單，
-而它落實「最近一跳」的方式比 XFF 更徹底：**PROXY 頭本來就只描述一跳**
-（發它的那臺代理說「我這條連接的用戶端是誰」），⇒ 不存在「取最左還是最右」這個問題。
+## Files and HTTP cache
 
-| 面 | 現在怎樣 |
-|---|---|
-| **L4** | ✅ **收與發都串接了**，見 [DSL 參考 §4.5](/architecture/dsl-reference.md) |
-| **HTTP** | ⏳ 清單收得進設定、建得進執行環境圖，**執行環境不做** —— 已登記進 `UNWIRED`。Pingora 的 accept 與上游連接器都夠不到，要給 fork 加接縫（`PLAN.md` §10）|
+Fulcrum implements file range/validator/index/listing behavior and complete cache semantics; pingora-cache is not vendored. Cache shares the ordinary forwarding path, applies only to reverse_proxy, compresses before storage and normalizes representation keys. This is a shared cache: Authorization responses require explicit public/s-maxage/must-revalidate permission, otherwise storing them risks cross-user disclosure.
 
-⚠ ⚠ **在 HTTP 那半邊串接之前，`remote_ip` 仍然只取 socket 對端** ——
-前面掛了 LB 的話，它拿到的是**那臺 LB 的位址**。★ 這一條寫在這裡是因為
-「設定裡寫了 `proxy_protocol_from`」與「`remote_ip` 會用它」是兩件事，
-而它們看起來完全一樣。
+Disk paths use two hashed directory levels, one metadata file per primary-key family and a body file per Vary variant. A response tells us Vary only after lookup, so family metadata locates variants with two opens. Write temporary files then rename. 304 revalidation changes metadata without rewriting bodies. Read directly by calculated paths without depending on the eviction index, so the first request after restart can hit. Verify length/metadata on reads and delete corrupt entries. Incremental background rebuild visits one first-level shard per second and removes orphan bodies/bad metadata; saved eviction state is advisory. Initial occupancy undercount delays eviction but does not block hits. Do not perform a full startup scan before readiness.
 
-# 三個入口，一個路由層
-
-| 入口 | 實作 | 說明 |
-|---|---|---|
-| h1 / h2（TCP + TLS） | Pingora `http_proxy_service` | 含 WebSocket 升級與 gRPC（本質是 h2）|
-| **HTTP/3（UDP + QUIC）** | **自建 `Service`**，⚠ ~~`quinn` + `h3`~~ → **`quiche`**（**G103**）| ✅ **（批 J）已完成實作並串接**：有 `tls` 的連接埠自動在**同連接埠**聽 UDP（G110），h1/h2 回應帶 `Alt-Svc`。★ Pingora（0.8 與 2026-09-24 rebase 上去的 0.9 都一樣）**不帶 HTTP/3**；★ 自建的是入口/連接歸屬/路由匯合，**協定棧本體用 `quiche::h3`**（G105）|
-| **L4（TCP / UDP 透傳）** | **自建 `Service`** | ✅ **整個 L4 面已完成實作**：TCP（批 A）+ UDP（批 B）+ SNI/ALPN 分流（批 C）+ **PROXY protocol 收發（批 D）**。自建監聽器 + 參與 socket 移交、與 `reverse_proxy` 共用同一套挑上游的實作；UDP 另有工作階段表（空閒 60s 回收 + 1024 條上限）與「停機即停 `recv_from`」|
-
-★ 三個入口把請求歸一到**同一個路由層**與**同一個上游池**，因此設定裡**不存在**「這條規則只對 HTTP/3 生效」這類分裂。
-✅ ★ ★ **這句話有判據**：h3 入口由 `FulcrumApp` 自己實作
-`H3RequestHandler`（**同一個 app 執行個體**，`H1Entry` 那層 newtype 存在的唯一理由就是別建出第二個
-—— 第二個意味著**第二個上游連接池**），而
-[`tests/h3/run.sh`](../../tests/h3/run.sh) 拿 `reverse_proxy` / `file_server` / 錯誤頁
-三種 outcome 在 h3 與 h1 上比**逐字相同的回應體**。
-⚠ ⚠ 只驗「h3 上 GET / 拿到 200 與正確的體」是不夠的：注入一個不走執行鏈、直接回首頁那個串的樁，
-**那條判據仍然是綠的**。
-
-兩個自建入口能與 Pingora 原生入口掛在同一個 `Server` 上而不犧牲優雅升級——這一點已由 M0 證明，見 [M0 接縫驗證](/verification/m0-seam.md) 與 [處理程序與元件邊界](/architecture/process-model.md)。
-
-★ **HTTP/3 那條前置由 G109 解決**：升級視窗內兩代處理程序共享同一個 UDP socket，
-資料報會被分流，而**連接狀態只存在於某一代** ⇒ 代標識編進伺服器端自選的 CID 前綴（批 J），
-不屬於本代的資料報經一條 unix datagram 通道**跨處理程序轉交**給它那一代（批 K）。
-⇒ **換代零中斷對 h3 也成立。** ★ 轉交**只走一跳**，而這一點是結構性的：
-`relay::decode` 的回傳值裡沒有 `gen_id`，處置它的那一層也拿不到判歸屬所需的任何東西。
-
-## ⚠ pingora 0.9.0 起，h1 / h2 入口會在路由之前拒掉幾類請求（2026-09-24 rebase 帶進來，接受、不改）
-
-上游 0.9.0 收緊了 HTTP 解析（request-target 分類統一、歧義 authority 一律拒）。這幾類請求**到不了樞衡的路由層**：
-
-| 入口 | 被拒的形狀 | 用戶端看到什麼 | 樞衡這邊留下什麼 |
-|---|---|---|---|
-| h1 | 重複的 `Host`；`Host` 或 URI 帶 userinfo；absolute-form 的目標與 `Host` 不完全相同（大小寫、連接埠寫法不同都算）；有歧義的 absolute-form（`http:host`、authority 裡有反斜槓）| ⚠ **連接直接斷開，⛔ 不回 400** | ⚠ **什麼都沒有**：`read_request()` 出錯即回傳，訪問紀錄與指標裡都沒有這條 |
-| h2 | 重複的 `Host`、userinfo、`Host` 與 `:authority` 不一致、兩者都缺、`:path` 是 absolute-form 或有歧義、`:path` 裡有 CR / LF | pingora 回 400 或重置這條流；同一連接累計 32 條後整條斷開 | 同上，收不到 |
-| h3 | **不走這套檢核** | —— | ⚠ 於是 h1/h2 與 h3 在「重複 `Host` / authority 不一致」上處理不同（已知差異，登記未改）|
-
-另外三條會被讀錯的變化：
-
-- absolute-form 請求的 `uri.path()` 從「整段 URL」變成「只有路徑」，`#` 片段一律去掉 ⇒ 路由按路徑匹配（更正確），訪問紀錄裡的 `uri` 變短；轉發給上游的 `raw_path()` 不變。
-- 反方向：值**相同**的重複 `Content-Length`（含 `5, 5` 這種逗號寫法）從「拒絕」改成「接受」，上游回應裡也一樣。
-- 上游方向：請求目標裡有 NUL / LF / CR / 空格時，寫上游請求頭失敗 ⇒ 樞衡回 `all_upstreams_down`；上游回應頭裡的折行（obs-fold）被規範成單個空格。
-  另外，h1 上游的回應**沒讀完**的連接不再放回池裡重複使用（`1ed40d4`）⇒ 重測連接池時重複使用率若比 0.8.1 低，先查這一條。
-
-★ HTTP/1 下游 pipelining 在 0.9.0 裡是**可選開啟、預設關**，預設行為與 0.8.1 相同（有多讀位元組時不復用連接）。
-
-h2 入口還有兩條（設計裡沒列、rebase 當天從上游紀錄裡補查到的）：
-
-- ⚠ **h2 預設上限收緊了**（`90890bb`）：`HttpServerApp::h2_options()` 回傳 `None` 時，pingora 改用
-  「每連接最多 **100** 條並行流 + 解碼後的頭部表最多 **64 KiB**」。樞衡沒覆寫 `h2_options()` ⇒ 直接吃到這兩個數
-  （0.8.1 時是 h2 crate 0.4 的預設：**不通告**並行流上限 = 不限，頭部表 16 MiB）。
-  ⇒ 一條 h2 連接上要同時開超過 100 條流的用戶端（典型是 gRPC）：守規矩的排隊，不守的那幾條流被 h2 當場重置。
-  ★ owner 2026-09-24 拍：**接受 0.9.0 的預設**，不覆寫 `h2_options()`。
-- ★ 停機時 h2 連接裡**已經收到的流會被處理完**再斷（`aece993`，RFC 9113 §6.8）；0.8.1 收到停機信號就直接退出接收循環。
-
-## ★ h1 / h2 監聽的寫緩衝是 16 KiB，不是 pingora 預設的 1460 位元組（G155）
-
-pingora 給每條接入連接套一層帶緩衝的流：讀預設 64 KiB，寫預設只有 **1460 位元組**。
-h1 寫回應是先把頭 `write_all` 進緩衝、再寫正文 ⇒ 「緩衝裡的 + 這次的」一超過容量，
-頭就先被衝出去、正文再寫穿 ⇒ 頭 + 約 4 KiB 正文的回應是**兩次 send、兩個 TCP 段**
-（nginx / haproxy 是一次）。⇒ 樞衡的 L7 資料面監聽（明文與 TLS）把寫緩衝設成 **16 KiB**
-（上游的公開介面 `ListenerConfig::l4_buffer`，⛔ 沒動 fork；落點是 `crates/fulcrum-server/src/lib.rs` 的 `L7_L4_BUFFER`）。
-
-| | |
-|---|---|
-| 覆蓋到的 | **帶 `Content-Length`** 且頭 + 正文不超過約 16 KiB 的回應一次發出（TLS 時是頭與正文兩個記錄一起發）|
-| 覆蓋不到的 | 更大的回應仍然先衝頭、再寫穿；沒有 `Content-Length` 的回應（chunked、`encode` 壓縮後、讀到關閉）寫完頭就 flush，緩衝多大都還是 ≥ 2 次 send。要連它們一起治，得在 fork 裡把頭與第一塊正文合成一次傳送（方案 B）—— **只登記、不排期**（`G155`）|
-| 代價 ① 記憶體 | 寫緩衝在建連時整塊分配 ⇒ 每條連接多約 15 KiB（讀緩衝本來就是 64 KiB）|
-| 代價 ② 時延 | pingora 只對帶 `Content-Length` 的回應緩衝：頭不 flush，正文攢滿約 16 KiB 或寫完最後一段才發 ⇒ **回應頭也一起等**。分幾段寫 CL 正文的只有反代分支（含快取未命中回源）：上游先發頭和不到 16 KiB 正文、然後停住時，用戶端在停頓結束前**連狀態行都收不到，而且沒有時間上限**（改前的門檻約 1.4 KiB）。2026-10-04 在開發機上實測過這個形狀：上游停 2 s，首段 4 KiB 時經樞衡的首位元組時間 2.00 s，首段 17 KB 時 0.0008 s。chunked 與讀到關閉的正文每寫必 flush ⇒ SSE 一類不受影響。緩解要動 fork（h1 工作階段暴露 `flush`，或反代分支在首塊之後 flush），與方案 B 一併登記、**不排期** |
-| 沒改的 | 管理面的 Unix socket 仍是 pingora 預設；L4 透傳與 HTTP/3 本來就不走這層緩衝 |
-| 判據 | [`tests/serve/run.sh`](../../tests/serve/run.sh) 第 10 節：用戶端讀自己 socket 的 `TCP_INFO`，4 KiB 的回應明文與 TLS 都只許 1 個帶資料的段；32 KiB 那條是內建反證（仍須 ≥ 2）。⚠ 只量了 h1；h2 走同一層緩衝，沒單獨量 |
-
-# 靜態檔案與快取
-
-- **靜態檔案由樞衡自身實作**：range、ETag、壓縮與預壓縮、目錄索引。
-- ~~**HTTP 快取重複使用 `pingora-cache` 的 `Storage` 與 `EvictionManager` 抽象，磁碟後端由樞衡實作**~~ —— ⚠ ★ **由 G82 改口徑：快取層完全自研，`pingora-cache` 不進 fork。** 原文保留在這裡，因為它記錄了這個決定是從哪個形狀改過來的。
-
-## ✅ D8 已由 G82–G84 結案
-
-| | 定下來的 |
-|---|---|
-| **快取層來源** | **完全自研**，不 vendor `pingora-cache`（★ 因此 D17 的「只補 `pingora-cache`」作廢，fork 當時維持 7 個 crate；⚠ ** 因 G104 加回 `pingora-boringssl`，現為 8 個** —— 與快取無關）|
-| **磁碟佈局** | 快取鍵 hash 的**兩級分片目錄** + 每條目 **meta 與 body 兩個檔案** + `tmp` 後 `rename` 原子完成實作 |
-| **崩潰恢復** | 啟動**不掃盤**：讀時檢核、壞條目即丟即刪；後台任務漸進重建索引 |
-| **`purge`** | 走管理面 `POST /purge`（按 key 或前綴），與 `/load`、`/renew` **同一個** Unix socket、同一套 0600 權限（G14）|
-
-★ **meta 與 body 分開**不是風格：重驗證（304）**只改 meta 不動 body**，而那是快取最常見的寫操作之一；合成一個檔案就得整體重寫。
-★ **啟動不掃盤**是因為它與 G78 的 `sd_notify(READY=1)` 直接衝突 —— 零停機換代要求新一代**快速就緒**，而全盤掃描的時間隨快取大小線性增長。⚠ 代價是索引與磁碟之間有個**最終一致**的視窗：剛重新啟動時可能少算佔用，於是淘汰比穩態晚一點觸發。
-
-⚠ ⚠ **自研的代價寫在明處**：RFC 9111 的新鮮度與可快取性、`Vary`、防驚群、中繼資料序列化全部自己寫（對照 `pingora-cache` 0.8.1 的實測行數 ≈4000 行），**而快取的錯表現為「偶爾給錯內容」** —— 不像轉發的錯那樣當場可見。⇒ 判據要按這個形狀設計，不能只測「命中率對不對」。
-
-★ 磁碟快取的崩潰恢復是經典難題（`PLAN.md` §9 已列為風險）。**緩解順序仍然有效**：先做記憶體層與唯讀快取，磁碟後端最後做 —— 它說的是**做的順序**，上面那三條說的是**做成什麼形狀**，兩者不衝突。
-
-## ✅ 已經做出來了：語義層與記憶體後端＝**批 G**，磁碟後端＝**批 H**
-
-設定面是 `cache { disk <目录> }`；不寫 `disk` 就是記憶體後端。逐條見
-[DSL 參考 §4.2](/architecture/dsl-reference.md)。⚠ **快取後端是處理程序級的** ——
-多個 `cache` 塊寫了不同的 `disk` 是編譯期錯誤（`FUL-DSL-0035`）。
-
-完成實作時值得記住的三件事：
-
-1. ★ ★ ★ **讀路徑不看淘汰索引。** 按快取鍵算出檔案名直接開 ⇒ 「啟動不掃盤」與
-   「重新啟動之後第一個請求就能命中」**同時**成立。⚠ 把讀掛到索引上的寫法會讓一次重新啟動
-   等於一次全量回源 —— 而那恰恰是磁碟快取存在的理由。索引只管淘汰。
-2. ★ **meta 是一族（一個主鍵）一個，body 是一條一個。** 請求到達時還不知道 `Vary`
-   （那是回應告訴我們的），所以變體的檔案名算不出來 —— 一族一個 meta 讓一次查找
-   只要兩次 `open`。沒有 `Vary` 時它**就是** G83 說的「兩個檔案」，而 G83 給出的
-   理由（重驗證只改 meta 不動 body）一字不差地成立。
-3. ★ **目錄用不了 ⇒ 關掉快取、照常轉發。** 不退回記憶體（按磁碟寫的 `capacity`
-   會變成記憶體預算 ⇒ OOM），也不拒絕啟動（換代時那是服務整體中斷）。
-   ⚠ 而「關掉」必須說得出來：裝載紀錄一行 `error` + 執行環境 `X-Fulcrum-Cache`
-   那個頭不再出現。
-
-# 上游發現與健康（G17）
-
-- **上游位址**：靜態列表 **或** 網域 + **定期重解析**
-- **主動健康檢查**：可配頻率與並行上限
-- **被動熔斷**：按錯誤率與連續失敗計數摘除，恢復後按**慢啟動**回灌
-
-> ★ **DNS 定期重解析針對的是 nginx 的一個經典事故源**：上游網域**預設**只在啟動時解析一次，後端 IP 變了必須 reload。
-> ⚠ 2026-09-24 更正：1.27.3 起 nginx 開放原始碼版可以在 `upstream` 的 `server` 上顯式寫 `resolve`（要另配 `resolver` 與共享記憶體 `zone`）做動態重解析 ⇒ 差別在**預設行為與設定門檻**，⛔ 不是「nginx OSS 做不到」。
-
-# 最容易在哪做錯
-
-1. ★ **給 HTTP/3 單開一套路由規則。** 三個入口共用一個路由層是本頁的核心；一旦分裂，「一份設定」這個產品理由就破了。
-2. ~~★ **假設 `pingora-cache` 開放原始碼版帶磁碟後端。**~~ ✅ ** 已親手核實**（讀 0.8.1 原始碼）：`memory.rs` 的 `MemCache` **是它唯一的 `Storage` 實作**，而 `EvictionManager` 有兩個（`lru` / `simple_lru`，自帶 save/load）。★ 這條核實**照樣有價值**，儘管 G82 之後我們不用它了：它是拍板時看的那張表上的一行。
-3. **把慢啟動漏掉。** 熔斷恢復後直接滿權重回灌，會把剛恢復的節點二次打死。
-
-# 相關
-
-[TLS](/architecture/tls.md)（兩個入口共用同一個 `select_certificate_callback`） · [觀測](/architecture/observability.md)
+The backend is process-wide: inconsistent disk choices, including mixed disk/no-disk, reject FUL-DSL-0035. If a disk directory is unusable, log error, disable cache and keep forwarding; do not fall back to memory (disk capacity could OOM) or abort the whole generation. Disabled cache emits no X-Fulcrum-Cache header. Memory/disk use the same synchronous seven-operation shape; D20 stays closed pending G151's cache-hit criterion. `capacity` is the maximum across blocks, dynamic on /load and lazily shrunk; `ttl` is only fallback freshness. See [DSL](dsl-reference.md) and [observability](observability.md) for the full protocol and reporting contract.

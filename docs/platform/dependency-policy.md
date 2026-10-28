@@ -1,195 +1,80 @@
 ---
-type: 技術基線
-title: 相依策略（G29）
-description: 追新、不設上界、Cargo.lock 入庫、每週檢查，且任何版本必須已發佈滿 24 小時才允許採納。
-resource: ../../tools/dep-check.py
-tags: [相依, 安全, 必讀, 易錯]
+type: Platform Contract
+title: Dependency Policy
+description: G29 adoption, quarantine, dual-lock verification, monitoring, and compiler freeze.
+tags: [platform, engineering]
 status: stable
 generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
+  by: openai/codex
+  at: 2026-10-28T05:13:31Z
 sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G29（D1 結案，五條口徑與已認下的代價）
+  - resource: ../../PLAN.md
+  - resource: ../../tools/dep-check.py
+  - resource: ../../tools/supply-audit.py
 ---
 
-★ **完整表述在 [`PLAN.md`](../../PLAN.md) §10 G29**（它同時是 D1 的結案）。
+# Dependency policy (G29)
 
-# 五條口徑
+[PLAN.md](../../PLAN.md) owns this policy and approved exceptions:
 
-1. `Cargo.toml` 用 **`>=` 下界、不設上界**
-2. **`Cargo.lock` 入庫**，保證任何一次建置都可重現
-3. **每週**跑一次相依檢查，跟進最新版本
-4. ★ **任何版本必須已發佈滿 24 小時才允許採納**
-5. 每次升級必須**通過當前里程碑的全部驗證**（M3 之後是全量對拍）
+1. Direct requirements use `>=` lower bounds without upper bounds.
+2. Commit `Cargo.lock` for reproducible resolution.
+3. Check/follow updates weekly.
+4. Adopt only releases at least 24 hours old and not yanked.
+5. Run complete applicable milestone verification; M3 adds qualified comparisons where required.
 
-# ★ 代價已被明確告知並重申接受
+Unbounded requirements intentionally admit breaking major versions. A weekly update may require a real migration. Quarantine mitigates the interval between a malicious publication and discovery/yank; manifests cannot enforce publication age. Do not use bare `cargo update` outside the age-checked workflow.
 
-Cargo 的 `>=` **真的沒有上界**，`cargo update` 會跳到已發佈的最大版本，**包括破壞性的大版本**。所以每週那次檢查有時會是一次真的遷移工作，不是點一下就完。
-
-AI 提示這一點後，owner 於同日回覆「**確定使用最新+包括破壞性的版本更新**」——★ **這是知情後的重申，不是疏漏。** 不要拿「破壞性版本有風險」當理由回頭去釘死版本。
-
-# 24 小時懷疑期防的是什麼
-
-它擋的是**一類具體攻擊**：**投毒版本發佈後數小時內被發現並 yank**。盲目追新會正好撞進那個視窗；等滿 24 小時再取，絕大多數這類事件已經暴露。
-
-★ 這條**無法寫進 `Cargo.toml`**，只能由指令碼執行。
-
-# 怎麼跑
+## Entry points
 
 ```bash
-python tools/dep-check.py            # 只報告
-python tools/dep-check.py --apply    # 採納通過懷疑期的
-python tools/dep-check.py --hours 48 # 換一個懷疑期長度
+python tools/dep-check.py
+python tools/dep-check.py --apply
+python tools/dep-check.py --hours 48
+python tools/dep-check.py --check-pins
+python tools/dep-check.py --self-check
 ```
 
-★ cargo 預設在建置鏡像 `fulcrum-build:local` 的容器裡跑（G107；掛門禁那個 registry 卷，`/w/target` 是匿名卷 ⇒ 工作樹上不留 `target/.rustc_info.json`）；
-鏡像不在時先跑一趟門禁。`--cargo` 給了就照給的前綴跑 —— ⛔ 在宿主機上給 `--cargo cargo` 就回到了 [宿主機陷阱](/platform/host-and-gate-traps.md) 第 11 條。
+Default cargo execution uses `fulcrum-build:local`, the gate's registry volume, and anonymous `/w/target` (G107). Prepare the image through the documented gate if absent. `--cargo` uses its supplied prefix exactly; host `--cargo cargo` violates the container-only contract and can leave `target/.rustc_info.json` in the checkout.
 
-★ ★ **絕不要裸跑 `cargo update`。** 它會跳過懷疑期——而懷疑期正是 G29 存在的理由。
+`--apply` intentionally adopts packages. It does not authorize compiler changes, fork rebase, upstream submission, or publication.
 
-結束代碼即結論（★ **每項檢查各佔一位，可疊加**）：
+## Additive exit codes
 
-| 碼 | 含義 |
+| Code | Meaning |
 |---|---|
-| `0` | 都沒有要處理的 |
-| `10` | 有可採納的 cargo 更新（`--apply` 模式下表示已採納）|
-| `20` | ★ fork 的上游有新版，要人工 rebase |
-| `40` | ★ 建置鏡像要人管（G36）：rustc 有新版 / `@sha256` 釘子掉了 / **本次沒能查證** |
-| `80` | ★ systemd 測試宿主鏡像要人管（G39）：大版本變了 / **本次沒能查證** |
-| `160` | ★ **有未登記的安全公告 / 本次沒能查證**（新增，掃**兩把鎖**）|
-| `1` | 出錯；`--apply` 時也表示採納沒成（含順帶帶進沒過懷疑期的版本、整批作廢，見「指令碼做了什麼」第 4 條）|
+| `0` | No reported action. |
+| `10` | Eligible cargo updates; in apply mode, completed adoption. |
+| `20` | Upstream Pingora release needs a manual fork rebase. |
+| `40` | Build image: newer rustc, missing digest pin, or unverified check. |
+| `80` | Systemd test image: changed major or unverified check. |
+| `160` | Unregistered advisory or incomplete advisory check. |
+| `1` | Error, including failed/rolled-back adoption. |
 
-★ 它查的幾件事裡，**只有第一件在 `cargo update` 的視野內**。其餘（被 patch 的 pingora-core、建置鏡像的編譯器、測試宿主的 systemd、以及**現有版本上的安全公告**）`cargo update` 結構上就看不見——這正是它們要被單獨盯住的原因。
+Flags add: cargo updates plus fork drift report `30`. Interpret the categories rather than treating every nonzero as a source-adoption failure. Advisory scanning precedes adoption; rescan both resulting locks for final-state evidence.
 
-★ ★ **`160` 這一項掃的是兩把鎖，`vendor/pingora/Cargo.lock` 在前、根鎖在後。** 在它之前，`supply-audit.py` 預設只審根鎖，**而且沒有任何東西自動呼叫它**——偏偏根鎖是兩者裡**次要**的那把（`[patch.crates-io]` 把 `pingora-core` 指向 vendor，而根鎖裡連一個 rustls 相關的包都沒有）。**最該被掃的那把鎖，恰恰沒人掃。** 代價  兌現過一次：`h2` 的 RUSTSEC-2026-0258 是手動跑一次 vendor 鎖才撞見的。
+## Candidate and adoption algorithm
 
-★ `ACCEPTED` 豁免名單從 `supply-audit.py` **匯入**而不是複製——兩份名單分家的表現是「這邊判紅、那邊判綠，而兩邊都自稱權威」。並進本指令碼而不另設節奏，理由同 G36：**沒人記得住第二件事**。
+1. Run `cargo update --dry-run` separately for root and `vendor/pingora/Cargo.toml`. Parse crates.io `Updating`/`Adding` lines including trailing available-version, MSRV, and publication-age annotations. `Downgrading`, `Removing`, git, and path sources are not adoption candidates. `--self-check` pins actual output forms.
+2. Root candidates own versions in the root lock. Vendor-only candidates have old `name@version` absent from root, or the new version for additions. Both sets use the same age/yank criteria and eligible changes report `10`.
+3. Query each candidate's crates.io publication time and yank status. Reject young, yanked, or unverifiable versions with a reason.
+4. Snapshot both locks byte for byte. Apply eligible root candidates using `cargo update -p <name> --precise <version>`, then vendor-only candidates against the vendor manifest. Judge the **resulting locks**: target present, old version absent, shared-package alignment satisfied. A sibling may already have updated a package, making the later command nonzero despite a correct lock.
+5. Exact-pinned families such as `wasm-bindgen` plus `js-sys`/`web-sys` may need one combined `cargo update -p a@old -p b@old ...` without `--precise`. Recheck final target versions; a release newer than the candidate collection is not automatically approved.
+6. Compare resulting locks with snapshots. Every newly introduced non-target version independently passes the same current age/yank/verification check, including transitives pulled by `--precise`. Any failure restores **both** byte snapshots, rejects the entire batch, names the version/introducing operation, and returns `1`. Older eligible incidental versions are reported without failure.
+7. Verify vendor/root agreement for packages actually used by Pingora. A root-only package no Pingora crate consumes need not be fabricated into the vendor lock; inspect the inverse graph.
 
-# 指令碼做了什麼
+## Separate monitoring surfaces
 
-1. 用 `cargo update --dry-run` 問出「如果現在更新，會動哪些包」——★ **只有這批需要查**，全量查幾百個傳遞相依是浪費
+- **Advisories:** vendor lock first, root second; import the single `ACCEPTED` registry from `supply-audit.py`. Lock-only packages still receive review. Duplicated exemptions create conflicting authorities.
+- **Fork releases:** `[patch.crates-io]` removes ordinary registry discovery for the fork. Read baseline directly from vendored `pingora-core/Cargo.toml`, check upstream separately, apply quarantine, and refuse automatic rebase. `--skip-fork` explicitly disables this branch.
+- **Unreleased upstream:** report main's lead over its tag and likely dependency commits. This is advisory, does not affect the exit code, and is not mandatory adoption.
+- **Build compiler (G36):** read Dockerfile `FROM`, compare rustc with official image HTTP metadata. Debian-package digest drift is informational because this is not a runtime image. Missing `@sha256`, changed rustc, or inability to verify reports `40`; never auto-apply. `--skip-image` explicitly disables this branch.
+- **Systemd host (G39):** the major version is part of M1 evidence. If MainPID-handover's negative scenario changes behavior, revisit G37 rather than editing an assertion to pass.
 
-   ★ **解析要認行尾的括號註記。** 只認 `Updating` / `Adding` 兩種行，行尾可以再掛一個括號註記：cargo 1.98.0 在還有跨大版本的更新（`cargo update` 夠不到）時掛
-   `(available: v0.14.2)`，resolver 3 按 MSRV 退回時掛 `(available: v4.6.7, requires Rust 1.85)`（`Adding` 同樣），
-   原始碼裡另有 `(requires Rust X)` 與 `-Zmin-publish-age` 才有的 `published …`。錨死行尾的寫法會把這樣的候選整條丟掉 ——
-   不報、不過懷疑期、不採納，一點聲響都沒有（2026-10-16 在 `zstd = ">=0.12, <0.14"` 的一次性專案裡重現；
-   真實樹當天 4 行、0 行帶註記，是潛伏的）。`Downgrading` / `Removing` 與來源不是 crates.io 的行（git／path）不是候選。
-   `--self-check` 用 cargo 的原樣輸出釘著（`parse_dry_run`）
+G36 freezes the compiler during M3; G152 freezes benchmark competitors/generator/image. G167 requires matching rustc pins across the derived Dockerfile set. See [build and test](build-and-test.md).
 
-   ★ **兩份清單各問一次。** 根清單之外再對 `vendor/pingora/Cargo.toml` 跑一次，只收 **`名字@旧版本` 根鎖裡沒有**的那些
-   （只在 vendor 鎖裡的包：`pingora-core` 的 dev-dep、vendor 成員才開的可選相依拖進來的；新增包看新版本）。
-   根鎖也有的版本歸根那條路、由第 4 條鏡像進 vendor 鎖 —— 兩邊各自決定，[2/5] 就會對不上。
-   ⚠ 此前候選只來自根清單，於是只在 vendor 鎖裡的版本**永遠不是候選**：2026-10-16 vendor 的 dry-run 動 29 項，
-   其中 25 項是這一類，`quinn-proto` 0.11.16 帶著五條公告（RUSTSEC-2026-0338…0342），本指令碼一條都不報。
-   報告裡單列一節「vendor 獨有的更新」，走同一個懷疑期；有可採納的同樣點亮 `10`
-2. 對每個候選版本查 crates.io 的**發佈時間**與 **yanked 狀態**
-3. 發佈不足 N 小時、或已被 yank 的，**一律擋下並說明原因**
-4. `--apply` 時只對通過的候選做 `cargo update -p <name> --precise <ver>`，★ **成敗看跑完之後的鎖，不看 cargo 的結束代碼**：
-   根鎖逐項核對「目標版本在、舊版本不在」，vendor 鎖核對與根鎖對得上。同族包（`boring-sys` 跟 `boring`、`zstd-sys` 跟 `zstd`）
-   常被前一項順帶帶到位，輪到它自己時 cargo 報 `did not match any packages` 並非零退出 —— 那不是失敗，鎖對了就退 `10`。
-   vendor 獨有的那批在根那批之後、對 vendor 清單逐項採納，同樣按結果鎖判成敗；它們動過的每個名字再與根鎖對一次齊
-   （新版本可能把兩把鎖共有的包拉走）。
-   ★ **互相 `=` 釘死的一族逐項永遠升不動**（`wasm-bindgen` 族與 `js-sys` / `web-sys`：任何一項單獨 `--precise` 都撞上另一項的 `=`）
-   ⇒ 逐項跑完還沒到位的，一次 `cargo update -p a@旧 -p b@旧 …`（不帶 `--precise`）一起升，再照舊按結果鎖判。
-   不帶 `--precise` 落到候選清單之後才發的版本不算到位，下面那道懷疑期核對也會現查它。
-   2026-10-16 在一次性副本上實跑（真 cargo + crates.io）：vendor 獨有的 25 項一次全到位（其中 7 項靠一起升），退 `10`，根鎖逐位元組沒動
+## Limits and follow-up
 
-   ★ ★ **順帶帶進來的版本同樣要過懷疑期。** `--precise` 是保守更新，但新版本要求的相依鎖裡滿足不了時照樣會動，
-   而且被拉到**滿足要求的最新版、不看發佈時間**（cargo 1.98.0 實測：`zstd` 0.12.4 → 0.13.0 把 `zstd-safe` 6.0.6 拉到 7.3.0，
-   `^7.0.0` 有 7.0.0 就夠）。⇒ 同族包的最新版還在懷疑期裡（「被擋下的」裡正列著它），或新版本新增了一個剛發版的相依，
-   上面那項核對都看不見。所以採納前給兩把鎖**逐位元組**拍快照，採納後逐把鎖比：新出現、又不是任何一項採納目標的版本，
-   逐個現查懷疑期（與候選同一判據，查不到、已 yank 也算不過）。**有一個不過，整批作廢**：兩把鎖還原成快照、退 `1`，
-   點名是哪個版本、由哪一項帶進來，本輪什麼都不採，等它過了懷疑期重跑（owner 2026-10-16 彈出視窗選定，沒選「只報告」或「只扣下肇事項」）。
-   被帶到候選清單之外、早已過了懷疑期的老版本只打一行 `○`，不判紅
+`cargo update` moves within all upstream requirements. Caret/tilde upper bounds can block newer packages despite unbounded local requirements. No candidates does not mean every dependency is latest or safe. [Supply-chain audit](supply-chain.md) separates lock, compiled graph, call-site activation, linkage, and full staleness/advisory review.
 
-# ★ 它看不見什麼
-
-這是使用這個指令碼時最容易誤判的一點：
-
-> **`dep-check.py` 只報告 `cargo update` 能動的東西。**
-
-而 `cargo update` **只在現有版本需求範圍內移動**。任何被上游清單的上界卡住的相依，它**一個都不會報**——指令碼會輸出「沒有可用更新，相依已是最新」，而實際上有 44 個包落後，其中兩個帶安全公告。
-
-★ **「dep-check 說全綠」不等於「相依是最新的」。** 全量稽核是**另一個指令碼**：
-
-```bash
-python tools/supply-audit.py --cargo "<cargo 命令>"
-```
-
-它逐包對比 crates.io 的 `max_stable_version`、對 `Cargo.lock` 全量查 OSV，並**按「參與編譯 / 僅在 lock 裡」分桶**（★ 不傳 `--cargo` 就沒有分桶，數字會偏大一倍）。結束代碼 `20` = 有未登記的安全公告；★ **陳舊包不判紅**——那會讓這道門永遠紅。詳見 [供應鏈現狀](/platform/supply-chain.md)。
-
-★ **這不是假設，是實際發生過的** 全量稽核前，`cargo update --dry-run` 一直報「無可用更新」，而當時有 44 個包落後、兩條真漏洞在庫裡。
-
-# ★ pingora 走 fork，上游由指令碼單獨盯著
-
-`[patch.crates-io]` 把 `pingora-core` 指向 [`vendor/pingora/`](../../vendor/pingora/FORK.md)（G30）。
-
-★ ★ **這製造了一個盲區**：被 patch 的 crate **徹底脫離了 crates.io 的更新流**，`cargo update` 再也不會為它查任何東西。上游發了 0.9 也不會有任何提示——**而 fork 的全部價值（抬上界、修掉兩條公告）恰恰要靠跟進上游才不會隨時間腐化**。
-
-所以 `dep-check.py` **單獨查一次上游最新版**，與 fork 的基線比對：
-
-```text
-── fork 上游检查 ──
-fork 基线 pingora-core 0.8.1 仍是上游最新，无需 rebase。
-```
-
-上游領先時它會報出版本、發佈時間、期間發過幾個版本，並**明確拒絕自動採納**：
-
-| | |
-|---|---|
-| 基線從哪來 | ★ 直接讀 `vendor/pingora/pingora-core/Cargo.toml` 的 `version`——**不另設一份要手動同步的記錄**，那種記錄遲早與事實分家 |
-| 懷疑期 | 同樣適用（新版不滿 24 小時會標註） |
-| 結束代碼 | **20** = fork 落後；與 cargo 那條疊加，兩者都有則 **30** |
-| 關掉 | `--skip-fork` |
-
-## ★ 它還會看上游 main，不只看發版
-
-只盯 release 是不夠的：`nix` 0.24→0.31 那次遷移**先落在上游 main**，我們直接照抄省下了一整輪工作。所以指令碼還會問 GitHub「main 領先基線 tag 多少提交」，並挑出標題像相依改動的那些：
-
-```text
-  ★ 上游 main 领先 tag 0.8.1 **167 个提交**（尚未发版）
-    其中 20 条看起来与依赖有关 …
-```
-
-★ **這條只報告、不影響結束代碼**——main 上的東西還沒發版，是「值得提前撈」而不是「必須跟進」。
-
-★ ★ **它第一次跑就有了收穫**：撈出兩條直接打在 fd 移交上的未發版 commit，其中一條會改變樞衡自建 `Service` 的寫法。見 [尚未驗證的接縫](/verification/open-seams.md)。
-
-## ★ 第三件：建置鏡像的編譯器（G36 / D13）
-
-同樣在 `cargo update` 的視野之外，理由和 fork 一樣——它壓根不是一個 crate。
-
-`docker/Dockerfile.build` 的基礎鏡像釘到了 digest（可重現），代價是不會自己跟進。指令碼會查 Docker Hub 上 `rust:1-trixie` 現在指向哪個精確版本（**純 HTTP，不需要 Docker，也不拉鏡像**），與 Dockerfile 裡釘的比對。
-
-| | |
-|---|---|
-| 判據 | ★ **只看 rustc 版本**。Debian 側的 digest 漂移只打一行提示——建置鏡像不是執行環境鏡像，那些包不進產物（G13 是 musl 靜態二進位）|
-| 釘子從哪來 | ★ 直接讀 `docker/Dockerfile.build` 的 `FROM` 行——**不另設一份要手動同步的記錄** |
-| 結束代碼 | **40**；rustc 有新版 / `@sha256` 釘子掉了 / **本次沒能查證**，三種都算 |
-| 自動採納 | ★ **拒絕**，同 fork rebase——換編譯器必須重跑三場景，不該無人值守 |
-| 關掉 | `--skip-image` |
-
-★ **「沒能查證」判紅不判綠**：Docker Hub 不可達時它回傳「要人管」，而不是「無事」。只發一個請求，失敗多半是真有問題。
-
-⚠ ★ **M3 對拍期間凍結**，別在採集資料的中途換編譯器。詳見 [建置與驗證](/platform/build-and-test.md)。
-
-跟進步驟見 [`FORK.md`](../../vendor/pingora/FORK.md)：把上界改動在新基線上重做，修隨之而來的呼叫點。
-
-- ★ **先看上游有沒有已經自己抬了某幾條**——`nix` 那一次就是白撿的
-- ★ **做完照例跑 M0**——fork 的改動裡有一處正落在 `transfer_fd` 上
-
-# 升級之後
-
-★ **必須跑完當前里程碑的全部驗證**（G29 第 5 條）：
-
-```bash
-bash tests/m0/docker-run.sh
-```
-
-M3 之後是全量對拍。見 [建置與驗證](/platform/build-and-test.md) 與 [效能驗收標準](/verification/performance-bar.md)。
-
-# 相關
-
-[供應鏈現狀](/platform/supply-chain.md) · [技術棧](/platform/tech-stack.md) · [工作方式](/governance/working-agreement.md)
+After adoption run `bash tests/m0/docker-run.sh` and required qualified comparisons. Before rebase inspect which deltas upstream already implemented; afterwards run vendor and integration gates. See [fork](../../vendor/pingora/FORK.md) and [contributor guide](../../AGENTS.md).

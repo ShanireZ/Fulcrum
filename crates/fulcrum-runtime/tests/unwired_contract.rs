@@ -57,15 +57,17 @@ fn 清单与契约逐字相等() {
 #[test]
 fn 文档里那句未接线清单与_unwired_对得上() {
     const DOC: &str = include_str!("../../../docs/architecture/dsl-reference.md");
-    // 那句話在文件開頭的引言塊裡，以「仍有幾條只是」開頭，到行末的破折號為止。
+    // Read only the explicit English summary before its em dash. Retain legacy
+    // markers for parser fixtures without including the explanatory prose.
     let start = DOC
-        .find("仍有幾條只是")
+        .find("**Parsed but unwired**:")
+        .or_else(|| DOC.find("仍有幾條只是"))
         .or_else(|| DOC.find("仍有几条只是"))
         .expect("dsl-reference.md 里找不到那句「仍有几条只是「解析得过」」——它被改写了？");
     // ⚠ 不要按固定位元組數開窗：中文是多位元組，切在字元中間會 panic。
     //   `find` 給回的一定是字元邊界。
     let seg = &DOC[start..];
-    let seg = match seg.find("——") {
+    let seg = match seg.find(" —").or_else(|| seg.find("——")) {
         Some(i) => &seg[..i],
         None => panic!("那句清单后面应当有一个「——」把它收住"),
     };
@@ -123,18 +125,16 @@ fn 文档里那句未接线清单与_unwired_对得上() {
 
 const PLAN_MD: &str = include_str!("../../../PLAN.md");
 
-/// `PLAN.md` §1「能力面」那句 `⏳ **未落地** ——` 裡，**反引號鍵名**的那一部分。
-///
-/// ★ ★ 判據只截到**第一個句號**：句號之後是給人看的註解，而註解裡必然會提到
-/// 那些鍵名（講的就是它們）。⛔ 把註解也讀進來 = 一個把正確寫法判紅的門，
-/// 而那種門最後會被人繞過去，不會被人滿足（同 `tools/plan-refs.py` 記的第 4 條）。
+/// The explicit PLAN summary ends at its line boundary (or legacy full stop).
+/// Later notes may mention implemented keys and must stay outside this claim.
 fn plan_unlanded_segment(md: &str) -> &str {
     let start = md
-        .find("⏳ **未完成實作** ——")
+        .find("**Not implemented**:")
+        .or_else(|| md.find("⏳ **未完成實作** ——"))
         .or_else(|| md.find("⏳ **未落地** ——"))
         .expect("PLAN.md §1 里找不到那句「⏳ **未落地** ——」——它被改写了？");
     let seg = &md[start..];
-    match seg.find('。') {
+    match seg.find(['。', '\n']) {
         Some(i) => &seg[..i],
         None => panic!("「未落地」那一行后面应当有一个句号把它收住"),
     }
@@ -190,27 +190,27 @@ fn plan_第1节未落地那一行不许列已接线的能力() {
     // ② ★ ★ ★ **合成輸入：證明它真的判得動。** 沒有這幾條，上面那個 `is_empty()`
     //   在「函式恆回傳空 vec」時**同樣是綠的** —— 而那正是今天最可能的壞法，
     //   因為真資料這一側本來就是空集。
-    let synthetic = "⏳ **未落地** —— PROXY protocol 的「发」那半边 · `passive_fail`";
+    let synthetic = "**Not implemented**: sending PROXY protocol; `passive_fail`";
     assert_eq!(
         stale_unlanded_keys(plan_unlanded_segment(&format!("{synthetic}。")), &keys),
         vec!["passive_fail".to_string()],
         "一个已经销号的键名写在这一行里，判据没有把它逮出来"
     );
     // 還在 UNWIRED 裡的鍵名**不許**被判紅（否則這道門恆紅，早晚被加 #[ignore]）。
-    let ok_line = "⏳ **未落地** —— `tracing` 与 `on_demand`";
+    let ok_line = "**Not implemented**: `tracing` and `on_demand`";
     assert!(
         stale_unlanded_keys(plan_unlanded_segment(&format!("{ok_line}。")), &keys).is_empty(),
         "还没接线的键名被判成了过期"
     );
     // 純散文（今天的真實形狀）不該報任何東西。
-    let prose = "⏳ **未落地** —— PROXY protocol 的「发」那半边";
+    let prose = "**Not implemented**: sending PROXY protocol";
     assert!(
         stale_unlanded_keys(plan_unlanded_segment(&format!("{prose}。")), &keys).is_empty(),
         "一行散文被判出了键名"
     );
     // ⚠ 截斷那一步也要釘：句號**之後**的註解裡提到銷號鍵名時，⛔ 不許被算進來。
-    let with_note = "⏳ **未落地** —— PROXY protocol 的「发」那半边。\n\
-                     ⚠ 注解：`passive_fail` 已由 G136 销号。";
+    let with_note = "**Not implemented**: sending PROXY protocol.\n\
+                     Note: `passive_fail` is implemented (G136).";
     assert!(
         stale_unlanded_keys(plan_unlanded_segment(with_note), &keys).is_empty(),
         "句号之后的注解被读进了判据范围 —— 这道门会把正确的写法判红"
@@ -245,7 +245,7 @@ fn sub_directive_rows(md: &str) -> Vec<SubRow> {
             continue;
         }
         let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
-        if cells.first().copied() == Some("子指令") {
+        if matches!(cells.first().copied(), Some("Subdirective" | "子指令")) {
             in_table = true;
             continue;
         }

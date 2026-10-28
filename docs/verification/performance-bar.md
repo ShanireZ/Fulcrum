@@ -1,94 +1,61 @@
 ---
-type: 驗證記錄
-title: 效能驗收標準（G19）
-description: 三家全部對拍、逐類設門、不劣於該類最強者 10%、指令碼與原始資料全公開；不發佈無法重現的效能宣告。
-resource: ../../PLAN.md
-tags: [驗證, 效能, 必讀, 尚未完成實作]
+type: verification
+title: Performance acceptance (G19)
+description: Reproducible category comparisons and the limits of benchmark evidence.
+resource: ../../bench/README.md
+tags: [verification, technical-evidence]
 status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
 sources:
-  - id: plan-8
-    resource: /references/plan.md
-    title: PLAN.md §8 效能驗收標準（G19 全文）
-  - id: plan-7
-    resource: /references/plan.md
-    title: PLAN.md §7 M3 對拍達標（退出條件）
+  - id: plan
+    resource: ../../PLAN.md
+    title: Product scope, decisions and milestone exits
 ---
 
-★ 本頁記的是**標準**，不是結果。⛔ **M3 走到哪、出過哪幾組讀數，一律不在這裡寫** ——
-里程碑狀態只在 [`PLAN.md`](../../PLAN.md) §1；各組讀數在 `bench/results/`
-（目錄名按日期排，最後那個是最新的），每組的 README 逐條寫著它**說不了什麼**。
-⚠ 本頁此前寫著「一個效能數字都還沒有」與「合格的對拍宿主今天不存在」——
-2026-09-06 合格宿主出第一組讀數那天起兩句都不成立，而本頁是別人拿來當地圖用的。
+# Performance acceptance (G19)
 
-| | 在哪 |
+This page describes the acceptance contract, not current results or milestone
+state. [PLAN §8](../../PLAN.md) is authoritative; [bench/](../../bench/README.md)
+owns the executable methodology, host qualification, server alignment and
+invalidation rules. Dated raw snapshots remain in bench/results/.
+
+## Acceptance contract
+
+| Dimension | Requirement |
 |---|---|
-| **對拍的指令碼、環境快照與判定口徑** | [`bench/`](../../bench/README.md)（M3 第一刀，**G132**）。常設門禁裡有一格（`BENCH_ONLY`）每趟都把整條流水線跑一遍，並**兩個方向**驗判據判得動 |
-| **對拍的結果** | `bench/results/` —— 只在**合格宿主**上出得來，見下 |
-
-★ ★ ★ **「不合格的宿主上不出數字」不靠紀律守著。** `bench/env-snapshot.sh` 先判宿主合格性，
-不合格時 `bench/verdict.sh` **結構上**就不去取最強者、不算門檻、不打 PASS / FAIL ——
-它寫 `VERDICT: UNQUALIFIED` 並逐條說出為什麼。⇒ 想讓它出數，只有一條路：換一臺合格的宿主。
-⚠ 原始資料仍然完整寫入磁碟，那份資料證明的是**流水線跑得通**，
-⛔ 它不是、也不許被引用成效能讀數。
-
-⚠ §8 七類裡**哪幾類已經有指令碼**，看 [`bench/README.md`](../../bench/README.md)「§8 的類」那張表 ——
-⛔ 本頁不抄那個數（抄了就會過期）。第一刀按 G132 只做一類的理由仍然成立：G19 的門檻是
-「不劣於**該類最強者** 10%」，而在「最強者」這個概念被檢驗過之前先鋪開覆蓋面，是在檢驗之前鋪。
-判定口徑、四家的對齊口徑、以及**這套東西證不了什麼**，全部寫在 [`bench/README.md`](../../bench/README.md)。
-
-# 四條
-
-| | 口徑 |
-|---|---|
-| **物件** | Caddy、HAProxy、Nginx **三家全部對拍**，★ **不挑軟柿子** |
-| **方法** | 同一臺機、同一組案例、同一負載生成器 |
-| **門檻** | 每類案例，樞衡**不劣於該類最強者** 10% |
-| **公開** | 基準指令碼與**原始資料**全部公開 |
-
-★ **不發佈無法重現的效能宣告，不使用「快 N 倍」式表述。**
+| Competitors | Caddy, HAProxy and nginx, with any missing-competitor treatment explicitly decided before a category. |
+| Method | Same machine, cases and load generator. |
+| Threshold | Fulcrum meets at least 90% of the strongest applicable competitor in each category, including equality. |
+| Publication | Publish reproducible scripts, raw data and qualifications, including unfavorable results. |
 
 <a id="用例按類劃分"></a>
 
-# 案例按類劃分
+## Categories
 
-靜態吞吐 · 反代吞吐 · TLS 握手 · L4 轉發 · 快取命中 · 長連接 · 高並行短連接
+Static throughput, reverse-proxy throughput, TLS handshakes, L4 forwarding,
+cache hits, long connections and high-concurrency short connections. Determine
+the strongest separately per category; never average competitors or borrow a
+winner from another category. These are seven independently falsifiable parts
+of the product hypothesis, not one aggregate score.
 
-★ **「該類最強者」逐類算，不是取三家平均、也不是取某一家當基準。** 靜態那一類比的是 nginx，L4 那一類比的是 HAProxy——**樞衡要在每一格都追上那一格的冠軍。**
+## Evidence boundaries
 
-# ★ 為什麼這條標準這麼嚴
+The development benchmark gate exercises pipeline behavior and criterion
+positive/negative controls; green does not mean acceptance. On an unqualified
+host the verdict is UNQUALIFIED, without a strongest/threshold/PASS/FAIL result.
+Raw output from that path is pipeline evidence only. Host qualification does
+not by itself prove the load generator has spare capacity.
 
-因為 [定位](/product/positioning.md) 的整個論證建立在「三家的長處不衝突，可以收進一個實作」上。
-
-**如果某一類明顯落後，那個假設在這一類上就是錯的**——而含糊的對拍會讓這個錯誤一直藏著。逐類設門就是把假設拆成七個可證偽的命題。
-
-# 環境必須可重現
-
-`PLAN.md` §9 把「基準環境不可重現，數字失去意義」列為風險。緩解：
-
-- 基準環境**用指令碼固化**，含**核心參數與 CPU 親和**
-- 每次對拍**記錄完整環境快照**
-
-★ G26 的一個附帶收益正在這裡：Docker 環境**將來直接就是 CI 與對拍環境的底座**。見 [建置與驗證](/platform/build-and-test.md)。
-
-# 這條紀律不只在 M3 生效
-
-[工作方式](/governance/working-agreement.md) 把它列為常駐紀律：
-
-> ★ **絕不在沒有可重現的端到端實測時宣稱效能。**
-
-[`AGENTS.md`](../../AGENTS.md) 也寫了一遍。這意味著**在 M3 之前，任何效能表述都不該出現在文件、提交資訊或對外材料裡**——包括「應該會更快」這種。
+Script kernel parameters and CPU affinity, record complete environment snapshots,
+retain comparison caveats, and apply the raw-data/invalidation rules in bench/.
+Performance claims require reproducible end-to-end measurements; local diagnostics,
+implementation language and a green development gate do not establish them.
+Do not use unqualified “N times faster” claims.
 
 <a id="與依賴升級的關係"></a>
 
-# 與相依升級的關係
+## Dependency changes
 
-G29 第 5 條：**每次升級必須通過當前里程碑的全部驗證**。
-
-★ **M3 之後，這句話的意思是每次相依升級都要跑全量對拍**，不只是跑測試。見 [相依策略](/platform/dependency-policy.md)。
-
-# 相關
-
-[實施路線](/governance/roadmap.md)（M3 退出條件） · [定位](/product/positioning.md) · [設計原則](/product/design-principles.md) 第 6 條
+G29 requires the current milestone's complete applicable verification for every
+adoption. After M3 that includes full comparisons. G36 freezes build-compiler
+changes during M3; G152 freezes the benchmark image and constrains missing Caddy
+support in L4/cache categories. See the [dependency policy](../platform/dependency-policy.md).

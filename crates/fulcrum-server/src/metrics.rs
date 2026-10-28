@@ -2482,7 +2482,7 @@ mod tests {
         /// 標籤那一格 → 按序的標簽名。`无` = 空。
         /// ⚠ 回傳 `None` 表示**這一格的寫法不認識** —— 那要紅，不能當成空。
         fn 解析标签格(格: &str) -> Option<Vec<&str>> {
-            if 格 == "无" || 格 == "無" {
+            if 格 == "None" || 格 == "无" || 格 == "無" {
                 return Some(Vec::new());
             }
             // ⚠ **空格子不當成「無標籤」**：那會讓一個被清空的格子悄悄對上
@@ -2514,7 +2514,12 @@ mod tests {
                 ));
             }
             let 期望来处 = 来处写法(f.source);
-            if 格[2].replace("事件點", "事件点").replace("活體", "活体") != 期望来处
+            if 格[2]
+                .replace("Event", "事件点")
+                .replace("Live", "活体")
+                .replace("事件點", "事件点")
+                .replace("活體", "活体")
+                != 期望来处
             {
                 差.push(format!("数从哪来：文档写 `{}`，代码是 `{期望来处}`", 格[2]));
             }
@@ -2530,7 +2535,10 @@ mod tests {
                 Some(_) => {}
             }
             // ★ 上界那一格的第一條：**無標籤 ⇒ 恆為 1**（單向蘊含，反向不成立）。
-            if f.labels.is_empty() && !格[4].starts_with("恒为 1") && !格[4].starts_with("恆為 1")
+            if f.labels.is_empty()
+                && !格[4].starts_with("Always 1 series")
+                && !格[4].starts_with("恒为 1")
+                && !格[4].starts_with("恆為 1")
             {
                 差.push(format!(
                     "上界：这个族无标签 ⇒ 只可能有一条 series，那一格却写着 `{}`",
@@ -2718,6 +2726,22 @@ mod tests {
             对不上的地方(&样板, &好行).is_empty(),
             "正样本自己就不过 —— 后面那几条反向断言因此什么都证明不了"
         );
+        let english = [
+            "`fulcrum_probe`",
+            "gauge",
+            "Live",
+            "None",
+            "Always 1 series",
+        ];
+        assert!(对不上的地方(&样板, &english).is_empty());
+        for (column, bad) in [(2, "Unknown"), (3, ""), (4, "Always 10 series")] {
+            let mut changed = english;
+            changed[column] = bad;
+            assert!(
+                !对不上的地方(&样板, &changed).is_empty(),
+                "English documentation column {column} accepted {bad:?}"
+            );
+        }
         for (坏, 该说的) in [
             (
                 ["`fulcrum_probe`", "counter", "活体", "无", "恒为 1"],

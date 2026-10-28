@@ -1,65 +1,59 @@
 ---
-type: reference
-title: Host traps, gate discipline, scenario flags and port map
-description: Detail split out of AGENTS.md when the workspace put project guidelines on a resident-context budget.
-tags: [gate, host, ports, dependencies]
-status: current
+type: Platform Contract
+title: Host and Gate Traps
+description: Scenario switches, port ownership, cleanup, Docker/MSYS limits, and criteria that prevent false green results.
+tags: [platform, engineering]
+status: stable
+generated:
+  by: openai/codex
+  at: 2026-10-28T05:17:25Z
+sources:
+  - resource: ../../AGENTS.md
+  - resource: ../../tests/m0/docker-run.sh
+  - resource: ../../tests/lib/vol-lock.sh
+  - resource: ../../tests/ci/shellcheck-all.sh
 ---
 
 # Host traps, gate discipline, scenario flags and port map
 
-> **Everything here is still a hard rule** — `AGENTS.md` keeps only the traps that bite most often and points here.
+These are contributor requirements. [AGENTS.md](../../AGENTS.md) gives the short entrypoint; [build and test](build-and-test.md) defines gate scope. Source scripts own actual dispatch and checks. Historical machine observations are archived outside Git; reusable failure mechanisms and limitations remain here.
 
 ## Scenario flags
 
-Narrow it with one `*_ONLY=1`:
+Set one `*_ONLY=1` on `bash tests/m0/docker-run.sh`:
 
-| flag | scenario |
+| Flag | Scope |
 |---|---|
-| `BUILD_ONLY` / `LINT_ONLY` | build only · `fmt` + `clippy -D warnings` + `shellcheck` only |
-| `COMPILE_ONLY` | `shellcheck` + compile, **all targets**, zero tests run — what the `pre-push` hook uses. The hook adds `COMPILE_SHELLCHECK=0` when the pushed range changes no `*.sh` / `*shellcheckrc` / `docker/Dockerfile.build`, plus `VOL_REPORT=0` (G158) and `HOST_SELFTESTS=auto`, which skips the host self-tests only when this worktree holds a pass record for the same fingerprint of the gate scripts and host tools (G159); the full gate never sets these, and no value skips the self-tests unconditionally. ⚠ `BUILD_ONLY` is not the same thing: `cargo build --release` never compiles test targets |
-| `UNIT_ONLY` | Fulcrum's own crate tests |
-| `VENDOR_ONLY` | the fork regression net (**first gate after a rebase**) |
-| `SERVE_ONLY` | data plane end-to-end, real traffic |
-| `L4_ONLY` | L4 (TCP/UDP passthrough, SNI/ALPN split, PROXY protocol, socket handover) |
-| `FILES_ONLY` / `CACHE_ONLY` / `CACHEDISK_ONLY` / `ENCODE_ONLY` | static files · cache · disk backend · compression |
-| `H3_ONLY` / `RELAY_ONLY` | HTTP/3 end-to-end · cross-generation QUIC relay |
-| `PP_ONLY` / `LOG_ONLY` | PROXY protocol on the HTTP side · structured access log |
-| `METRICS_ONLY` | the Prometheus scrape endpoint (`metrics`, a terminal directive) end-to-end |
-| `STATS_ONLY` | `GET /stats` — the optional fields and the degenerate states, not "can it be scraped" |
-| `ACME_ONLY` / `RENEW_ONLY` | ACME against pebble (a real local CA) · renewal |
-| `SMOKE_ONLY` / `STRESS_ONLY` / `MUSL_ONLY` / `UNCLAIMED_ONLY` | smoke self-check · sustained load · musl static artifact · unclaimed inherited fd |
-| `BENCH_ONLY` | the M3 comparison harness: pinned-version gates, then the whole pipeline plus its criteria, in a third image. ⛔ **It produces no performance numbers** (G132) and green here does not mean M3 passes |
+| `BUILD_ONLY` | Release build only; does not compile test targets. |
+| `COMPILE_ONLY` | All-target compilation and applicable shellcheck; no Rust tests. Hook optimizations are described in build-and-test.md. |
+| `LINT_ONLY` | fmt, clippy -D warnings, shellcheck. |
+| `UNIT_ONLY` | Fulcrum's own crate tests. |
+| `VENDOR_ONLY` | Fork regression net; first gate after rebase. |
+| `SERVE_ONLY` | Real-traffic data-plane end-to-end. |
+| `L4_ONLY` | TCP/UDP, SNI/ALPN, PROXY, listener handover. |
+| `FILES_ONLY`, `CACHE_ONLY`, `CACHEDISK_ONLY`, `ENCODE_ONLY` | Files, memory cache, disk backend, compression. |
+| `H3_ONLY`, `RELAY_ONLY` | HTTP/3, cross-generation QUIC relay. |
+| `TLSPOL_ONLY` | Global TLS group/resumption policy on real handshakes (G168). |
+| `PP_ONLY`, `LOG_ONLY` | HTTP PROXY protocol, structured access logs. |
+| `METRICS_ONLY` | Prometheus endpoint and quantitative consistency. |
+| `STATS_ONLY` | Runtime optional fields and degenerate states. |
+| `ACME_ONLY`, `RENEW_ONLY` | Real local pebble issuance and renewal. |
+| `SMOKE_ONLY`, `STRESS_ONLY`, `MUSL_ONLY`, `UNCLAIMED_ONLY` | Smoke self-check, sustained load, product static artifact, inherited-fd cleanup. |
+| `BENCH_ONLY` | M3 harness/criteria in the comparison image; **no performance result** (G132). |
 
-Most flags have a matching `<NAME>_TESTS=0` that skips that scenario instead (`LINT=0` for lint).
-Two scenarios run in a **container of their own** and are invoked last: the systemd ones
-(systemd as PID 1; `M1_TESTS=0`, or `bash tests/m1/systemd-run.sh` alone) and the M3 comparison
-(three rival servers in one image; `BENCH_TESTS=0`, or `bash tests/bench/run.sh` alone).
+Most have matching `<NAME>_TESTS=0`; lint uses `LINT=0`. `M1_TESTS=0` skips systemd, and `DOCS_GATE=0` disables both documentation prechecks. Systemd, product-musl, and benchmark stages use their own containers. Systemd can run through `bash tests/m1/systemd-run.sh`; benchmark through `bash tests/bench/run.sh`.
 
-⚠ `docker-run.sh` self-tests its `*_ONLY` dispatch on every run — adding a scenario means adding
-a row to that self-test and the `<NAME>_ONLY` / `<NAME>_TESTS` pair.
+The full gate never uses hook shortcuts `COMPILE_SHELLCHECK=0 HOST_SELFTESTS=auto VOL_REPORT=0`. `auto` skips host self-tests only with a matching worktree-local content/tool fingerprint; no value unconditionally skips them. Dispatch self-tests must recognize each new ONLY/TESTS pair.
 
-⚠ ★ **The shellcheck scan is derived, but "derived" was never as wide as it read.** It is
-derived *within the roots it is given* (`tests/ci/shellcheck-all.sh`), so a new directory **under
-those roots** is covered without anyone remembering — and a new **top-level** directory was not.
-Measured 2026-09-05: the new top-level `bench/` shipped five `.sh` files that no static check had
-ever seen, which is the same shape as the hand-written directory list this scanner replaced, one
-level up. ⇒ It now also runs a **wider** probe asserting nothing lives outside the roots, so that
-mistake is **red rather than silent**. ★ The probe asks `git ls-files --cached --others
---exclude-standard` rather than walking the tree with `find`, and all three flags carry weight:
-`--cached` alone misses a script that has been written but not yet `git add`ed — which is exactly
-what those five files were at the moment the check mattered most — while `--others
---exclude-standard` keeps a scratch script under gitignored `handoff/` out of scope, where it
-belongs. Only `vendor/` is excluded by hand, because it is upstream's code, not ours.
+Shell inventory is derived within configured roots and checked by a wider `git ls-files --cached --others --exclude-standard` census. New untracked scripts count; ignored workspace drafts do not. Only upstream `vendor/` is explicitly excluded. A new top-level script root must fail until its coverage is declared.
 
 ## Port allocation
 
-Scenarios run sequentially, but each one claims its own range so a leftover process from a
-previous run cannot be mistaken for the one under test. A new scenario takes a free range.
+Run scenarios sequentially. Each owns its range; a new scenario takes a free range and returns all listeners on exit so a stale process cannot satisfy the next baseline.
 
 | scenario | ports |
 |---|---|
-| `tests/m0/` | 8081 · 9000 |
+| `tests/m0/` | 8080–8082 for actual M0 listeners; 9000 remains reserved (also used as an absent-port synthetic parser fixture). |
 | `tests/serve/` | 9100–9110 (9107–9109 are the thread-model section, G140; 9110 is a python upstream echoing request header names, G163) |
 | `tests/stress/` · `tests/smoke/` | 9200–9201 · 9210–9212 |
 | `tests/l4/` | 9300–9317 |
@@ -79,218 +73,64 @@ previous run cannot be mistaken for the one under test. A new scenario takes a f
 | *(registered, never listened on)* | 19999 — see below |
 | *(shared, hardcoded)* | 80 — see below |
 
-**The `bench/` row is registered even though it cannot collide today.** The M3 comparison runs in
-its own container (`docker/Dockerfile.bench`, started by `tests/bench/run.sh`), so its four
-listeners live in a network namespace no other scenario shares. It is on the list anyway because
-*"it does not collide today"* is not a property anything holds it to — the day someone gives that
-container `--net=host`, the collision appears and nothing says so. ⚠ ★ The first draft of that
-scenario took **9700–9703**, which `tests/h3/` already owns. The claim "9700–9703 is free" came
-from a hand-rolled `grep` whose character class was `[A-Z_]+` — **it cannot match the digit in
-`${H3_PORT:-9700}`**, so it silently omitted a whole row while looking complete. ⇒ Read this
-table; do not re-derive it with a one-off scanner.
+The benchmark ranges remain reserved even though their container currently has a separate network namespace. A future host-network change must not silently collide with another scenario. Read the table rather than inventing a one-off scanner; a pattern such as `[A-Z_]+` misses names with digits, including `H3_PORT`.
 
-**19999 is registered precisely because nothing ever listens on it.** `tests/serve/run.sh` and
-`tests/metrics/run.sh` both use `127.0.0.1:19999` as a `reverse_proxy` address whose only job is
-to exist as an override key and then go dangling — neither scenario ever connects to it. That is
-why it is safe today, and it is also why it is easy to miss: it appears in no listener list. ⚠ It
-stops being safe the moment a scenario adds a *real* probe through it, because the connection
-would go to whatever happens to occupy 19999 on the host. Treat this row as a claim about
-intent — **if you need an address that is actually connected to, take one from your own range.**
+Port 19999 is intentionally not listened on and not connected to: serve/metrics use it only as an override key that becomes dangling. A real connection probe must use its scenario's assigned range instead of whatever host process might occupy 19999.
 
-**Port 80 is the one exception, and it is shared on purpose.** `synthesize_http_redirect`
-(`crates/fulcrum-config/src/compile.rs`) gives every auto-HTTPS site a 308 redirect site on a
-hardcoded `:80`, so these scenarios bind it implicitly: `tests/acme/run.sh` ·
-`tests/acme/renew.sh` · `tests/serve/` · `tests/log/` · `tests/h3/` · `tests/proxyproto/` ·
-`tests/quic-relay/`. ★ **Keeping it hardcoded is settled (G137, closing D29)** — HTTP-01 (RFC 8555
-§8.3) has the CA connect to port 80 only, so a knob would silently disable the backup issuance
-path (G54). ⚠ The cost is stated there: a deployment whose `:80` is taken by another proxy
-cannot use the automatic redirect at all.
+### Implicit port 80
 
-⚠ ★ **`tests/stats/` was on that list on 2026-09-03 and was taken back off the same day** —
-worth reading, because it shows both failure modes. Its `gen3.Fulcrumfile` has
-`t.example:9932 { tls … }`, and `fulcrum compile` on exactly that shape emits **two** sites,
-the second being `http://t.example:80` — so it *was* binding `:80`, while its own file comment
-said the opposite and this list did not name it. ⇒ Fixed by giving that generation a global
-`auto_http_redirect false`, guarded by a **compile-time** assertion in the scenario (its port
-set must be exactly `{9932}`). ★ That gate is deterministic — no runtime timing, and deleting
-the `auto_http_redirect false` line turns it red immediately.
+`synthesize_http_redirect` emits a fixed :80 308 site for auto-HTTPS addresses (G137, RFC8555 HTTP-01 requires :80). An address with a hostname and no explicit `http://` defaults to HTTPS; manually writing `tls` does not disable the redirect. Only explicit HTTP on all addresses or global `auto_http_redirect false` avoids it. A deployment with :80 already owned elsewhere cannot use this automatic redirect.
 
-⚠ ★ **A scenario is on that list the moment it has one auto-HTTPS address**, which is any
-address with a hostname and no explicit `http://` — the scheme defaults to `https` in
-`parse_address`, and `auto_http_redirect` defaults to *on*. Writing `tls <crt> <key>` does not
-take it off the list; only `http://` on every address, or a global `auto_http_redirect false`,
-does. ⇒ `tests/metrics/` has a TLS site on 9922 and stays off the list **because its three
-configs each carry `auto_http_redirect false`** — that line is load-bearing, not boilerplate.
-⚠ ⚠ The list above is maintained by hand and **nothing checks it**: a scenario that grows a
-TLS site silently becomes the next implicit binder, and the symptom lands on an innocent port
-in some *other* scenario. Re-derive it before trusting it.
+Known implicit binders include ACME issuance/renewal, serve, log, h3, proxyproto, and quic-relay. Metrics and stats deliberately disable redirect; stats also asserts the compiled listener set is exactly `{9932}`. TLS-policy configs disable it while running multiple policy instances. This list is manually maintained, so re-derive it from compiled configs after adding TLS sites rather than trusting an old comment.
 
-⚠ ⚠ ⚠ **An occupied `:80` can take down listeners that have nothing to do with it**, and the
-mechanism is not obvious. `ListenerEndpoint::listen` takes the process-wide `ListenFds` mutex and
-then calls `bind()` **while still holding it** (`listeners/l4.rs`; upstream's own comment on that
-line says "consider make this mutex std::sync::Mutex or OnceCell"). `bind_tcp` retries 30 times at
-1 s. So one occupied port parks the shared lock for up to 30 s, and **every listener that has not
-yet taken the lock never binds** — regardless of which service or runtime it belongs to. Whether
-your port is before or after the stuck one is a race, so the symptom is intermittent and lands on
-an innocent port. Measured: a leaked `:80` holder made `tests/acme/run.sh` fail on **`:8083`**,
-with the only error in the log being about `:80`.
+Any IPv4 LISTEN on :80, including loopback and different SO_REUSEADDR settings, can obstruct the redirect. The old Pingora0.8 process-wide lock held through a retrying bind could stall unrelated listeners; current0.9 uses short/per-address locking, so do not present that old global-lock failure as current implementation. A busy port still requires diagnosis, cleanup, and real listener checks.
 
-⚠ Any LISTEN on `:80` makes that bind fail — all four shapes (`0.0.0.0` or `127.0.0.1`, with or
-without `SO_REUSEADDR`) return `EADDRINUSE`. No scenario may assume the redirect listener came up,
-and none asserts it.
+Every generation-spawning scenario returns :80 too, skipping blame for a port already occupied on entry. Register PIDs in the caller: `GEN2=$(start_gen ...)` runs in a subshell, so `PIDS+=` there mutates a copy and can leave cleanup with no recorded process despite green assertions.
 
-★ **The fix belongs at the source: a scenario must hand `:80` back when it exits.** Because `:80`
-is synthesized, no scenario mentions it, so a leak names nothing and the next scenario takes the
-blame. `tests/quic-relay/run.sh` now asserts in its own `cleanup` that the ports it used — `:80`
-included — are free again, and skips `:80` if it was already busy on entry so it cannot blame
-someone else. Copy that check into any scenario that starts a generation the same way.
-⚠ The bug it caught was `GEN2=$(start_gen …)`: `$(…)` is a subshell, so `PIDS+=` updated a copy
-and `cleanup` killed nothing — while the scenario still reported PASSED.
+## Gate discipline
 
-## Gate discipline — the ways a green gate stops meaning anything
+### An early stop truncates the probe
 
-### 0. An early stop truncates the probe, and the truncated output looks complete
+Cargo stops a dependency chain at its first compile failure; downstream injected sites may never compile. Completion means the final pass leaves no unexplored red downstream crate, not that one pass printed N errors. Print an injection count beside an independent census. The same subset trap appears with fail-fast tests, skipped dependent CI jobs, `grep -m 1`, and short-circuit operators.
 
-cargo stops at the **first** crate in the dependency chain that fails to compile, so everything
-downstream is never built. Measured on this repo: an injection placed at **7 sites across 4
-crates** came back naming **1**, from `fulcrum-config` alone — and that output reads exactly like
-a full list. Four rebuild passes were needed to collect them all.
+Other required distinctions:
 
-★ The criterion is **"the last pass produced no red crate downstream"**, not "the compiler printed
-N errors". A single pass that does report every site means the symbol happened to be private to
-one crate — **that is luck, not method**, and it will not hold for the next injection.
+- Fixture shape must cover branch boundaries: IP/hostname, relative/absolute, ASCII/non-ASCII. Test quantity cannot establish that coverage.
+- When a previously unwired capability ships, re-anchor positive/negative lists. A wired feature must not remain listed as unimplemented; guard both directions.
+- A product claim must execute the product binary. A spike only establishes mechanism feasibility; inspect ExecStart and the actual artifact.
+- Bulk rewrites/branch changes can leave apparently fresh stale binaries across a named target/bind mount. Require `Compiling <crate>` and actual new test execution. Treat mtime skew as a hypothesis until established, not a universal explanation.
+- A gauge must distinguish known good and bad cases; a permanently empty output or refusal can look like a valid result.
+- Measure delivery/framing, not TCP segment arrival. A single recv/read can split header/payload legally. Use a structural sender completion marker, such as half-close then read-to-EOF, with timeout only as a backstop. A deterministic payload delay can expose the faulty single-read assumption; increasing sleeps does not fix the criterion.
+- `systemctl reload` zero only reports the trigger, not successful re-exec. Check changed pid, executable/inode, and converged response.
+- Run a new failing criterion on a clean control tree before attributing failure to the patch.
 
-⇒ **Print the injected count next to an independent census of the same category.** You only learn
-that something was missed when the two numbers disagree; one number alone can never tell you.
+After rebase or branch switch, refresh source mtimes **inside the container** before the gate if needed. In Git Bash:
 
-⚠ Same shape, different clothes: `--fail-fast`, a CI job skipped because its `needs:` failed,
-`grep -m 1`, and short-circuiting boolean operators. Each returns a well-formed answer about a
-subset while looking like an answer about the whole.
+```bash
+export MSYS_NO_PATHCONV=1
+docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w fulcrum-build:local bash -c 'find crates spikes -name "*.rs" -o -name Cargo.toml | xargs touch'
+```
 
-And the ways a gate that does run still stops meaning anything:
+This is a refresh step, not test evidence. Avoid concurrent gates or edits to bind-mounted shell inputs. Linux hosts use their real absolute bind path instead of cygpath.
 
-- **The blind spot is in the fixture.** When a code path branches on the *shape* of an input
-  (IP literal vs hostname, absolute vs relative, ASCII vs not), check the fixtures contain both
-  shapes. The count of gates tells you nothing about this.
-- **A gate anchored on something *missing* needs re-anchoring every time that thing ships.**
-  Anchor the positive half on a fixed prefix, and add the reverse half — a capability that is
-  already wired must not appear — because that direction never goes red on its own. Pin such
-  lists in both directions, docs included.
-- **The binary the gate runs is part of the fixture.** A spike proves the road exists; it does
-  not prove the product is on it. When a scenario proves a *product* property, check what
-  `ExecStart=` actually points at.
-- **The binary the gate runs may be one the tree no longer describes.** On this host `cargo`
-  sometimes calls a crate fresh after a bulk rewrite (`git rebase`, branch switch) and reuses the
-  previous test binary: the run is green and the new tests are simply **not in it**. Measured:
-  after one rebase, two identical `UNIT_ONLY` runs on the same tree reported **289** and **288**
-  tests for `fulcrum-server` while the source had **291** — ⚠ two readings that disagree with
-  *each other*, and the three newly added tests never ran. The file was identical inside the
-  container (`md5sum` matched) and `cargo test -p fulcrum-server --lib -- --list` found all 291,
-  so only the path through the named `target` volume was stale ⇒ mtime skew across the Docker
-  Desktop bind mount is the likely cause, but that half is a hypothesis, not a measurement.
-  ★ **Anchor on `Compiling <crate>` in the log** — a green summary does not say what was built.
-  After a rebase or a branch switch, refresh mtimes from inside the container first:
+## Host traps
 
-  ```bash
-  docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w fulcrum-build:local bash -c 'find crates spikes -name "*.rs" -o -name Cargo.toml | xargs touch'
-  ```
-- **A ruler that reads the same in both cases cannot tell them apart.** Before trusting a gauge,
-  ask what it reads in the good case and in the bad case, and make sure those readings differ.
-- **A criterion can name one quantity and measure another — and the tell is that it goes red at
-  random.** `tests/l4`'s PROXY-protocol case asserted "the payload follows the header" by having
-  the upstream fixture do a **single** `recv`. But `l4.rs` writes to the upstream three times:
-  the PROXY header at connect, the peeked prelude, then whatever `copy_bidirectional` relays. On
-  the send-only listener the prelude is empty, so header and payload are separated by a client
-  round trip ⇒ whether they land in one TCP segment is a race, and the assertion was reading
-  **segment boundaries**, not delivery. Measured 2026-09-02: red in a full gate run, green on a
-  rerun of the same tree with **zero** changes; forcing a 150 ms gap before the payload made it
-  red **100 %** of the time, which is what turned a guess into a mechanism.
-  ★ ★ **The expensive part is not the flake — it is what a flake teaches people.** Once a line is
-  known to go red at random, a real regression on that line reads as "that flaky one again", and
-  the criterion has quietly become worse than no criterion.
-  ⇒ Fix by making the **sender** say it is finished — half-close (`shutdown(SHUT_WR)`) and read to
-  EOF — a structural end marker instead of a timing one. Keep a socket timeout as a backstop and
-  say in the comment that the backstop is **not** the criterion, or the next reader will tune it.
-  ⚠ Same shape, different clothes: any assertion whose subject is "what had arrived by the time I
-  looked" — one `recv`, one `read`, a fixed `sleep` before scraping a log, a single poll of a
-  metrics endpoint. Ask what makes the observation point the *right* one; "it passed" does not.
+1. Export `MSYS_NO_PATHCONV=1` for documented Docker commands in Git Bash; otherwise container paths such as `/w` can be rewritten.
+2. Use Windows-form absolute bind sources on MSYS (`cygpath -m`), and use the shared normalization routine for image/tree/cache identity. Docker Desktop staging paths must not recursively generate new tree identities; do not reimplement volume naming.
+3. Keep shell/gate inputs LF via `.gitattributes`. Git status can be clean after checkout converted bytes. Inspect CR bytes with `tr -dc '\r' < file | wc -c`; MSYS grep normalizes line endings and is not a byte check.
+4. Container `/etc/hosts` is a bind-mounted file: truncate/rewrite in place (`cat > /etc/hosts`), then restore in cleanup. `sed -i` and rename replace the inode and can be rejected.
+5. If explicit exits make shellcheck label an EXIT trap unreachable (SC2317), remove unnecessary trailing `exit 0`; do not add a suppression.
+6. Trap SIGPIPE (`trap '' PIPE`) when testing broken sockets, so a write becomes a checked return rather than silent exit141.
+7. Bash read is not a whole-UDP-datagram client; use a proper datagram helper.
+8. `curl --rate N` defaults to per hour without a unit; `-o` and `-w` apply per URL.
+9. Shellcheck0.10 does not detect every function mutation behind command substitution. Keep caller pid ownership and cleanup-port assertions. A comment beginning `# shellcheck` is parsed as a directive; reword ordinary prose.
+10. `git archive` can honor global autocrlf. Extract official comparisons with `git -c core.autocrlf=false archive ...` and verify bytes, or a line-ending-only difference can obscure the actual patch.
+11. Host cargo writes `target/.rustc_info.json` even without building, violating G107's empty-host-target criterion. `dep-check.py` defaults to container cargo; supplying host cargo reintroduces the failure. An empty target mountpoint left by a subpath volume can cause the same artifact from later container `cargo metadata`. For ad-hoc vendor cargo use `--target-dir /w/target/<name>` and mount a target volume at `/w/target`, not a nested vendor target. Root target needs that mount even for `cargo tree`/metadata. Remove accidental host artifacts as such, without deleting unrelated work.
 
-Two corollaries:
+## Dependency-check limits
 
-- **Never anchor a judgment on the exit code of the thing that triggers the work.** `systemctl
-  reload` returns 0 whether or not the re-exec succeeded. Anchor on what the world looks like
-  afterwards (did the pid file change? what does `/proc/<pid>/exe` say?).
-- **A broken measuring instrument reports a broken subject**, and the report reads exactly like
-  a real defect. When a new gate goes red, first run it on a clean tree.
+Exit categories add: 10 eligible cargo updates, 20 manual fork rebase, 40 build-image attention/unverified, 80 systemd-major attention/unverified, 160 advisory/unverified, 1 error. Only package updates belong to cargo update's view; other branches need separate monitoring. These branches report rather than automatically rebase or change images.
 
-## Host traps 4-11 (Windows + Git Bash / MSYS)
+Scan vendor/root advisories with one imported ACCEPTED registry. No cargo candidates means only that current upstream requirements permit no move, not that every package is latest. Inspect vendored Pingora, not crates.io. Rebase first checks what upstream already fixed and then runs all relevant gates. Changed systemd behavior in the MainPID-handover control revisits G37; it does not justify weakening the assertion. Inspect locked-version library source/docs rather than inferring API compatibility across releases.
 
-4. **`/etc/hosts` inside the container is a bind-mounted *file*.** Truncate and rewrite in place
-   (`cat > /etc/hosts`); `sed -i` and `mv` replace the inode, which a bind mount rejects. Restore
-   it in `cleanup`.
-5. **A scenario where every path ends in an explicit `exit` makes shellcheck disown its own
-   `trap … EXIT`** (SC2317). Drop the trailing `exit 0` rather than adding a `disable` comment.
-6. **Trap `SIGPIPE`.** A scenario that writes to a socket it just broke dies with exit 141 and no
-   failure line; `trap '' PIPE` turns that write into a return value.
-7. **`bash` cannot read a UDP datagram** — one `read()` consumes the datagram and returns its
-   first byte. Use a client that reads whole datagrams (the L4 scenario uses a python3 helper).
-8. **`curl --rate N` is per *hour* without a unit**, and `-o` / `-w` apply per URL.
-9. **`shellcheck` does not see a variable mutated inside a function that is called in `$(…)`.**
-   Measured on 0.10: SC2030/SC2031 fire for `( B=1 )` and `X=$(D=9; …)`, and say nothing about
-   `f(){ A+=(x); }; X=$(f)` — the exact shape that leaked a process for three months. Register the
-   pid in the caller, and let `cleanup` assert the ports came back. ⚠ A comment line starting with
-   `# shellcheck` is parsed as a *directive* (SC1073) — reword rather than indent it.
-10. **`git archive` on this host writes CRLF.** The global `core.autocrlf=true` applies to archive
-    output too, so an "official upstream tree" extracted that way differs from upstream in every
-    line ending, and a diff against it reports every file as changed. Measured 2026-09-24 while
-    reconciling the pingora 0.9.0 rebase. Extract with `git -c core.autocrlf=false archive …`, and
-    check the result with `tr -dc '\r' < file | wc -c` (MSYS `grep` normalizes line endings and
-    will not see the CRs).
-11. **Host `cargo` against the checkout breaks G107 on the next gate.**
-    Host cargo writes `target/.rustc_info.json` into the checkout even when nothing is built, so the gate's
-    host-side G107 check (every `target/` in the tree must be empty) exits `RC=1` on a tree nobody
-    meant to build. Measured 2026-09-24, hit again 2026-10-23 through `tools/dep-check.py`, whose
-    default was the host `cargo`. Since 2026-10-23 its default is the build-image container
-    (`container_cargo`: the gate's registry volume, an anonymous `/w/target`, `--self-check` pins it);
-    passing `--cargo cargo` on the host brings the trap back. For other ad-hoc cargo use the
-    `docker run … fulcrum-build:local cargo` form in [supply chain](supply-chain.md), and if the
-    file already exists, delete it: it is a host artifact, not a cache worth keeping.
-    ⚠ **The same file can also arrive with no host cargo at all.** cargo writes `.rustc_info.json`
-    only if the target directory *already exists* — and mounting a named volume at a sub-path
-    (`-v vol:/w/vendor/pingora/target`) leaves that directory behind on the host as an empty
-    mount point. The vendor net's `cargo metadata --locked` has no `--target-dir`, so the next gate
-    writes into it and the gate after that goes red on G107. Measured 2026-09-24 (absent → nothing
-    written; present and empty → written; sub-path volume → empty dir left behind). ⇒ For ad-hoc
-    container cargo against `vendor/pingora`, pass `--target-dir /w/target/<name>` instead of
-    mounting a volume on its `target/`.
-    ⚠ The root `target/` is **always** such a leftover — the gate itself mounts `/w/target` — so any
-    ad-hoc `docker run … cargo` on the checkout must mount a volume there too. Commands that take no
-    `--target-dir` (`cargo tree`, `cargo metadata`) otherwise write straight onto the host; this bit
-    the same day it was written down.
-
-## Dependency check exit codes and caveats
-
-Exit codes stack, one bit per check: `10` cargo-side updates · `20` the pingora fork's upstream
-moved and needs a manual rebase · `40` build image needs attention (G36 — rustc moved, the
-`@sha256` pin is gone, **or the check could not complete**) · `80` systemd test-host image
-(G39, keyed on systemd's *major* version) · `160` unregistered security advisory (or the scan
-could not complete) · `1` error. Any sum of those is a valid code.
-
-Only the first is inside `cargo update`'s field of view; the rest are structurally invisible to
-it, which is why they are watched separately. All of them report and refuse to auto-apply.
-
-- **`dep-check.py` reporting "all current" does not mean the dependencies are current.** It only
-  sees what `cargo update` can move, and that never crosses an upper bound in an upstream
-  manifest. Measured once at 44 of 176 packages behind while it reported no updates available.
-- **The advisory check scans both lockfiles**, `vendor/pingora/Cargo.lock` first and the root one
-  second — `[patch.crates-io]` points `pingora-core` at the vendor tree. The `ACCEPTED` registry
-  is imported from `supply-audit.py`, not copied.
-- **pingora does not come from crates.io.** Read pingora source under `vendor/pingora/`, not the
-  crates.io copy. When upstream releases, check first whether it already raised the bounds, and
-  always re-run the gate afterwards — one fork change lands in `server/transfer_fd/mod.rs`.
-- **systemd gets its own check (G39)** because the test host's systemd *is* part of the M1
-  conclusion. When it goes red, look at `tests/m1/mainpid-handover.sh`: if that scenario turns
-  green, systemd changed its behaviour and **G37's trade-off must be re-evaluated rather than the
-  assertion edited**.
-- **Pin library versions when reading docs.** Do not infer Pingora or BoringSSL API compatibility
-  across versions — check `cargo doc` against the version actually locked.
+See [dependency policy](dependency-policy.md), [supply chain](supply-chain.md), and [build and test](build-and-test.md).

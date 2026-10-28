@@ -1,85 +1,28 @@
 ---
-type: 架構基線
-title: 管理面：雙通道與狀態模型
-description: 全量原子 load + Runtime 增量雙通道；生效狀態 = 期望狀態 ⊕ 臨時覆蓋層，覆蓋層不持久化但永遠可見。
-resource: ../../PLAN.md
-tags: [架構, 承重牆, 必讀, 易錯]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G8（雙通道）、G14（管理面安全）、G18（Runtime 歸宿與判據）
-  - id: plan-4
-    resource: /references/plan.md
-    title: PLAN.md §4 設計原則第 3 條與第 4 條
+type: architecture
+title: Control plane
+description: Atomic full loads and explicit nonpersistent runtime overrides.
 ---
+# Control plane
 
-★ 本頁屬**技術基線**，帶真內容。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
+This is the approved technical baseline and yields to [PLAN.md](../../PLAN.md) on conflict.
 
-# 兩條通道（G8）
 
-直取兩家長處：全量 load 保證「整份設定即唯一事實」與原子退回（Caddy），增量 runtime 用於改權重、摘節點、清快取且零 reload（HAProxy）。
+| Channel | Contract |
+|---|---|
+| Full load | Validate a complete expected state and activate atomically; validation/health failure preserves the previous version. |
+| Runtime increments | Immediate set_weight, disable, enable and purge without reload or connection interruption. |
 
-| 通道 | 用途 | 語義 |
-|---|---|---|
-| **全量 load** | 提交完整設定 | **原子生效**；任一檢核或健康檢查失敗則**整體退回**到上一版本 |
-| **Runtime 增量** | 改權重、摘/加節點、清快取、匯出 stats | 立即生效，零 reload，零連接中斷 |
+Effective state = expected-state baseline plus temporary overrides. Only the baseline is persistent, diffable and reversible. Overrides disappear on process restart and never create another persistent write path.
 
-★ 全量 load **換不了**在啟動時就定死的東西，碰到就整份回 **409**、⛔ 一個改動都不生效，訊息指向 `systemctl reload`（真的換代，零停機）：
-監聽連接埠集 · L4 監聽器集 · 快取後端 · 全域的 `tls_groups` 與 `tls_session_resumption`（**G168**：TLS context 在監聽器起來時就建好了；`tls_groups` 逐項逐序比）。
-⇒ 「換不了的就說換不了」—— 一份 200 而沒生效的設定，是三種結局裡最壞的一種（`crates/fulcrum-server/src/admin.rs` 模組文件）。
+`POST /load?overrides=keep` or `POST /load?overrides=clear` requires exactly one explicit query parameter. Missing, invalid or repeated values (even identical repeats) return 400 before any mutation. The body is plain structured JSON configuration, not `{"overrides":...,"config":...}`. A release pipeline may need clear while an incident operator needs keep; either default could silently do the wrong thing (G120).
 
-# 狀態模型：基線 ⊕ 臨時覆蓋層（G18）
+`clear` lists every removed override. `keep` preserves all slots, marks keys no longer resolving to an upstream as dangling, and names them individually. Dangling entries still count as active registered overrides. Every `/load` and `/runtime` response ends with active/dangling counts; `/stats` instead includes the full list in valid JSON and never appends plain text. The unlabeled `fulcrum_overrides_active` gauge reads the same source.
 
-這是 G8 埋下的一致性問題的解法，也是樞衡與 HAProxy 的**關鍵分野**。
+The override key is (site name, optional reverse_proxy id, normalized upstream address). Shared keys intentionally affect all corresponding routes without warning; stats reports how many. Add a stable id to separate them. IDs are 1–64 characters `[A-Za-z0-9_.-]`, preventing sentinel collision and multiline ambiguity; they are not metric labels. Do not generate IDs from content hashes or positions, which change addressing across deployments/reordering.
 
-```text
-生效状态 = 期望状态（基线，来自全量 load）
-         ⊕ 临时覆盖层（来自 Runtime 通道）
-```
+Each slot reports disabled, weight, dangling and set_at_unix alongside the exact key. set_at_unix is the last modification's absolute wall-clock Unix time, including same-value sets; store SystemTime internally, not integer seconds. NTP jumps can reorder timestamps. Do not add a second monotonic timestamp or convert to elapsed seconds. There is no actor field: Unix socket access is authorized by filesystem ACLs and requests carry no principal identity.
 
-- **期望狀態是唯一權威。** 由全量 load 寫入，可持久化、可 diff、可回復。
-- **臨時覆蓋層不持久化。** 處理程序重新啟動之後它被清空；全量 load 之後清不清空由
-  `overrides` 參數定（**必填**、走查詢串，`POST /load?overrides=keep|clear`，
-  G120，**批 N 任務 5**）：`clear` 才清空且逐項列出被清掉的，`keep` 原樣保留——
-  鍵落不到任何上游的那些標成**懸空**（仍算生效中）並逐條點名，不是無聲無息
-  地消失。
-- ★ **但它永遠可見**，分兩個出口，**形式不同、內容互補**：
-  · `POST /load` 與 `POST /runtime` 的**每一次回應**都在正文末尾帶一行
-    「當前有 N 項臨時覆蓋生效中（其中 M 項懸空）」（裁決 R11）；
-  · `GET /stats` 的 `overrides` 一節把每一項**逐條列出**（三格鍵原樣、`disabled`、
-    `weight`、`dangling`、`set_at_unix`）。
-    ⚠ `/stats` 的正文是 JSON，**有意不追加**那一行純文字計數 —— 追加會把它撕成不合法的 JSON。
-  · 另有無標籤 gauge `fulcrum_overrides_active`（G126）給抓取端，取數與 `/stats` 同源。
-- ⛔ **逐項裡沒有「誰」。** 在 G14 之下它**結構上不存在**（管理面走 Unix socket + `0600`，
-  訪問控制交給檔案系統 ACL，請求不攜帶任何身分）⇒ 這一格永遠不會有。
-- ✅ **「什麼時候」已經做了**（裁決 R6 留下的那條，owner 拍板）：`set_at_unix`，**絕對 Unix 秒**。
-  ★ ★ 語義是「**最後一次改動**」而不是「首次被覆蓋」—— 維運問的那句話是
-  「這臺機器摘掉多久了」，問的是**當前形態**的年齡；先改 `weight` 再 `disable` 時，
-  取「首次」的讀數會讓人以為它兩天前就摘了，而其實兩分鐘前才摘。
-  ⚠ 時鐘取**牆鍾**，代價寫在明處：牆鍾會跳（NTP 校正）⇒ 極端情況下兩項覆蓋的先後
-  與時間戳順序可以不一致。⛔ 不為此引入第二個單調時鐘 —— 那會讓 `/stats` 出現兩種時間。
-  ⛔ **不是「已經過了多少秒」**：相對秒讀起來完全正常，而它在兩次抓取之間含義會變（R5）。
-  ⚠ 它**不進指標**（G126 已經拍過：「是哪幾項」本來就該來 `/stats` 看）。
+Full load returns 409 without partial activation when startup-bound configuration changes: HTTP listener-port set, L4 listener set, cache backend, or global tls_groups/tls_session_resumption. Group lists compare item by item in order. Diagnostics direct the operator to `systemctl reload`, which performs a new generation. Runtime cache-capacity changes are supported (G135): compute the shared maximum once, update both backends and report the backend's read-back value; shrinking waits for next insertion rather than sweeping LRU during load.
 
-> ★ **判據**：HAProxy 的病根**不是** runtime 改動會在 reload 後消失，而是**它消失得無聲無息**。
-> 問題的本質是「可見與否」，不是「持久化與否」。樞衡選擇**不持久化 + 強制可見**。
-
-# 暴露面（G14）
-
-- **預設只綁 Unix domain socket**，權限交給檔案系統 ACL。★ **零網路暴露，不需要發明 token 體系。**
-- 遠程管理需**顯式開啟**，且只能走 **mTLS**。
-- ★ 這是對 Caddy 的直接修正：**Caddy 的 Admin API 預設綁回環且無認證，同機任意處理程序可改設定。**
-
-# 最容易在哪做錯
-
-1. ★ ★ **新增第二條持久化寫路徑。** 「Runtime 改了權重，順手存一下下次也生效」看起來體貼，實際直接摧毀「期望狀態是唯一權威」——兩份權威分岔時沒人知道該信哪個。[設計原則](/product/design-principles.md) 第 3 條就是拿來否決它的。
-2. ★ **把覆蓋層做成「可見」但不是每次回應都帶。** 判據是**無聲無息**才是病根；一個要另外調介面才能查到的覆蓋清單，實際效果與 HAProxy 相同——**維運不會去查他不知道存在的東西**。
-3. **全量 load 做成「盡力而為」。** 部分生效 + 部分失敗是最壞的形態：它既不是舊狀態也不是新狀態。第 4 條原則「設定變更是交易，不是檔案寫入」就是拿來否決它的。
-
-# 相關
-
-[設定分層](/architecture/configuration.md)（裝載的是什麼） · [觀測](/architecture/observability.md)（Runtime stats 重複使用同一條通道） · [安全基線](/platform/security-baseline.md)
+Management defaults to a mode-0600 Unix domain socket. No admin option creates none; network addresses currently reject startup. The product policy for future explicitly enabled remote management is mTLS (G14). [Metrics](observability.md) is an ordinary protected site endpoint, not a second management API.

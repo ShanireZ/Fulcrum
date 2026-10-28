@@ -1,99 +1,20 @@
 ---
-type: 專案治理
-title: 相容性分類法
-description: 五個對外面各自「什麼算 breaking」；承諾本身從 M4 起生效，在那之前這一頁只是預先講清代價。
-resource: ../../PLAN.md
-tags: [治理, 相容性, 版本]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-09-05T00:00:00Z
-sources:
-  - id: plan-11
-    resource: /references/plan.md
-    title: PLAN.md §10 G149（版本與相容性策略，原 D9）
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G141（本頁的授權決定）
-  - id: plan-7
-    resource: /references/plan.md
-    title: PLAN.md §7 M4（承諾的起點）
+type: contract
+title: Compatibility
+description: Public change surfaces, build identity and release transition policy.
 ---
+# Compatibility
 
-★ **權威是 [`PLAN.md`](../../PLAN.md)**：§10 的 `G149` 是這件事本身（2026-09-07 結案，原 `D9`），§10 的 `G141` 是本頁的授權決定。
-本頁只回答一個問題：**改動落在哪個面上、算不算 breaking。**
+[PLAN G141/G149](../../PLAN.md) own this policy. Classification applies now; compatibility promises start at M4/1.0. Until then product versions remain 0.x and breaking changes are possible. Internal Rust APIs are not public surfaces: all product crates use publish=false. Spike crate versions are not release versions.
 
-## 一、承諾從什麼時候起
+| Surface | Breaking change |
+|---|---|
+| DSL | Previously accepted input fails or changes behavior. Accepted input with different behavior can be more costly than explicit validation failure. |
+| Structured JSON/load API | Previously accepted payload is rejected. |
+| /stats JSON | Remove a field or change its type/meaning; additive fields are compatible. |
+| Metrics | Rename/remove families or labels, or narrow label values. Adding families/samples is compatible; removals can silently disable alerts. |
+| FUL-DSL-NNNN diagnostics | Once issued, never change a code's meaning. |
 
-⛔ **現在沒有相容性承諾**，這一條不由本頁改動 —— 它寫在 [`PLAN.md`](../../PLAN.md) §7 的 M4 一節裡。
-本頁給出的是**分類法**，不是承諾：它讓「這個改動以後會不會很貴」在今天就答得出來，
-而不是等到承諾生效那天再來吵一遍。
+After promises begin, metrics/stats transitions require at least six months and one minor release; DSL/JSON requires at least one minor with clear deprecation warnings. Reassess durations before M4 if release cadence differs from expectations. Diagnostics never deprecate their established meaning.
 
-★ ★ **為什麼現在寫、卻不現在承諾**：`G129` 把 `id` 的取值域收緊成 `[A-Za-z0-9_.-]`，
-理由逐字是「D9 還沒結案、M4 之前沒有任何相容性承諾 ⇒ **要收就現在收最便宜**」。
-⚠ 那是 `G129` 寫下時的原話，**當時為真**；`D9` 已於 2026-09-07 由 `G149` 結案 ——
-⛔ 別據這句話反推「今天還沒結案」。★ 而它的**結論**不變：承諾仍從 M4 起生效。
-那個自由度今天仍然需要 —— 提前上承諾等於把它收掉。
-⇒ **分類法今天生效（用來估價），承諾 M4 起生效（用來約束）。**
-
-## 二、五個面，各自的 breaking 長得不一樣
-
-⚠ **「對外」指的是這個專案之外的人或機器相依的東西。** 六個 crate 全是 `publish = false`，
-沒有 crates.io 下游 ⇒ **Rust 層面的 API 不是對外面**，跨 crate 改簽名不進這張表。
-
-| 面 | 誰在消費 | 什麼算 breaking |
-|---|---|---|
-| **DSL** | 人手寫的設定檔案 | 曾經編得過的設定現在編不過；或**編得過但行為不同** |
-| **結構化設定**（`POST /load`）| 機器生成的 JSON | 曾經裝得上的 payload 現在被拒 |
-| **`/stats` JSON** | 維運指令碼、看板 | 刪欄位、改欄位語義、改類型。⚠ **加**欄位不算 |
-| **指標名與標籤** | Prometheus 告警與看板 | 改族名、刪族、刪標籤、收窄標籤值域。⚠ **加**族、**加**樣本不算 |
-| **`FUL-DSL-NNNN`** | 文件與自動化 | 一旦發出就不能改含義 |
-
-⚠ **DSL 那一行的後半句是重點**：「編得過但行為不同」比「編不過」**貴得多** ——
-編不過會當場停在 `fulcrum validate`，行為不同則要等到線上才發現。
-⇒ 判斷一個 DSL 改動時，先問的不是「還編得過嗎」，是「同一份設定的行為變了沒有」。
-
-⚠ **`FUL-DSL-NNNN` 那一行不是本頁新加的承諾**：
-[`dsl-reference.md`](/architecture/dsl-reference.md) 早就寫著這些碼穩定、可被文件與自動化引用。
-本頁只是把它歸到同一張表裡，⛔ 不得與之矛盾。
-
-## 三、★ 指標那一面最貴，理由與別處不同
-
-改一個指標名，**不會有任何東西回報錯誤**：
-設定照樣裝、請求照樣過、門禁照樣綠。只有別人的告警規則**靜默地不再匹配**，
-而「告警沒響」和「一切正常」在監控臺上長得一模一樣。
-
-⇒ 它與本儲存庫反覆踩的那一族是同一個物種：**一個「沒有」既可能是真沒有，也可能是量具夠不著。**
-⇒ 紀律：**改指標名與標籤，按最高檔處理**，⛔ 不因為「反正編譯得過」就當成小事。
-
-★ 反過來，**加**一個族或一條樣本是安全的：沒有人的告警會因為多了一個族而失效。
-⇒ 這條不對稱正是這張表按「刪/改 vs 加」分界的理由，不是隨手定的。
-
-## 四、建置身分 ≠ 版本承諾
-
-`fulcrum_build_info{version}` 回答的是「**跑的是哪一次建置**」，
-⛔ **不是**「這個版本承諾了什麼」。兩件事共用一個字串會讓人把前者讀成後者。
-
-⇒ 取值用 semver 的**建置中繼資料**語法（`+` 之後那一段）：按 semver 自己的規矩，
-`+` 後面的內容**不參與版本先後比較** —— 語法本身就在宣告「這是身分，不是承諾」。
-
-取值鏈，從左到右第一個取得到的贏：
-
-| | 來源 | 用在哪 |
-|---|---|---|
-| ① | `FULCRUM_BUILD_ID` 環境變數 | 打包與發佈：由建置環境喂真值 |
-| ② | `git describe` 推導 | 日常開發與門禁 |
-| ③ | 顯式 `unknown` | 前兩個都取不到時 |
-
-⛔ ★ **第三檔必須是顯式的 `unknown`，不許悄悄退回 `0.0.0`。**
-「讀不到」與「讀到了 0.0.0」是兩件事，而後者會讓人以為自己看到了一個真實的版本號
-—— 與本儲存庫「沒能檢查不算檢查通過」是同一條紀律。
-
-## 五、本頁不回答的
-
-- ~~**版本號怎麼排**、**棄用要給多久的過渡期**~~ —— **2026-09-07 由 `G149` 結案**，
-  ⇒ 本頁不再回避它們：版本號 `0.x` 排到 M4、M4 起 `1.0`（`1.0` 與「承諾開始生效」
-  綁成同一件事，就是本頁 §一 那句話在版本位上的寫法）；棄用過渡期**按本頁 §二 那五個面分檔**。
-  ⚠ ⚠ `G149` 裡那兩個具體數字（幾個 minor）**是 agent 擬的、owner 尚未過目**，M4 前必須落定。
-- **`vendor/pingora/` 的 fork 改動** —— 那由 [`FORK.md`](../../vendor/pingora/FORK.md) 管，
-  它跟隨上游而不是跟隨本專案的承諾。
+`fulcrum_build_info{version}` identifies a build, not its compatibility promise. Build metadata follows FULCRUM_BUILD_ID, direct .git inspection, then explicit `<package-version>+unknown`. The git fallback does not detect dirty worktrees; packaging must supply an explicit build identity. Semver build metadata does not affect version precedence. Fork maintenance follows [FORK.md](../../vendor/pingora/FORK.md), not this public-interface policy.

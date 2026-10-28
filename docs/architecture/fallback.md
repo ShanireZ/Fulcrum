@@ -1,146 +1,20 @@
 ---
-type: 架構基線
-title: 回落層
-description: ⛔ 這一層已整塊刪除（G98）；本頁留著，是因為它記著三件在別處照樣成立的事。
-resource: ../../PLAN.md
-tags: [架構, 過渡期, 必讀]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G2（三家角色）、G9（回落定位）、G25（回落兩家）
-  - id: plan-63
-    resource: /references/plan.md
-    title: PLAN.md §6.3 回落層（過渡期，1.0 時歸零）
-  - id: plan-10-d6
-    resource: /references/plan.md
-    title: PLAN.md §10 G34（D6 結案：回落層處理程序管理＝重複使用既有 systemd 單元，在樞衡的 unit 裡宣告相依）
+type: architecture
+title: Removed fallback layer
+description: Migration behavior and durable constraints after G98.
 ---
+# Removed fallback layer
 
-★ 本頁屬**技術基線**。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
+This is the approved technical baseline and yields to [PLAN.md](../../PLAN.md) on conflict.
 
-> # ⚠ ⚠ ⚠ 這一層（M2 批 G）**整塊刪除**（G98）
->
-> §6.3 原本寫的是「1.0 時歸零」，owner 在批 G 提前了它 —— 因為**它的使用者已經歸零**：
-> `l4`（批 B）→ `file_server`（批 F）→ `cache`（批 G），三個全都自研完了。
->
-> **程式碼裡刪掉的**：`Owner::FallbackNginx` / `FallbackCaddy` · `fallback_engine()` ·
-> `Fallback` / `FallbackRoute` / `FallbackTargets` · `fallback_routes()` ·
-> `Outcome::Fallback` · `BodyRt::FallbackTerminal` · 全域選項 `fallback_nginx` /
-> `fallback_caddy` · `plan` 裡那條「+1 跳」· 資料面那一整支。
->
-> ⚠ **寫了 `fallback_*` 的設定現在編譯不過**，報的是 **`FUL-DSL-0034`**
-> （一條專門的診斷），**不是**「未知的全域選項」——
-> ★ 一個公開設定面消失時，只回「你是不是想寫 XXX」等於讓寫過它的人以為自己打錯了字。
->
-> ## ★ ★ 本頁留著，因為它記著三件在別處照樣成立的事
->
-> 1. **501 與 502 是兩個不同的事實，不許合併** —— 501 = 設定裡沒寫；502 = 寫了但連不上。
->    合併之後，一次設定遺漏與一次後端故障在現場長得一模一樣。
->    （這句話已搬進 `crates/fulcrum-server/src/lib.rs` 的模組文件。）
-> 2. **一個靜靜躺著的死設定，與一個正在生效的設定，在設定檔案裡長得一模一樣** ——
->    所以這一層會在裝載紀錄裡說「配了但沒有任何路由會用到它」。
-> 3. **約束第 1 條：走與 `reverse_proxy` 完全同一段轉發程式碼，不另開一條路。**
->    ★ 這一條**被快取繼承了下來**（M2 批 G 的 `proxy_with(…, pass)`）：兩份轉發程式碼
->    對 `header_up` / `rewrite` / 候選位址退回的處理遲早分家，而現場表現是
->    「配了快取之後某個頭就沒了」。
->
-> ★ ★ ★ 另有**一樣東西是從這一層裡救出來的**：自環檢測此前**只守回完成實作址**，
-> 而 `reverse_proxy 127.0.0.1:443` 是同一個事故。⇒ 它挪到了上游那一側
-> （`Runtime::self_loop_warnings`，且在那邊是 warning 不是 error）。
-> > **一條判據被刪掉的時候，它守著的那件事不會跟著消失。**
->
-> ⚠ ⚠ 而它此後有一段時間**算了卻沒人說**：`fulcrum-runtime` 有意不相依 `log`
-> （回傳話、不自己列印），而資料面一側一直沒有把這幾句話接出來 ⇒ 全倉唯一的讀者
-> 是單測。★ 現在由 `log_load_summary` 在裝載紀錄裡說出來，端到端判據在
-> `tests/serve/run.sh` 的 `[4/4]`，含反向那一半（**不自環的上游不許被說進去**）。
-> > **一個用來「出了事你能知道」的東西，自己不說話時沒人知道。**
->
-> ⇒ **下面全部是歷史記錄**，描述的是  至 08-25 之間的行為。
 
-# ✅ 它串接了（G79）
+G98 removed the complete Caddy/nginx fallback once L4, files and cache were native. Removed types, forwarding branches and fallback_routes fields must stay removed; a permanently empty field would falsely imply a supported path. `fallback_nginx` and `fallback_caddy` reject with dedicated diagnostic FUL-DSL-0034, explaining removal rather than suggesting a spelling error.
 
-在此之前，該走回落的請求一律回 **501**（一個誠實的中間態）。現在：
+The historical layer forwarded files/cache to nginx and other incomplete capabilities to Caddy through ordinary ProxyTarget/shared reverse_proxy code, without translating capabilities or configuration semantics. Existing systemd units used Wants/After rather than Requires, so a failed backend did not kill the entrance. Fulcrum never started, supervised, restarted or read external engine configuration, and never statically linked the engines.
 
-| 全域塊裡 | 該走回落的請求 |
-|---|---|
-| 沒寫 `fallback_nginx` | **501** —— 你沒告訴我後端在哪 |
-| 寫了，後端連得上 | **轉發過去**（+1 跳）|
-| 寫了，後端連不上 | **502**（`all_upstreams_down`）|
+Retained constraints:
 
-★ ★ **501 與 502 有意不合並**：合併之後，一次設定遺漏與一次後端故障
-在現場長得一模一樣。三個方向各有一條端到端判據（`tests/serve/run.sh`）。
-
-★ ★ ★ **「薄轉發」是用「共用同一段程式碼」落實的**：回落目標就是一個普通的
-`ProxyTarget`，走的是與 `reverse_proxy` **完全同一段**轉發函式。
-能力翻譯、設定語義映射、統一兩家行為差異 —— 這三件事因此**做不到**，
-而不是靠自覺不去做。
-
-⚠ `fallback_caddy` 收得進 DSL，但 **HTTP 執行鏈上沒有任何指令指向 caddy**：
-只有 `l4` 回落 caddy，而 l4 整條還沒串接。這件事由一道結構門盯著
-（`crates/fulcrum-runtime/tests/fallback.rs` 的
-`http_链上目前只有_nginx_一种回落目标`），哪天有指令指向 caddy 了它會紅。
-
-⚠ **回完成實作址指回樞衡自己會被拒絕建置**（`fulcrum validate` 就報）：那是無限循環，
-而它的現場表現只是源源不斷的正常轉發記錄。判據取得很窄 —— 主機是本機形式
-**且**連接埠在本處理程序監聽集裡，兩條同時成立才判。寧可漏報也不許誤報：
-一次誤報會讓一份合法設定**起不到**。
-
-# 它是什麼
-
-自研某塊能力尚未完成時，樞衡把該類請求**轉發給成熟引擎**：
-
-| 能力 | 回落給 |
-|---|---|
-| 靜態檔案、HTTP 快取 | **Nginx** |
-| 其餘未完成能力 | **Caddy** |
-
-★ **回落是時間軸上的臨時頂班**（G9），不是架構層次。某塊自研完成即拆除，**1.0 時回落程式碼歸零**。
-
-# 四條約束（防止它長成第二個產品）
-
-1. ★ **只做薄轉發。** 不做能力翻譯，不做設定語義映射，**不試圖統一兩家的行為差異**。
-2. **邊界顯式。** 哪些請求走回落，必須在設定中可見、在 stats 中計數、在計畫輸出中**標出額外跳數**。
-3. ★ **一塊自研完成，立即拆除對應回落。** 拆除是**里程碑的一部分**，不是「以後再說」——見 [實施路線](/governance/roadmap.md) M2。
-4. **不靜態連結任何一家。** 僅通過處理程序邊界與各自的 API 交互（★ 也是**授權條款考慮**）。
-
-# ★ 代價已知並接受（G25）
-
-回落**兩家**而非一家，回落層工程量**約翻倍**，而這些程式碼 1.0 時**全部刪除**。
-
-AI 當時建議只回落 Caddy 一家（評 8.5 vs 7.0），owner 推翻了它。換來的是：**過渡期不必向自己和早期使用者解釋難看的效能數字**——靜態與快取這兩塊 nginx 最強。
-
-# 判斷一個改動該不該做
-
-[設計原則](/product/design-principles.md) 第七條給了一條可操作的判據：
-
-> **如果一個改動讓回落層更難刪，它就違反了第七條**——哪怕那個改動本身讓回落工作得更好。
-
-能力翻譯、設定語義映射、統一兩家行為差異，全部因此出局。
-
-# ✅ 處理程序管理方式（G34，結案）
-
-**重複使用既有 systemd 單元 + 在樞衡的 unit 裡宣告相依。** 樞衡**不拉起、不監管、不重新啟動、不讀它們的設定**。
-
-```ini
-Wants=caddy.service nginx.service
-After=caddy.service nginx.service
-```
-
-★ **`Wants=` 而不是 `Requires=`**：回落後端掛掉不該把樞衡一起拖死——**入口還活著並對未實作能力回傳 502，好過整個入口消失**。
-
-## 為什麼不是「樞衡自己拉起並監管」
-
-1. ★ 本頁「四條約束」之上，[設計原則](/product/design-principles.md)第七條給的判據是「**讓回落層更難刪的改動就違反第七條**」。自建監管會讓樞衡長出**處理程序管理器**這個第二身分，而這部分程式碼 1.0 時要一起刪。
-2. ★ G31 之後樞衡在 systemd 下**前台執行、跑在自己的 cgroup 裡**，它拉起的子處理程序會被拖進同一生命週期——**優雅升級時會被一起殺掉**。
-
-★ 兩個方案本來都滿足第 4 條約束（不靜態連結、僅通過處理程序邊界交互），所以決定它的是上面這兩條，不是第 4 條。
-
-**1.0 時拆除回落層** = 刪掉轉發程式碼 + 從 unit 裡刪掉這兩行。
-
-# 相關
-
-[首版範圍](/product/scope.md) · [設計原則](/product/design-principles.md) · [觀測](/architecture/observability.md)（回落計數）
+1. Unconfigured capability (501) and configured but unreachable backend (502) describe different faults.
+2. Report unused/dead configuration; its presence in a file does not prove it is active.
+3. Reuse a single forwarding implementation for rewrite, header changes and address fallback; cache continues through proxy_with rather than another proxy path.
+4. Preserve self-loop warnings after removing their original fallback consumer. Runtime::self_loop_warnings returns diagnostics without logging; log_load_summary emits them on the server side. Report only when both the host is a local form and the port belongs to this process's listeners; false positives must not reject valid configuration. These are warnings because self TLS-to-cleartext proxying can be intentional. Walk nested containers, name the affected upstream exactly once and exclude unrelated upstreams. Test warnings without generating actual loop traffic.

@@ -1,50 +1,21 @@
 ---
-type: 架構基線
-title: DSL 指令集參考
-description: M1 的完整指令清單、匹配器、佔位符、類型與預設值；執行順序表是公開契約。
-resource: ../../PLAN.md
-tags: [架構, 設定, 承重牆, 必讀]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-19T00:00:00Z
-sources:
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 G47/G48/G49/G50/G51/G52（D3 的語義）與 G60–G63（D3 結案）
-  - id: plan-61
-    resource: /references/plan.md
-    title: PLAN.md §6.1 首版自研範圍（決定哪些指令 M1 自研、哪些回落）
+type: architecture
+title: DSL reference
+description: Complete configuration surface, execution order, matchers, placeholders and defaults.
 ---
+# DSL reference
 
-★ 本頁屬**技術基線**，帶真內容。它**服從** [`PLAN.md`](../../PLAN.md)；衝突時以 `PLAN.md` 為準。
-設定分層與已定語義見[設定分層](/architecture/configuration.md)。
+This technical baseline yields to [PLAN.md](../../PLAN.md). [Configuration](configuration.md) explains the DSL→JSON→runtime layers. DSL and structured JSON are public inputs and both validate semantic constraints.
 
-> ✅ **本頁描述的編譯期行為與執行環境行為都已經實作**
-> （`crates/fulcrum-config` + `crates/fulcrum-runtime` + `crates/fulcrum-server`）。
-> ★ §三那張表由 `crates/fulcrum-config/tests/doc_contract.rs` **與程式碼逐行比對**，
-> 而它真正被執行這件事由 `crates/fulcrum-runtime/tests/routing.rs` 與
-> `tests/serve/run.sh`（真流量）釘住。
-> ⚠ **仍有幾條只是「解析得過」**：`tls internal`、`on_demand`、
-> `tracing`——
-> 它們由 `fulcrum_runtime::UNWIRED` 逐條登記、裝載時打出來，並有契約測試釘住那份清單。
-> **別把「文件裡寫了」當成「執行環境會做」。**
-> ✅ ★ **`proxy_protocol_from` （M2 批 L 第 ① 步）從這句話裡刪掉**：
-> 全域塊那一份（管 HTTP 面）**收**的那半邊串接了 —— 在 TLS 握手之前讀掉 PROXY 頭，
-> 並把這條連接的對端位址換成頭裡報的真實用戶端。`l4` 塊裡那一份早在 M2 批 D 就完全串接。
-> ⚠ ⚠ **而「向上遊發」那半邊至今沒有任何 DSL 面**（`reverse_proxy` 的子指令表裡沒有它），
-> 所以它**不在**這張表上 —— 這張表登記的是「DSL 認得、執行環境不做」，
-> 而一個寫都寫不出來的能力不屬於這一類（寫進來反而會讓人以為寫得出來）。
-> ★ `tls <cert> <key>` 與 TLS 監聽本身**已經串接**（HTTPS 真流量驗過），
-> 所以 `tls` 那一格是**拆細**的，不是整條未實作。
+**Parsed but unwired**: `tls internal`, `on_demand`, `tracing` — these are registered in fulcrum_runtime::UNWIRED and reported at load. Explicit PEM TLS and automatic ACME are implemented. HTTP PROXY reception is implemented; HTTP upstream PROXY sending remains unsupported at runtime, although reserved proxy_protocol syntax exists. L4 PROXY reception/sending are implemented independently.
 
-# 一、總覽：一份設定長什麼樣
+# 1. Overview
 
 ```text
-# 全局选项块（可选，必须在最前）
+# Optional global options must precede all sites.
 {
-    acme_email  ops@example.com
-    admin       unix//run/fulcrum/admin.sock
+    acme_email ops@example.com
+    admin unix//run/fulcrum/admin.sock
 }
 
 example.com {
@@ -57,139 +28,63 @@ api.example.com {
     @internal remote_ip 10.0.0.0/8
     handle @internal {
         reverse_proxy 10.0.0.1:8080 10.0.0.2:8080 {
-            lb_policy       least_conn
-            health_uri      /health
+            lb_policy least_conn
+            health_uri /health
             health_interval 5s
-            dns_refresh     30s
+            dns_refresh 30s
         }
     }
     respond 403
 }
 ```
 
-★ 上面這個例子只有在 `handle` 跑在 `respond` **之前**時才成立——見 §三。
+handle must execute before the fallback respond; this is the ordered-chain contract, not incidental formatting.
 
-## 全域選項塊能寫什麼
+## Global options
 
-| 選項 | 形式 | 說明 |
-|---|---|---|
-| `acme_email` | `acme_email <邮箱>` | ACME 帳戶電子信箱（G53）|
-| `acme_ca` | `acme_ca <目录 URL>` | 換 CA（預設 Let's Encrypt）|
-| `admin` | `admin unix/<路径>` | 管理面監聽位址（G8/G14）|
-| `default_sni` | `default_sni <域名>` | 用戶端**不帶** SNI 時當作它報了這個名字。⚠ 它**不**給「報了、而我們沒有那張證書」的 SNI 備援 —— 那種連接照舊被拒絕握手（Caddy 把後者另立為 `fallback_sni`，樞衡沒有）|
-| `auto_http_redirect` | `auto_http_redirect <true\|false>` | 自動把 HTTP 跳到 HTTPS（G12）。★ **不寫就是 `true`**，見 §二 |
-| `grace_period` | `grace_period <时长>` | 優雅停機的排空視窗。★ 不寫＝ **30s**，見[部署](/platform/deploy.md) |
-| `threads_l7` | `threads_l7 <正整数>` | L7 資料面（h1/h2 與 **h3**）**每個** service 的執行緒數。不寫＝ **CPU 核數** |
-| `threads_l4` | `threads_l4 <正整数>` | L4 面（TCP/UDP 透傳）**每個** service 的執行緒數。不寫＝ **2** |
-| `threads_admin` | `threads_admin <正整数>` | 管理面與**後台任務**的執行緒數。不寫＝ **1** |
-
-> ⚠ ⚠ ★ **三格分開、⛔ 沒有一個籠統的 `threads`，這是機制決定的不是口味**：pingora 的
-> 執行緒**不跨 service 共享**（每個 service 各起一套 runtime）⇒ **總執行緒數 ≈ Σ(各 service)**。
-> 一個全域值設成核數會直接超訂 —— 4 核 × 4 service = 16 個 worker 執行緒。
-> 推導與初值見[處理程序模型](/architecture/process-model.md)的「執行緒模型」一節。
->
-> ★ 取值域 `[1, 1024]`；`0`、負數、帶單位、不是數字都是**裝載期錯誤**（`FUL-DSL-0046`）。
-> ⚠ `0` 尤其不能放過：pingora 拿它去建 tokio runtime 會**啟動時 panic**，
-> 而那個回報錯誤一個字都不提設定。
->
-> ★ ★ **`threads_admin` 同時是「其餘一切」那一格**：它就是 pingora `ServerConf.threads`，
-> 而那是所有沒被逐 service 覆蓋的東西（後台任務全是這一類）的回落值。
->
-> ⏳ **這三個初值不是結論。** 判據在 M3 的對拍資料裡（[效能驗收標準](/verification/performance-bar.md)），
-> 而那些數今天還不存在。
-| `proxy_protocol_from` | `proxy_protocol_from <网段…>` | ★ ★ **信任這些來源發來的 PROXY 頭**，管 **HTTP 面全部監聽連接埠**（M2 批 D）。不寫＝**誰都不信**。見下 |
-| `tls_session_resumption` | `tls_session_resumption <true\|false>` | **TLS 工作階段恢復**（G168）。`false` ⇒ 一張 session ticket 都不發、伺服器端 session cache 關 ⇒ TLS 1.2 / 1.3 用戶端每條連接都完整握手。不寫＝ **`true`**（BoringSSL 預設）。管每一個 HTTPS 監聽與 h3 |
-| `tls_groups` | `tls_groups <組名…>` | **允許的 TLS 金鑰交換組**（G168）。⚠ 是**集合**、⛔ 不是偏好序：握手照**用戶端**的順序在其中挑。只認 BoringSSL 的正式名（區分大小寫）：`X25519MLKEM768` `X25519` `P-256` `P-384` `P-521` `MLKEM1024`；別名（`x25519`、`prime256v1`…）、打錯的與重複的都是**裝載期錯誤**（`FUL-DSL-0047`，帶正式名的建議）。不寫＝ BoringSSL 預設。管每一個 HTTPS 監聽與 h3。⚠ 後量子組在 TLS 1.2 裡不存在，而 1.2 下 ECDSA P-256 證書還要求清單裡有 `P-256` ⇒ **只寫 `X25519MLKEM768` 時 TLS 1.2 用戶端一律握不上**。⚠ TLS-ALPN-01 的驗證連接（ALPN `acme-tls/1`）走同一個 HTTPS 監聽 ⇒ 釘得太窄也會擋住 CA 的驗證連接，用 TLS-ALPN-01 簽發 / 續期的網域會隨之失敗 |
-
-> ⚠ ⚠ **這兩個 TLS 設定改了要換代**：TLS context 在監聽器起來時就建好了 ⇒ `POST /load` 提交的值與執行中的
-> 任一個不同（`tls_groups` 逐項逐序比）就回 **409**、⛔ 任何改動都不生效，訊息指向 `systemctl reload`
-> —— 與「監聽連接埠集變了」同一條規矩（[管理面](/architecture/control-plane.md)）。
-
-★ **憑證不在這裡，也不在 DSL 的任何地方**（G59）：DNS 供應商的 token 只從
-檔案或環境變數讀——DSL 是要被 diff、被貼進 issue、被版本控制的東西。
-
-## ★ ★ ★ `proxy_protocol_from`：不在清單裡，就一個位元組都不讀
-
-前面掛了 L4 負載均衡器（雲 LB、HAProxy、另一臺樞衡）時，真實用戶端 IP 只能靠
-**PROXY protocol** 帶進來 —— 它是連接開頭的一小段位元組，不是 HTTP 頭。
-
-| 來源 | 樞衡怎麼做 |
+| Option | Syntax and semantics |
 |---|---|
-| **在清單裡** | 讀那個頭，`remote_ip` 匹配器與訪問紀錄用**頭裡的**位址 |
-| **不在清單裡** | ★ ★ **一個位元組都不讀**，那幾個位元組原樣當作應用資料 |
+| `acme_email` | ACME account email. |
+| `acme_ca` | CA directory URL; defaults to Let's Encrypt. |
+| `admin` | `admin unix/<path>`; mode 0600. Omitted means no socket; network address rejects startup. |
+| `default_sni` | Name used only when the client supplies no SNI. Unknown supplied names still reject; no fallback_sni behavior. |
+| `auto_http_redirect` | true/false, default true. Synthesizes the :80 HTTP redirect site described below. |
+| `grace_period` | Drain duration, default 30s. Final shutdown is explicitly 5s; match systemd stop budget. |
+| `threads_l7` | Integer 1–1024, per L7 h1/h2/h3 service; default CPU count. |
+| `threads_l4` | Integer 1–1024, per TCP/UDP service; default 2. |
+| `threads_admin` | Integer 1–1024, admin and background/default services; default 1. |
+| `proxy_protocol_from` | Trusted source CIDRs for all HTTP listeners; absent trusts nobody. |
+| `tls_session_resumption` | true/false, default true. false disables session cache and emits zero tickets for h1/h2 and h3. |
+| `tls_groups` | Allowed BoringSSL group set: X25519MLKEM768, X25519, P-256, P-384, P-521, MLKEM1024. Case-sensitive official names only; errors, aliases and duplicates reject FUL-DSL-0047. Client preference selects within the set. Absent uses BoringSSL defaults. |
 
-⚠ ⚠ **它與[安全基線](/platform/security-baseline.md)裡 XFF 那條是同一口徑
-（「不在清單裡就當沒有這個頭」），但落法不同，而這個不同必須說清楚**：
-XFF 是 HTTP 頭，忽略它無害；PROXY 頭是**連接開頭的位元組**，
-「讀掉丟棄」與「一個位元組都不讀」是**給上游兩條完全不同的流**。
+Threads are not shared across services; worker totals sum. There is no generic threads setting. Invalid/zero/unit-suffixed/noninteger thread values reject FUL-DSL-0046; role defaults are initial choices awaiting M3 evidence. threads_admin fills Pingora's fallback ServerConf.threads; it is not just the admin listener. See [process model](process-model.md).
 
-★ 取「一個位元組都不讀」的兩條理由：
+TLS contexts are startup-bound: /load changes to either global TLS option return 409 without applying anything, directing the operator to systemctl reload. tls_groups compares list order despite selection being set semantics. Post-quantum-only lists reject TLS1.2; ECDSA P-256/TLS1.2 also needs P-256. Restriction applies to acme-tls/1 CA validation and can break issuance/renewal. Absent options perform no BoringSSL override calls.
 
-1. 它與 L4 分流那條「**不終止 TLS、只看一眼、位元組原樣重放**」是同一條紀律 ——
-   **樞衡不替上游做決定**。
-2. ★ ★ 更硬的那條：v2 的頭**自帶一個 u16 長度欄位**，
-   「讀掉丟棄」必須先解析**攻擊者控制**的那兩個位元組才知道該丟多少 ——
-   而「不讀」完全不碰。
+### PROXY reception and trust
 
-⚠ **代價寫在明處**：清單配錯了（該信的沒寫進去），上游會收到那 12/16 位元組，
-若它自己不認 PROXY 頭就會協定錯亂。★ 那是**「你配錯了」的正確症狀**，
-不是樞衡替你猜錯了 —— 而猜錯的症狀是「用戶端 IP 有時對有時不對」，那種要難查得多。
+For a trusted source, consume the PROXY header before application/TLS bytes and use its client address in remote_ip/logs. For an untrusted source, read zero bytes: the prefix remains application data. Reading and discarding would alter the stream and parse an attacker-controlled v2 length. A misconfigured trust list can therefore expose the prefix to an upstream, producing an explicit protocol failure rather than guessed identity. Trusted sources must send a header; otherwise close the connection. LOCAL and PROXY UNKNOWN are valid (e.g. health checks): consume the header but retain socket peer identity.
 
-★ **`LOCAL` 命令與 `PROXY UNKNOWN` 不是錯誤**：它們表示「這條連接沒有真實用戶端」
-（**上游 LB 的健康檢查就長這樣**）—— 頭照樣吃掉，用戶端位址仍用 socket 對端。
-⚠ 把它們判成壞頭，現場表現是**每一次健康檢查都斷連**。
+The HTTP path uses Pingora's existing 60s per-connection handshake timeout plus a 4096-byte hard buffer limit. L4 uses a separate 3s PROXY wait. Do not claim these are the same bound. Never infer identity from the leftmost X-Forwarded-For.
 
-## ~~回落後端~~ —— ⚠ ⚠ **整層（M2 批 G）刪除**
+### Removed fallback options
 
-§6.3 那個過渡層的使用者是**逐塊歸零**的：`l4`（批 B）→ `file_server`（批 F）→
-`cache`（批 G）⇒ **一個都不剩**，於是 `fallback_nginx` / `fallback_caddy`
-兩條全域選項**一併刪除**，比 §6.3 原本寫的「1.0 時歸零」提前。
+fallback_nginx/fallback_caddy reject FUL-DSL-0034. L4/files/cache are native; Fulcrum neither supervises external engines nor retains a dormant fallback configuration field. See [removed fallback](fallback.md).
 
-⚠ **寫了它們的設定現在編譯不過**，而報的**不是**「未知的全域選項」——
-有一條專門的診斷（`FUL-DSL-0034`）告訴人這一層去哪了、現在該怎麼寫。
-★ 一個公開設定面消失時，最起碼的交代是說清它沒了、為什麼、現在怎麼辦；
-只回「你是不是想寫 XXX」等於讓寫過它的人以為自己打錯了字，而它當初是對的。
+# 2. Site addresses
 
-★ ★ 那一層留下兩句話，在別處照樣成立：
-
-1. **501 與 502 是兩個不同的事實，不許合併** —— 501 = 設定裡沒寫，502 = 寫了但連不上。
-   合併之後，一次設定遺漏與一次後端故障在現場長得一模一樣。
-2. **一個靜靜躺著的死設定，與一個正在生效的設定，在設定檔案裡長得一模一樣** ——
-   所以那一層當初會在裝載紀錄裡說「配了但沒有任何路由會用到它」。
-
-★ 樞衡**不拉起、不監管、不重新啟動、不讀**任何外部引擎的設定（G34）——
-這一條沒有隨回落層消失，它是產品邊界。那兩個後端處理程序現在可以停掉了。
-
-# 二、站台塊的位址
-
-| 寫法 | 含義 |
+| Address | Meaning |
 |---|---|
-| `example.com` | HTTPS（自動 HTTPS，G12），並自動把 HTTP 重定向過來（**合成一個 `:80` 站台**，見下）|
-| `*.example.com` | 通配符，**只吃一層**（見下）。★ **需要 DNS-01**（G54/G57），M1 即可用（G58）|
-| `http://example.com` | 明確 HTTP，**不自動升級、不簽證書** |
-| `example.com:8443` | 指定連接埠 |
-| `:8080` | 任意 Host 的該連接埠 |
-| `a.com, b.com { … }` | 多位址共用一個塊 |
+| `example.com` | Automatic HTTPS and a synthesized HTTP redirect site on :80. |
+| `*.example.com` | Exactly one wildcard label; requires DNS-01. No apex or deeper-label match. |
+| `http://example.com` | Explicit HTTP; no automatic upgrade or certificate. |
+| `example.com:8443` | Explicit port. |
+| `:8080` | Any Host on this port. |
+| `a.com, b.com { ... }` | Multiple addresses share one site block. |
 
-★ ★ **通配符只吃一層，這是公開契約的一部分**（G66）：
+Routing and certificate wildcard checks use the same wildcard_covers helper. Add *.b.example.com explicitly to cover another level. IPv6 literal site addresses are currently unsupported and get a dedicated explanatory diagnostic.
 
-| 站台寫法 | `a.example.com` | `example.com` | `a.b.example.com` |
-|---|---|---|---|
-| `*.example.com` | ✅ 中 | ❌ 不中（裸域） | ❌ 不中（多一層） |
-
-⚠ **不是「後綴匹配」**。這與 **RFC 6125、瀏覽器的實際行為、以及 Caddy** 一致，
-更要緊的是它與**證書那一側完全一致**——一張 `*.example.com` 的證書本來就服務不了
-`a.b.example.com`。★ 兩側共用同一份實作（`fulcrum_config::host::wildcard_covers`），
-所以這張表不會與程式碼分家。
-★ 想覆蓋多層，就把 `*.b.example.com` 也寫成一個站台塊。
-
-⚠ **上表就是全部**。M1 **不支援 IPv6 字面值位址**（`[::1]:8443` 這種）——
-這是已知限制，不是疏漏；寫了會得到一條點名說明這件事的診斷，
-而不是一句關於連接埠或字元集的、指錯方向的抱怨。
-
-## ★ ★ 自動 HTTP 重定向：它是**一個真的站台塊**，不是資料面裡的特判
-
-寫 `example.com` 時，編譯器會**合成**這樣一個站台：
+Automatic redirect is a real synthesized site, visible in compile JSON and plan output:
 
 ```text
 http://example.com {
@@ -197,112 +92,42 @@ http://example.com {
 }
 ```
 
-★ ★ **合成物出現在 `fulcrum compile` 的 JSON 與 `fulcrum plan` 的輸出裡** ——
-它是可以被讀到、被 diff、被質疑的事實，而不是「產品自己知道的一件事」。
-⚠ 一條看不見的特判，在它某天行為不對時，使用者手上沒有任何東西可查。
+308 preserves method/body. An explicit HTTP block for that hostname suppresses synthesis. A :80 catchall does not suppress it, but warning FUL-DSL-0030 explains exact→wildcard→port-catchall precedence. auto_http_redirect false disables it. Port :80 is fixed (G137): HTTP-01 requires it, and challenge handling runs before routes. A front proxy occupying :80 must yield it or implement redirects there. Unmatched sites receive 421 rather than an arbitrary default site.
 
-| 規則 | 說明 |
-|---|---|
-| 狀態碼 | **308**，不是 301/302 —— 308 保留方法與 body，否則一個 `POST` 會變成 `GET`（現場表現是「表單提交丟了」）|
-| 自己寫了 `http://<同一主机名>` | **不合成那一個**，你的寫法優先 |
-| 已經有 `:80` 連接埠備援站台 | 仍然合成，**但會給一條 warning**（`FUL-DSL-0030`）：站台索引是「精確 → 通配 → 連接埠備援」，合成的是精確匹配，會把那幾個主機名從備援站台手裡接走 |
-| 關掉 | 全域塊裡 `auto_http_redirect false`（⚠ 是 `false`，DSL 的布爾不認 `off`，見 §七）|
+# 3. Execution order
 
-★ ★ **它順帶把 HTTP-01 修好了**：G54 把 HTTP-01 定為「備」，而**沒有 80 連接埠就沒有落腳點** ——
-一臺 443 被擋住的機器會永遠簽不出證書，且換不了挑戰方式。
-⚠ 挑戰應答跑在**路由之前**，所以這條 308 吃不到它。
+The table is a public contract compared row-for-row against chain_directives! by doc_contract.rs. Site-top-level directives are stably sorted; inside route, written order applies. A new directive requires both explicit numeric placement and exhaustive compiler handling (no wildcard fallback).
 
-> ⚠ ⚠ **這一節從前是一句空話。** 表裡那句「並自動把 HTTP 重定向過來」
-> 印了三個月，而程式碼裡一行都沒有：`plan` 只列 `https :443`，80 連接埠上沒有任何監聽。
-> 它是上線當天 `curl http://example.com` 連不上時才被發現的。
-> ★ 文件與實作對不上時，**先問哪一邊是對的** —— 這一次是文件對、實作欠著。
-
-★ **無站台匹配時回傳 421**（G63），不靜默交給任何站台——見 §八。
-
-# 三、執行順序表（G49）——★ 這是公開契約
-
-站台塊內的指令**按下表順序執行，不按書寫順序**。這是 G49 拍板的形狀（照 Caddy），
-換來的是「使用者隨便寫也能跑對」與 Caddyfile 遷移零意外。
-
-| 序 | 指令 | 類別 | 歸屬 |
+| Order | Directive | Kind | Ownership |
 |---|---|---|---|
-| 10 | `tracing` | 中介軟體 | 預留 |
-| 20 | `header` | 中介軟體 | M1 自研 |
-| 30 | `rewrite` | 中介軟體 | M1 自研 |
-| 40 | `encode` | 中介軟體 | M2 自研 |
-| 50 | `cache` | 中介軟體 | M2 自研 |
-| 55 | `handle` | 容器 | M1 自研 |
-| 56 | `route` | 容器 | M1 自研 |
-| 60 | `redir` | 終結 | M1 自研 |
-| 70 | `respond` | 終結 | M1 自研 |
-| 75 | `metrics` | 終結 | M2 自研 |
-| 80 | `reverse_proxy` | 終結 | M1 自研 |
-| 90 | `file_server` | 終結 | M2 自研 |
+| 10 | `tracing` | Middleware | Reserved |
+| 20 | `header` | Middleware | M1 native |
+| 30 | `rewrite` | Middleware | M1 native |
+| 40 | `encode` | Middleware | M2 native |
+| 50 | `cache` | Middleware | M2 native |
+| 55 | `handle` | Container | M1 native |
+| 56 | `route` | Container | M1 native |
+| 60 | `redir` | Terminal | M1 native |
+| 70 | `respond` | Terminal | M1 native |
+| 75 | `metrics` | Terminal | M2 native |
+| 80 | `reverse_proxy` | Terminal | M1 native |
+| 90 | `file_server` | Terminal | M2 native |
 
-> ★ **這張表就是程式碼裡那張表。** `crates/fulcrum-config/src/directive.rs` 的 `chain_directives!`
-> 是它的程式碼側，`crates/fulcrum-config/tests/doc_contract.rs` **逐行比對兩邊**——
-> 改了一側沒改另一側，測試會紅。契約不靠自覺維護。
+Middleware accumulates. Containers dispatch their internal chain; the first matching terminal ends the request. Containers have positions after middleware and before terminal fallback so a site-level respond does not swallow a handle. route's escape applies inside its block; route itself remains order 56. FUL-DSL-0028 explains an earlier unconditional terminal and actual order; fulcrum plan prints steps and their positions.
 
-- **中介軟體**按序依次執行，可疊加。
-- **容器**（`handle` / `route`）決定塊內那些指令怎麼跑，本身不產生行為。
-- **終結類第一個匹配即停**，其後的終結指令不再考慮。
+# 4. Directives
 
-## ★ 容器為什麼也佔表位（完成實作時補）
+## 4.1 Terminals
 
-拍板當天這張表裡只有九條，配套說明寫的是「容器不參與排序」。完成實作時發現那句話**留了一個洞**：
-容器與普通指令之間的先後就沒有定義了，而按「不在表裡的排最後」接住，
-**本頁 §一那個範例當場就是錯的**——
+| Directive | Form |
+|---|---|
+| `reverse_proxy` | `reverse_proxy [matcher] <upstream...> { ... }` |
+| `respond` | `respond [matcher] <status> [body]` |
+| `redir` | `redir [matcher] <target> [code]`, default 302. |
+| `file_server` | `file_server [matcher] [browse] { root ... }` |
+| `metrics` | `metrics [matcher]`; no arguments or subblock. |
 
-```text
-handle @internal { reverse_proxy … }
-respond 403                            # 兜底
-```
-
-`respond` 在第 70 步；`handle` 若排在它後面，那條 403 會恆勝，
-**handle 塊永遠進不去，而設定能裝載、請求能通、紀錄一行不報**。
-這正是 G49 配套第 2 條點名要防的那個形狀。
-
-所以容器進表，位置在**中介軟體之後、終結類之前**：先按匹配分派（`handle`），
-再給保序塊一次機會（`route`），最後才是站台級的備援終結指令。
-★ 這是**對 G49「照 Caddy」的落實，不是新決策**——Caddy 的 order 列表裡
-`handle` / `route` 同樣各佔一位。
-
-## ★ ★ ★ 三條配套約束，缺一不可
-
-1. **`route { … }` 是保序逃生口**：塊內**按書寫順序**執行，順序表不生效。
-   沒有它，「表決定一切」時使用者無法表達例外。
-   ⚠ 逃生口管的是**塊內**：`route` 這個塊自己仍然站在第 56 步上。
-2. **新增指令必須在表裡有位置，否則編譯不過。** ⚠ 這是本頁最容易爛掉的一處：
-   若按「不在表裡就排最後」處理，新指令會**悄悄跑在錯誤的位置上**——
-   設定能裝載、請求能通、紀錄一行不報。
-   **做成編譯期窮盡性檢查，不是註解提醒。**
-   ★ Caddy 自己就是這麼做的（不在 order 列表裡的指令直接回報錯誤）。
-   ★ ★ **完成實作成兩半，兩半都要有**：① 序號寫在 `chain_directives!` 每行的最前面，
-   少了它編不過——**「忘了給位置」這個選項不存在**；② `compile.rs` 裡對
-   `ChainDirective` 的 `match` **沒有 `_` 備援臂**，「在表裡有位置」≠「有人接」。
-3. **錯誤提示要能解釋位置**：執行順序與書寫順序不同而出了意外時，
-   診斷必須說出「它實際跑在第幾步、為什麼」，否則使用者只能去背這張表。
-   ★ 已完成實作：`FUL-DSL-0028` 在編譯期就指出「你這條排在第 N 步，
-   而第 M 步那條沒有匹配器、會先終結請求」；`fulcrum plan` 把整條鏈連同步號打出來。
-
-# 四、指令清單（G60：首版對外能力面全覆蓋）
-
-★ **`状态` 列說明它由誰承擔**。
-⚠ ⚠ 這裡原本講的是 **G47 隱式回落**（寫 `cache` 不必也不允許寫 `fallback`，
-編譯器自己決定它走 nginx，裝載紀錄逐條列出，G52）—— **那一層（M2 批 G）整塊刪除**，見 §一。★ G52 那條「隱式的事必須可見」沒有作廢，
-它換了物件：現在由快取與靜態檔案那兩處「把生效的預設值打出來」承擔。
-
-## 4.1 終結類
-
-| 指令 | 形式 | 狀態 |
-|---|---|---|
-| `reverse_proxy` | `reverse_proxy [matcher] <upstream…> { … }` | **M1 自研** |
-| `respond` | `respond [matcher] <status> [body]` | **M1 自研** |
-| `redir` | `redir [matcher] <to> [code]`，預設 302 | **M1 自研** |
-| `file_server` | `file_server [matcher] [browse] { root … }` | **M2 自研**（批 F）|
-| `metrics` | `metrics [matcher]` —— **不收任何參數、沒有子塊** | **M2 自研**（批 M）|
-
-### `metrics`：Prometheus 抓取端點（G116）
+### `metrics`
 
 ```text
 metrics.example:9443 {
@@ -313,239 +138,102 @@ metrics.example:9443 {
 }
 ```
 
-它是**普通站台塊裡的終結指令**，不是獨立監聽器、也不是站台級屬性。
-⇒ 訪問控制（匹配器）、TLS、訪問紀錄**全部重複使用現有機制**（G116 就是這三樣），
-而 [G14「管理面只綁 Unix socket」的口徑一個字不動](/platform/security-baseline.md)
-—— 指標面不屬於管理面。回應是 `200`，`Content-Type: text/plain; version=0.0.4; charset=utf-8`。
+metrics is an ordinary site terminal reusing matchers/TLS/logging, not an admin endpoint/new listener. It returns 200 with `Content-Type: text/plain; version=0.0.4; charset=utf-8`. encode currently does not compress metrics/respond/redir; it is wired only to files/proxy. This can cost ongoing scrape bandwidth and has no runtime warning.
 
-⛔ **壓縮不在其中**：`metrics` 與 `respond` / `redir` 同病 —— 三者寫回應走的是同一條
-沒有 encoder 的路（`encode` 今天只接在 `file_server` 與轉發那兩處）。⇒ 在這個站台裡
-寫一條 `encode gzip`，**對抓取端點一個位元組都不影響**：回應仍是 `200`、正文仍然正確，
-只是 `Content-Encoding` 那一格不出現，而沒有人會去看一個成功抓取的回應頭。
-代價見[可觀測性](/architecture/observability.md)。
+Keep metrics inside handle when paired with respond 403: respond's order 70 would win over top-level metrics at 75. FUL-DSL-0037 warns when no source-restricting matcher exists, including inherited handle/route conditions. remote_ip and header count as potential protection (including negation); path/path_regexp/host/method/query do not distinguish clients issuing the same request. The check cannot establish a correct CIDR or secrecy of a header value. JSON representation is `{"order":75,"matcher":...,"directive":"metrics"}` with no second directive payload key. See [observability](observability.md).
 
-⚠ ⚠ **代價說在明處：指標與業務共用監聽器，匹配器寫錯就會把指標暴露出去。**
-這一條**架構兜不住，只能靠文件與診斷兜** —— 上面這段就是文件那一半，
-`FUL-DSL-0037` 是診斷那一半：`metrics` 身上**沒有任何限制得了來源的匹配器**時報一條
-warning（`handle` / `route` 那層帶著也算 —— 它罩住塊內每一步）。
+### reverse_proxy subblock
 
-★ ★ ★ **算不算數，問的是「它能不能把兩個發同樣請求的用戶端分開」**：
-
-| 條件 | 算不算 | 為什麼 |
-|---|---|---|
-| `remote_ip` | ✅ | socket 對端，在這一層偽造不了 |
-| `header` | ✅ | 一個共享金鑰可以放在這裡 |
-| `path` · `path_regexp` · `host` · `method` · `query` | ❌ | 全都是請求行與請求頭裡的東西，**任何用戶端都能照著發一份** —— 它們只決定端點擺在哪，不減少能碰到它的人 |
-
-⚠ ⚠ **所以 `handle /metrics { metrics }` 照樣報警告**，而這正是這條診斷的重點：
-從 nginx / Caddy 遷過來的人第一反應就是寫一條路徑，於是**最可能出現的那個裸奔設定**
-恰恰是最先撞上來的那一個。⚠ `not { remote_ip … }` 仍然算保護。
-
-★ 仍然判不動的那一半：**匹配器寫得對不對**（網段圈沒圈對、`header User-Agent Prometheus`
-其實誰都擋不住）。編譯期沒有這些資訊 ⇒ **寧可漏報也不誤報** ——
-一條報「已保護」的假話比沒有診斷更壞。
-
-⚠ 它排在 **75**，也就是 `respond` 之後。所以 `metrics @internal` 與一條備援 `respond 403`
-**並排寫在站台塊頂層是錯的** —— 403 在第 70 步先終結。範例裡那個 `handle`（第 55 步）
-不是排版習慣，是唯一正確的寫法；寫錯時 `FUL-DSL-0028` 會說出來。
-
-★ 訪問紀錄 `outcome` 那個閉集因此**從 7 個值變成 8 個**，多的是 `metrics`
-（`reverse_proxy` · `file_server` · `respond` · `redir` · `error` · `no_site_match` ·
-`acme_http01` · **`metrics`**）。閉集靠資料面一個窮盡 `match` 守著：加一種就編不過。
-
-⚠ 結構化設定是**公開入口**（G11），所以它的 JSON 形狀也是契約：這一步序列化成
-`{"order":75,"matcher":…,"directive":"metrics"}`，**沒有第二個鍵**。
-
-指標清單、每一格的基數上界與取數點見[可觀測性](/architecture/observability.md)。
-
-### `reverse_proxy` 的子塊
-
-| 子指令 | 說明 | 狀態 |
-|---|---|---|
-| `lb_policy` | `round_robin`（預設）／`least_conn`／`ip_hash`／`random` | M1 |
-| `health_uri` | 主動健康檢查路徑（G17）。✅ **已串接**（批 11，G77）。★ **不寫它就完全不探測** —— 其餘 `health_*` 有預設值也不會讓探測發生 | M1 |
-| `health_interval` / `health_timeout` | 預設 `10s` / `3s`，**打點下界 500ms**。★ 每條 `reverse_proxy` 各自的 `health_interval` 真的算數（**不像 `dns_refresh` 那樣全庫取最小值** —— 探測是打在別人服務上的流量）。⚠ `health_timeout` 罩的是**整趟**（連接 + 寫 + 讀）| M1 |
-| `health_status` | 認為健康的狀態碼，預設 `2xx`。★ 認不出的寫法是**裝載期錯誤**，不回落成預設 | M1 |
-| `dns_refresh` | ★ 上游網域**定期重解析**（G17）。預設 `30s`，**下界 5s**。**這條直接消滅 nginx OSS 那個經典事故源**。✅ **已串接**（批 10，G76）。⚠ 打點節奏取**全庫最小值**、每輪刷全部上游——配了 `60s` 的那條可能被更頻繁地刷到（更頻繁不是更稀疏，對正確性無影響） | M1 |
-| `passive_fail` / `passive_window` / `passive_cooldown` | **被動熔斷**（G17，串接與冷卻那一格是 **G136**）。`passive_fail <次数>` = 視窗內失敗幾次就把這個上游摘出排程；`passive_window` 預設 **10s** = 數失敗的視窗；`passive_cooldown` 預設 **30s** = 摘掉之後歇多久。<br>⚠ ⚠ **不寫 `passive_fail` 就完全不熔斷** —— 與 `health_uri` 同一條先例，另外兩個旋鈕有預設也不會讓熔斷發生（只寫它們會得到一條 `FUL-DSL-0045` 警告）。⛔ `passive_fail 0` 不是關閉的寫法，是 `FUL-DSL-0044`：關閉只有「不寫」這一種表達。<br>★ 算失敗的有兩類：**連不上/超時**，以及**上游真的回了 5xx**。⛔ 樞衡自己合成的 5xx（`all_upstreams_down` 那條 502）**不算** —— 否則一次全站故障會把每個上游再熔一遍，自我強化。<br>★ ★ 恢復走**真半開**：冷卻期滿後**恰好放一個**請求過去探路，成功就完全恢復、失敗就重新熔斷並重置冷卻。⚠ 樞衡**不換上游重試**，所以打到壞上游的每一個請求都是使用者可見的錯 —— 半開把「上游一直不好」的代價釘在**每週期 1 個**，而「到期全量放回」那種做法每週期要付 `passive_fail` 個。<br>★ 它與主動健康檢查（`health_uri`）**各佔一格、互不覆蓋**：那個打的是一個專門的探測路徑，被動熔斷看的是**真實流量**。⇒ 一個 `/health` 回 200 而真實業務在 500 的上游，只有它看得見。⚠ 代價：一個上游可能「主動檢查說健康、被動熔斷說不可用」，`/stats` 的 `passive_open` 與指標 `fulcrum_upstream_passive_open` 分別說得出來。 | M2 |
-| `header_up` / `header_down` | 改發往上游 / 回給用戶端的頭 | M1 |
-| `transport` | `http`（預設）／`https` | M1 |
-| `tls_insecure_skip_verify` | 上游用 https 時跳過證書檢核。⚠ 只給自簽的內網上游用 | M1 |
-| `id` | ★ **這一條 `reverse_proxy` 的穩定名字**（M2 批 N，G125），**選填**，一個參數。管理面的臨時覆蓋層用 `(站点名, id, 上游地址)` 三格尋址「**這個站台塊**裡的那臺機器」；沒寫 `id` 的那條，那一格**就是空串** —— 這不是第二套尋址，只是同一個鍵空間裡 id 可以為空。<br>★ ★ **同一個站台裡兩條 `reverse_proxy` 的 `(id, 上游地址)` 相同 ⇒ 它們共享同一個覆蓋格子**，一次 `disable` 把這幾條一起摘掉。⛔ **不是錯誤，也不給告警**：「一個後端掛在幾組 `handle` 路由後面」是反代最常見的寫法 ⇒ **現有設定一個位元組都不用改**。★ 而「一起摘掉」多半正是要的語義：那臺機器壞了，它不該從任何路由收流量。**想分開就給其中一條寫一行 `id`**，寫了就各佔一格、各摘各的。<br>⚠ 「這一格覆蓋管著幾條 `reverse_proxy`」由 `GET /stats` 顯示出來（G18「不持久化但永遠可見」）—— 那是「以為 `disable` 只影響一條」這件事唯一的提醒。<br>⚠ ⚠ **鍵裡的上游位址是歸一化之後的那個串**（`backend` ⇒ `backend:80`，與執行環境裡那個上游的名字逐字相同）—— 於是一條寫 `backend`、另一條寫 `backend:80` 的兩條 `reverse_proxy` **共享同一格**，儘管設定裡兩行長得不一樣。這不是缺陷而是**邊界**：管理面對著的是執行環境。★ `/stats` 會把三格鍵**原樣列出來**，維運照抄即可。<br>⚠ 同一個塊裡寫兩行 `id` 是錯誤（`FUL-DSL-0041`），⛔ **不是「後寫的贏」**；`id ""` 也是錯誤（`FUL-DSL-0042`）：空串正是「沒寫」的那一格，寫它什麼都沒分開。<br>⚠ ⚠ **取值域是 `[A-Za-z0-9_.-]`、長度 1–64**，越界是錯誤（`FUL-DSL-0043`，**M2 批 P**）。★ ★ 硬的理由只有一條 —— **與備援記號撞車**：本儲存庫用 `<other>` / `<none>` / `<unknown>` / `<undeclared>` 表示「取不到 / 備援」，靠的是**尖括號在真值裡不可能出現**，而在這一條之前 `id <none>` 是合法的；另半條是可讀性（`id` 裡的換行會讓 `/stats` 與紀錄上那一行在人眼裡斷成兩行）。⛔ **不是指標基數**：`id` 一個字都不進指標（G126）—— ★ 一個假理由會讓下一個人理直氣壯地把限制放寬回去。⚠ 這是一次**收緊**：在此之前裝得上的某些設定以後裝不上，M4 之前沒有相容性承諾（§7）⇒ 要收就現在收最便宜。<br>⚠ **兩條路各攔一次**：DSL 這條給 `FUL-DSL-0043`，而**結構化設定**那條（`POST /load`，G11 的公開入口，不經過 `fulcrum compile`）由執行環境圖自己再攔一遍回 400。★ 兩處調的是**同一個**判據函式，⛔ 不是兩份手寫的平行邏輯。<br>⛔ **不自動派生**：內容雜湊會讓「發佈時加一臺機器」把剛摘掉的壞節點的覆蓋頂懸空，站台內序號會讓「換一下書寫順序」靜默改掉尋址 —— 與 `weight` 拒絕位置式是同一條理由。<br>⚠ **跨站台不併**（第一格是站台名），**同一條 `reverse_proxy` 裡把同一個位址寫兩遍只算一條**（那本來就是同一條上的同一臺機器）。| M2 |
-| `proxy_protocol` | ★ **給上游發一個 PROXY 頭**，`v1` / `v2`；**省略參數就是 `v2`**（M2 批 D）。⚠ 它與 `header_up X-Forwarded-For` 解決同一件事但**層不同** —— 對**不解析 HTTP 的上游**它是唯一可用的那個。★ 樞衡自己收到過 PROXY 頭時，發出去的是**那個頭裡的位址**（鏈式傳遞），不是自己的 | M2 |
-| `weight` | **上游權重**：`weight <上游地址> <正整数>`，可寫多行，**沒寫的上游是 1**，值域 **`[1, 65535]`**。<br>⚠ ⚠ **位址必須與 `reverse_proxy` 那一行上的 token 逐字相同** —— 這裡**不做任何歸一化**：寫 `weight backend 3` 而上面寫的是 `backend:80`，是**裝載期錯誤**（`FUL-DSL-0038`，並把那條 `reverse_proxy` 的上游清單原樣列出來）。★ 歸一化住在執行環境那一層，設定層再寫一份「差不多的」就會分家，而分家的現場是「設定照過、權重沒生效」。<br>⚠ 同一個上游寫兩次是錯誤（`FUL-DSL-0039`），⛔ **不是「後寫的贏」**：那種規則下挪動一行就會靜默改掉權重。<br>⛔ **`0` 不合法**（`FUL-DSL-0040`）：把一臺機器摘出排程**只有一種寫法** —— 管理面臨時覆蓋層的 `disable`。兩條路做同一件事就會分家。<br>✅ **四種 `lb_policy` 全部認權重**（M2 批 N）：**先篩可用集，再在可用集上按累積權重挑**。`least_conn` 比的是 `inflight / weight`（整數交叉相乘，無浮點）。★ **被摘掉的上游連它的權重一起出局** —— 否則「按 3:1 分，而那個 3 沒在跑」會讓 3/4 的請求落空。<br>⚠ **落點是連發**：取「累積權重 + 遊標」而不是平滑加權，所以 3:1 的落點是 `a a a b` 而**不是** `a a b a`。要平滑分佈的話，這是一處函式體的事。<br>⚠ ⚠ **`ip_hash` 下改權重會讓雜湊映射整體錯位** —— 與「一個上游掉出可用集」同一性質：工作階段粘性在**上游變動或權重變動**時都不保證保持。| M2 |
-
-### `file_server` 的子塊
-
-| 子指令 | 說明 |
+| Subdirective | Meaning |
 |---|---|
-| `root` | 文件根目錄。⚠ **必填**，且**必須是絕對路徑**（G91）。相對路徑相依處理程序 cwd，而 systemd 下 cwd 是 `/`、開發機上是專案目錄 —— 同一份設定會在兩處指向兩個地方，現場只看得到 404 |
-| `index` | 目錄索引檔案名，可多個。**預設 `index.html`** |
-| `follow_symlinks` | `true`（**預設**）／`false`。G87。預設與 nginx（`disable_symlinks off`）、Caddy 一致：不做額外系統呼叫。寫 `false` 之後按 canonicalize 檢核，結果必須仍在 `root` 之內。⚠ 寫法是 **`false` 不是 `off`**（見下） |
-| `hide` | 命中的**路徑段**回 404。**追加**在預設表之後，可寫多行。G88 |
-| `hide_defaults` | `true`（**預設**）／`false`。寫 `false` 關掉預設表，只用自己寫的 `hide` |
-| `precompressed` | **預壓縮旁檔案**（M2 批 I，G99）。取值同 `encode`：`gzip` / `zstd` / `br`，可多個、可寫多行（**追加**）。發 `/x.css` 時，若用戶端認 br 且 `/x.css.br` 在，就直接發它。<br>★ **它比現壓嚴格更好**：旁檔案本身就是被選中的那個表示 ⇒ 強 `ETag`、`Content-Length`、`Accept-Ranges` 與 Range **全都保住**，而現壓那四樣全掉。<br>⚠ ⚠ **旁檔案比原檔案舊就當它不存在** —— 這一條 nginx 與 Caddy 預設都**不做**。理由：一個改了 `x.css` 卻忘了重新生成 `x.css.br` 的部署，只會讓**支援 br 的那部分使用者**拿到舊內容，不報任何錯、紀錄裡一行都沒有，而開發者自己的瀏覽器還很可能拿到新的 |
+| `lb_policy` | round_robin (default), least_conn, ip_hash or random. |
+| `health_uri` | Enables active probes; absent means no probes even when other health defaults exist. |
+| `health_interval` | Default 10s, 500ms lower scheduling bound; each proxy's interval applies individually. |
+| `health_timeout` | Default 3s across connect+write+read. |
+| `health_status` | Default 2xx; invalid syntax rejects load rather than reverting. |
+| `dns_refresh` | Default 30s, minimum 5s. Global scheduler uses the smallest interval and refreshes all upstreams, so longer configured intervals may refresh sooner. |
+| `passive_fail` | Positive failure threshold; absent disables, invalid/zero rejects FUL-DSL-0044. Counts connect/timeout and genuine upstream 5xx, not synthesized Fulcrum failures. |
+| `passive_window` | Failure-count window, default 10s. Without passive_fail warns FUL-DSL-0045. |
+| `passive_cooldown` | Default 30s, separate from failure window. After expiry exactly one half-open probe; success restores, failure reopens. |
+| `header_up` | Modify outgoing request headers. |
+| `header_down` | Modify final response headers. |
+| `transport` | http (default) or https. |
+| `tls_insecure_skip_verify` | Skip upstream HTTPS certificate verification for explicitly intended self-signed internal services. |
+| `id` | Optional stable route identity, one value 1–64 characters [A-Za-z0-9_.-]. Duplicate lines reject FUL-DSL-0041, explicit empty rejects FUL-DSL-0042, invalid domain rejects FUL-DSL-0043. |
+| `proxy_protocol` | Reserved HTTP-upstream syntax, v1/v2 (omitted value=v2); no current HTTP data-plane sending implementation. L4 sending is independently usable below. |
+| `weight` | `weight <exact-upstream-token> <integer>`; default 1, range 1–65535. |
 
-（`browse` 是行內標誌，不在子塊裡：`file_server browse { root /srv/www }`。）
+Passive state and active healthy are independent: active /health success cannot clear a business-traffic breaker. Stats and metrics expose both; log breaker transitions rather than every failure. No request is retried on another upstream after being sent. A single half-open probe bounds repeated failure cost even under concurrency.
 
-**預設 hide 清單**（非空，裝載時會逐條打出來）：
-`.git` · `.env` · `.svn` · `.hg` · `.bzr` · `.DS_Store`
+Override addressing is (site name,id,normalized upstream). Omitted id is empty; collisions deliberately share a slot without warning, including backend and backend:80 after normalization. Stats reports exact keys and reference count; add id to separate. Cross-site keys never merge; duplicated same-address tokens in one route count once. Do not derive identities by order or content hash. The id restriction avoids reserved <none>/<other>/<unknown>/<undeclared> collision and multiline output, not metric cardinality; validate through the same helper on DSL and JSON input paths.
 
-- 按**路徑段**匹配：`/x/.git/config` 命中，而 `.gitlab-ci.yml` **不會**被 `.git` 命中。
-- 命中回 **404 不是 403** —— 403 等於確認「這個檔案在」，那是一次資訊洩漏。
-- ★ `.well-known/` **不受影響**：這裡不按 `.` 一刀切，它只是一個普通目錄。
-  ⚠ 若按「點開頭一律 404」做，使用者的靜態站會**把自己的證書簽發擋掉**
-  （HTTP-01 的挑戰路徑就在 `.well-known/acme-challenge/` 下），
-  而現場看到的只是「CA 說驗不過」。
+Weight tokens match the declaration byte-for-byte without config-layer normalization; mismatch=FUL-DSL-0038, repeated weight=FUL-DSL-0039, zero/invalid/out-of-range=FUL-DSL-0040. Disabling has one spelling: runtime disable, not weight 0. All four policies filter availability first, then cumulative weights; least_conn compares inflight/weight by integer cross-products. Weighted round-robin is bursty (3:1→a a a b), not smooth. ip_hash affinity changes when upstream availability or weights change.
 
-⚠ ⚠ **兩條布爾只認 `true` / `false`**，明確拒絕 `yes/no/on/off`
-（與 `tls_insecure_skip_verify` 同一條口徑）。★ 代價認下：從 nginx
-（`disable_symlinks off`）遷過來的人會下意識寫 `off`，由診斷的 did-you-mean 接住 ——
-換的是**一套 DSL 只有一種布爾寫法**。
+### file_server subblock
 
-**這一批做到哪**（G89）：發檔案 · 目錄索引 · 目錄不帶尾斜槓 **301** 到帶斜槓
-（查詢串保留）· `browse` 目錄列表 · `ETag` / `Last-Modified` /
-`If-None-Match` / `If-Modified-Since` → **304** · **單段** `Range` 與 `If-Range`。
-
-**明確不做**：多段 `multipart/byteranges`（回 **200 全量**，RFC 9110 允許忽略 `Range`）。
-方法只認 `GET` / `HEAD`，其餘 **405** 且帶 `Allow`。
-
-> ✅ ✅ **預壓縮旁檔案在 M2 批 I 做完** —— 見上表的 `precompressed`。
-> ⚠ 這裡原本寫的是「不做，因為 `encode` 本身還在 `UNWIRED` 裡，先做旁檔案會讓
-> 『壓縮』有兩個互不知道的實作」。★ 那條理由是對的，而它**成立的前提在批 I 消失了**：
-> `encode` 串接之後兩者是同一件事的兩半 —— 有旁檔案用旁檔案、沒有才現壓，
-> 而「已經壓過的不再壓一遍」由壓縮層自己（看見 `Content-Encoding` 就放行）與
-> `file_server`（選中旁檔案就把 encoder 丟掉）**兩處各擋一道**。
-
-`Content-Type` 由**自帶的一張約 60 條小表**決定，查不到就是
-`application/octet-stream`（G90：一個只需要查表的能力，不值得為它抬相依面）。
-
-## 4.2 中介軟體類
-
-| 指令 | 形式 | 狀態 |
-|---|---|---|
-| `header` | `header [matcher] [+-]<name> [value]` | **M1 自研** |
-| `rewrite` | `rewrite [matcher] <to>` — 內部改寫，不發重定向 | **M1 自研** |
-| `encode` | `encode gzip zstd br` | **M2 自研**（批 I；壓縮本體用 fork 裡那份，G100）|
-| `cache` | `cache [matcher] { ttl … }` | **M2 自研**（語義層與記憶體後端＝批 G，磁碟後端＝批 H）|
-
-### `cache` 的子塊
-
-| 子指令 | 說明 |
+| Subdirective | Meaning |
 |---|---|
-| `ttl` | ⚠ ⚠ **備援**新鮮度，**不是覆蓋**（G96）：只有上游**沒給** `Cache-Control: max-age` / `s-maxage` / `Expires` 時才用它。上游給了就聽上游的。★ 不寫它 ⇒ 上游沒說新鮮度的回應**不快取**。<br>★ 取備援而不是覆蓋的理由：覆蓋語義會讓一個帶 `no-store` 的回應也被存下來 —— 而那是「偶爾給錯內容」裡最貴的一種。⚠ 代價認下：從 nginx `proxy_cache_valid` 遷過來的人會發現它不覆蓋 |
-| `max_size` | **單條目**大小上限。超過它的回應**不進快取**（照發給用戶端）。預設 8MB |
-| `capacity` | **整個快取**的容量上限，達到就按 **LRU** 淘汰。預設 256MB。★ **改了它 `POST /load` 立刻生效**（**G135**），生效值會寫在 load 的回話裡；多個 `cache` 塊寫不同值時取**最大**。⚠ **調小是惰性的**：到下一次寫入之前，佔用仍可能高於新上限 —— `POST /load` 是接管流量時的關鍵路徑，在那裡掃一遍 LRU 會把 O(1) 變成隨快取大小線性（G84 同一條紀律）。⚠ 它是必需的而不是可選的 —— 一個沒有上限的記憶體快取就是一處記憶體洩漏，而那種洩漏的現場是「跑幾天之後被 OOM 殺掉」，與快取本身看不出關係。★ 寫了 `disk` 時它是**磁碟**預算，不寫時是**記憶體**預算 —— 同一條指令、兩種介質，生效值與介質都在裝載紀錄裡 |
-| `disk` | **磁碟後端**的根目錄（**批 H**，G83/G84）。寫了它 ⇒ 快取寫入磁碟、處理程序重新啟動後**還在**；不寫 ⇒ 記憶體後端，重新啟動即空。必須是**絕對路徑**（`FUL-DSL-0033`）。<br>⚠ ⚠ **快取後端是處理程序級的**：多個 `cache` 塊寫了**不同**的 `disk`（含「一個寫了、一個沒寫」）是編譯期錯誤 `FUL-DSL-0035` —— 兩個不同的值裡必有一個是「你以為生效、其實沒有」的。★ 與 `capacity` 處置不同是因為代價不同：容量取大一點不會讓任何站台拿不到東西，目錄取一個會讓另一個站台的快取整個落在別處<br>★ 名字取 `disk` 而不是 `path`：`path` 在本 DSL 裡已經是**請求路徑**（匹配器與 `{path}` 佔位符） |
+| `root` | Required absolute path; cwd-dependent relative roots reject. |
+| `index` | One or more names, default index.html. |
+| `follow_symlinks` | true default; false canonicalizes and requires containment under root. |
+| `hide` | Append named path segments to the 404 list; multiple lines append. |
+| `hide_defaults` | true default; false disables the built-in list. |
+| `precompressed` | gzip/zstd/br, multiple values/lines append; select acceptable fresh sibling representation. |
 
-**做到哪**（G97）：可快取性判定 · 新鮮度 · 快取鍵 · `Vary` · 條件重驗證
-（`If-None-Match` / `If-Modified-Since` 發給上游，收到 **304 只更新中繼資料、不動 body**）·
-**上游回應頭裡的全套 `Cache-Control` 指令**（`no-store` / `no-cache`（兩種形態）/
-`private`（兩種形態）/ `public` / `max-age` / `s-maxage` / `must-revalidate` /
-`proxy-revalidate` / `immutable` / `no-transform`）· **防驚群** · `POST /purge`
-· **磁碟後端**（批 H）。
+browse is inline, not a subdirective. Default hidden segments are .git, .env, .svn, .hg, .bzr and .DS_Store, reported at load. Match segments rather than prefixes (.git does not match .gitlab-ci.yml); return 404 to avoid confirming existence. .well-known stays usable. true/false are the only boolean spellings.
 
-**明確不做**：`stale-while-revalidate` / `stale-if-error`（解析了但**不施加**）·
-快取 `HEAD` · 快取 `206` 部分回應。
+GET/HEAD support indexes, trailing-slash 301 preserving query, optional directory listing, ETag/Last-Modified, If-None-Match/If-Modified-Since→304, single Range and If-Range. Other methods return 405+Allow. Multipart ranges intentionally receive a full 200 response. MIME uses a built-in small extension table, default application/octet-stream; parse all three HTTP date formats, including RFC850 two-digit-year rules.
 
-### 磁碟後端做成什麼形狀（G83 / G84）
+Precompressed siblings older than the original are ignored to prevent partial-client stale deployments. The selected sibling is its own representation: keep strong ETag, Content-Length, Accept-Ranges and ranges. Otherwise dynamically compress; do not compress an existing Content-Encoding or a selected sibling twice. Dynamic compression weakens ETag and loses those full-representation properties.
 
-| | |
+## 4.2 Middleware
+
+| Directive | Form |
 |---|---|
-| 佈局 | 快取鍵 hash 的**兩級分片目錄**；meta 與 body **兩類檔案**；`tmp` 後 `rename` 原子完成實作 |
-| 重驗證 | **只改 meta 不動 body** —— 這正是 meta 與 body 分開的理由 |
-| 啟動 | **不掃盤**：讀時按鍵算出檔案名直接開 ⇒ **重新啟動之後第一個請求就能命中**；淘汰索引走 save/load，後台每秒走一個一級分片目錄漸進重建 |
-| 崩潰恢復 | 讀時檢核（body 長度與 meta 對不上就**即丟即刪**）；後台清理收掉沒人認領的 body 與壞掉的 meta |
-| 目錄用不了 | ★ **關掉快取、照常轉發**（不是退回記憶體 —— 按磁碟寫的 `capacity` 會變成記憶體預算而 OOM；也不是拒絕啟動 —— 換代時那等於服務整體中斷）。裝載紀錄有一行 `error`，執行環境 `X-Fulcrum-Cache` 那個頭不再出現 |
+| `header` | `header [matcher] [+-]<name> [value]` |
+| `rewrite` | `rewrite [matcher] <target>`, internal rewrite without redirect. |
+| `encode` | `encode gzip zstd br`, reusing the existing fork compressor. |
+| `cache` | `cache [matcher] { ttl ... }`, reverse_proxy only. |
 
-⚠ **代價寫在明處**：淘汰索引與盤之間有個**最終一致**的視窗 —— 剛重新啟動時佔用算得偏小，
-於是淘汰比穩態晚一點觸發。★ 而**命中不受影響**，因為讀路徑根本不看索引。
+### cache subblock
 
-★ ★ **我們是共享快取**，這一句改變好幾處判斷，其中最貴的一條是：
-**帶 `Authorization` 的請求，其回應預設不可快取**（RFC 9111 §3.5），
-除非回應明確寫了 `public` / `s-maxage` / `must-revalidate`。
-⚠ 漏了它就是**把一個人的私有頁面發給下一個人**，而不會有任何回報錯誤。
-
-★ 命中的回應帶 `Age` 與 `X-Fulcrum-Cache` 兩個頭 ——
-⚠ `Age` 是 RFC 9111 §5.1 要求的：下游若還有一層快取，它要拿 `Age` 算自己的新鮮度；
-不發的話同一份內容會被一路放大到兩倍壽命。
-
-`X-Fulcrum-Cache` 的取值：記憶體後端是 `HIT` / `REVALIDATED`，
-磁碟後端是 `HIT-DISK` / `REVALIDATED-DISK`。
-★ 後綴說的是**這個處理程序真的挑中了哪個後端**，不是設定裡寫了什麼 ——
-⚠ 「配了 `disk` 而目錄用不了」時快取是關掉的，這個頭**一個都不會出現**。
-
-⚠ **快取只裹 `reverse_proxy`**：`respond` / `redir` 沒有上游可省，
-而 `file_server` 的位元組已經在本機磁碟上、再存一份記憶體是淨虧。
-
-## 4.3 容器與結構
-
-| 指令 | 說明 |
+| Subdirective | Meaning |
 |---|---|
-| `route { … }` | ★ **保序容器**（G49 的逃生口），塊內按書寫順序 |
-| `handle [matcher] { … }` | **互斥容器**：多個 `handle` 裡只有第一個匹配的會執行 |
-| `handle_errors { … }` | 錯誤頁（G63）。塊內可用 `{status}` 佔位符 |
+| `ttl` | Fallback freshness only when upstream gives no max-age/s-maxage/Expires; absent means no caching without upstream freshness. Never overrides no-store. |
+| `max_size` | Per-entry cap, default 8MB; oversized responses still reach the client. |
+| `capacity` | Backend-wide LRU budget, default 256MB; maximum across blocks, memory budget without disk and disk budget with disk. /load applies and reads back effective value; shrink evicts on next put, not during load. |
+| `disk` | Absolute root (FUL-DSL-0033), process-wide. Different paths or mixed disk/no-disk blocks reject FUL-DSL-0035. |
 
-## 4.4 站台級
+Supports cacheability, freshness/key/Vary, conditional revalidation (304 updates metadata only), request coalescing, purge, and upstream no-store/no-cache/private (both forms), public/max-age/s-maxage/must-revalidate/proxy-revalidate/immutable/no-transform. stale-while-revalidate and stale-if-error parse but are not applied; HEAD and 206 responses are not cached. This is a shared cache: Authorization responses default uncacheable except explicit public/s-maxage/must-revalidate.
 
-| 指令 | 形式 | 狀態 |
-|---|---|---|
-| `tls` | `tls`（自動，預設）／`tls <cert> <key>`／`tls internal`（自簽）／`tls { on_demand … }` | **M1 自研** |
-| `log` | `log { output … }` — ✅ **欄位清單與格式由 G113 + G114 定稿**（D7 結案）；權威是 [觀測](/architecture/observability.md)，本節只說設定面 | M2 |
+Compression precedes storage, with normalized secondary representation keys (G101). Hits send Age plus X-Fulcrum-Cache: HIT/REVALIDATED for memory, HIT-DISK/REVALIDATED-DISK for disk. These report the selected live backend; origin responses have no cache-hit status. An unusable disk backend logs error, disables cache and forwards without this header, never switches the disk budget to memory or aborts the generation.
 
-### `tls` 的子塊
+Disk layout/read-time integrity/background recovery and the synchronous memory/disk interface are specified in [data path](data-path.md). Reads bypass the eviction index so restart can immediately hit; startup never scans the full disk. Temporary occupancy undercount affects eviction only. Purge shares the 0600 management socket, with key/prefix/all scopes.
 
-| 子指令 | 說明 |
+## 4.3 Containers
+
+| Directive | Semantics |
 |---|---|
-| `on_demand` | 握手期按 SNI 觸發簽發（G12）。⚠ ⚠ **只到設定層為止**：還欠對 `ask` 的存取資格呼叫、並行閘門與失敗快取 —— 它在 `fulcrum_runtime::UNWIRED` 裡登記著，裝載時會打出來 |
-| `ask` | ★ **存取資格端點。G15：開了 `on_demand` 卻沒配它，拒絕啟動**——這裡在編譯期就紅 |
-| `dns` | DNS-01 用哪家（G57：`cloudflare` / `dnspod` 原生，其餘走 `exec` hook）|
-| `resolvers` | 檢核 TXT 可見性時問哪些**權威 NS**。★ G58：**要輪詢確認，絕不能只 sleep 一個固定秒數** |
-| `zones` | ★ 這份 DNS 憑證被**宣告**覆蓋哪些 zone。**G59 第 3 條：原生供應商必填**，超出宣告範圍一律拒絕 |
+| `route { ... }` | Preserve written order inside; the container itself remains order 56. |
+| `handle [matcher] { ... }` | Mutually exclusive: only the first matching handle executes. |
+| `handle_errors { ... }` | Error chain; supports {status}. |
 
-### DNS-01 怎麼寫（G57 / G58）
+## 4.4 Site attributes
 
-```text
-*.example.com {
-    tls {
-        dns exec /etc/fulcrum/dns-hook.sh
-        resolvers ns1.example.net:53 ns2.example.net:53
-    }
-    respond 200
-}
-```
-
-★ ★ **`dns` 與 `resolvers` 必須成對出現，否則編譯期就紅** —— 形狀照 G15
-（`on_demand` 沒配 `ask` 就拒絕啟動）。理由是 G58 那條硬約束：
-確認 TXT 可見只能靠**真去問權威 NS**，少了 `resolvers`，實作要麼退回固定 sleep
-（G58 明確禁止），要麼在簽發中途才回報錯誤——而那時已經在 CA 那邊開了一張訂單、
-並且往 DNS 上寫了一條記錄。
-
-★ **不帶連接埠就補 `:53`**。寫 **IPv4 字面值或主機名都行**，而兩者的差別只在**什麼時候解析**：
-
-| 寫法 | 什麼時候變成位址 |
+| Directive | Form |
 |---|---|
-| `1.12.0.1:53` | 就是它 |
-| `drummer.dnspod.net` | ★ **每次簽發那一刻**解析一次，解出幾個位址就問幾個 |
+| `tls` | Automatic tls (default), tls <cert> <key>, tls internal (UNWIRED), or tls { on_demand ... } (UNWIRED). |
+| `log` | Flat JSON logging; full field contract in [observability](observability.md). |
 
-⚠ ⚠ **主機名不會在啟動時被釘成 IP，這是有意的。** 釘住等於賭「這個名字對應的位址永遠不變」，
-而 `resolvers` 指的恰恰是 anycast 權威 —— 實測 `drummer.dnspod.net` 一次解出 **6 個位址**（含 IPv6），
-而兩小時前手抄進設定的只有 3 個。★ 現場表現會極難查：**證書籤不下來，而設定、憑證、DNS 記錄全對**。
+### tls subblock
 
-★ ★ **一個名字解出幾個位址就問幾個**，不是挑第一個：那是幾臺**各自獨立**的權威節點，
-而 TXT 是逐節點同步過去的。只問第一臺，就會把「這一臺已經有了」當成「全網都有了」——
- 真機上正是這個形狀：本機判定可見、CA 那邊仍判 `Invalid`，43 秒後重試才成。
-
-⚠ **寫得不對是編譯期錯誤**（`FUL-DSL-0029`），不是裝載時一行紀錄：
-連接埠不在 1–65535、主機名裡有非法字元、IPv6 字面值（M1 不支援）都在 `validate` 就紅。
-★ 而「這個名字現在解析得出來嗎」**不在編譯期判** —— 那要網路，
-一次 DNS 抖動不該讓一份沒改過的設定突然編不過。解析失敗會變成一次**響亮的簽發失敗 + 退避**。
-
-★ ★ **憑證不寫在這裡**（G59 第 1 條）。DSL 是要被 diff、被貼進 issue、
-被版本控制的東西——**憑證只從環境變數或檔案讀**。
-exec hook 自己去拿；原生供應商則在 DSL 裡給出**來源**，見下。
-
-#### 原生 Cloudflare / DNSPod 怎麼寫（G57 / G59）
+| Subdirective | Meaning |
+|---|---|
+| `on_demand` | Issue by handshake SNI; UNWIRED runtime admission/concurrency/failure cache remains. |
+| `ask` | Admission endpoint required when on_demand is configured; omitted rejects compilation. |
+| `dns` | Native cloudflare/dnspod or exec hook. |
+| `resolvers` | Authoritative TXT-visibility servers; required with dns and vice versa. |
+| `zones` | Explicit allowed zones, required by native providers; label-boundary check before writes. |
 
 ```text
 *.example.net {
@@ -558,133 +246,26 @@ exec hook 自己去拿；原生供應商則在 DSL 裡給出**來源**，見下�
 }
 ```
 
-`dns <cloudflare|dnspod> <凭据>` 的第二個參數有三種寫法：
+Resolver names resolve at every issuance; query every resulting address. Missing port becomes 53; invalid port/hostname and currently IPv6 literals reject FUL-DSL-0029. Resolution failure itself is runtime issuance failure/backoff. Confirm authoritative visibility before notifying the CA; fixed sleeps are prohibited.
 
-| 寫法 | 含義 | 它是秘密嗎 |
-|---|---|---|
-| `env:名字` | 從環境變數讀 | ❌ 是**指針**，設定裡看不到值 |
-| `file:路径` | 從檔案讀（`trim`，空的當成沒有憑證）| ❌ 同上 |
-| 直接寫值 | **憑證本身**（Caddy 形狀）| ✅ **是** —— 見下 |
-| `literal:<值>` | 同上，用於**值裡帶冒號**的場合 | ✅ |
+Native credential forms: env:NAME, file:/absolute/path (trim, empty means missing), a direct literal, or literal:<value> for colon-containing credentials. Source-looking typos reject FUL-DSL-0031. Inline values make the whole config secret: load refuses any other-user mode bits, accepts 0640 root:service-group. compile redacts by default, --with-secrets warns on stderr, Secret Debug/Display redact, and loading redacted output rejects explicitly. Keep the implementation's redaction sentinel unchanged. File pointers are not the values themselves.
 
-## ⚠ ⚠ ⚠ 寫了字面值，這份設定檔案就是秘密了
+zones chooses the longest matching declared zone, not a suffix that accepts evilexample.net. Cloudflare startup verifies every zone via GET /zones?name, supporting user/account tokens; DNSPod verifies Info.Version but cannot prove scope. Fatal credential errors reject startup; network/timeouts log error and continue (unverified), preserving unrelated sites. Cloudflare needs Zone:Read+DNS:Edit; DNSPod free TTL minimum is 600 and HTTP200 still requires checking body status.code. Body credentials require redaction as well as auth-header redaction.
 
-★ ★ 允許內聯的代價不是「多一種寫法」，而是**設定檔案的性質變了**。
-樞衡裡有四條路會把設定原樣吐出來，所以內聯憑證之後這四條都必須跟著變：
+Exec convention: `<program> set <record-name> <value>` and `clear` to remove. Arguments are separate argv, never shell-interpreted; nonzero exit fails, timeout kills, output is bounded/truncated, and service identity has no elevation. Form _acme-challenge.example.com for *.example.com, stripping wildcard prefix. See [TLS](tls.md) for certificate storage, ARI and challenge isolation.
 
-| 路 | 變成什麼 |
+### log subblock
+
+| Subdirective | Meaning |
 |---|---|
-| `fulcrum compile` | **預設脫敏**（憑證變成 `«已脱敏»`）；要真值得顯式 `--with-secrets`，而且它會在 stderr 上說一聲 |
-| `POST /load` 的載荷 | 同上 —— ⚠ 拿預設產物去 load 會被**明確拒絕**，而不是把 `«已脱敏»` 當憑證發給 CA |
-| 診斷（出錯那一行會被原樣打出來）| 由上面那條脫敏兜住 |
-| `Debug` / 紀錄 | `Secret` 的 `Debug`/`Display` 預設脫敏 |
+| `output` | stderr default, or file <absolute-path>. Open at load; failure rejects startup or /load=400 preserving old config. |
+| `level` | Threshold: debug/info record all; warn records 4xx/5xx; error records 5xx. Each output line's level is independently derived from status. |
+| `headers` | Request header allowlist, at least one name; absent logs no headers. |
+| `resp_headers` | Final sent response-header allowlist, after header middleware. |
 
-★ **判據不是「我們記得在這四處脫敏」，而是預設就不出真值** ——
-一條要在 N 個地方記住的規則，遲早會在其中一個地方被忘掉。
+Allowlist entries must be valid RFC9110 tokens. Authorization, Cookie, Set-Cookie and Proxy-Authorization reject case-insensitively (FUL-DSL-0036); JSON Runtime::build independently rejects them with 400. Deduplicate names case-insensitively. No-site 421 has no site logging configuration and therefore no access-log line; metrics account for it. h3 omits unavailable tls_cipher, rather than fabricating a cipher name.
 
-### ★ 裝載期的權限門
-
-只要設定裡出現字面值憑證，裝載時就檢查這份檔案**別人讀不讀得到**：
-
-| 情況 | 處置 |
-|---|---|
-| 沒有字面值憑證 | **一個字都不查**（不去管別人怎麼放一份沒有秘密的設定）|
-| 有，且 `o` 位有任何權限（如 `0644`）| **拒絕啟動**，並告訴你 `chmod 640` 怎麼改 |
-| 有，`0640 root:<服务组>` | 放行 —— 這是正當形狀：root 擁有、服務唯讀 |
-
-⚠ 不要求 `0600`：那會**逼人把設定交給服務使用者擁有**，而設定本該由 root 管。
-★ 一條把人推向更差實踐的規則，比沒有規則更糟。
-
-### ⚠ 打錯的來源前綴會被攔下（`FUL-DSL-0031`）
-
-既然不寫前綴就是值本身，那麼 `fil:/path`、`ENV:NAME` 這類**打錯的前綴**
-會被當成憑證發給對端 —— 現場是「憑證不對」，而真正的原因是打錯了幾個字母。
-⇒ 長得像來源前綴、而那個前綴不認識 ⇒ **編譯期回報錯誤**。
-★ 白名單那條老理由（「猜錯的那一次恰恰就是真 token 被放行的那一次」）沒有失效，
-它只是**換了落點**：從「攔字面值」變成「攔打錯的前綴」。
-
-★ ★ **`zones` 對原生供應商是必填**（G59 第 3 條）。它宣告「這份憑證被允許動哪些 zone」，
-簽發時記錄名不落在其中就**直接拒絕，一個 API 請求都不發**。
-
-> ⚠ 它不等於「憑證實際能幹什麼」：DNSPod 的 token 是**帳號級**的，
-> 覆蓋該帳號下的全部網域，而且**沒有可問出範圍的端點**。
-> 宣告的價值在於——**越權那一刻是樞衡自己拒絕的，而且拒絕的理由在設定裡看得見**。
->
-> ★ 判據按**標籤邊界**判，不是後綴：宣告 `example.net` **不會**放行 `evilexample.net`。
-> 同時宣告父子 zone 時取最長的那個。
-
-★ **Cloudflare 還會在啟動時被真檢核一次**（G59 第 2 條）：對**宣告的每一個 `zones`** 查一次 id
-（`GET /zones?name=…`，與簽發路徑上的第一步同一個請求形狀）——
-憑證讀不出來、或者對端說它不可用，**拒絕啟動**——形狀照 G15，錯誤在啟動時暴露。
-⚠ 而**檢核請求發不出去**（網路不通）時只打一條 error 繼續跑，不拒絕啟動：
-一次網路抖動不該讓整臺機器上**所有**站台都起不來，包括那些用靜態證書的。
-★ 這是一處知情的取捨，不是遺漏。DNSPod 只能驗「憑證能用」（`Info.Version`），驗不了範圍。
-
-#### exec hook 的呼叫約定
-
-```text
-<程序> set   <记录名> <值>     # 挂上一条 TXT
-<程序> clear <记录名> <值>     # 摘掉
-```
-
-結束代碼非零即視為失敗，stdout/stderr 會被截斷後帶進錯誤資訊。
-
-⚠ **它是一個新的攻擊面**，所以：**不經 shell 解釋**（三個參數各是一個獨立 argv，
-`a.com; rm -rf /` 這種網域只是普通位元組）、**有超時且到點就殺**、
-**輸出有上限**、以服務自己的使用者身分執行、不做任何提權。
-
-★ 記錄名由樞衡算好給你，通配符已經剝掉前綴：
-`*.example.com` 的挑戰記錄是 `_acme-challenge.example.com`
-（RFC 8555 §8.4，**不是** `_acme-challenge.*.example.com`）。
-
-✅ **原生 `cloudflare` / `dnspod` 已串接**（連同 G59 的啟動時憑證檢核），
-★ 並且**兩家都在真網域上簽過生產證書**：`*.example.com` 走 DNSPod、
-`*.example.net` 走 Cloudflare（批 19）。
-⚠ 兩條只有真對端才會暴露的口徑，寫在這裡免得下一個人再撞：
-**DNSPod 免費版 TTL 下限是 600**（寫死 60 會讓每一張證書都簽不下來）；
-**Cloudflare 要 `Zone:Read` + `DNS:Edit` 兩項**權限，而官方「Edit zone DNS」範本只給後者。
-
-### `log` 的子塊
-
-✅ **全部串接**（M2 批 L 第 **②** 步：固定集；第 **③** 步：白名單頭 + TLS 資訊；
-D7 由 G113 + G114 結案）。
-★ **欄位清單與格式的權威是 [觀測](/architecture/observability.md)**，本節只說設定面。
-
-| 子指令 | 說明 |
-|---|---|
-| `output` | `stderr`（預設，進 journal）或 `file <绝对路径>`。★ ★ 檔案**在裝載時就打開**，打不開是**硬錯誤**（`serve` 起不來 / `POST /load` 回 400 且舊設定一個位元組沒動）—— ⚠ 一個用來「出了事你能知道」的東西，自己壞掉時必須有人知道。⚠ 必須絕對路徑，理由與 `cache { disk }`（G91）逐字相同 |
-| `level` | **閾值**，不是「這一行的級別」：`warn` 只記 4xx/5xx，`error` 只記 5xx。⚠ 對訪問紀錄 **`debug` 與 `info` 等價**（都記全部）—— 保留 `debug` 只因為它本來就在取值表裡，而**多一個取值不多一種行為** |
-| `headers` | 寫成 `headers <名字…>`（至少一個）。**請求頭白名單**：⚠ ⚠ 預設**一個頭都不記** —— 不寫這一行就是不記，沒有「記幾個常用的」這種中間態 |
-| `resp_headers` | 寫成 `resp_headers <名字…>`。**回應頭白名單**。★ 取的是**最終**回應頭（`header` 那一步之後寫出去的），不是上游給的那一份 |
-
-⚠ ⚠ **每一行自己的 `level` 欄位是按狀態碼派生的**（`<400` info · `4xx` warn · `5xx` error），
-與上面那個閾值**是兩件事**：前者給紀錄的消費方看，後者給維運用來關掉噪音。
-★ 合成一個的話，「只記錯誤」就沒法表達了。
-
-#### ⚠ ⚠ ⚠ 白名單裡的四個名字是編譯期錯誤（`FUL-DSL-0036`）
-
-`Authorization` · `Cookie` · `Set-Cookie` · `Proxy-Authorization`
-寫進任一白名單 ⇒ **設定裝不上**（大小寫不敏感）。
-
-★ ★ 取「編譯期拒絕」而不是「執行環境脫敏」：後者要求脫敏表跟得上每一個新的敏感頭名，
-而**漏一個就是一次靜默洩漏**；前者的失效形態是「設定裝不上」，當場可見。
-⚠ **兩條路各攔一次**：DSL 這條給 `FUL-DSL-0036`，而**結構化設定**那條
-（`POST /load`，G11 的公開入口，不經過 `fulcrum compile`）由執行環境圖自己再攔一遍回 400。
-
-⚠ 白名單裡的名字還必須是**合法 HTTP 頭名**（RFC 9110 的 `token`），否則也裝不上 ——
-★ 理由是「查不到」與「這條請求上沒有這個頭」在紀錄裡長得一模一樣，
-一個拼錯的名字會**靜靜地什麼都不記**。
-
-⚠ ⚠ **沒有站台匹配的請求（421）記不進訪問紀錄**：`log` 是站台塊內的指令，
-而那條請求按定義不屬於任何站台。★ 那是 **D26**（✅ 已由 **G118** 結案 —— 給
-`no_site_match` 一個計數器），不是遺漏。
-⚠ **走 HTTP/3 的請求只有三格 TLS 資訊**（`tls_cipher` 拿不到）——
-✅ D27 已結案（G128，落點 fork 改動 14），理由見
-[觀測](/architecture/observability.md) 那一節。
-
-## 4.5 頂層非站台塊（M2）
-
-L4 面（§6.1）不是站台塊內的指令，它有自己的頂層塊：
+## 4.5 Top-level L4 blocks
 
 ```text
 l4 {
@@ -694,8 +275,6 @@ l4 {
     udp :53 {
         proxy 10.0.0.6:53
     }
-
-    # SNI / ALPN 分流（M2 批 C）：**不终止 TLS**，只看一眼 ClientHello 再决定送给谁
     tcp :443 {
         sni api.example.com {
             proxy 10.0.0.1:8443
@@ -706,238 +285,95 @@ l4 {
         alpn h2 {
             proxy 10.0.0.3:8443
         }
-        proxy 10.0.0.9:8443          # 兜底：没命中、不是 TLS、或看不懂的 ClientHello
+        proxy 10.0.0.9:8443
     }
 }
 ```
 
-## SNI / ALPN 分流（批 C）
+TCP supports direct proxy plus ordered first-match sni/alpn routing; multiple values within a rule are OR. SNI is case-insensitive exact or single-label wildcard using the common helper. ALPN is byte-exact membership, not prefix (h2 differs from h2c). A bare proxy is fallback; absent fallback closes unrecognized connections with a log. This L4 rule order is written order, not the HTTP directive table.
 
-| 規則 | 語義 |
-|---|---|
-| `sni <名字…>` | ClientHello 的 `server_name`。**精確**或 `*.example.com`（★ **只吃一層**，與站台索引、證書解析**共用同一份實作**，G66）。⚠ 大小寫不敏感 |
-| `alpn <协议…>` | ClientHello 的 ALPN 清單，**逐位元組相等**、任意一條命中即算命中。⚠ **不是前綴匹配**：`h2` 與 `h2c` 是兩個協定 |
-| 裸 `proxy` | **備援**。沒寫就表示「只服務我認得的那幾個名字」，其餘連接**直接關閉**並記一行 |
+Inspection does not terminate TLS. Replay every consumed byte unchanged. A readable SNI can route a hello a full TLS stack would reject; unreadable/non-TLS/timeout/oversize uses fallback. Bound inspection by 3s and 16KiB. UDP cannot use sni/alpn because TLS ClientHello is not present and QUIC Initial is encrypted; reject with an explanatory diagnostic.
 
-★ **同一條裡寫多個值是 OR**（與站台塊裡的匹配器同一條口徑）；
-★ ★ **規則按書寫順序匹配，第一個命中即用** —— L4 沒有那張執行順序表
-（它是給中介軟體排序的），所以這裡的順序**就是你寫的順序**，與 `route { … }` 同源。
+L4 upstreams require an explicit port (no HTTP scheme to supply it). Listener sets bind at startup and require systemctl reload to change (/load=409), but upstream targets can change live. TCP uses shared selection and can try another target during connection establishment; after connecting, no idle timeout is imposed (long-idle DB connections are valid). UDP connect is not a handshake; choose once and do not infer health from it. UDP sessions key by client address, expire at 60s idle and cap at 1024 per listener to bound spoofed-source fd use; stop recv_from immediately on shutdown so the old generation cannot steal new datagrams.
 
-⚠ ⚠ **這是「看一眼」，不是「終止 TLS」**：樞衡讀走的那幾個位元組會**原樣重放**給上游，
-上游拿到的是一條完整的、從第一個位元組開始的 TLS 流。★ 這條由門禁逐位元組比對
-（`tests/l4/run.sh`），因為它錯了的現場表現是「TLS 偶爾握手失敗」，而樞衡這邊一切正常。
-
-⚠ **能不能分流，只取決於能不能讀出 SNI**。★ 換到 BoringSSL（G104）之後這一條變寬了：
-它的早回呼在幾乎全部 ClientHello 檢核**之前**觸發，於是一個完整 TLS 棧會拒絕的 hello
-（例如缺 `signature_algorithms` 擴充）照樣按 SNI 分流。
-★ 讀不出 SNI 的連接**走備援**，不是被關掉：樞衡不替上游拒絕一個上游自己也許能處理的用戶端。
-
-⚠ **`udp` 上不能寫 `sni` / `alpn`，而這不是「以後再做」，是做不到**：
-UDP 上沒有 TLS ClientHello，QUIC 的 Initial 是**加密的**。寫了是編譯期錯誤，
-且診斷會說出這個理由 —— 一條只說「不支援」的診斷會讓人以為等等就有了。
-
-★ 看 ClientHello 有**兩個上限**，寫在程式碼裡也寫在這裡：最多等 **3 秒**、最多快取 **16 KiB**；
-超了就按「不是 TLS」走備援。⚠ 它與 TCP 那條「有意不設空閒超時」不衝突：
-那說的是**已經接上上游**之後，而這一段連上游都還沒選出來。
-
-狀態（**M2 批 A**）：
-
-| | 現在怎樣 |
-|---|---|
-| `tcp` | ✅ **樞衡自己轉發**（批 A）：自建監聽器 + 參與 socket 移交；多個 `proxy` 輪詢，與 `reverse_proxy` **共用同一套挑上游的實作**；★ 建連階段會自動換下一個上游。**批 C** 起還能按 `sni` / `alpn` 分流（見下） |
-| `udp` | ✅ **樞衡自己轉發**（批 B）：按用戶端位址維護工作階段，**空閒 60 秒回收**、每個監聽器最多 **1024 條並行工作階段**（⚠ UDP 源位址可偽造，這兩條是防 fd 被打光的）；★ 停機信號一到就**停止收包**，否則老一代會搶走新一代的資料報 |
-
-⚠ **UDP 與 TCP 有三處語義差別**，寫在 `crates/fulcrum-server/src/l4.rs` 的 UDP 那一節：
-工作階段邊界要自己維護、**空閒超時必須有**（UDP 沒有 FIN）、停機時要停 `recv_from`。
-★ 還有一條：UDP 的 `connect` **不是握手**，它證明不了上游活著 ⇒
-TCP 那邊「建連階段換上游」的做法在 UDP 上**沒有對應物**，挑一次就用它。
-
-⚠ **上游必須寫明連接埠**（`10.0.0.5:3306`）：HTTP 那邊缺連接埠能按 scheme 補 80/443，
-一個裸 TCP 監聽器沒有 scheme，補不了。
-
-⚠ **監聽位址在啟動時綁定**，與 HTTP 連接埠同一條限制：`POST /load` 換不了它（會回 409），
-換要走 `systemctl reload`。★ 但 `proxy` 後面的**上游隨時可以改** —— 換上游不經過 bind。
-
-★ **沒有空閒超時，這是有意的**：L4 的典型物件是資料庫連接，空閒幾小時是正常的，
-而一個「看起來安全」的 30 秒超時會讓樞衡去殺一條兩端都認為健康的連接 ——
-現場表現是「資料庫偶爾斷線」。空閒由兩端自己管。
-
-✅ **SNI / ALPN 分流（批 C）完成實作**，寫法見上。
-
-## PROXY protocol（批 D）
-
-§6.1 承諾的最後一樣。**收與發都做**，`tcp` 塊裡兩條獨立的指令：
+### L4 PROXY protocol
 
 ```text
 l4 {
     tcp :5432 {
-        proxy_protocol_from 10.0.0.0/8    # 收：信任这些来源发来的头
-        proxy_protocol                    # 发：给上游发一个（省略参数＝ v2）
+        proxy_protocol_from 10.0.0.0/8
+        proxy_protocol
         proxy 10.0.0.7:5432
     }
 }
 ```
 
-| 指令 | 語義 |
+Reception and sending are independent. proxy_protocol_from declares trusted sources and requires their header; others read zero bytes. proxy_protocol [v1|v2] sends, default v2; chained reception+sending forwards the original client address. A too-broad trust list rejects otherwise normal headerless traffic, intentionally preventing trusted proxy IPs from bypassing remote_ip controls. LOCAL/UNKNOWN retain peer identity. Header wait is 3s, then ClientHello inspection can add another 3s. UDP rejects both directives: a one-time connection-prefix header has no datagram connection-start location.
+
+# 5. Matchers
+
+Named @blocks carry complex conditions; inline matcher positions accept @name, a path beginning /, or explicit * (match all). Use `rewrite * /new/x`: otherwise a slash-prefixed destination is consumed as a path matcher. Diagnostics suggest the explicit escape.
+
+| Condition | Meaning |
 |---|---|
-| `proxy_protocol_from <网段…>` | **收**。★ **不在清單裡就一個位元組都不讀** —— 口徑與理由見 §二那一節 |
-| `proxy_protocol [v1\|v2]` | **發**。省略參數＝ **`v2`**（owner 拍板）|
+| `path` | Path wildcard matching. |
+| `path_regexp [name] <re>` | Regex with capture placeholders. |
+| `host` | Host header. |
+| `method` | One or more methods. |
+| `header <name> [value]` | Presence/equality. |
+| `query <key>=<value>` | Query parameter. |
+| `remote_ip <cidr...>` | Peer/trusted-PROXY client IP, never untrusted XFF. |
+| `not { ... }` | Negation. |
 
-★ ★ **收與發是兩件獨立的事，不是一個開關的兩半**：只收不發、只發不收、
-收了再發（**鏈式傳遞**：上游看到的仍是最初那個用戶端）三種都是真實用法。
+Multiple conditions in a named matcher are AND; multiple values within one condition are OR.
 
-⚠ ⚠ ⚠ **寫了 `proxy_protocol_from` 之後，清單內的來源不發頭會被關掉連接。**
-這一條會讓人意外，所以說在明處：`proxy_protocol_from 10.0.0.0/8` 這句話的意思是
-**「這個網段的流量是經代理來的」**，⇒ 那個網段裡出現一條不帶頭的連接本身就是異常。
-★ 取「必須發」而不是「發了就用、沒發就算了」的理由是安全上的：若允許清單內的來源
-**選擇性地**不發頭，它就能讓樞衡改用 socket 對端 —— 而那個位址正是 LB 自己，
-於是一條 `remote_ip 10.0.0.0/8` 規則會**命中它**。
-⚠ **代價**：清單配寬了（比如整個 `10.0.0.0/8`），那個網段裡所有不發頭的正常連接都會被拒。
-★ 這與 HAProxy 的 `accept-proxy`、nginx 的 `listen … proxy_protocol` 是同一條語義，
-只是樞衡多了一層**來源限定**。
+# 6. Placeholders
 
-★ 兩條時間上限：等 PROXY 頭最多 **3 秒**。⚠ 它與「看 ClientHello」那 3 秒是**兩段**：
-一條既收 PROXY 頭、又配了 `sni` 分流的連接，最壞要 **6 秒**才選得出上游。
+The fixed set has no expressions, functions or conditionals. An unavailable-position placeholder is a compile error, never an empty-string fallback.
 
-⚠ ⚠ ★ **上面這兩個數只管 `l4` 那半邊。HTTP 面（全域 `proxy_protocol_from`）的口徑不一樣，
-而這個不一樣是有意的**：HTTP 面那段讀發生在 `handshake()` 裡，而上游**已經**把整個
-`handshake()` 包在一個 **60 秒**的超時裡、並且是 per-connection spawn 的。
-⇒ 再加一個自己的超時，就是多一個要與它同步的數字。★ 它有的是另一道保證：
-緩衝區**硬上界 4096 位元組**（那是「這個循環一定會停」的備援，真正的協定上界由解析器自己給）。
-⚠ 別把「L4 是 3 秒」讀成「HTTP 面也是 3 秒」—— 兩半邊在這一點上從來沒有對齊過。
-
-⚠ ⚠ **`udp` 上寫這兩條是編譯期錯誤，而這不是「以後再做」**：
-PROXY protocol 是**面向連接**的 —— 頭在連接開頭發一次。UDP 上沒有「連接開頭」，
-每個資料報都是獨立的：「只發一次」沒有落點，「每個都發」不是這個協定規定的東西。
-★ 與 `sni` / `alpn` 在 `udp` 上那條同一條紀律，**診斷都要說出為什麼**。
-
-原文（M1，G60）：**解析得過，編譯成回落**。保留在這裡，因為它說明這一格是**什麼時候、
-因為哪一批**變的 —— 而不是看起來一直如此。
-★ 至此 `l4` **不再產生任何回落標記**，`L4Config` 裡那個 `fallback` 欄位也整個刪掉了：
-⚠ 一個恆為 `None` 的欄位不是「保守」，它是**一句會被當真的假話** ——
-`compile` / `plan` 的產物是公開契約，讀的人會以為那條路還在。
-
-# 五、匹配器（G50）
-
-**複雜條件一律走命名塊；行內只允許路徑。**
-
-```text
-@admin {
-    path      /admin/*
-    remote_ip 10.0.0.0/8
-    method    POST PUT DELETE
-}
-handle @admin { … }
-
-reverse_proxy /api/* backend:8080      # 行内简写：只能是路径
-rewrite       * /new/x                 # ★ `*` 显式占住匹配器位
-```
-
-★ ★ **`*` 是必需的一條逃生口**（照 Caddy）：規則是「第一個以 `/` 開頭的參數就是匹配器」，
-而 `rewrite /new/x` 裡那個 `/new/x` 其實是**目標**。沒有 `*`，這條最自然的寫法就是死衚衕。
-⚠ 寫錯時診斷會直接告訴你改成 `rewrite * /new/x`，不會只丟一句「參數不對」。
-
-| 條件 | 說明 |
+| Placeholder | Meaning/availability |
 |---|---|
-| `path` | 路徑，支援 `*` 通配 |
-| `path_regexp [name] <re>` | 正則；命名捕獲組可由 `{path.N}` 引用 |
-| `host` | Host 頭 |
-| `method` | 請求方法（可多個）|
-| `header <name> [value]` | 請求頭存在 / 等於 |
-| `query <k>=<v>` | 查詢參數 |
-| `remote_ip <cidr…>` | 用戶端 IP。★ 取值口徑見[安全基線](/platform/security-baseline.md)——**不能取 XFF 最左項** |
-| `not { … }` | 取反 |
+| `{host}` | Request Host. |
+| `{uri}` | Full URI with query. |
+| `{path}` | Path. |
+| `{query}` | Query without ?. |
+| `{method}` | Method. |
+| `{scheme}` | http/https. |
+| `{remote_ip}` | Client IP. |
+| `{remote_port}` | Client port. |
+| `{header.<Name>}` | Request header. |
+| `{resp_header.<Name>}` | Response header, response-side/handle_errors only. |
+| `{path.<N>}` | Regex capture N. |
+| `{status}` | Error status, handle_errors only. |
+| `{upstream}` | Selected upstream, response side only. |
+| `{time}` | Request start, RFC3339. |
 
-行內匹配器位只認三種寫法：`@name`、以 `/` 開頭的路徑、以及 `*`（全部匹配）。
+# 7. Value types
 
-★ 同一 `@name` 塊內**多條件是 AND**；同一條件寫多個值是 OR。
+Durations require units (5s, 1m, 2h, 500ms), never bare numbers. Sizes accept decimal/binary prefixes (10MB,1GiB). Booleans are only true/false, rejecting yes/no/on/off. Strings are bare or quoted; quote spaces, braces and #. Outside quotes, # begins a whole-line or trailing comment. M1 supports one file without import/conf.d; cross-file locations, cycles and relative roots are outside scope.
 
-# 六、佔位符（G61：小而固定，無表達式、無函式、無條件）
+# 8. Default responses
 
-**只有下面這些，文件列全。** ★ DSL 一旦長出圖靈完備的表達式層，
-它就變成一門沒人測試的程式設計語言，而錯誤提示會跟著失控。
-
-| 佔位符 | 含義 |
+| Condition | Response |
 |---|---|
-| `{host}` | 請求的 Host |
-| `{uri}` | 完整 URI（含查詢串）|
-| `{path}` | 路徑部分 |
-| `{query}` | 查詢串（不含 `?`）|
-| `{method}` | 請求方法 |
-| `{scheme}` | `http` / `https` |
-| `{remote_ip}` | 用戶端 IP |
-| `{remote_port}` | 用戶端連接埠 |
-| `{header.<Name>}` | 請求頭 |
-| `{resp_header.<Name>}` | 回應頭（僅 `handle_errors` 與回應側指令可用）|
-| `{path.<N>}` | `path_regexp` 的第 N 個捕獲組 |
-| `{status}` | 回應狀態碼（僅 `handle_errors` 可用）|
-| `{upstream}` | 本次選中的上游位址（僅回應側可用）|
-| `{time}` | 請求開始時間（RFC 3339）|
+| No site match | 421 Misdirected Request |
+| No route within site | 404 |
+| All upstreams unhealthy | 502 |
 
-★ **用在不可用的位置是編譯錯誤，不是空串。** 空串會讓 `handle_errors` 之外誤用
-`{status}` 的設定**看起來能跑**，而輸出裡少一段——那正是本專案反覆抓的那種無聲失敗。
+`handle_errors` overrides built-in error responses and can use {status}. A default site must not silently receive unmatched traffic.
 
-# 七、類型與字面值
+# 9. Diagnostics
 
-| 類型 | 寫法 | 說明 |
-|---|---|---|
-| 時長 | `5s` `1m` `2h` `500ms` | ★ **裸數字是錯誤**，不做預設單位 |
-| 大小 | `10MB` `1GiB` | 十進位與二進位前綴都認，含義按 IEC |
-| 布爾 | `true` / `false` | ★ **只認這兩個**——不接受 `yes/no/on/off`，避開 YAML `no → false` 那類坑 |
-| 字串 | 裸詞或 `"…"` | 含空格、`{`、`#` 時必須加引號 |
-| 註解 | `#` 到行尾 | 只能整行或行尾，不能在引號內 |
-
-# 八、預設值（G63）——★ 預設值本身就是契約
-
-| 情形 | 預設回應 |
-|---|---|
-| **無站台匹配** | **421 Misdirected Request** |
-| 站台內無路由匹配 | 404 |
-| 上游全部不健康 | 502 |
-
-★ **無站台匹配回傳 421 而不是靜默交給某個站台**：後者是 nginx `default_server`
-那類行為的溫床——請求被交給一個使用者沒打算讓它去的地方，而且沒有任何提示。
-
-`handle_errors { … }` 可覆蓋，塊內可用 `{status}`。
-
-# 九、錯誤提示規範（G51）
-
-**一次報全 + 穩定錯誤碼。** 每條診斷至少包含：
+Aggregate recoverable errors with stable codes, line/column, source excerpt and caret:
 
 ```text
 error[FUL-DSL-0007]: unknown directive `reverse-proxy`
   --> /etc/fulcrum/Fulcrumfile:12:5
    |
 12 |     reverse-proxy 127.0.0.1:3000
-   |     ^^^^^^^^^^^^^ 未知指令
+   |     ^^^^^^^^^^^^^ unknown directive
    |
-   = help: 你是不是想写 `reverse_proxy`？
-   = note: 全部指令见 docs/architecture/dsl-reference.md §4
+   = help: did you mean `reverse_proxy`?
 ```
 
-- **行列號 + 原始碼片段 + caret**，缺一不可；
-- **錯誤碼 `FUL-DSL-NNNN` 穩定**，可被文件與自動化引用（⚠ 一旦發出就不能改含義，與 D9 相鄰）；
-- 儘量**錯誤恢復**，把能報的一次報完——依據是設計原則第 4 條「設定變更是交易」。
-
-★ **G49 之下有一類專屬診斷**：當執行順序與書寫順序不同並造成了意外，
-診斷必須說出「它實際跑在第幾步」，否則使用者只能去背 §三那張表。
-
-# 十、最容易在哪做錯
-
-1. ★ ★ ★ **加了指令卻沒在 §三的順序表裡給它位置。** 見 §三第 2 條——
-   **做成編譯期窮盡性檢查，讓它編不過。**
-2. ★ **把佔位符在不可用位置解析成空串。** 必須是編譯錯誤（§六）。
-3. ★ **給 `remote_ip` 取 XFF 的最左項。** 那是**用戶端可偽造**的；口徑見[安全基線](/platform/security-baseline.md)。
-4. **以為裸寫 `file_server` 還能編過。** M2 批 F 起 **`root` 必填且必須絕對**（G91）——
-   ⚠ 這一條推翻了它在 M1–批 E 期間的行為（那時它編譯成回落路由，由裝載紀錄逐條列出）。
-   ★ 舊行為寫在這裡不是歷史癖好：**照著舊文件抄的設定現在會編不過**，
-   而回報錯誤指的是 `root`，不是「file_server 變了」。
-5. **給 `import` 留後門。** G62 明確 M1 不做，因為它會一次性引入跨檔案錯誤定位、
-   循環引用與相對路徑三件事，**恰好都打在 G51 剛把標準定高的那個面上**。
-
-# 相關
-
-[設定分層](/architecture/configuration.md)（三層與已定語義） ·
-[TLS 與自動 HTTPS](/architecture/tls.md)（`tls` 指令背後的 ACME 落法） ·
-[回落層](/architecture/fallback.md)（⚠ 在 M2 批 G 歸零，該頁留作記錄） ·
-[管理面](/architecture/control-plane.md)（這份設定怎麼裝載與回復）
+Once emitted, FUL-DSL-NNNN meanings are stable for docs/automation. Explain execution order where written order is misleading. Examples and the directive/subdirective/placeholder inventory are executable documentation contracts; changing prose never authorizes removing their coverage.

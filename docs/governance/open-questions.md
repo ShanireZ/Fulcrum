@@ -1,45 +1,11 @@
 ---
-type: 專案治理
-title: 待定清單
-description: 不阻塞當前進度、但必須在對應里程碑開工前定下來的問題；只列仍然開著的那些。
-resource: ../../PLAN.md
-tags: [治理, 待定, 尚未完成實作]
-status: stable
-generated:
-  by: claude-code/opus-5
-  at: 2026-08-12T00:00:00Z
-sources:
-  - id: plan-11
-    resource: /references/plan.md
-    title: PLAN.md §11 待定清單
-  - id: plan-10
-    resource: /references/plan.md
-    title: PLAN.md §10 決策清單（已結案的那些的結論）
+type: navigation
+title: Open D-questions
+description: Mirror of the open D identifiers in PLAN section 11.
 ---
+# Open D-questions
 
-★ **完整表述在 [`PLAN.md`](../../PLAN.md) §11，本頁只做導覽。**
-**待定項不是需求** —— 沒拍板之前不得據以實作，也不得在別處當成已定事實複述。
+[PLAN §11](../../PLAN.md) owns the open D set. It is empty. Unfinished M3 work and suspended design questions remain in PLAN §7; an empty numbered set does not approve or complete them. tools/plan-refs.py requires this mirror's D rows to match the authority exactly.
 
-⚠ **編號只增不減。** 已結案的 D 號不在本頁，它們的結論在
-[決策紀錄](/governance/decision-log.md) 指向的 `PLAN.md` §10 裡；
-一條被刪掉的待定項與一條從來沒有過的待定項，事後看起來一模一樣。
-
-# 仍然開著的
-
-
-> ⚠ ⚠ **2026-09-07 起這張表是空的** —— `D9` 與 `D20` 同日結案（`PLAN.md` §10 的 `G149` / `G150`），而它們是最後兩條。
-> ⛔ **空不等於「沒有未決的事」** —— M3 的效能目標、壓測視窗、靜態檔案快取那份設計的四處待拍板都還開著，它們**不是 D 號**。
-
-| | 待定項 | 最晚需要在 | 一句話 |
-|---|---|---|---|
-
-# 兩條讀法
-
-**「等 X 發生就到期」的登記，沒有任何東西會在 X 發生時通知它。**
-D22 的到期條件滿足了四輪才被發現，而這四輪裡每一輪都讀過這張表。
-⇒ 到期條件要麼掛進一道門，要麼寫成「每輪都要看一眼」的那種檢查。
-
-**一條待定項被拍板時，答案未必是它問的那個問題。**
-D22 登記的是「探針何時變成常設的門」，而 owner 換掉的是**判據本身** ——
-探針編的是 spike，答不了「產物是不是單靜態二進位」。
-⇒ 結案時先回頭看這一條問的到底是什麼。
+| ID | Question | Required before |
+|---|---|---|

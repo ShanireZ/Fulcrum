@@ -88,7 +88,9 @@ ROW_ANY_D = re.compile(r"^\|.*\bD\d+\b", re.MULTILINE)
 # 「§11（的／裡的／待定清單）Dnn」這一小撮**斷言成員資格**的句式。
 # ⚠ 視窗只有 8 個字元，而這是承重的：把它放寬到十幾個，
 #   「§11 **只列仍然開著的**，D1 早已不在裡面」這句**正確**的話就會被判紅。
-CLAIM = re.compile(r"§11[^\n]{0,8}?\*{0,2}(D\d+)")
+CLAIM = re.compile(
+    r"(?:§11[^\n]{0,8}?|§11\s+(?:open questions|pending list)\s+)\*{0,2}(D\d+)"
+)
 
 
 def read(rel: str) -> str:
@@ -212,6 +214,9 @@ def selftest() -> list[str]:
     # ② 句式判據：命中得了，也漏得掉。⚠ 兩個方向都要跑 ——
     #    只驗「命中」的自測，配一個恆真的正則照樣全綠。
     hits = [
+        "PLAN.md §11 lists **D27** as open.",
+        "PLAN.md §11 open questions D27–D30",
+        "PLAN.md §11 pending list D27",
         "那是 §11 的 **D27**，不是遗漏。",
         "`PLAN.md` §11 的 D27 把候选写成三选一。",
         "PLAN.md §11 D27（版本与兼容性策略）",
@@ -221,6 +226,8 @@ def selftest() -> list[str]:
         if [d for _, d, _ in claims_in(line)] != ["D27"]:
             bad.append("句式判据漏了一条真断言：%s" % line)
     misses = [
+        "§11 only lists questions that remain open; D27 is closed.",
+        "G128 closed D27; see §10, not the open table.",
         # ★ 這一條是真事：修完之後 decision-log.md 就是這麼寫的。
         "§11 **只列仍然开着的**，D1 早已不在里面 —— 结论在 §10 的 G29。",
         "★ **§11 待定项不是需求。** 没拍板之前不得据以实现。",
@@ -259,10 +266,13 @@ def selftest() -> list[str]:
         #    而「只被觀察到綠過的門」正是本儲存庫禁止的那種門。
         probe = os.path.join(root, "probe.md")
         with open(probe, "w", encoding="utf-8") as handle:
-            handle.write("一句正常的话。\n那是 §11 的 **D27**，不是遗漏。\n")
+            handle.write(
+                "A normal sentence.\n那是 §11 的 **D27**，不是遗漏。\n"
+                "PLAN.md §11 open questions **D27**\n"
+            )
         with open(probe, encoding="utf-8") as handle:
             probe_text = handle.read()
-        if len(problems_for("probe.md", probe_text, {"D19"})) != 1:
+        if len(problems_for("probe.md", probe_text, {"D19"})) != 2:
             bad.append("端到端反证：过期断言没有变成一条红")
         if problems_for("probe.md", probe_text, {"D19", "D27"}):
             bad.append("端到端反证：D27 还开着时不该红 —— 这道门判的不是它想判的东西")

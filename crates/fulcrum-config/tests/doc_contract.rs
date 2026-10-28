@@ -33,7 +33,8 @@ struct Row {
 /// 從 markdown 裡摳出 §三那張表。
 fn parse_order_table(md: &str) -> Vec<Row> {
     let start = md
-        .find("# 三、執行順序表")
+        .find("# 3. Execution order")
+        .or_else(|| md.find("# 三、執行順序表"))
         .or_else(|| md.find("# 三、执行顺序表"))
         .expect("文档里找不到 §三 —— 标题被改过？契约测试必须先知道自己在读哪一段");
     let rest = &md[start..];
@@ -55,9 +56,16 @@ fn parse_row(line: &str) -> Option<Row> {
         order: cells[0].parse::<u16>().ok()?,
         name: cells[1].trim_matches('`').to_string(),
         kind: cells[2]
+            .replace("Middleware", "中间件")
+            .replace("Terminal", "终结")
+            .replace("Container", "容器")
             .replace("中介軟體", "中间件")
             .replace("終結", "终结"),
-        owner: cells[3].replace("預留", "预留"),
+        owner: cells[3]
+            .replace("M1 native", "M1 自研")
+            .replace("M2 native", "M2 自研")
+            .replace("Reserved", "预留")
+            .replace("預留", "预留"),
     })
 }
 
@@ -132,12 +140,12 @@ fn 文档里的序号严格递增() {
 #[test]
 fn table_parser_can_both_hit_and_miss() {
     const GOOD: &str = "\
-# 三、执行顺序表（G49）
+# 3. Execution order (G49)
 
 | 序 | 指令 | 类别 | M1 归属 |
 |---|---|---|---|
-| 20 | `header` | 中间件 | M1 自研 |
-| 80 | `reverse_proxy` | 终结 | M1 自研 |
+| 20 | `header` | Middleware | M1 native |
+| 80 | `reverse_proxy` | Terminal | M1 native |
 
 # 四、别的
 | 90 | `不该被读到` | 终结 | M1 自研 |
@@ -278,7 +286,11 @@ fn 文档里印出来的示例必须真能编译() {
     // ★ `### \`metrics\``（批 M）：那一份範例正是 G116 教人怎麼把指標圈起來的那一份，
     //   ⚠ 而它同時是**唯一**印出「`handle` 必須罩住 `metrics`」的地方 ——
     //   抄下來編不過，等於把唯一那份正確寫法印錯了。
-    for heading in ["# 一、總覽", "## 4.5 頂層非站台塊", "### `metrics`"] {
+    for heading in [
+        "# 1. Overview",
+        "## 4.5 Top-level L4 blocks",
+        "### `metrics`",
+    ] {
         let src = code_block_after(DOC, heading);
         assert!(src.len() > 40, "{heading} 抽出来的代码块太短：{src:?}");
         let o = fulcrum_config::compile_str("docs/architecture/dsl-reference.md", &src);
@@ -294,7 +306,7 @@ fn 文档里印出来的示例必须真能编译() {
 fn 总览示例里的兜底_respond_确实排在_handle_之后() {
     // ⚠ 只斷言「編譯得過」不夠：把 handle 挪到 respond 後面它照樣編譯得過，
     //   只是那個「備援 403」會變成恆勝，而**沒有任何一行輸出會說出來**。
-    let src = code_block_after(DOC, "# 一、總覽");
+    let src = code_block_after(DOC, "# 1. Overview");
     let cfg = fulcrum_config::compile_str("t", &src)
         .config
         .expect("示例应当能编译");
@@ -312,6 +324,6 @@ fn 默认响应三条与文档一致() {
     let d = fulcrum_config::model::Defaults::default();
     assert_eq!(d.no_site_match, 421);
     assert!(DOC.contains("421 Misdirected Request"));
-    assert!(DOC.contains("| 站台內無路由匹配 | 404 |"));
-    assert!(DOC.contains("| 上游全部不健康 | 502 |"));
+    assert!(DOC.contains("| No route within site | 404 |"));
+    assert!(DOC.contains("| All upstreams unhealthy | 502 |"));
 }
