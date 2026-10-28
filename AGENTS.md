@@ -2,7 +2,7 @@
 
 In a managed workspace, read `../AGENTS.md` when it exists. A standalone clone does not require sibling workspace files.
 
-Write first-party public documentation in English. Preserve exact interface identifiers, diagnostic/output tokens, upstream/vendor legal text and immutable evidence; explain those exceptions in English rather than silently translating their contents.
+Keep each document's prose consistent with its intended language: English editions use English, and localized editions use their respective languages. Keep the English, Simplified Chinese, Taiwan Traditional Chinese and Japanese README editions synchronized with links to all four. Preserve exact interface identifiers, diagnostic/output tokens, upstream/vendor legal text and immutable evidence; explain those exceptions in the document's language rather than silently translating their contents.
 
 ## Authorities
 

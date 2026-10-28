@@ -4,6 +4,8 @@
 
 <img src="assets/brand/fulcrum-logo.png" alt="Fulcrum" width="160" height="160">
 
+[English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文(TW)](README.zh-TW.md) | [日本語](README.ja.md)
+
 A Rust web server, reverse proxy and load balancer.
 
 - HTTP/1.1, HTTP/2 and HTTP/3 with automatic HTTPS.
