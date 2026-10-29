@@ -22,3 +22,15 @@ __pycache__/
 #   G19 要求基準指令碼與**原始資料**全部公開。真要發佈的那一趟應當寫到一個
 #   指定目錄再單獨提交，⛔ 別把這條 ignore 讀成一條資料保密規定。
 /bench/out/
+
+# Local operating state; keep public benchmark inputs and vendor TLS fixtures.
+/.local/
+/.scratch/
+/vardata/
+/credentials/
+/.env
+/.env.*
+!/.env.example
+/*.bundle
+.DS_Store
+Thumbs.db
