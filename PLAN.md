@@ -101,6 +101,17 @@ Outstanding M3 work and constraints:
 - User-space file-path/response allocations, metrics registry contention and selected Pingora parsing/serialization overhead have been addressed. Their local instruction/allocation diagnostics are not performance claims. A qualitative attribution found the extra qualified-host gap in the Pingora/Tokio foundation rather than Fulcrum's own layer; the private attribution readings are not published.
 - Keep `SharedRuntime::current()` on the hot path after G164's withdrawal. Before another snapshot-cache attempt, attribute the approximately 8 µs diagnostic regression (35a9c5f versus e8adcd8; data local and untracked, not a performance claim) on a machine with enough cores and hardware PMU access. Account for old-graph destruction during a `RefCell` borrow if a destructor can reenter snapshot acquisition.
 - Header serialization-buffer reuse, G155's combined header/body write or explicit flush mitigation, the remaining kernel-side file-path cost, the residual per-request `within_root()` blocking transition, and connection-pool behavior after Pingora 0.9 need investigation. No implementation authorization or schedule follows from this list.
+- Before the next qualified window, refresh both the measured binary and `bench/` on the qualified host. Both are still at `39cfb7d`, which predates the TLS-handshake case, fork changes 16–22, G160–G163, G165, G166, G168 and the October dependency updates. The window runbook and host restore script stay local; the restore script's live-connection warning for ports 3950/3960 is a known false alarm.
+- Criterion ④A, the optional absolute generator ceiling (G142; [bench README](bench/README.md)), stays inactive until a `raw/<case>/ceiling.txt` reference has been measured.
+- Further unscheduled investigation: the per-request error-page body `expand`, G156's pending measurements and deferred final-review minor findings, and verification of the disk-cache-hit measurement basis.
+- With `encode` and `cache` on a reverse-proxy site, a miss emits title-cased `ETag`/`Vary` (G162) while a cache hit emits the stored lowercase names (found 2026-10-14). Field names are case-insensitive, so this stays unchanged pending a decision.
+
+Other outstanding items. These are owner decisions and maintenance; they grant no implementation or external-write authorization:
+
+- Owner review is outstanding for the current §10 wording of G134–G146, G151–G163 and G169, and for the agent-chosen benchmark values (the C20 threshold; the reverse-proxy category name, port range and criterion numbering; origin reuse of `fulcrum-respond.Fulcrumfile`). The review briefs are local governance records.
+- Prepared upstream submissions 8 and 9 (drafts kept outside the repository) await an owner send-or-hold decision. Sending them is a separate external publication under G40.
+- The next weekly G29 run re-runs `python tools/dep-check.py`. The 2026-10-23 report deferred `icu_*` 2.4.0 (vendor lock), `cc` 1.10.0 and `webpki-root-certs`/`webpki-roots` 1.0.11 to that run. The committed `tests/musl/arm64-verified.txt` keeps its older header until the next aarch64 trigger regenerates it; do not edit it by hand.
+- Leftovers on the qualified host await separately authorized cleanup: an obsolete incoming directory, the 2026-10-15 PM2 dump backups and the G164 window snapshots. Benchmark and diagnostic work never touches the live production server.
 
 ## 8. Performance acceptance (G19)
 
