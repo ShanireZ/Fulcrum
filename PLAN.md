@@ -108,7 +108,6 @@ Outstanding M3 work and constraints:
 
 Other outstanding items. These are owner decisions and maintenance; they grant no implementation or external-write authorization:
 
-- Owner review is outstanding for the current §10 wording of G134–G146, G151–G163 and G169, and for the agent-chosen benchmark values (the C20 threshold; the reverse-proxy category name, port range and criterion numbering; origin reuse of `fulcrum-respond.Fulcrumfile`). The review briefs are local governance records.
 - Prepared upstream submissions 8 and 9 (drafts kept outside the repository) await an owner send-or-hold decision. Sending them is a separate external publication under G40.
 - The next weekly G29 run re-runs `python tools/dep-check.py`. The 2026-10-23 report deferred `icu_*` 2.4.0 (vendor lock), `cc` 1.10.0 and `webpki-root-certs`/`webpki-roots` 1.0.11 to that run. The committed `tests/musl/arm64-verified.txt` keeps its older header until the next aarch64 trigger regenerates it; do not edit it by hand.
 - Leftovers on the qualified host await separately authorized cleanup: an obsolete incoming directory, the 2026-10-15 PM2 dump backups and the G164 window snapshots. Benchmark and diagnostic work never touches the live production server.
@@ -132,7 +131,7 @@ Resolved risks remain constrained by their fixes: QUIC DCID relay handles shared
 
 ## 10. Decisions
 
-G-identifiers are append-only. A superseded choice is identified explicitly. Product decisions remain binding; discussion transcripts and owner wording reviews are local governance records. The following table retains technical conclusions and their constraints.
+G-identifiers are append-only. A superseded choice is identified explicitly. Product decisions remain binding; discussion transcripts and owner wording reviews are local governance records. On 2026-11-06 the owner decided not to review further the wording of G134–G146, G151–G163 and G169, or the agent-chosen benchmark values, so the current English summaries stand. The following table retains technical conclusions and their constraints.
 
 | ID | Decision |
 |---|---|
