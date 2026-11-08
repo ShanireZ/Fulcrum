@@ -1,6 +1,7 @@
 # 樞衡 Fulcrum
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg?style=flat-square)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/ShanireZ/Fulcrum/gate.yml?branch=main&style=flat-square&label=ci)](https://github.com/ShanireZ/Fulcrum/actions/workflows/gate.yml)
 
 <img src="assets/brand/fulcrum-logo.png" alt="Fulcrum" width="160" height="160">
 
